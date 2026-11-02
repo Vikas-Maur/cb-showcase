@@ -7,7 +7,10 @@
 //   3. a project already broken this way is found through its history (the library, cb history, cb cut list, the
 //      panel), and Restore of a good version brings it back, its clip playable at once (3f);
 //   4. Restore of main@1, then of the newest version, brings every media entry back with the details Cardboard gave it
-//      (laptop, merge/prod-2 P2-1: clip.mp4 came back without its duration, size and thumbnail).
+//      (laptop, merge/prod-2 P2-1: clip.mp4 came back without its duration, size and thumbnail);
+//   5-7. the final candidate's re-check (0cc587f1): a recovered project's media entries can be saved by the editor
+//      (P1-1), an undo never leaves it empty and an emptied version is refused as what it is (P2-1, P3-2), and a cb
+//      restore round trip lists the clip's file again (P3-1).
 // Run alone or through slot.sh:
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> CARTON_TEST_DIR=<scratch> node --test --test-concurrency=1 scripts/carton/test/sync/restore-root.test.js
 const test = require("node:test");
@@ -306,12 +309,12 @@ test("3f. a recovered project's clip plays without a restart: Restore of a good 
     assert.equal(r.ok, true, r.error);
     await S.until(() => envOf(pc).project.name === "Demo", 20_000, "project.json with its name");
     // Where it plays from and the probe's facts, as the import gave them: Cardboard's probe of the file, which the
-    // broken file no longer named (its recovery of unlisted media finds it by id). Nothing is guessed: when it was
-    // added, which nothing recorded, stays unset.
+    // broken file no longer named (its recovery of unlisted media finds it by id). When it was added, which nothing
+    // recorded, is the project's own date: Cardboard's editor can't save an entry without one (final candidate P1-1).
     const clip = videoIn(envOf(pc).project);
     assert.equal(clip.id, was.id);
     for (const k of ["src", "format", "size", "duration", "width", "height", "frameRate", "hasAudio", "codec", "metadataStatus"]) assert.deepEqual(clip.data[k], was.data[k], k);
-    assert.equal(clip.createdAt, undefined);
+    assert.deepEqual([clip.createdAt, clip.addedAt], [envOf(pc).project.createdAt, envOf(pc).project.createdAt]);
     // Thumbnails and the waveform: Cardboard's own derive (ensureDerived), from what its cache holds for the clip
     await S.until(() => videoIn(envOf(pc).project).data.thumbnailIds?.length, 30_000, "the clip's thumbnails");
     const derived = videoIn(envOf(pc).project);
@@ -623,5 +626,235 @@ test("2b. the write check and Cardboard's own reader agree on a real project and
   for (const [what, [doc, before]] of Object.entries(extra)) {
     assert.ok(read(JSON.stringify(doc)), `${what}: Cardboard reads it`);
     assert.ok(projectProblems(JSON.parse(JSON.stringify(doc)), before).length > 0, `${what}: refused on purpose`);
+  }
+});
+
+// ---------------------------------------------------------------- laptop, final candidate (0cc587f1): P1-1, P2-1, P3-1, P3-2
+// What Cardboard's editor does with a media entry's dates at every save (installErrorTelemetry `p9`, after its load's
+// `P2`: `new Date(x)`, then `.toISOString()`). The renderer can't run here: this is what it needs of every entry.
+const editorSaves = (m) => { new Date(m.createdAt).toISOString(); new Date(m.addedAt).toISOString(); return true; };
+const undated = (p) => (p.media ?? []).filter((m) => { try { return !editorSaves(m); } catch { return true; } }).map((m) => m.id);
+/**
+ * The laptop's broken projects as the app left them on its first start: broken as build 915eb36 broke them, then named
+ * again ("Named the project", main@6): a name, and no aspect ratio, tracks, clips or media.
+ */
+async function brokenAndNamed(pc, b) {
+  const { broken } = await breakLikeTheBug(pc, b);
+  const named = { ...broken, name: "Demo", stateUpdatedAt: broken.stateUpdatedAt + 1000 };
+  asProcess(pc, b, `
+    const lc = await f.internals.open(args.bundle);
+    const r = await lc.carton.commit({ doc: { name: "Demo", tracks: [], timelineItems: [], media: [] }, author: { kind: "human", id: "person" } });
+    if (r.status !== "confirmed") throw new Error("not committed: " + r.status);
+    require("fs").writeFileSync(require("path").join(args.bundle, "project.json"), JSON.stringify(args.file, null, 2));
+    await f.internals.setRevFor(args.bundle, args.rev, r.ref);`, { bundle: bundleOf(pc), file: { ...envOf(pc), project: named, media: [] }, rev: named.stateUpdatedAt });
+  return named;
+}
+
+test("5. P1-1: a project recovered through History is written with every media entry Cardboard's editor can save, and its GUI edits land", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("recover-save", b);
+  S.seed(pc, b);
+  try {
+    const created = envOf(pc).project.createdAt;
+    await brokenAndNamed(pc, b);
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const p = await panel(pc, id, "save-panel");
+    // the laptop's steps: ⋯ on the version before the break → Restore
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 4).ref)).ok, true);
+    await S.until(() => (envOf(pc).project.media ?? []).length > 0, 20_000, "the restore in project.json");
+    const back = envOf(pc).project;
+    assert.deepEqual(undated(back), [], "every entry has dates the editor's save takes: " + JSON.stringify(back.media));
+    // nothing kept those dates (the bug came before .carton/media.json): the project's own date, as no media is older
+    for (const m of back.media) assert.deepEqual([m.createdAt, m.addedAt], [created, created], m.id);
+    for (const m of back.media.filter((x) => x.data?.type === "text")) assert.deepEqual([m.data.format, m.data.size, m.data.presetId], ["text", 0, "custom"], "a title as Cardboard makes one");
+    // what the editor loads (the worker's store) is the same
+    assert.deepEqual(undated(await S.projectOf(pc, id)), []);
+    // a GUI edit (the laptop's: a title deleted) is a version, and in project.json
+    const before = must(pc.cb(["history", "Demo"]), "history").json().versions[0].version;
+    const doc = await S.projectOf(pc, id);
+    const gone = doc.timelineItems.find((i) => i.type === "text");
+    await pc.call("projects.updateScoped", { ...doc, timelineItems: doc.timelineItems.filter((i) => i.id !== gone.id), stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
+    await S.until(() => !envOf(pc).project.timelineItems.some((i) => i.id === gone.id), 20_000, "the delete in project.json");
+    const h = must(pc.cb(["history", "Demo"]), "history after").json();
+    assert.notEqual(h.versions[0].version, before);
+    assert.equal(h.versions[0].kind, "edit");
+    assert.deepEqual(undated(envOf(pc).project), []);
+    // through cb alone too (the app closed): cb restore writes complete entries
+    await pc.stopWorker();
+    must(pc.cb(["restore", "Demo", "main@1"]), "cb restore main@1");
+    fs.rmSync(path.join(bundleOf(pc), ".carton", "media.json"), { force: true }); // nothing kept, as on the laptop
+    must(pc.cb(["restore", "Demo", "main@4"]), "cb restore main@4");
+    assert.ok(envOf(pc).project.media.length > 0);
+    assert.deepEqual(undated(envOf(pc).project), []);
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("5b. P1-1: a project already on disk with date-less media (recovered by the earlier candidate) is read with the dates, and its next save writes them", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("recover-save-disk", b);
+  S.seed(pc, b);
+  try {
+    const env = envOf(pc);
+    const created = env.project.createdAt;
+    // the earlier candidate's recovered file (docs/regress/final/restore/project-json): {id, data} only, under head's rev
+    const project = { ...env.project, media: env.project.media.map((m) => ({ id: m.id, data: m.data })), stateUpdatedAt: env.project.stateUpdatedAt + 1 };
+    asProcess(pc, b, `
+      const lc = await f.internals.open(args.bundle);
+      require("fs").writeFileSync(require("path").join(args.bundle, "project.json"), JSON.stringify(args.file, null, 2));
+      await f.internals.setRevFor(args.bundle, args.rev, (await lc.carton.head()).ref);`, { bundle: bundleOf(pc), file: { ...env, project }, rev: project.stateUpdatedAt });
+    assert.equal(undated(envOf(pc).project).length, env.project.media.length, "date-less on disk, as on the laptop");
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    // what the editor loads has them: the project's own date (nothing kept theirs)
+    const doc = await S.projectOf(pc, id);
+    assert.deepEqual(undated(doc), []);
+    assert.ok(doc.media.every((m) => m.createdAt === created));
+    // nothing was written to read it so
+    assert.equal(undated(envOf(pc).project).length, env.project.media.length);
+    // the editor's next save lands, and writes them
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 171 } : undefined));
+    await S.until(() => envOf(pc).project.timelineItems.some((i) => i.fontSize === 171), 20_000, "the save in project.json");
+    assert.deepEqual(undated(envOf(pc).project), [], "the save wrote the dates");
+    assert.equal(must(pc.cb(["history", "Demo"]), "history").json().versions[0].kind, "edit");
+    // cb reads it the same way (its own copy of the store)
+    await pc.stopWorker();
+    const again = { ...envOf(pc).project, media: envOf(pc).project.media.map((m) => ({ id: m.id, data: m.data })), stateUpdatedAt: envOf(pc).project.stateUpdatedAt + 1 };
+    asProcess(pc, b, `
+      const lc = await f.internals.open(args.bundle);
+      require("fs").writeFileSync(require("path").join(args.bundle, "project.json"), JSON.stringify(args.file, null, 2));
+      await f.internals.setRevFor(args.bundle, args.rev, (await lc.carton.head()).ref);`, { bundle: bundleOf(pc), file: { ...envOf(pc), project: again }, rev: again.stateUpdatedAt });
+    const edit = path.join(pc.home, "edit5b.tsx");
+    must(pc.cb(["source", "print", "Demo"]), "print");
+    fs.writeFileSync(edit, fs.readFileSync(path.join(bundleOf(pc), "timeline.tsx"), "utf8").replace(/fontSize=\{171\}/, "fontSize={172}"));
+    must(pc.cb(["source", "apply", "Demo", edit]), "cb source apply");
+    assert.ok(envOf(pc).project.timelineItems.some((i) => i.fontSize === 172));
+    assert.deepEqual(undated(envOf(pc).project), [], "cb's write wrote them too");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("6. P2-1: Ctrl+Z or cb undo right after the recovery would leave the project empty: refused in plain words, nothing changes; P3-2: the emptied versions are refused as what they are", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("recover-undo", b);
+  S.seed(pc, b);
+  try {
+    await brokenAndNamed(pc, b);
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const since = Date.now();
+    const p = await panel(pc, id, "undo-panel");
+    // P3-2: the old bug's empty version (main@5) and the named one (main@6): not where the history starts
+    for (const seq of [5, 6]) {
+      const r = await p.call("restore", p.rows().find((v) => v.seq === seq).ref);
+      assert.equal(r.ok, false, "@" + seq);
+      assert.equal(r.error, "Nothing to restore: that version is empty (nothing of the project is in it)");
+    }
+    assert.match((await p.call("restore", p.rows().find((v) => v.seq === 0).ref)).error, /the history starts there/);
+    for (const seq of [5, 6]) {
+      const x = pc.cb(["restore", "Demo", "main@" + seq]);
+      assert.equal(x.code, 1);
+      assert.match(x.out + x.err, new RegExp(`main@${seq} holds nothing of the project: there is nothing in it to restore\\. Pick another version \\(see \`cb history\`\\)\\.`));
+    }
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 4).ref)).ok, true);
+    await S.until(() => envOf(pc).project.aspectRatio === "16:9", 20_000, "the restore in project.json");
+    const file = fs.readFileSync(path.join(bundleOf(pc), "project.json"), "utf8");
+    const head = must(pc.cb(["history", "Demo"]), "history").json().versions[0];
+    assert.equal(head.kind, "restore");
+    // Ctrl+Z (the GUI's session undo): refused, said, nothing written
+    const u = await pc.call("carton.undo", { projectId: id, since });
+    assert.equal(u.status, "refused");
+    assert.equal(u.error, "Can't undo that: the project would be left empty");
+    assert.equal(u.project, undefined, "nothing for the editor to adopt");
+    // cb undo, the app open (its holder serves it)
+    const c = pc.cb(["undo", "Demo"]);
+    assert.equal(c.code, 1, c.out + c.err);
+    assert.match(c.out + c.err, /Can't undo that: the project would be left empty/);
+    await S.sleep(1500); // anything that would follow (a materialization, a save) has had its time
+    assert.equal(must(pc.cb(["history", "Demo"]), "history after").json().versions[0].version, head.version, "no version made");
+    assert.equal(fs.readFileSync(path.join(bundleOf(pc), "project.json"), "utf8"), file, "project.json as it was");
+    // the person's own edit after it is undone as ever
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 181 } : undefined));
+    await S.until(() => envOf(pc).project.timelineItems.some((i) => i.fontSize === 181), 20_000, "the save");
+    const ok = await pc.call("carton.undo", { projectId: id, since });
+    assert.equal(ok.status, "confirmed", JSON.stringify(ok));
+    await S.until(() => !envOf(pc).project.timelineItems.some((i) => i.fontSize === 181), 20_000, "the undo in project.json");
+    // and it stays undone: nothing writes the restored state back over it (the laptop's main@8 after its main@7)
+    await S.sleep(3000);
+    const h = must(pc.cb(["history", "Demo"]), "history at the end").json().versions;
+    assert.equal(h[0].kind, "undo", "the undo is head: " + JSON.stringify(h.slice(0, 3).map((v) => [v.version, v.kind, v.by?.id])));
+    assert.ok(!envOf(pc).project.timelineItems.some((i) => i.fontSize === 181));
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("7. P3-1: after a cb restore round trip the media manifest lists the clip's file again, and cb says nothing about unlisted media", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("restore-manifest", b);
+  S.seed(pc, b);
+  try {
+    const listed = (e) => (e.media ?? []).map((x) => x.mediaId);
+    const clip = videoIn(envOf(pc).project).id;
+    assert.deepEqual(listed(envOf(pc)), [clip]);
+    must(pc.cb(["restore", "Demo", "main@1"]), "cb restore main@1");
+    assert.deepEqual(listed(envOf(pc)), []);
+    const r = must(pc.cb(["restore", "Demo", "main@4"]), "cb restore main@4");
+    assert.deepEqual(listed(envOf(pc)), [clip], "the file is listed again: " + JSON.stringify(envOf(pc).media));
+    assert.ok(envOf(pc).media[0].ownedByBundle);
+    for (const x of [r, must(pc.cb(["project", "list"]), "project list"), must(pc.cb(["media", "list", "Demo"]), "media list")]) assert.doesNotMatch(x.err, /unlisted media/, x.err);
+    // the GUI round trip lists it too
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const p = await panel(pc, id, "manifest-panel");
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 1).ref)).ok, true);
+    await S.until(() => (envOf(pc).project.media ?? []).length === 0, 20_000, "main@1");
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 4).ref)).ok, true);
+    await S.until(() => listed(envOf(pc)).length === 1, 20_000, "the clip's file listed");
+    assert.doesNotMatch(must(pc.cb(["project", "list"]), "project list").err, /unlisted media/);
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("6b. P2-1 (review): a late copy of an earlier version that lost its seen.json entry is no outside edit: displaced by the next write, it doesn't put that version back", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("late-copy", b);
+  S.seed(pc, b);
+  try {
+    const file = path.join(bundleOf(pc), "project.json");
+    const early = fs.readFileSync(file); // main@4, its rev recorded
+    // an edit after it (as an undo would be), main@5
+    must(pc.cb(["source", "print", "Demo"]), "print");
+    const edit = path.join(pc.home, "edit6b.tsx");
+    fs.writeFileSync(edit, fs.readFileSync(path.join(bundleOf(pc), "timeline.tsx"), "utf8").replace("fontSize={140}", "fontSize={191}"));
+    must(pc.cb(["source", "apply", "Demo", edit]), "apply");
+    const head = must(pc.cb(["history", "Demo"]), "history").json().versions[0].version;
+    const now = fs.readFileSync(file);
+    // the earlier file back on disk, its entry in seen.json lost (two processes writing it at once can lose one)
+    fs.writeFileSync(file, early);
+    fs.rmSync(path.join(bundleOf(pc), ".carton", "seen.json"), { force: true });
+    // the next write displaces it (the facade's install, as both copies of the store install), and its review runs
+    const r = asProcess(pc, b, `
+      const fs = require("fs"), path = require("path");
+      const tmp = path.join(args.bundle, ".project.json.late.tmp");
+      fs.writeFileSync(tmp, args.now);
+      const env = JSON.parse(args.now);
+      const ok = await f.cardboard14.install(tmp, args.file, undefined, env.project.stateUpdatedAt, env);
+      await new Promise((r) => setTimeout(r, 2000)); // the review of what it displaced (300 ms after the install)
+      return ok;`, { bundle: bundleOf(pc), file, now: now.toString("utf8") });
+    assert.notEqual(r, false, "installed");
+    const h = must(pc.cb(["history", "Demo"]), "history after").json().versions;
+    assert.equal(h[0].version, head, "no version put the earlier one back: " + JSON.stringify(h.slice(0, 2).map((v) => [v.version, v.kind, v.by?.id])));
+    assert.ok(envOf(pc).project.timelineItems.some((i) => i.fontSize === 191), "the edit stays in project.json");
+  } finally {
+    S.killHelpers();
   }
 });

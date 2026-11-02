@@ -239,7 +239,24 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
      (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
      waveform, and the worker announces the change; the worker runs one derive per project at a time (main's waits
      for it), and cb runs none (two processes deriving one file's artefacts at once break Cardboard's cache write:
-     an ENOENT nothing catches ended cb in cbproj.test.js). Nothing is guessed: `createdAt` and `addedAt` stay unset.
+     an ENOENT nothing catches ended cb in cbproj.test.js).
+   - Laptop, final candidate (`0cc587f1`) P1-1: every entry a materialization writes is complete for the editor
+     (`materializeProject`'s `completeEntry`). Its `createdAt` and `addedAt`, which the editor reads into Dates at load
+     (installErrorTelemetry `P2`) and writes back at every save (`p9`: `.toISOString()`, which throws on an Invalid
+     Date), come from the file's entry, else the details kept for it, else the project's own `createdAt` (then its
+     `updatedAt`, then the epoch, as library-worker.js `sw` reads a date it can't); `addedAt` defaults to `createdAt`
+     (`sw` again). A title gets `format: "text"`, `size: 0`, `presetId: "custom"`, as library-worker.js `ZZ` makes one.
+     Before, a project recovered from the root-restore bug came back with seven entries of `{id, data}` only, and no
+     GUI save ever landed. A file already on disk like that is completed as the bundle loader reads it (both copies'
+     `Ti`, after the recover hook: the store bridge's `loaded`, which loads the facade only for a project that needs
+     it), so the editor loads dates and its next save writes them. `projectProblems` doesn't flag a date-less entry
+     (Cardboard's reader takes it, and flagging it would lift the write guard from such projects through `breaks`,
+     refuse their history and their recovery); `undatedMedia` finds them.
+   - P3-1: before head goes into `project.json` (the worker's `materializeIn`, cb's `after`), a file entry the library
+     can't place (`media.resolvePath`) whose file is `media/<id>.<ext>` is registered (`placeMedia`), so the store's
+     `buildManifest` lists it: a cb restore round trip left the manifest empty (the entry came back whole from
+     `.carton/media.json`, so `reprobeMedia`, which registers what it probes, had nothing to do), and every cb command
+     after it recovered the file as unlisted.
    - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
 
 **Tests:**
@@ -361,6 +378,26 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   (`LocalCarton.write` notes every `gui` request, `noteGuiWrite`) and tells the head move with no one busy (windows-sync
   review round 4 #1; before, it froze the file as for a `cb` call).
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
+- Laptop, final candidate P2-1: an undo, redo or revert whose result the schema takes for empty (`Schema.empty`:
+  Cardboard's name with no aspect ratio, tracks, clips or media), made from a head that isn't, is refused by core before
+  anything is written (`EmptyVersion`, "Can't undo that: the project would be left empty"; `planUndo`, `planRevert`,
+  and local's `undoTurn`; a shared cut's queued undo made empty by a teammate's edit is refused at the push). The
+  worker answers the page `{status: "refused", error}` (the code survives the control socket when another process
+  holds the lease), and the page shows the words over the stage and does not fall back to Cardboard's snapshot undo.
+- The displaced-file review no longer imports a `project.json` that is exactly a version history holds (its rev
+  recorded, its versioned content that version's: `isKnownState`). Such a file is Carton's own whose `seen.json` entry
+  was lost (two processes writing the file at once can lose one); imported against head as an outside edit, it put
+  that version back over everything since, an undo made meanwhile included ("external:project.json"). A file under a
+  known rev with other content is still imported. Before, Ctrl+Z right after recovering a project
+  undid the Restore into the state the root-restore bug left, and the tab crashed in the layouts panel, which splits
+  the aspect ratio: every state the page adopts (an undo's answer, a change from elsewhere) now gets Cardboard's own
+  default, 16:9, as its load gives a project without one.
+
+**Telling the person (final candidate P1-1).**
+- `Jt`, the editor store's scoped save, logs a failure and rethrows; its catch also calls the bridge's `saveFailed`,
+  which shows "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." over the stage
+  (at most every 20 s, again once a save has landed). Such a failure happens in the page, before anything reaches the
+  worker, so only the page can tell: a recovered project's date-less media made every save throw there, unseen.
 
 **Remaps (H7).**
 - Ripple delete records `{kind:"remap", tracks:[t], at:end, delta:start-end}`.

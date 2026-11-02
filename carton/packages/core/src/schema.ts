@@ -219,6 +219,14 @@ export interface SchemaDef {
   label?: ((collection: string, record: Rec | undefined, doc?: Doc) => string) | null;
   /** Editors' words for root fields in descriptions (`{aspectRatio: "aspect ratio"}`). */
   labels?: Record<string, string> | null;
+  /**
+   * A state that holds nothing of the project though it has a field or a record: the host's own rule, beside core's
+   * (no root field and every collection empty, `isBlank`). Cardboard: a name with no aspect ratio, tracks, clips or
+   * media, what an earlier build's restore of the empty root left once the project was named again (laptop, final
+   * candidate P2-1). Restore and "make a cut from" refuse such a version (`EmptyVersion`), and undo, redo and revert
+   * never make one from a state that isn't one.
+   */
+  empty?: ((doc: Doc) => boolean) | null;
 }
 
 export interface Schema {
@@ -229,10 +237,12 @@ export interface Schema {
   readonly soft: SoftValidator | null;
   readonly label: ((collection: string, record: Rec | undefined, doc?: Doc) => string) | null;
   readonly labels: Readonly<Record<string, string>> | null;
+  /** `SchemaDef.empty` (absent or null: core's own rule only). */
+  readonly empty?: ((doc: Doc) => boolean) | null;
 }
 
 /** Builds a schema: indexes field groups and the record spec of every collection. Undeclared fields are atomic. */
-export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null, labels = null }: SchemaDef): Schema {
+export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null, labels = null, empty = null }: SchemaDef): Schema {
   const colls: Record<string, CollectionSpec> = {};
   for (const [name, c] of Object.entries(collections)) {
     const groups = (c.groups ?? []).map((g) => ({ ...g, set: new Set(g.fields) }));
@@ -241,5 +251,5 @@ export function defineSchema({ root = {}, collections = {}, timeline = null, har
     const key = c.key ?? "id";
     colls[name] = { ...c, key, groups, groupOf, record: { kind: "object", fields: { [key]: scalar, ...(c.fields ?? {}) }, deep: false, only: !!c.only } };
   }
-  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label, labels };
+  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label, labels, empty };
 }

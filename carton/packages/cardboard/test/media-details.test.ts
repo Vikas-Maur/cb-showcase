@@ -47,8 +47,9 @@ test("materializeProject: an entry the current file doesn't have takes its known
   // a restore over a file without the clip (main@1's): back as Cardboard had it
   const back = materializeProject(doc, project([]), (id) => known.get(id));
   assert.deepEqual(back.media, [clip, text]);
-  // without known details: what history holds, as before
-  assert.deepEqual((materializeProject(doc, project([])).media as unknown[])[0], { id: "m-clip", data: { type: "video", fileName: "clip.mp4" } });
+  // without known details: what history holds, and the dates Cardboard's editor needs to save it (laptop, final
+  // candidate P1-1: the project's own date, as nothing kept the entry's; this project has no createdAt: its updatedAt)
+  assert.deepEqual((materializeProject(doc, project([])).media as unknown[])[0], { id: "m-clip", data: { type: "video", fileName: "clip.mp4" }, createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z" });
   // the file's entry wins over what is known (a newer probe there)
   const newer = { ...clip, data: { ...clip.data, duration: 3.04 } };
   assert.equal(((materializeProject(doc, project([newer, text]), (id) => known.get(id)).media as any[])[0]).data.duration, 3.04);
@@ -57,7 +58,7 @@ test("materializeProject: an entry the current file doesn't have takes its known
   assert.equal(((materializeProject(renamed, project([]), (id) => known.get(id)).media as any[])[0]).data.fileName, "intro.mp4");
   // a code graphic's size from its known details (a graphic no clip shows: codeSize had nothing to take it from)
   const g = materializeProject(fromHost(project([graphic])), project([]), () => mediaDetails(graphic));
-  assert.deepEqual((g.media as any[])[0], graphic);
+  assert.deepEqual((g.media as any[])[0], { ...graphic, createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z" });
 });
 
 test("droppedMedia: the entries a write removes, by id; nothing for the same list or nothing removed", () => {
@@ -125,9 +126,9 @@ test("MediaDetails: details go back only to the same media (its kind, its conten
   assert.deepEqual(known("m-clip", { id: "m-clip", data: { type: "video" } }), mediaDetails(clip), "unlinked from sharing since: still its file");
   assert.equal(known("m-clip", { id: "m-clip", contentHash: "b".repeat(64), data: { type: "video" } }), undefined, "other content under the id");
   assert.equal(known("m-clip", { id: "m-clip", data: { type: "audio" } }), undefined, "another kind");
-  // and through materializeProject: an id brought back with other content has history's fields only
+  // and through materializeProject: an id brought back with other content has history's fields only (and dates)
   const other = { id: "m-clip", contentHash: "b".repeat(64), data: { type: "video", fileName: "clip.mp4" } };
-  assert.deepEqual((materializeProject(fromHost(project([other])), project([]), known).media as unknown[])[0], other);
+  assert.deepEqual((materializeProject(fromHost(project([other])), project([]), known).media as unknown[])[0], { ...other, createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z" });
   // the same id seen again with other content replaces what was kept
   const relinked = { ...clip, contentHash: "b".repeat(64), data: { ...clip.data, duration: 9 } };
   await d.save(d.changes([relinked])!);

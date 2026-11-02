@@ -43,3 +43,59 @@ test("cb restore, cut new --from and publish at main@0 say there is nothing ther
     await local.close();
   }
 });
+
+// Laptop, final candidate P3-2: a later version an earlier build's bug emptied ("Restored an earlier version", main@4)
+// was refused with "the history starts there", which only main@0 is. And P2-1: `cb undo` right after the Restore that
+// brought such a project back undid it into the empty state (the app's open tab crashed). The schema's own rule says
+// what holds nothing of the project (`Schema.empty`: here, as Cardboard's, no aspect ratio and nothing in it).
+test("cb restore of a later empty version says what it is; cb undo never leaves the project empty", async () => {
+  const { defineSchema } = await import("@carton/core");
+  const { openLocal } = await import("@carton/local");
+  const { bundle, schema, doc0 } = await import("./support/real.ts");
+  const none = (v: unknown) => !Array.isArray(v) || !v.length;
+  const empty = defineSchema({ ...schema, root: {}, collections: { tracks: { seq: true }, timelineItems: { parent: { field: "trackId", collection: "tracks" } } }, timeline: schema.timeline, empty: (d) => !d.aspectRatio && none(d.tracks) && none(d.timelineItems) });
+  const adapter = { name: "test", schema: empty, schemaVersion: 1, fromHost: (h: any) => h, toHost: (d: any) => d };
+  const { dir, projectId } = bundle("cli-empty-later");
+  const local = await openLocal({ projectDir: dir, projectId, adapter, actor: human, init: { doc: { ...doc0(), aspectRatio: "16:9" } } });
+  try {
+    await local.write({ kind: "commit", doc: { tracks: [], timelineItems: [] } as any }); // main@2: the old bug's empty version
+    await local.write({ kind: "commit", doc: { name: "Demo", tracks: [], timelineItems: [] } as any }); // main@3: named again
+    for (const v of ["main@2", "main@3"]) {
+      const r = await cb(local, ["restore", v]);
+      assert.equal(r.code, 1, v);
+      assert.equal(r.err, `Error: ${v} holds nothing of the project: there is nothing in it to restore. Pick another version (see \`cb history\`).`);
+    }
+    assert.equal((await cb(local, ["restore", "main@1"])).code, 0, "the project as it came in"); // main@4
+    const head = await local.carton.head();
+    const u = await cb(local, ["undo"]);
+    assert.equal(u.code, 1, u.out + u.err);
+    assert.equal(u.err, "Error: Can't undo that: the project would be left empty");
+    assert.equal((await local.carton.head()).ref.seq, head.ref.seq, "no version made");
+    assert.equal((await local.carton.head()).doc.aspectRatio, "16:9");
+  } finally {
+    await local.close();
+  }
+});
+
+test("cb undo --turn never leaves the project empty either (local's undoTurn builds its own undo)", async () => {
+  const { defineSchema } = await import("@carton/core");
+  const { openLocal } = await import("@carton/local");
+  const { bundle, schema, doc0 } = await import("./support/real.ts");
+  const none = (v: unknown) => !Array.isArray(v) || !v.length;
+  const empty = defineSchema({ collections: { tracks: { seq: true }, timelineItems: { parent: { field: "trackId", collection: "tracks" } } }, timeline: schema.timeline, empty: (d) => !d.aspectRatio && none(d.tracks) && none(d.timelineItems) });
+  const adapter = { name: "test", schema: empty, schemaVersion: 1, fromHost: (h: any) => h, toHost: (d: any) => d };
+  const { dir, projectId } = bundle("cli-empty-turn");
+  const local = await openLocal({ projectDir: dir, projectId, adapter, actor: human, init: { doc: { name: "Demo", tracks: [], timelineItems: [] } as any } });
+  const agent: Actor = { kind: "agent", id: "director/c1/t1", name: "Director", chat: "c1", turn: "t1", group: "local:me@box" };
+  try {
+    // the agent's turn brings the project back (as a Restore would): undoing that turn would empty it again
+    await local.write({ kind: "commit", doc: { ...doc0(), aspectRatio: "16:9" } as any }, { actor: agent });
+    const head = await local.carton.head();
+    const u = await cb(local, ["undo", "--turn", "t1"]);
+    assert.equal(u.code, 1, u.out + u.err);
+    assert.equal(u.err, "Error: Can't undo that: the project would be left empty");
+    assert.equal((await local.carton.head()).ref.seq, head.ref.seq, "no version made");
+  } finally {
+    await local.close();
+  }
+});

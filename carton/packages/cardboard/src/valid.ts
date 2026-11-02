@@ -68,6 +68,31 @@ export function breaks(next: unknown, current: unknown): string[] {
   return projectProblems(next, () => current.project as Obj);
 }
 
+// Laptop, final candidate P1-1: a project recovered through History had media entries without createdAt and addedAt.
+// Cardboard's reader takes them (both are optional there), so the project is listed, opens and plays; but its editor
+// turns each into a Date when it loads the project and back into text at every save (installErrorTelemetry `P2`, `p9`:
+// `.toISOString()`), and an Invalid Date throws there: no edit was ever saved, and nobody was told. That isn't a
+// problem for projectProblems: a file it flags is one no write may make from a project Cardboard lists, and the check
+// that a write doesn't break one stands aside for a file that has problems already (`breaks`), so flagging these would
+// lift the guard from exactly the projects that need it, refuse to start their history and refuse their recovery.
+// Instead every writer gives such an entry its dates (`completeMedia`, @carton/cardboard's materializeProject) and the
+// project loaders do for a file already on disk; `undatedMedia` finds them.
+
+/** A date Cardboard's editor can read and write back: text that `new Date()` takes. */
+export const readableDate = (v: unknown): v is string => typeof v === "string" && Number.isFinite(Date.parse(v));
+
+/** The positions of the media entries Cardboard's editor can't save (createdAt or addedAt missing or unreadable). */
+export function undatedMedia(project: unknown): number[] {
+  const media = isObj(project) ? project.media : undefined;
+  if (!Array.isArray(media)) return [];
+  const out: number[] = [];
+  for (let i = 0; i < media.length; i++) {
+    const m = media[i];
+    if (isObj(m) && !(readableDate(m.createdAt) && readableDate(m.addedAt))) out.push(i);
+  }
+  return out;
+}
+
 /** A list field of the project: absent, or a list of objects, each checked. */
 function list(p: Obj, field: string, out: string[], each: (x: Obj, at: string) => void): void {
   const v = p[field];

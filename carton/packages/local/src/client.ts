@@ -81,7 +81,9 @@ export async function submit(method: string, params: object, opts: SubmitOptions
       return { via: "holder", holder, result, attempts: attempt, ...(passedOver ? { passedOver } : {}) };
     } catch (e: any) {
       const code = e?.code;
-      lastError = { error: String(e?.message ?? e), code };
+      // a holder's domain error keeps its own code (ipc's `data.code`); whether to retry still reads the transport's
+      const own = e instanceof RpcError && typeof (e.data as { code?: unknown } | undefined)?.code === "string" ? (e.data as { code: string }).code : undefined;
+      lastError = { error: String(e?.message ?? e), code: own ?? code };
       log({ type: "cb-error", error: lastError.error, code, sent });
       // refused before running it (a stopped holder answers -32003), or never reached: always safe to look again
       const refused = e instanceof RpcError && e.code === -32003;

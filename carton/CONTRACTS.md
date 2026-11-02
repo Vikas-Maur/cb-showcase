@@ -89,6 +89,21 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   no replay). `restore` of one, and `fork` from one given as `from`, throw `EmptyVersion` (`code: "EMPTY_VERSION"`)
   before anything changes, on local and shared cuts; a UI doesn't offer either on such a row. A `fork` from head takes
   the head as it is.
+  - **The schema's own rule** (laptop, final candidate P2-1, P3-2). `SchemaDef.empty(doc)` adds the states a host can't
+    open as a project though they have a field or a record (Cardboard: a name with no aspect ratio, tracks, clips or
+    media, what the root-restore bug left once the project was named again); `isBlank` takes it beside core's own rule.
+    Restore and `fork` from such a version throw `EmptyVersion`, its words saying which it is: a cut's start "(the
+    history starts there, before the project was in it)", any later version "(nothing of the project is in it)".
+    `undo`, `redo` and `revert` whose result the schema's rule takes for empty, made from a head it doesn't, throw
+    `EmptyVersion` ("Can't undo that: the project would be left empty") before anything is written or queued (History's
+    `planUndo` and `planRevert`; local's `undoTurn` too). On a shared cut a queued one is rebased onto teammates' edits
+    before it is pushed: one that has become empty so is refused at the push (`rejectLocally`, its author told "it would
+    have left the project empty"; review of fix/recover-save #1). Not checked: a push the server confirms on a head that
+    moved without the client's rebase (the sequencer has no schema rule). Core's own rule never refuses an undo: a
+    generic schema reaches no field and no record by undoing its first record.
+  - A lease holder's refusal keeps its code across the control socket (`@carton/local`: a thrown error's string `code`
+    rides in the JSON-RPC error's `data.code`, and `submit` answers `{via: "error", code}` with it; retries still read
+    the transport's code), so the app's undo tells "refused" from a failure wherever the lease is held.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the

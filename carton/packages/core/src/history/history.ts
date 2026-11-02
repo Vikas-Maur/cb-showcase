@@ -1032,10 +1032,10 @@ export class History {
     return "status" in p ? p : this.commit(cutId, { ...p, ...(id ? { id } : {}) });
   }
   /** A revert without committing (a shared cut queues it); `tail`: the cut's pending changes, which it may revert. */
-  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail }: { author?: Actor; kind?: ChangeKind; tail?: Tail } = {}): Planned | (CommitResult & { status: "conflicts" }) {
+  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail, what = "revert" }: { author?: Actor; kind?: ChangeKind; tail?: Tail; what?: string } = {}): Planned | (CommitResult & { status: "conflicts" }) {
     const c = this.#log(cutId, tail).find((x) => x.id === changeId);
     if (!c) throw new Error(`no change ${changeId}`);
-    const inv = this.#inverted(cutId, [c], tail);
+    const inv = this.#inverted(cutId, [c], tail, what);
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
     return { doc: inv.doc, author: author ?? c.author, kind, ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: changeId }, inverse: true };
   }
@@ -1050,9 +1050,14 @@ export class History {
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
   // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
   // moves back with it; the changes made since it are the other side's recorded remaps. A card in any step stops it.
-  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail?: Tail): Inverted {
+  // `what` (undo, redo, revert): P2-1, an undo, redo or revert never empties a project its head holds. A result the
+  // schema's own rule takes for empty (`Schema.empty`: Cardboard's name with no aspect ratio, tracks, clips or media),
+  // made from a head that isn't, is refused before anything is written or queued. Core's own rule (no field, every
+  // collection empty) is a state a generic schema reaches by undoing its first record, so only the schema's refuses.
+  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail: Tail | undefined, what: string): Inverted {
     const log = this.#log(cutId, tail);
-    let cur: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
+    const head: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
+    let cur = head;
     let done: RemapMaps = {};
     for (let i = changes.length - 1; i >= 0; i--) {
       const c = changes[i]!;
@@ -1068,6 +1073,8 @@ export class History {
       cur = m.doc;
       if (!isEmptyMap(inv)) done = E.composeMaps(done, m.edges.ours);
     }
+    const empty = this.schema.empty;
+    if (empty?.(cur) && !empty(head)) throw new EmptyVersion(null, what, "result");
     return { doc: cur, maps: done };
   }
   acceptRest(cutId: string, inverseId: ChangeId, opts: { author?: Actor } = {}): CommitResult {
@@ -1081,9 +1088,13 @@ export class History {
   }
   /** The state a restore writes: a node's, or a header's or StateRef's (pins included). */
   restoreTarget(ref: NodeId | StateRef | string): Doc {
-    const target = typeof ref === "string" && ref.includes("@") && !ref.includes("~") ? this.stateOf(ref) : this.resolve(ref as StateRef | string).doc;
+    const node = typeof ref === "string" && ref.includes("@") && !ref.includes("~");
+    const r = node ? null : this.resolve(ref as StateRef | string);
+    const target = r ? r.doc : this.stateOf(ref as NodeId);
     if (!target) throw new StateUnknown(ref, "restore target not held");
-    if (E.isBlank(target, this.schema)) throw new EmptyVersion(ref, "restore");
+    // a cut's start, or a later version (P3-2: an earlier build's bug emptied one, and its refusal said "the history
+    // starts there")
+    if (E.isBlank(target, this.schema)) throw new EmptyVersion(ref, "restore", (r ? r.seq : parseNode(ref as NodeId).seq) ? "later" : "start");
     return target;
   }
 
@@ -1150,7 +1161,7 @@ export class History {
   planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor; tail?: Tail; scope?: UndoScope } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const top = this.redoStack(cutId, group, tail, scope)[0];
     if (!top) return null;
-    const p = this.planRevert(cutId, top.changeId, { ...(author ? { author } : { author: top.author }), tail });
+    const p = this.planRevert(cutId, top.changeId, { ...(author ? { author } : { author: top.author }), tail, what: "redo" });
     return "status" in p ? p : { ...p, entry: top };
   }
   /**
@@ -1186,7 +1197,7 @@ export class History {
       }
     }
     const changes = entries.map((e) => log[e.seq - 1]!).reverse();
-    const inv = this.#inverted(cutId, changes, tail);
+    const inv = this.#inverted(cutId, changes, tail, "undo");
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
     const ids = changes.map((c) => c.id);
     return { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true, entry: top };

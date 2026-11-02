@@ -92,6 +92,10 @@ module.exports = ({ dir, slice, who, codec }) => {
     const b = REV_LINE.exec(text)?.[1].trim();
     return b && !/^\d+$/.test(b) ? b : null;
   };
+  // A media entry Cardboard's editor can't save (no readable createdAt or addedAt), or a text entry without what
+  // Cardboard's own text media have (@carton/cardboard's completeEntry is the rule; this only says when to ask it).
+  const readable = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
+  const incomplete = (m) => !!m && typeof m === "object" && (!readable(m.createdAt) || !readable(m.addedAt) || (m.data?.type === "text" && (m.data.format === undefined || m.data.size === undefined || m.data.presetId === undefined)));
   let api;
   // carton-node.cjs is loaded on first use, so a cb command that never touches a project pays nothing for it. If it
   // can't load, every hook runs Cardboard's own code, as with Carton off.
@@ -222,6 +226,21 @@ module.exports = ({ dir, slice, who, codec }) => {
       if (typeof c?.recover !== "function") return null;
       try { return await c.recover({ bundlePath, text }); }
       catch (e) { console.warn("[carton] a damaged project.json couldn't be read through its history:", e?.message ?? e); return null; }
+    },
+    // Laptop, final candidate P1-1: a project.json whose media entries have no createdAt or addedAt (an earlier build's
+    // restore or recovery wrote them so) is listed and plays, but Cardboard's editor throws "Invalid time value" at
+    // every save, and every edit was lost. The loader's project (the reader's {project, media}) gets them here, the
+    // project's own date when nothing kept theirs (the facade, @carton/cardboard's completeMedia); the next save writes
+    // them. The check is the loader's only cost for a project that has them all: carton-node.cjs isn't loaded for it.
+    loaded(bundlePath, r) {
+      const media = r?.project?.media;
+      if (!Array.isArray(media) || !media.some(incomplete)) return r;
+      const c = carton();
+      if (typeof c?.completeMedia !== "function") return r;
+      try {
+        const project = c.completeMedia(r.project, bundlePath);
+        return project === r.project ? r : { ...r, project };
+      } catch (e) { console.warn("[carton] a project's media entries couldn't be completed:", e?.message ?? e); return r; }
     },
     attach(store, mirror, root) {
       // (weakly: Open Project's staging library goes when Cardboard is done with it)

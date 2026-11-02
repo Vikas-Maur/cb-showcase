@@ -20,7 +20,7 @@
 
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
-import { hashDoc } from "../engine/index.ts";
+import { apply, fork, hashDoc } from "../engine/index.ts";
 import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, Person, PersonRids, PresenceMsg, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
@@ -821,11 +821,18 @@ export class SyncClient {
     const wrap = jsonBytesBound(wrapper, Infinity);
     const out: Change[] = [];
     const sizes: number[] = [];
-    let tooLarge: string | null = null;
+    let tooLarge: string | null = null, emptied: string | null = null;
+    const S = this.queue.schema, empty = S.empty;
     for (const p of pend) {
       if (p.held) break;
       if (this.queue.isEmpty(p) || this.inFlight(p)) continue;
       const v = last(p.versions);
+      // an undo, redo or revert rebased onto a teammate's edits so that it would now leave the project empty (final
+      // candidate P2-1, review): refused here, as History refuses one made so; the changes after it go on without it
+      if (empty && p.history?.reverts !== undefined && !empty(v.baseDoc) && empty(apply(fork(v.baseDoc, S), v.ops, S))) {
+        emptied = p.id;
+        break;
+      }
       let ch: Change = {
         id: p.id,
         hash: v.hash,
@@ -878,11 +885,13 @@ export class SyncClient {
         if (i < out.length) size += sizes[i]! + 1;
       }
     }
-    if (tooLarge) {
+    const refused = tooLarge ?? emptied;
+    if (refused) {
       // sent before (a copy may still be confirmed): withdrawn first, reported once the server answers (round 3
       // finding 2); never sent: rejected at once
-      this.emit({ type: "reject", id: tooLarge, reason: "too large", epoch: this.epoch });
-      this.queue.rejectLocally(b, tooLarge, "too large");
+      const reason = tooLarge ? "too large" : "it would have left the project empty";
+      this.emit({ type: "reject", id: refused, reason, epoch: this.epoch });
+      this.queue.rejectLocally(b, refused, reason);
       this.defer(() => this.pump(), 1);
     }
   }

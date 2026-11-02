@@ -175,7 +175,10 @@ const patchStore = (replace, k) => {
   // bundle whose history Carton holds is read through that history, so the library lists the project again, cb finds
   // it, and Restore in History brings it back. Cardboard's reader still decides: it parses what Carton gives, and what it
   // refuses stays unlisted, as before. Only when its own parse failed: a project it reads costs nothing more.
-  replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;let n=await Promise.all(r.media.map(`);
+  // Laptop, final candidate P1-1: media entries without the dates Cardboard's editor writes back at every save (an
+  // earlier build's restore or recovery wrote them so) get them as the file is read (the store bridge's `loaded`), so
+  // the editor's saves land again; the next save writes them. A project whose entries have them costs one check.
+  replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;__carton.on&&(r=__carton.loaded(e,r));let n=await Promise.all(r.media.map(`);
   replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.
@@ -331,6 +334,10 @@ if (mode === "--cli") {
     replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
     replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
     replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
+    // Laptop, final candidate P1-1: a save that fails in the page (its project couldn't be written out: there, media
+    // entries with no dates) was only logged, and every edit was lost unseen. The bridge tells the person (a toast over
+    // the stage); Cardboard's own handling (log, rethrow) is unchanged.
+    replace('throw console.error("Failed to update scoped project data:",n),n', 'throw window.__carton?.saveFailed?.(n),console.error("Failed to update scoped project data:",n),n');
     // H6: undo and redo of the person's actor group.
     replace("undo:()=>{if(me())return;const n=e();", "undo:()=>{if(window.__carton.undo())return;if(me())return;const n=e();");
     replace("redo:()=>{if(me())return;const n=e();", "redo:()=>{if(window.__carton.redo())return;if(me())return;const n=e();");

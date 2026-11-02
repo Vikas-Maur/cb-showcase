@@ -459,6 +459,8 @@ export function JoinDialog({ bridge, onClose }) {
 /** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
+  // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
+  useEffect(() => bridge.onNotice?.((text) => toasts.show(text)), [bridge]);
   const onPreview = useCallback(async (conflict, side, label) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
     if (!ref) return;
