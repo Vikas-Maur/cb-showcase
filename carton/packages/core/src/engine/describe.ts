@@ -132,52 +132,6 @@ function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group>
   }
   return groups;
 }
-/**
- * Records that are part of another record the same ops touch (`CollectionDef.partOf`): a record `nounOf` calls
- * nothing (Cardboard's title's own "Text: W1" media entry) whose key the declared field of exactly one touched record
- * holds. Its change is that record's: never a line or a change of its own (regress prod3 P3-C: "15 changes" for a
- * clip, 6 titles and 2 tracks, with "Added media 'Text: W1'"…). Held by several (a duplicated title shares its entry),
- * it stays its own, so leaving one of them out never takes the others' entry. Part key → owner key.
- */
-function ownedParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
-  const out = new Map<string, string>();
-  const rec = (g: Group) => (getIn(base, [g.coll!, g.id as string], schema) ?? (g.ops.find((op) => op.op === "insert" && op.path.length === 2) as { value?: unknown } | undefined)?.value) as Rec | undefined;
-  // by the owning collection's field: part key's id → part key
-  const parts = new Map<string, Map<unknown, string>>();
-  for (const [k, g] of groups) {
-    const cs = g.coll ? schema.collections[g.coll]! : undefined, r = cs?.partOf ? rec(g) : undefined;
-    if (r && cs!.nounOf?.(r) === null) {
-      const at = cs!.partOf!.collection + "\0" + cs!.partOf!.field;
-      (parts.get(at) ?? parts.set(at, new Map()).get(at)!).set(g.id, k);
-    }
-  }
-  if (!parts.size) return out;
-  const held = new Map<string, string | null>();
-  for (const [k, g] of groups) {
-    if (!g.coll) continue;
-    for (const [at, ids] of parts) {
-      const [coll, field] = at.split("\0");
-      if (coll !== g.coll) continue;
-      const p = ids.get(rec(g)?.[field!]);
-      if (p !== undefined) held.set(p, held.has(p) ? null : k);
-    }
-  }
-  for (const [p, o] of held) if (o) out.set(p, o);
-  return out;
-}
-/** Records part of another the ops touch (`ownedParts`), as [collection, key] pairs: the Fold dialog lists them with it. */
-export function ownParts(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; owner: [string, string] }[] {
-  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
-  return [...ownedParts(groups, base, schema)].map(([p, o]) => {
-    const a = groups.get(p)!, b = groups.get(o)!;
-    return { part: [a.coll!, a.id as string], owner: [b.coll!, b.id as string] };
-  });
-}
-
-/**
- * A record's label (a clip is named after its media's file name), looked up in base plus the records this change
- * inserts, so a clip added with its media is named after it. That doc is built once, only when a label asks.
- */
 /** `base` plus the records `ops` insert: the doc a label looks records up in (`describe`'s `names`, made once for many). */
 export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
   const added = new Map<string, Rec[]>();
@@ -337,11 +291,67 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
   }
   let n = keys.size;
   if (n < 2) return n;
-  // a record part of another (a title's own media entry) is its owner's change
-  for (const [p, o] of ownedParts(groups, base, schema)) if (keys.has(p) && keys.has(o)) n--;
+  // a record part of another (a title's own media entry) is its holder's change
+  for (const [k, holder] of heldParts(groups, base, schema)) if (keys.has(k) && keys.has(holder)) n--;
   if (keys.size < 3) return n; // a split is three records at least
   for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
   return n;
+}
+
+/**
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) whose change is their
+ * holder's, as a split's parts are the split's (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted
+ * media 'Text: W6'"; regress prod3 P3-C: a setup row's "15 changes" listed every title's entry). The holder is the one
+ * record of the part's `partOf` collection whose declared field names it, in base or among the records the change
+ * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
+ * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
+ * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
+ * is still told. Who names what is read once per call (a restore of many titles stays linear). Part's key → holder's.
+ */
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+  const out = new Map<string, string>();
+  const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
+  // by "collection\0field": the value → the keys of every record whose field holds it (base, then inserted)
+  const index = new Map<string, Map<unknown, Set<unknown>>>();
+  const namers = (coll: string, field: string, hk: string) => {
+    const at = coll + "\0" + field;
+    let m = index.get(at);
+    if (!m) {
+      const add = (v: unknown, id: unknown) => (m!.get(v) ?? m!.set(v, new Set()).get(v)!).add(id);
+      index.set(at, (m = new Map()));
+      for (const h of (base[coll] as Rec[] | undefined) ?? EMPTY) add(h[field], h[hk]);
+      for (const [, g] of groups) {
+        const w = g.coll === coll && whole(g);
+        if (w && w.op === "insert") add((w.value as Rec)?.[field], g.id);
+      }
+    }
+    return m;
+  };
+  for (const [k, g] of groups) {
+    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf;
+    if (!of || !cs?.nounOf) continue;
+    const w = whole(g);
+    const r = (w?.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
+    if (!r || cs!.nounOf(r) !== null) continue;
+    const hk = schema.collections[of.collection]?.key;
+    const names = hk ? namers(of.collection, of.field, hk).get(r[cs!.key]) : undefined;
+    if (names?.size !== 1) continue;
+    const hkey = of.collection + "/" + [...names][0], hw = whole(groups.get(hkey));
+    // the holder touched too; added or deleted together, or both edited
+    if (groups.has(hkey) && (w || hw ? w?.op === hw?.op : true)) out.set(k, hkey);
+  }
+  return out;
+}
+/**
+ * The records `ops` add or delete with the record that holds them (heldParts): one change with it, so a list by record
+ * (the Fold dialog) joins each to its holder's row, as it joins a split's parts.
+ */
+export function heldBy(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; holder: [string, string] }[] {
+  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
+  return [...heldParts(groups, base, schema)].map(([p, h]) => {
+    const a = groups.get(p)!, b = groups.get(h)!;
+    return { part: [a.coll!, String(a.id)], holder: [b.coll!, String(b.id)] };
+  });
 }
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
@@ -471,10 +481,11 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     split.set(sp.key, sp);
     for (const p of sp.parts) split.set(p.key, null);
   }
-  const owned = ownedParts(groups, base, schema);
+  // a part with the record holding it: told with it (heldParts)
+  for (const k of heldParts(groups, base, schema).keys()) split.set(k, null);
   for (const [key, g] of groups) {
     const sp = split.get(key);
-    if (sp === null || owned.has(key)) continue; // a split's part, a record's own part: told with it
+    if (sp === null) continue; // a split's part, or a part held by another record: told with it
     if (sp) {
       // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
       // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,

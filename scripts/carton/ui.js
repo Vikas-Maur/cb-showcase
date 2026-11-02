@@ -17,7 +17,12 @@ import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
 // person couldn't tell they had worked. One at a time, gone after 6 s; Fold in offers to switch to the cut it went into.
-const toasts = { value: null, seq: 0, subs: new Set(), show(text, action) { this.set({ id: ++this.seq, text, action }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
+// `tone` "warning": a failure or a refusal the bridge tells (a save that failed, an undo refused), with the warning
+// look Carton's other failures have (the conflict stack, footage still on its way, Offline), not the ✓ of a
+// confirmation (laptop, merge/prod-2 N-3), and said at once to a screen reader (role alert).
+const toasts = { value: null, seq: 0, subs: new Set(), show(text, action, tone) { this.set({ id: ++this.seq, text, action, ...(tone ? { tone } : {}) }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
+// what the bridge tells (scripts/carton/renderer-bridge.js notice: a save that failed, an undo refused)
+const tellFailure = (text) => toasts.show(text, null, "warning");
 const clockTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 function confirmations(ui) {
   const versionByRef = (ref) => (ui.history().all?.() ?? []).find((v) => v.ref === ref);
@@ -68,8 +73,9 @@ function Toast() {
     return () => clearTimeout(timer);
   }, [t]);
   if (!t) return null;
-  return h("div", { className: "carton-toast", role: "status", "aria-live": "polite" },
-    h(Icon, { name: "check", size: 14 }),
+  const warn = t.tone === "warning";
+  return h("div", { className: "carton-toast", "data-tone": warn ? "warning" : undefined, role: warn ? "alert" : "status", "aria-live": warn ? "assertive" : "polite" },
+    h(Icon, { name: warn ? "warning" : "check", size: 14 }),
     h("span", { className: "carton-toast-text" }, t.text),
     t.action ? h(Button, { onClick: () => { toasts.set(null); void t.action.run(); } }, t.action.label) : null,
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
@@ -464,7 +470,7 @@ export function JoinDialog({ bridge, onClose }) {
 export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
-  useEffect(() => bridge.onNotice?.((text) => toasts.show(text)), [bridge]);
+  useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
   const onPreview = useCallback(async (conflict, side, label) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
     if (!ref) return;
@@ -487,4 +493,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, LiveChipView, MediaNotice, Sidebar, CartonProvider };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider };

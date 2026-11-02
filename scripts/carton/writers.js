@@ -8,6 +8,9 @@
 // be there. A size that isn't, though cb reported it applied, is a lost update. It prints each writer's applies,
 // failures and apply time (p50, p90, p99), and the lost count; then, when any failed, why: each failure's step, exit
 // code and message in brief (also `failures` in --out), so a rare one can be diagnosed (a 4-writer run had 1 in 155).
+// --out also keeps every timed edit raw (`samples`, per writer: its edit number, start as epoch ms, duration in ms from
+// the print to the apply's answer, as the table's p50/p90/p99 take it, and outcome, "applied" or "failed"), so a timing
+// claim can be recomputed later from the run itself. The printed table is unchanged.
 const fs = require("fs"), os = require("os"), path = require("path"), { spawn, spawnSync } = require("child_process");
 
 const [cmd, cbPath, root, ...rest] = process.argv.slice(2);
@@ -56,7 +59,7 @@ if (cmd === "setup") {
   const dir = bundle();
   if (!dir) throw new Error(`no project "${PROJECT}" in ${root}: run setup first`);
   const end = Date.now() + seconds * 1000;
-  const stats = Array.from({ length: writers }, () => ({ applied: 0, failed: 0, ms: [], last: null }));
+  const stats = Array.from({ length: writers }, () => ({ applied: 0, failed: 0, ms: [], last: null, samples: [] }));
   // each failure: which writer, its edit number, the step (print, the title not found, apply), exit code and why
   const failures = [];
   const fail = (k, i, step, r, json) => { stats[k].failed++; failures.push({ writer: `W${k + 1}`, edit: i, step, code: r.code, reason: reasonOf(r, json) }); };
@@ -77,6 +80,7 @@ if (cmd === "setup") {
       let applied = false, json = null;
       try { json = JSON.parse(r.out.slice(r.out.indexOf("{"))); applied = json.applied === true; } catch {}
       if (applied) s.applied++, (s.last = size); else fail(k, i, "apply", r, json);
+      s.samples.push({ edit: i, start: started, ms: s.ms[s.ms.length - 1], outcome: applied ? "applied" : "failed" });
       const wait = started + 1000 / rate - Date.now();
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }
@@ -91,7 +95,8 @@ if (cmd === "setup") {
       if (!kept) lost++;
       return { writer: `W${k + 1}`, applied: s.applied, failed: s.failed, last: s.last, onDisk: m ? Number(m[1]) : null, kept, p50: pct(s.ms, 50), p90: pct(s.ms, 90), p99: pct(s.ms, 99) };
     });
-    const result = { project: dir, writers, rate, seconds, lost, rows, failures };
+    const samples = Object.fromEntries(stats.map((s, k) => [`W${k + 1}`, s.samples]));
+    const result = { project: dir, writers, rate, seconds, lost, rows, failures, samples };
     console.table(rows);
     console.log(lost ? `LOST: ${lost} writer(s) lost their last applied edit` : "no lost updates");
     for (const f of failures) console.log(`failed: ${f.writer} edit ${f.edit} ${f.step}, exit ${f.code}: ${f.reason}`);

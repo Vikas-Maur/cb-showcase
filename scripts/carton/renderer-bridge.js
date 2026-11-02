@@ -10,6 +10,16 @@
 //   this editor session only (since the project opened here), never a terminal's cb. The worker's answer carries the
 //   project it wrote, adopted at once; the undo and redo buttons follow what Carton has left to undo and redo.
 // - H7: ripple, gap and silence deletes and ripple trims record what they moved.
+// - H4, one editor action one save (laptop, merge/prod-2 N-1). One undo step of the editor (pushTimelineHistory) can
+//   save twice: its timeline (debounced, 300 ms) and the media entry a title or code graphic owns ("Text: W6"), which
+//   the editor saves on its own (a delete drops it once its cached files are gone, Kx; adding a title adds it,
+//   EditorRoute's iu). Carton made a version of each, in either order, and one Ctrl+Z took back only one of them: the
+//   title stayed gone, or came back without its entry. Stock's own undo takes back both (its Xx puts the entry back).
+//   Now the editor notes such an entry when its action makes it (ride), the action's timeline save carries it in its
+//   scope (board, at the save's two call sites: the debounce and its flush), and the entry's own save then goes with
+//   that save (send): one save, one version, one undo step. If the entry's save comes first, it sends the waiting
+//   timeline save now (it carries the entry) rather than ahead of it. No timer: the boundary is the editor's own save.
+//   A library file's media (an import, a sound) stays a save of its own, as stock's undo never takes it back.
 // Main says whether Carton is on (carton:call "enabled"). Until it has, and whenever it's off, every hook does what
 // Cardboard does. A method the page answers itself (the live-sync half, scripts/carton/sync) is added with
 // handle(name, fn): call(name, args) then runs fn(...args) here instead of going to main.
@@ -55,6 +65,57 @@ module.exports = String.raw`window.__carton = (() => {
   const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
+  // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
+  // ("removedMediaIds:<id>" or "ownedMediaIds:<id>"), one per time an action made it, oldest first: { carrier }, null
+  // while it waits for its action's timeline save, "boarding" while that save is being sent with it, then that save's
+  // promise. An entry's own save takes the oldest out (review #1: the same title deleted again after an undo, while
+  // the first delete's save still waited, is a second one, never the first's). Only carried ones are ever dropped,
+  // oldest first, past RIDERS (one whose own save never came: its write failed before it), and never one the save
+  // just sent carries, nor a waiting one (review #3: a Delete of 65 titles is one action, its entries' saves late).
+  const riders = new Map();
+  let ridersOf = null, carriedCount = 0;
+  const RIDERS = 1024, MEDIA = ["ownedMediaIds", "removedMediaIds"];
+  const isCarried = (r) => typeof r?.carrier?.then === "function";
+  const take = (key, r) => {
+    const q = riders.get(key), i = q ? q.indexOf(r) : -1;
+    if (i < 0) return;
+    q.splice(i, 1);
+    if (!q.length) riders.delete(key);
+    if (isCarried(r)) carriedCount--;
+  };
+  const carry = (r, p) => { if (!isCarried(r)) carriedCount++; r.carrier = p; };
+  const trim = (now) => {
+    for (const [key, q] of [...riders]) {
+      if (carriedCount <= RIDERS) return;
+      for (const r of [...q]) if (carriedCount > RIDERS && isCarried(r) && r.carrier !== now) take(key, r);
+    }
+  };
+  const timelineSave = (scope) => (scope?.ownedFields ?? []).some((f) => TIMELINE.has(f));
+  // the media entries a save is made of, as rider keys; null when it holds anything else (a field, media details)
+  const entriesOf = (scope) => {
+    if (!scope || scope.ownedFields?.length || (scope.ownedMediaDataFields && Object.keys(scope.ownedMediaDataFields).length)) return null;
+    const keys = MEDIA.flatMap((k) => [...(scope[k] ?? [])].map((id) => k + ":" + id));
+    return keys.length ? keys : null;
+  };
+  // Carton's events reach this page over one IPC listener per channel, however many of its views subscribe
+  // (laptop, merge/prod-2: Electron's MaxListenersExceededWarning, 11 main:event listeners, each subscription one)
+  const fanOut = new Map();
+  const subscribe = (channel, f) => {
+    let c = fanOut.get(channel);
+    if (!c) {
+      c = { subs: new Set(), off: null };
+      fanOut.set(channel, c);
+      c.off = store.on(channel, (ev) => { for (const g of [...c.subs]) try { g.f(ev); } catch (e) { console.warn("[carton] a " + channel + " handler failed:", e?.message ?? e); } });
+    }
+    // one entry per subscription (review #5: the same handler subscribed twice is two, each with its own unsubscribe)
+    const entry = { f };
+    c.subs.add(entry);
+    return () => {
+      if (!c.subs.delete(entry) || c.subs.size) return;
+      fanOut.delete(channel);
+      if (typeof c.off === "function") c.off();
+    };
+  };
   return {
     get on() { return on; },
     ready,
@@ -82,6 +143,60 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // H7
     intent(i) { if (on) intents.push(i); },
+    // H4 (one action, one save): an editor action made a media entry its item owns (part: {removedMediaIds: [id]} or {ownedMediaIds: [id]}),
+    // whose own save follows. Noted only while that action's timeline save waits (armed) in the editor's project;
+    // otherwise the entry's save goes alone, as before.
+    ride(projectId, part) {
+      if (!on || !store || bypass) return;
+      const st = store.state();
+      if (st.cartonPreview || st.projectId !== projectId || !store.armed()) return;
+      if (ridersOf !== projectId) riders.clear(), (ridersOf = projectId), (carriedCount = 0);
+      for (const k of MEDIA) for (const id of part?.[k] ?? []) {
+        const key = k + ":" + id;
+        riders.set(key, [...(riders.get(key) ?? []), { carrier: null }]);
+      }
+    },
+    // H4 (one action, one save): the scope of the editor's timeline save (the debounce's and its flush's), with the entries waiting for it.
+    board(projectId, scope) {
+      if (!on || ridersOf !== projectId || !riders.size) return scope;
+      const add = { ownedMediaIds: [], removedMediaIds: [] };
+      for (const [key, q] of riders) for (const r of q) {
+        // (still "boarding": the save it boarded never reached send, its document failed to serialize)
+        if (isCarried(r)) continue;
+        const i = key.indexOf(":");
+        add[key.slice(0, i)].push(key.slice(i + 1));
+        r.carrier = "boarding";
+      }
+      if (!add.ownedMediaIds.length && !add.removedMediaIds.length) return scope;
+      const out = { ...scope };
+      for (const k of MEDIA) if (add[k].length) out[k] = [...new Set([...(scope[k] ?? []), ...add[k]])];
+      return out;
+    },
+    // H4 (one action, one save): every scoped save of the project store (patch-carton: its updateScoped), go() sending it to main. The
+    // timeline save that boarded entries is their carrier; an entry's own save then answers with it instead of being
+    // sent (it holds nothing more). If it comes while its timeline save still waits, that save goes now, carrying it.
+    send(doc, scope, go) {
+      if (!on || !riders.size || ridersOf !== doc?.id) return go();
+      if (timelineSave(scope)) {
+        const p = go(), held = new Set(MEDIA.flatMap((k) => [...(scope[k] ?? [])].map((id) => k + ":" + id)));
+        for (const [key, q] of riders) if (held.has(key)) for (const r of q) if (r.carrier === "boarding") carry(r, p);
+        trim(p);
+        return p;
+      }
+      const keys = entriesOf(scope);
+      if (!keys || !keys.every((k) => riders.has(k))) return go();
+      // the oldest of each entry: this save's own
+      const mine = keys.map((k) => [k, riders.get(k)[0]]);
+      if (!mine.every(([, r]) => isCarried(r)) && store.armed() && store.state().projectId === doc.id) {
+        // the waiting timeline save goes first, with the entry (cN sends it before it returns)
+        try { void Promise.resolve(store.flush()).catch(() => {}); } catch {}
+      }
+      const ok = mine.every(([, r]) => isCarried(r)), carriers = [...new Set(mine.map(([, r]) => r.carrier))];
+      for (const [k, r] of mine) take(k, r);
+      // not carried (its timeline save never went, or failed before it was sent): this save goes itself, as before
+      if (!ok) return go();
+      return carriers.length === 1 ? carriers[0] : Promise.all(carriers).then((v) => v[0]);
+    },
     // A project save that failed in the page (patch-carton: the editor store's scoped save, its catch).
     saveFailed(e) {
       if (!on) return;
@@ -257,10 +372,10 @@ module.exports = String.raw`window.__carton = (() => {
       if (!/^[a-zA-Z]+$/.test(name) || name === "enabled") throw new Error("A Carton method name is letters only, and not enabled: " + name);
       handlers.set(name, fn);
     },
-    onEvent: (f) => store.on("carton:event", f),
+    onEvent: (f) => subscribe("carton:event", f),
     // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
     // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
-    onCommand: (f) => store.on("carton:command", f),
+    onCommand: (f) => subscribe("carton:command", f),
     // live: a shared project's summary for the strip (sync state, who is here), or nothing.
     reportPanel(panel, live) {
       if (on && store) Promise.resolve(store.invoke("carton:panel", live ? { panel: panel ?? null, live } : { panel: panel ?? null })).catch(() => {});

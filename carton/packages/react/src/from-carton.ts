@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, namingDoc, ownParts, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -1226,10 +1226,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       joined?.set(key, parts);
       creditOf.set(key, parts[0]!);
     }
-    // A record part of another (a title's own media entry, core's ownParts) is in its owner's row, as History and the
-    // counts tell it (regress prod3 P3-C), and is left out with it.
-    for (const { part, owner } of ownParts(ops, doc, schema)) {
-      const k = pathKey(part), o = pathKey(owner), row = rowOf.get(o) ?? o;
+    // A title's own media entry with it (core's heldBy) is one row with the title, as History and the counts tell it,
+    // and is left out with it (laptop, merge/prod-2 N-1; regress prod3 P3-C). A title joined into a split's row takes
+    // its entry there.
+    for (const { part, holder } of heldBy(ops, doc, schema)) {
+      const k = pathKey(part), h = pathKey(holder), row = rowOf.get(h) ?? h;
       if (!groups.has(k) || !groups.has(row)) continue;
       groups.get(row)!.push(...groups.get(k)!);
       groups.delete(k);

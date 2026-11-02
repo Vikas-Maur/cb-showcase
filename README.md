@@ -454,6 +454,12 @@ What changes with it on:
   the undo was made offline or the other edit was: Carton used to slide that clip back by the length of the drag,
   on every machine, without a card. An undo that does clash with a later change, such as a terminal agent's `cb` edit
   of one of the pieces, changes nothing and says why in a conflict card.
+- **One action is one version, and one undo.** Deleting a title (or a code graphic) also removes its own media entry
+  ("Text: W6"), which Cardboard saves on its own, a moment before or after the timeline. Carton made two versions of
+  it ("Deleted title 'W6'", then "Deleted media 'Text: W6'"), and one Ctrl+Z took back only one of them: the title
+  stayed gone, or came back without its entry. Adding a title did the same. Now the title and its entry are saved
+  together, as one version that reads "Deleted title 'W6'", and one Ctrl+Z, Ctrl+Shift+Z or `cb undo` takes back the
+  whole action, as Cardboard's own undo does, on a shared project too. Versions saved before this stay as they are.
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
@@ -562,8 +568,8 @@ What changes with it on:
   both: the clip's own when the file or `.carton\media.json` has them, else the project's own date (no clip is older
   than its project); a title also gets what Cardboard's own titles have. A project already saved that way (one an
   earlier build recovered) gets them as Cardboard reads it, and its next save writes them. If a save still fails in
-  the editor, Carton says so over the stage: "Your last change couldn't be saved. It's on screen, but it isn't in the
-  project yet."
+  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check): "Your
+  last change couldn't be saved. It's on screen, but it isn't in the project yet." A refused undo says so the same way.
 - **Undo never empties a project.** Ctrl+Z (or `cb undo`) right after recovering such a project undid the Restore,
   back into the state the bug left (a name, and no aspect ratio, tracks, clips or media), and the open tab crashed
   ("This tab hit a snag"). Now an undo, redo or revert that would leave the project with nothing in it is refused

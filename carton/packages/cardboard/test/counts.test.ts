@@ -5,7 +5,7 @@
 //   left part, cleared auto reframe on its right part": the editor's save writes the new parts without it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countChanges, describe, describeVersion, diff, namingDoc } from "@carton/core";
+import { countChanges, describe, describeVersion, diff, heldBy, namingDoc } from "@carton/core";
 import type { Rec } from "@carton/core";
 import { cardboardSchema as S, fromHost } from "../src/index.ts";
 
@@ -22,8 +22,8 @@ test("P3-8: a setup version counts titles as titles, and a title's own media ent
   const v = describeVersion(diff(empty, full, S), empty, S);
   assert.equal(v.summary, "Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'");
   assert.doesNotMatch(v.summary, /clips|media files/);
-  // every record is listed but a title's own media entry, which is the title's (regress prod3 P3-C: "15 changes",
-  // "Added media 'Text: W1'"…): 2 tracks, the clip, 6 titles and the clip's media
+  // every record is listed but a title's own media entry, added with it, which is the title's (N-1 below; regress prod3
+  // P3-C: "15 changes", "Added media 'Text: W1'"…): 2 tracks, the clip, 6 titles and the clip's media
   assert.equal(v.lines.length, 2 + 1 + 6 + 1);
   assert.doesNotMatch(v.lines.join("\n"), /Text: /);
   assert.equal(countChanges(diff(empty, full, S), empty, S), 10);
@@ -103,4 +103,49 @@ test("prod3 P3-B: a clip moved onto a track the same fold adds names it; an unna
   assert.deepEqual(describe(row, before, S, null, namingDoc(before, ops, S)), ["Moved 'W1' to track 'Text 1', font size 100 → 150"]);
   // with nothing to name the track: not "to track another track"
   assert.deepEqual(describe(row, before, S), ["Moved 'W1' to another track, font size 100 → 150"]);
+});
+
+// N-1 (laptop, merge/prod-2): the editor's delete of a title drops the title's own "Text: W6" entry with it, which read
+// as a second change ("Deleted title 'W6'", "Deleted media 'Text: W6'"): its own media entry is the title's, as a
+// split's auto reframe drop is the split's. One line, one change, one row of the Fold dialog (heldBy).
+test("N-1: a title deleted (or added) with its own media entry is one change: the title's", () => {
+  const titles = [1, 2, 3, 4, 5, 6].map(titleItem), media = titles.map((t, i) => textMedia(`tm${i + 1}`, String(t.textContent)));
+  const before = fromHost(project([clip(), ...titles], [video, ...media]));
+  const gone = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(0, 5)]));
+  const ops = diff(before, gone, S);
+  assert.deepEqual(describe(ops, before, S), ["Deleted title 'W6'"]);
+  assert.equal(describeVersion(ops, before, S).summary, "Deleted title 'W6'");
+  assert.equal(countChanges(ops, before, S), 1);
+  assert.deepEqual(heldBy(ops, before, S), [{ part: ["media", "tm6"], holder: ["timelineItems", "t6"] }]);
+  // undone: both back, one change
+  const back = diff(gone, before, S);
+  assert.deepEqual(describe(back, gone, S), ["Added title 'W6' on 'Titles' at 6.0 s"]);
+  assert.equal(countChanges(back, gone, S), 1);
+  // a title and its entry added
+  const w7 = { ...titleItem(7), startTime: 7, endTime: 8 };
+  const added = fromHost(project([clip(), ...titles, w7], [video, ...media, textMedia("tm7", "W7")]));
+  assert.deepEqual(describe(diff(before, added, S), before, S), ["Added title 'W7' on 'Titles' at 7.0 s"]);
+  // the entry alone (its title stays): still told, as before
+  const orphan = fromHost(project([clip(), ...titles], [video, ...media.slice(0, 5)]));
+  assert.deepEqual(describe(diff(before, orphan, S), before, S), ["Deleted media 'Text: W6'"]);
+  assert.equal(countChanges(diff(before, orphan, S), before, S), 1);
+  // a title deleted while another title's entry is dropped alone: each told
+  const two = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(1, 6)]));
+  assert.deepEqual(describe(diff(before, two, S), before, S).sort(), ["Deleted media 'Text: W1'", "Deleted title 'W6'"]);
+  // review #2: an entry two titles name (Cardboard's duplicate keeps mediaItemId) belongs to neither alone: told
+  const copy = { ...titleItem(6), id: "t6copy", startTime: 7, endTime: 8 };
+  const shared = fromHost(project([clip(), ...titles, copy], [video, ...media]));
+  const allGone = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(0, 5)]));
+  assert.deepEqual(describe(diff(shared, allGone, S), shared, S).sort(), ["Deleted media 'Text: W6'", "Deleted title 'W6'", "Deleted title 'W6'"]);
+  assert.equal(countChanges(diff(shared, allGone, S), shared, S), 3);
+  assert.deepEqual(heldBy(diff(shared, allGone, S), shared, S), []);
+  // review #4: only the item's media field names its entry; a title whose name happens to be the entry's id isn't its holder
+  const named = { ...titleItem(2), name: "tm1" };
+  const before4 = fromHost(project([clip(), titleItem(1), named], [video, media[0]!, media[1]!]));
+  const after4 = fromHost(project([clip(), titleItem(1)], [video, media[1]!]));
+  assert.deepEqual(describe(diff(before4, after4, S), before4, S).sort(), ["Deleted media 'Text: W1'", "Deleted title 'tm1'"]);
+  assert.equal(countChanges(diff(before4, after4, S), before4, S), 2);
+  // a library file's media (a clip's) is never a part: deleting a clip and its media is two changes, as before
+  const noClip = fromHost(project(titles, media));
+  assert.equal(countChanges(diff(before, noClip, S), before, S), 2);
 });
