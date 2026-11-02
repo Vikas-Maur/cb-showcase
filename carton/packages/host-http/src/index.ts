@@ -30,6 +30,11 @@
 //   GET|HEAD|PUT /blob/:p/<key>?exp=…&sig=…  a signed URL (ranges)         → bytes  (a PUT may send If-None-Match: *
 //                                            for create-only, and X-Carton-Sha256 for a checked, recorded digest;
 //                                            it answers the stored BlobInfo, 412 when If-None-Match: * found the key)
+//   POST /api/projects/:p/streams/:id/append  a batch of a proxy stream's parts (bytes, manifests, entries) and maybe
+//                                            its end, editor → {stored}  (streams.ts: one request, where the part-by-
+//                                            part path took ten per segment)
+//   GET  /api/projects/:p/streams/:id/read?from=&init=&bytes=&parts=&wait=  a batch of entries, manifests and bytes, held
+//                                            at the live edge up to `wait` ms (streams.ts)
 //   PUT  /api/projects/:p/messages/<key>     an oversized message, editor  → {}   (key messages/c/<hour>/<sha>-<nonce>)
 //   GET  /api/projects/:p/messages/<key>     the server's oversized message → bytes (key messages/s/<hour>/<sha>)
 //   GET  /api/health
@@ -48,6 +53,7 @@ import { BlobError, MAX_PARTS, checkKey, checksKeys } from "@carton/blob-memory/
 import { eachLimit } from "./pool.ts";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
 import { isTeamMediaStore, mediaLockScope } from "./team.ts";
+import { streamRoutes } from "./streams.ts";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -80,6 +86,9 @@ export interface HttpDeps {
   clientOf?(req: Request): string;
   // the largest file one upload may store (a multipart object, or a signed PUT); none by default
   maxUploadBytes?: number;
+  // the project's media store for one request's writes of about `bytes` in `ops` calls (a stream append): a host whose
+  // write cap reserves per call (a Worker's: a Durable Object request each) reserves them in one go. Default: blobsFor.
+  blobsForWrites?(projectId: string, bytes: number, ops: number): Promise<BlobStore | undefined>;
 }
 
 /** A host's open creation (HttpDeps.openCreate): its record of project ids in use, and its daily limit. */
@@ -243,6 +252,20 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     }
     if (rest.startsWith("/messages/")) return await messageRoutes(req, rest.slice("/messages/".length), ctx, deps, projectId);
     const store = deps.blobsFor(projectId);
+    if (rest.startsWith("/streams/")) {
+      if (!store) return err(404, "this host has no blob store");
+      const routed = await streamRoutes(req, url, rest, {
+        ctx,
+        store,
+        storeForWrites: async (bytes, ops) => (deps.blobsForWrites ? ((await deps.blobsForWrites(projectId, bytes, ops)) ?? store) : store),
+        mayRead: (k) => mayRead(ctx, k),
+        lock: (k, fn) => withMediaLock(mediaLockScope(store, projectId), k, fn),
+        maxBodyBytes: deps.maxBodyBytes ?? 100 * 1024 * 1024,
+        ...(deps.maxUploadBytes !== undefined ? { maxUploadBytes: deps.maxUploadBytes } : {}),
+        maxEntries: Math.max(1, Math.min(MAX_BLOB_HEADS, Math.floor(deps.maxBlobHeads ?? MAX_BLOB_HEADS))),
+      });
+      if (routed) return routed;
+    }
     if (rest.startsWith("/blobs/") || rest.startsWith("/uploads")) {
       if (!store) return err(404, "this host has no blob store");
       return await blobRoutes(req, url, rest, ctx, store, deps, projectId);

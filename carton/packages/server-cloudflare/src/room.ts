@@ -29,7 +29,7 @@ import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
 import { r2BlobStore } from "./blob-r2.ts";
 import { doBlobStore } from "./blob-do.ts";
-import { cappedBlobStore, reserveIn, writeCapOf, WRITE_CAP_PATH } from "./write-cap.ts";
+import { cappedBlobStore, prepaidCap, reserveIn, writeCapOf, WRITE_CAP_PATH, type WriteCap } from "./write-cap.ts";
 import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 
 export const AUTH_HEADER = "x-carton-auth";
@@ -94,8 +94,17 @@ function teamOf(env: Env, projectId: string): string | undefined {
   const team = Object.hasOwn(teams.map, projectId) ? teams.map[projectId] : undefined;
   return typeof team === "string" ? team : undefined;
 }
-export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
-  env.BLOBS ? projectMediaStore(cappedBlobStore(r2BlobStore(env.BLOBS), writeCapOf(env)), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
+export const mediaBlobs = (env: Env, projectId: string, cap: WriteCap | undefined = writeCapOf(env)): BlobStore | undefined =>
+  env.BLOBS
+    ? projectMediaStore(cappedBlobStore(r2BlobStore(env.BLOBS), cap), projectId, teamOf(env, projectId))
+    : env.BLOB_VAULT
+      ? scopedBlobStore(cappedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), cap), "media/")
+      : undefined;
+/** The media store for one request's writes of about `bytes` in `ops` calls: the daily write cap reserved once for them. */
+export async function mediaBlobsForWrites(env: Env, projectId: string, bytes: number, ops: number): Promise<BlobStore | undefined> {
+  const cap = writeCapOf(env);
+  return mediaBlobs(env, projectId, cap && (await prepaidCap(cap, bytes, ops)));
+}
 
 // The newest document schemaVersion the room accepts in hello: SCHEMA_VERSION when set (to pin a deployment), else the
 // Cardboard adapter's CARDBOARD_SCHEMA_VERSION, so a Worker built with an adapter takes that adapter's clients (H-SV).

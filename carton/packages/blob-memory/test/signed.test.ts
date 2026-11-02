@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { blobStoreSuite } from "@carton/conformance";
+import type { BlobStore } from "@carton/core/plugins";
 import { MemoryBlobStore } from "../src/index.ts";
 import { createBlobUrlSigner, serveSignedBlob, parseRange, SHA256_HEADER } from "../src/signed.ts";
 
@@ -59,6 +60,45 @@ test("ranges: a-b, a-, -n, unsatisfiable, and multi-range served whole", async (
   assert.equal(ok.status, 206);
   assert.equal(ok.headers.get("content-range"), "bytes 97-99/100");
   assert.deepEqual([...new Uint8Array(await ok.arrayBuffer())], [97, 98, 99]);
+});
+
+test("a signed GET from a store with getWithInfo is one storage call, and answers exactly as head-then-read does, every range form (cf-proxy-path)", async () => {
+  const data = new Uint8Array(100).map((_, i) => i);
+  const calls: string[] = [];
+  // the same memory store seen twice: with getWithInfo, and without it (the head path)
+  const counted = (withInfo: boolean) =>
+    new Proxy(store, {
+      get(t, p) {
+        if (p === "getWithInfo" && !withInfo) return undefined;
+        const v = Reflect.get(t, p, t) as unknown;
+        if (typeof v !== "function") return v;
+        return (...a: unknown[]) => {
+          if (["head", "get", "getStream", "getWithInfo"].includes(String(p))) calls.push(String(p));
+          return (v as (...x: unknown[]) => unknown).apply(t, a);
+        };
+      },
+    });
+  await store.put("w.bin", data, { contentType: "video/mp4" });
+  await store.put("w0.bin", new Uint8Array(0));
+  const headers = [null, "bytes=0-9", "bytes=90-", "bytes=95-500", "bytes=99-99", "bytes=100-", "bytes=200-300", "bytes=-5", "bytes=-500", "bytes=5-2", "bytes=0-1,5-6", "items=0-1", "bytes=99999999999999999999-"];
+  for (const key of ["w.bin", "w0.bin", "absent.bin"]) {
+    const url = await signer.sign("GET", key, 60);
+    for (const range of headers) {
+      const ask = (s: BlobStore) => serveSignedBlob(new Request(url, range ? { headers: { range } } : {}), s, signer);
+      calls.length = 0;
+      const a = await ask(counted(true));
+      const used = calls.slice();
+      calls.length = 0;
+      const b = await ask(counted(false));
+      const what = `${key} ${range}`;
+      assert.equal(a.status, b.status, what);
+      for (const h of ["content-range", "content-length", "content-type", "etag", "accept-ranges"]) assert.equal(a.headers.get(h), b.headers.get(h), `${what}: ${h}`);
+      assert.deepEqual(new Uint8Array(await a.arrayBuffer()), new Uint8Array(await b.arrayBuffer()), what);
+      // one call, unless the range needs the size first (a suffix, an end before its start, a huge offset)
+      const needsSize = range !== null && /^bytes=(-|5-2|9{5})/.test(range);
+      if (!needsSize) assert.deepEqual(used, ["getWithInfo"], what);
+    }
+  }
 });
 
 test("list pages in code-point order across the BMP / astral boundary (U+E000 sorts before U+10000)", async () => {

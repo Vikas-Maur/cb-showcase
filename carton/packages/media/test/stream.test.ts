@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { concatBytes, equalBytes } from "../src/bytes.ts";
 import { MemoryLeafCache } from "../src/cache.ts";
-import { damagedKey, mediaKey, proxyPointerKey, streamSegmentKey } from "../src/keys.ts";
+import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamSegmentKey } from "../src/keys.ts";
 import { FsLeafCache } from "../src/node/fs-cache.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { LeafMismatchError } from "../src/range-source.ts";
@@ -14,6 +14,14 @@ import { scratchDir, xorshiftBytes } from "./helpers.ts";
 const KiB = 1024;
 const seg = (i: number) => xorshiftBytes(300 * KiB + i * 7, 100 + i);
 const INIT = xorshiftBytes(900, 99);
+
+/** The end as writers before cf-proxy-path wrote it: its parts, no sizes or durations (so the entries are needed). */
+function oldStyleEnd(store: CountingMemoryStore, id: string): void {
+  const end = JSON.parse(new TextDecoder().decode(store.objects.get(streamEndKey(id))!)) as Record<string, unknown>;
+  delete end.sizes;
+  delete end.durations;
+  store.objects.set(streamEndKey(id), new TextEncoder().encode(JSON.stringify(end)));
+}
 
 function setup() {
   const store = new CountingMemoryStore();
@@ -175,6 +183,7 @@ test("a finished stream whose entry can't be read fails the play instead of wait
   await writer.segment(seg(0), 2);
   await writer.segment(seg(1), 2);
   await writer.end();
+  oldStyleEnd(store, writer.id);
   store.objects.set(streamSegmentKey(writer.id, 1), new TextEncoder().encode("{not json"));
   const got: number[] = [];
   const outcome = await Promise.race([
@@ -226,9 +235,31 @@ test("the playlist of a finished stream missing an entry fails and reports it, i
   await writer.segment(seg(0), 2);
   await writer.segment(seg(1), 2);
   await writer.end();
+  oldStyleEnd(store, writer.id);
   store.objects.delete(streamSegmentKey(writer.id, 1));
   await assert.rejects(reader.playlist((h) => `/m/${h}`), { name: "StreamDamagedError" });
   assert.ok(store.objects.has(damagedKey(writer.id)));
+});
+
+test("an end that lists its parts' sizes and durations holds every entry: a lost entry doesn't stop the play, and a finished stream's layout is one read (cf-proxy-path)", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  for (let i = 0; i < 3; i++) await writer.segment(seg(i), 2 - i * 0.25);
+  const end = await writer.end();
+  assert.deepEqual(end.sizes, [INIT.length, seg(0).length, seg(1).length, seg(2).length]);
+  assert.deepEqual(end.durations, [2, 1.75, 1.5]);
+  store.objects.delete(streamSegmentKey(writer.id, 1));
+  const got: number[] = [];
+  for await (const p of reader.play()) if (p.part === "segment") got.push(p.segment.index);
+  assert.deepEqual(got, [0, 1, 2]);
+  assert.equal(store.objects.has(damagedKey(writer.id)), false);
+  // another reader: end, then everything from it, with no request for an entry
+  const fresh = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher }), id: writer.id });
+  const before = store.counters.gets;
+  assert.ok(await fresh.end());
+  assert.deepEqual((await fresh.known()).map((s) => [s.index, s.size, s.durationSec]), [[0, seg(0).length, 2], [1, seg(1).length, 1.75], [2, seg(2).length, 1.5]]);
+  assert.deepEqual(await fresh.initPart(), { hash: end.parts![0], size: INIT.length });
+  assert.equal(store.counters.gets - before, 1, "the end entry alone");
 });
 
 test("a finished stream whose segment fails a whole-stream read is reported, and taken over by the next claim (finding 8; S5-7)", async () => {

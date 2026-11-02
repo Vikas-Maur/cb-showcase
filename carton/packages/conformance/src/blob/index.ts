@@ -9,7 +9,7 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { BlobInfo, BlobStore } from "@carton/core/plugins";
+import type { BlobInfo, BlobStore, BlobWithInfo } from "@carton/core/plugins";
 
 // what a store sets on a create-only put's info (`PUT_CREATED` in @carton/blob-memory/rules)
 const PUT_CREATED = Symbol.for("carton.blob.putCreated");
@@ -328,6 +328,41 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       eq(await readStream((await store.getStream(k("stream"), { offset: 1000, length: 5000 }))!), data.subarray(1000, 6000));
       eq(await readStream((await store.getStream(k("stream"), { offset: 400_000 }))!), new Uint8Array(0));
       assert.equal(await store.getStream(k("nope")), null);
+    });
+
+    test("getWithInfo, when offered, answers what head and getStream do, in one call (ranges clipped, past the end: range null)", async (t) => {
+      if (!store.getWithInfo) return t.skip("no getWithInfo");
+      const data = bytes(300_000, 52);
+      await store.put(k("gwi"), data, { contentType: "video/mp4" });
+      const head = (await store.head(k("gwi")))!;
+      const whole = (await store.getWithInfo(k("gwi")))!;
+      assert.equal(whole.info.size, data.byteLength);
+      assert.equal(whole.info.contentType, "video/mp4");
+      assert.equal(whole.info.etag, head.etag);
+      assert.deepEqual(whole.range, { offset: 0, length: data.byteLength });
+      eq(await readStream(whole.body!), data);
+      const mid = (await store.getWithInfo(k("gwi"), { offset: 1000, length: 5000 }))!;
+      assert.deepEqual(mid.range, { offset: 1000, length: 5000 });
+      eq(await readStream(mid.body!), data.subarray(1000, 6000));
+      const tail = (await store.getWithInfo(k("gwi"), { offset: 299_000, length: 5000 }))!;
+      assert.deepEqual(tail.range, { offset: 299_000, length: 1000 }, "clipped at the end");
+      eq(await readStream(tail.body!), data.subarray(299_000));
+      const open = (await store.getWithInfo(k("gwi"), { offset: 299_990 }))!;
+      assert.deepEqual(open.range, { offset: 299_990, length: 10 });
+      eq(await readStream(open.body!), data.subarray(299_990));
+      for (const past of [{ offset: 300_000 }, { offset: 400_000, length: 10 }]) {
+        const o: BlobWithInfo = (await store.getWithInfo!(k("gwi"), past))!;
+        assert.equal(o.range, null, `range ${JSON.stringify(past)}`);
+        assert.equal(o.body, null);
+        assert.equal(o.info.size, data.byteLength);
+      }
+      await store.put(k("gwi-empty"), new Uint8Array(0));
+      const empty = (await store.getWithInfo(k("gwi-empty")))!;
+      assert.deepEqual(empty.range, { offset: 0, length: 0 });
+      eq(await readStream(empty.body!), new Uint8Array(0));
+      assert.equal((await store.getWithInfo(k("gwi-empty"), { offset: 0 }))!.range, null);
+      assert.equal(await store.getWithInfo(k("nope")), null);
+      assert.equal(await store.getWithInfo(k("nope"), { offset: 5, length: 5 }), null);
     });
 
     test("signedUrl, when offered: GET and PUT work for anyone holding the URL, until it expires", async (t) => {
