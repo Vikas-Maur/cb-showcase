@@ -118,9 +118,11 @@ const MIN_STAGE = 320;
  * The drawer covers the chat column (`chat`: its width, 0 when it is collapsed) and no more when that is at least the
  * minimum; narrower than that, the drawer keeps its minimum and says it reaches past the chat (`over`), so it ends
  * where the stage ends and leaves the timeline and its toolbar clear (baseline P3-7: at 960 px it covered Fullscreen and
- * Hide timeline).
+ * Hide timeline). It ends there too when the timeline's toolbar reaches under it (`tools`: the toolbar's right edge,
+ * its last button's): at 960 px with the chat open the toolbar runs on under the chat column, and the drawer as wide as
+ * that column covered Fullscreen and Hide timeline from top to bottom (regress prod3 P3-A).
  */
-export function fitPanel({ room, preferred, viewport, chat, min = WIDTH.min, minStage = MIN_STAGE }) {
+export function fitPanel({ room, preferred, viewport, chat, tools, min = WIDTH.min, minStage = MIN_STAGE }) {
   if (!(room > 0)) return { mode: "inline", width: preferred };
   if (room - preferred >= minStage) return { mode: "inline", width: preferred };
   if (room - min >= minStage) return { mode: "inline", width: Math.floor(room - minStage) };
@@ -128,7 +130,7 @@ export function fitPanel({ room, preferred, viewport, chat, min = WIDTH.min, min
   // not measured: as before; a chat collapsed to nothing is measured (review #2), and all of the drawer is past it
   if (!(chat >= 0)) return { mode: "overlay", width };
   const fits = Math.max(min, Math.min(width, Math.floor(chat)));
-  return { mode: "overlay", width: fits, over: fits > chat };
+  return { mode: "overlay", width: fits, over: fits > chat || tools > viewport - fits };
 }
 
 /** The panel's place in the row (fitPanel), kept up to date as the window, the Library or the chat change size. */
@@ -147,7 +149,9 @@ function useFit(ref, preferred) {
       const row = aside.parentElement?.getBoundingClientRect();
       // the chat column: the row's right of the stage, less the panel while it is in the row
       const chat = row ? Math.max(0, row.right - box.right - inflow) : undefined;
-      const fit = fitPanel({ room, preferred, viewport: window.innerWidth, chat });
+      // the timeline toolbar's right end: its last button (Cardboard's own, "Hide timeline" or "Show timeline")
+      const tools = document.querySelector('[aria-label="Hide timeline"],[aria-label="Show timeline"]')?.getBoundingClientRect().right;
+      const fit = fitPanel({ room, preferred, viewport: window.innerWidth, chat, tools });
       // reaching past the chat, the drawer ends where the stage does: the timeline below stays clear
       const next = { ...fit, ...(row ? { top: row.top, height: fit.over ? Math.max(0, box.bottom - row.top) : row.height } : {}) };
       const was = fitRef.current;

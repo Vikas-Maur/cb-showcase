@@ -215,6 +215,63 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
   }
 });
 
+// Regress prod3 P3-A: at 960 px with the chat open the chat column is 384 px wide, the drawer as wide (not past it),
+// so it stayed full height, over the timeline toolbar's Fullscreen and Hide timeline, which run on under the chat column
+// at that width. Wherever the toolbar reaches under the drawer (tools: its last button's right edge), the drawer ends
+// above it; where the toolbar ends left of the drawer, as before.
+test("prod3 P3-A: the drawer ends above the timeline toolbar wherever the toolbar reaches under it", opt, async () => {
+  // the laptop's 960 px with the chat open: chat 384, Hide timeline's right edge under it
+  assert.deepEqual(U.fitPanel({ room: 380, preferred: 384, viewport: 960, chat: 384, tools: 940 }), { mode: "overlay", width: 384, over: true });
+  // the wider cases (fix/ui-final): the toolbar ends left of the drawer, or isn't found: full height over the chat
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1100, chat: 340, tools: 700 }), { mode: "overlay", width: 340, over: false });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520, tools: undefined }), { mode: "overlay", width: 384, over: false });
+  // in the page: Cardboard's layout at 960 px with the chat open, as the laptop measured it
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/", width: 960, height: 826 });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  Object.assign(globalThis.window, { innerWidth: 960, addEventListener() {}, removeEventListener() {} });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
+    const row = w.document.createElement("div"), stage = w.document.createElement("div"), hide = w.document.createElement("button");
+    stage.setAttribute("data-carton-stage-host", "");
+    hide.setAttribute("aria-label", "Hide timeline");
+    row.getBoundingClientRect = box({ left: 0, right: 960, top: 0, bottom: 826 });
+    stage.getBoundingClientRect = box({ left: 200, right: 576, top: 0, bottom: 586 });
+    hide.getBoundingClientRect = box({ left: 912, right: 940, top: 594, bottom: 622 });
+    w.document.body.append(stage, hide, row);
+    const mount = async () => {
+      root = client.createRoot(row);
+      await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+      const a = row.querySelector("aside");
+      const out = [a.getAttribute("data-fit"), a.style.width, a.style.top, a.style.height];
+      await React.act(async () => root.unmount());
+      root = null;
+      return out;
+    };
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "586px"], "over the chat column, ending where the stage ends: the toolbar below stays clear");
+    // the timeline hidden: the same button, now "Show timeline"
+    hide.setAttribute("aria-label", "Show timeline");
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "586px"]);
+    // a toolbar that ends left of the chat column: the drawer covers the column, top to bottom, as before
+    hide.getBoundingClientRect = box({ left: 540, right: 568, top: 594, bottom: 622 });
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "826px"]);
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    for (const k of ["innerWidth", "addEventListener", "removeEventListener"]) delete globalThis.window[k];
+    Object.assign(globalThis.window, keep.win);
+    await w.happyDOM.close();
+  }
+});
+
 test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors' words", opt, () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.document = { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} }, activeElement: null };
