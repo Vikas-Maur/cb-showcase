@@ -154,6 +154,16 @@ module.exports = String.raw`window.__carton = (() => {
       } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
     },
     get stale() { return stale; },
+    // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
+    // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
+    // with its "Previewing an earlier version. Return to current to edit." over the timeline (store.refuse is its guard,
+    // me()). Baseline P3-9, final re-check N3: the editor opened inside the read-only preview and dropped what was typed.
+    // True when refused; never with Carton off or outside a preview.
+    refuse() {
+      if (!on || !store?.refuse || !store.state().cartonPreview) return false;
+      store.refuse();
+      return true;
+    },
     // Join's "Open": the joined project in a tab of its own, as the Dashboard opens one (main's tabs:open).
     openProject(projectId) {
       if (!on || !store || !projectId) return Promise.reject(new Error("Sharing isn't available for this project right now"));

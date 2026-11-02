@@ -144,6 +144,29 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
   assert.equal(t.c.stale, false);
 });
 
+// Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
+// a double-click on one) and dropped what was typed. Cardboard's own edits are refused there by its guard (`me()`:
+// its "Previewing an earlier version. Return to current to edit." over the timeline); the text editor isn't a write, so
+// patch-carton.js asks the bridge first. Refused only in a Carton preview, never with Carton off.
+test("baseline P3-9: an edit that isn't a write is refused in a preview, with Cardboard's own note; not otherwise", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let noted = 0;
+  t.store.refuse = () => { noted++; return true; };
+  assert.equal(t.c.refuse(), false, "not previewing: the editor's");
+  await t.c.preview("p1", "main@3");
+  assert.equal(t.c.refuse(), true, "previewing: refused");
+  assert.equal(noted, 1, "with Cardboard's own note");
+  await t.c.preview("p1", null);
+  assert.equal(t.c.refuse(), false);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.store.refuse = () => { noted++; return true; };
+  off.setState({ cartonPreview: { ref: "main@3" } });
+  assert.equal(off.c.refuse(), false, "Carton off: Cardboard's");
+  assert.equal(noted, 1);
+});
+
 test("the History panel's calls reach main with their arguments as given", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
