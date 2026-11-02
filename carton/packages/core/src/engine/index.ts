@@ -4,7 +4,7 @@
 // (`proofs/core-v5/engine.mjs`). Owner: foundation-core.
 export { deepEqual, pathKey, prefixKeys, canonical, unescapeSegment } from "./json.ts";
 export { sha256Hex, setSyncHash, portableSha256Hex, hashRecord, hashDoc, snapshot } from "./hash.ts";
-export { fork, getIn, specAt, stripEphemeral } from "./doc.ts";
+export { fork, getIn, isBlank, specAt, stripEphemeral } from "./doc.ts";
 export { diff } from "./diff.ts";
 export { apply } from "./apply.ts";
 export { MAX_KEY, keyBetween, keyUp, keyAfter, keysBetween, assignKeys, byPos } from "./keys.ts";

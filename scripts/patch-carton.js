@@ -35,6 +35,8 @@ const STORE = {
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
     readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
+    // the bundle loader's parse of project.json (`ti` in the worker): the reader, named
+    recover: ["let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map(", "qe"],
     install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,a)===!1?null:await Qo(c):await Bx(l,c)}"],
     // the envelope writeNow writes ({format, version, project, media}): the name it stringifies
     envelope: ["u=JSON.stringify(a);this.lastWritten", "a"],
@@ -87,6 +89,7 @@ const STORE = {
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
     readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
+    recover: ["let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map(", "ti"],
     install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,o)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
     envelope: ["d=JSON.stringify(o);this.lastWritten", "o"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
@@ -168,6 +171,11 @@ const patchStore = (replace, k) => {
   // The bundle loader behind read() and the library's rescan: a project.json caught mid-install is waited for, not
   // taken for a removed project.
   replace(...s.readBundle);
+  // Laptop, build 915eb36: a project.json the reader refuses (no name: Restore of "Started the cut" wrote one) in a
+  // bundle whose history Carton holds is read through that history, so the library lists the project again, cb finds
+  // it, and Restore in History brings it back. Cardboard's reader still decides: it parses what Carton gives, and what it
+  // refuses stays unlisted, as before. Only when its own parse failed: a project it reads costs nothing more.
+  replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;let n=await Promise.all(r.media.map(`);
   replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.

@@ -17,7 +17,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
-import { cardboardAdapter, materializeProject } from "@carton/cardboard";
+import { cardboardAdapter, materializeProject, projectProblems } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
@@ -504,6 +504,9 @@ extend({
           // The file starts at the cut's root, with the clips' full records from the descriptor: head (once caught up)
           // goes over it with those records kept by id, as the facade materializes any project.
           const project = { id: d.projectId, name: d.name, createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), ...materializeProject(d.doc0, null), media, stateUpdatedAt: now };
+          // never a project Cardboard can't read (laptop, build 915eb36): share data without a name is damaged
+          const problems = projectProblems({ format: "cardboard-project", version: 1, project, media: [] });
+          if (problems.length) throw new Error(`The host's share data for this project is damaged (${problems.join("; ")}): ask its owner to share it again`);
           fs.writeFileSync(path.join(staging, "project.json"), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }, null, 2));
           // The shared cut, from its root; its rows come from the host once the worker connects.
           const { store: st } = await openProjectStore({ bundleDir: staging, projectId: d.projectId });

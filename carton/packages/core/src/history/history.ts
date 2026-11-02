@@ -43,7 +43,7 @@ import { isEmptyMap } from "../engine/remap.ts";
 import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
+import { EmptyVersion, StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
@@ -730,6 +730,9 @@ export class History {
       const h = this.#hash.get(id);
       if (h) v.hash = h;
       if (named) v.name = named.name;
+      // a cut's start holds nothing when it is an imported project's empty root, or a cut made from one (its state is
+      // a keyframe: no replay)
+      if (s === 0 && E.isBlank(this.viewOf(id) ?? { _: 1 }, this.schema)) v.blank = true;
       out.push(v);
     }
     return out;
@@ -1033,6 +1036,7 @@ export class History {
   restoreTarget(ref: NodeId | StateRef | string): Doc {
     const target = typeof ref === "string" && ref.includes("@") && !ref.includes("~") ? this.stateOf(ref) : this.resolve(ref as StateRef | string).doc;
     if (!target) throw new StateUnknown(ref, "restore target not held");
+    if (E.isBlank(target, this.schema)) throw new EmptyVersion(ref, "restore");
     return target;
   }
 

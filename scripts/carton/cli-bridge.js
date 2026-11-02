@@ -28,6 +28,8 @@ module.exports = String.raw`var __cartonCli = (() => {
     const current = await lib.projects.read(id);
     const next = await carton().headProject(bundlePath, current, head);
     if (next) await lib.projects.updateScoped(next, carton().headScope(current, next));
+    // A head Cardboard couldn't read is never written (laptop, build 915eb36): the write is in history, the file isn't.
+    else if (carton().headRefused?.(bundlePath)) throw new Error("Saved in history, but project.json wasn't changed: Cardboard couldn't have read it (" + carton().headRefused(bundlePath).join("; ") + "). Restore another version.");
   };
   // Tools Carton serves in place of Cardboard's own when on.
   const CARTON_TOOLS = new Set(["timeline_history", "undo_timeline"]);

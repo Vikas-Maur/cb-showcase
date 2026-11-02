@@ -33,6 +33,7 @@ import { withInstallLock } from "./install-lock.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
+import { breaks } from "../valid.ts";
 
 export const PROJECT_FILE = "project.json";
 export const TIMELINE_FILE = "timeline.tsx";
@@ -490,7 +491,7 @@ export class Materializer {
   private projectPin: string | null = null;
 
   /** What happened, for tests and the activity log (never file contents). */
-  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[], recovered: [] as Record_[], cards: [] as SaveCards[] };
+  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[], recovered: [] as Record_[], refused: [] as Record_[], cards: [] as SaveCards[] };
 
   constructor(o: MaterializerOptions) {
     this.bundle = path.resolve(o.bundle);
@@ -1302,6 +1303,22 @@ export class Materializer {
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
     const next = this.host.toProject(p.doc, cur);
+    // A project Cardboard reads is never replaced by one it can't (no name: laptop, build 915eb36, Restore of "Started
+    // the cut"). Checked on the state just pinned, which is what would be written (head may have moved since it was
+    // read): refused, the old file stays, the state it shows is pinned for it again, and the refusal is logged. Head's
+    // next change tries again.
+    const problems = breaks({ ...env, project: { ...next, updatedAt: "", stateUpdatedAt: 0 } }, onDisk);
+    if (problems.length) {
+      await this.engine.release("project-file");
+      const shown = this.projectPin ? await this.resolveOrNull(this.projectPin) : null;
+      if (shown) {
+        const again = await this.engine.pin({ owner: "project-file", doc: shown.baseDoc, seq: shown.baseSeq, causal: shown.causal, ...(shown.cut ? { cut: shown.cut } : {}), ttlMs: 7 * DAY });
+        this.projectPin = refBodyOf(again);
+        await this.engine.putMeta(["file", PROJECT_FILE, "pin"], this.projectPin);
+      }
+      this.log.refused.push({ t: this.clock.now(), path: PROJECT_FILE, cause, ref: body, problems });
+      return;
+    }
     if (cur && same({ ...env, project: next })) {
       // the file already says this (also when it is a fresh foreign envelope: another materializer's install of the
       // same head, B11/B3; rewriting it would answer that install with one of ours, back and forth)

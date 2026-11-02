@@ -376,6 +376,11 @@ export interface Version {
   kind: ChangeKind | "root" | "fork";
   /** What the change did in plain words (describe()'s first line), when asked for (`log({summary: true})`). */
   summary?: string;
+  /**
+   * A cut's start (seq 0) with nothing in it: the empty root an imported project's history starts from (§16), or a cut
+   * made from it. `restore` and `fork` refuse it (`EmptyVersion`), so a UI doesn't offer them.
+   */
+  blank?: true;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";

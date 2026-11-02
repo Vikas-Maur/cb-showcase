@@ -82,6 +82,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches the clip's
   first piece only. `carton.lineage(from, to)` reads the lineage composed between two versions (`{ cut, seq }`, `from`
   before `to`; null: none), for code that maps old ids itself (comments' anchors).
+- **Empty versions** (laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, and the
+  project left Cardboard's library). A version with nothing in it (`isBlank`: no root field, every collection empty)
+  holds nothing of the project: the root an imported project's history starts from (`init.asChange`; the project is
+  `main@1`), or a cut made from it. `log()` marks a cut's start that is one (`Version.blank`, read from its keyframe:
+  no replay). `restore` of one, and `fork` from one given as `from`, throw `EmptyVersion` (`code: "EMPTY_VERSION"`)
+  before anything changes, on local and shared cuts; a UI doesn't offer either on such a row. A `fork` from head takes
+  the head as it is.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the

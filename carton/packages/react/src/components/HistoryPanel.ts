@@ -134,6 +134,12 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [comparing, setComparing] = useState<string | null>(null);
+  // Why the last restore or new cut didn't happen, in the words the app gave.
+  const [failed, setFailed] = useState<string | null>(null);
+  const act = useCallback((p: Promise<unknown>) => {
+    setFailed(null);
+    p.catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed));
+  }, [words]);
   const panel = useRef<HTMLElement>(null);
   const hist = ui.history();
   const active = activeId ? hist.indexOf(filter, activeId) : -1;
@@ -147,8 +153,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const open = useCallback(
     (id: string) => {
       const v = find(id);
-      // A version still waiting to sync has no state to show yet (L5).
-      if (!v || v.provisional) return;
+      // A version still waiting to sync has no state to show yet (L5); an empty one has none at all.
+      if (!v || v.provisional || v.empty) return;
       if (props.onOpen) props.onOpen(v);
       else ui.openPreview(v.ref, v.name || v.turn?.label || v.summary);
     },
@@ -160,6 +166,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     const box = panel.current?.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     setActiveId(id);
+    setFailed(null);
     setMenu({ id, x: box ? r.right - box.left : 0, y: box ? r.bottom - box.top + 4 : 0 });
   }, []);
   const namingRef = useRef(naming);
@@ -171,10 +178,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
       if (!name) return;
       if (mode === "cut") {
         const v = find(id);
-        if (v) void ui.newCut(name, v.ref);
+        if (v) act(ui.newCut(name, v.ref));
       } else void ui.nameVersion(id, name);
     },
-    [ui, find],
+    [ui, find, act],
   );
 
   // Keyboard: the context-menu key on the active row opens its actions, anchored to the row.
@@ -224,6 +231,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         ),
       ),
     ),
+    failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
     count === 0
       ? h("p", { className: "carton-empty" }, empty)
       : h(VirtualList, {
@@ -269,16 +277,17 @@ export function HistoryPanel(props: HistoryPanelProps) {
             className: "carton-history-menu",
             style: { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
           },
-          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5).
-          h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
+          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5). An empty one
+          // (the start of an imported project's history) has nothing to preview, restore or make a cut from: it says so.
+          menuVersion.empty ? null : h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
           props.currentRef
             ? h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setComparing(menuVersion.id)) }, words.compareWithCurrent)
             : null,
           h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
-          h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
+          menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
           menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
           h(MenuSeparator, null),
-          h(MenuItem, { icon: "restore", disabled: waiting, title: waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), void ui.restore(menuVersion.ref)) }, words.restore),
+          h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
         )
       : null,
     compareVersion && props.currentRef
@@ -286,7 +295,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           a: compareVersion.ref,
           b: props.currentRef,
           onWatch: props.onWatch,
-          onRestore: () => void ui.restore(compareVersion.ref),
+          ...(compareVersion.empty ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
           onClose: () => setComparing(null),
           className: "carton-history-compare",
         })

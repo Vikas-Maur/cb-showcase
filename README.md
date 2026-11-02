@@ -483,6 +483,19 @@ What changes with it on:
   isn't a well-formed name shows as no one.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
+- **A project is never left unreadable.** History's oldest row, "Started the cut", is where the history of a project
+  Carton took in begins, before the project itself (the next version): it has nothing to preview, restore or make a
+  cut from, so History doesn't offer those, and `cb restore`, `cb cut new --from` and `cb publish` refuse it, naming
+  the version that holds the project. (Restoring it used to write a `project.json` with no name and nothing in it, and
+  the project vanished from the library.) No writer turns a `project.json` Cardboard reads into one it can't, or
+  removes a project's name: the old file stays, and the refusal is logged in the bundle's `.carton\refused.log`.
+  History never starts from a file Cardboard can't read. When History or `cb` would have written such a file, they
+  say the project file wasn't changed.
+  A project the earlier build broke that way is listed again under its name, found by `cb history` and `cb cut list`,
+  and opens with its History: Restore of a version from before brings back its name, timeline and media library.
+  What only the old file held about a clip's media (its size, duration and thumbnails, and where a file linked from
+  outside the bundle is) isn't in the history: Cardboard finds a file copied into the bundle again by itself, and a
+  code graphic takes its size from the clip that shows it.
 
 The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):
 
@@ -582,6 +595,11 @@ run below.
    worker undoes it in its own process when it holds the project's sync lease, without a round trip through its own
    control socket. When another process holds the lease for a moment (a helper that took over while the app was
    busy) and saves your edit or your undo, the app still knows the change as yours and freezes nothing.
+
+9. The bundle loader, both copies: a `project.json` Cardboard's reader refuses, for a project whose history this
+   computer keeps (in `.carton\carton.db`, or in app data for a synced folder), is read through that history (the
+   file with the project's last name), so the library lists it again and `cb` finds it. Another project's or another
+   computer's history is never used. Cardboard's reader still decides, and a project it reads costs nothing more.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton

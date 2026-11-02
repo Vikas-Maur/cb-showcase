@@ -13,11 +13,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, branchToken } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
 import { Comments } from "@carton/comments";
@@ -30,6 +32,30 @@ const warnOnce = (key, msg) => {
   console.warn("[carton] " + msg);
 };
 const errText = (e) => (e && e.message) || String(e);
+
+// ---------------------------------------------------------------- never a project Cardboard can't read
+// Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name and empty tracks and media, and
+// the project left Cardboard's library. Every project.json this process writes is checked first (@carton/cardboard's
+// projectProblems: what Cardboard 1.4.0's reader needs, and a name): one that fails is not written, the old file stays,
+// and the refusal is logged, in the console (at most once every 10 s per project) and in the bundle's
+// .carton/refused.log (one JSON line each: when, which writer, what was wrong; never the project's own text).
+const REFUSED_LOG = "refused.log", REFUSED_LOG_MAX = 256 * 1024;
+const refusedSaid = new Map();
+function refuseProject(bundlePath, projectId, problems, where) {
+  const at = Date.now(), key = (bundlePath ?? projectId) + "\0" + where;
+  if (!(at - (refusedSaid.get(key) ?? 0) < 10_000)) {
+    refusedSaid.set(key, at);
+    console.warn(`[carton] kept project.json of project ${projectId ?? "?"}: the ${where} would have written one Cardboard can't read (${problems.join("; ")})`);
+  }
+  if (!bundlePath) return;
+  try {
+    const dir = path.join(bundlePath, ".carton");
+    if (!fs.existsSync(dir)) return;
+    const file = path.join(dir, REFUSED_LOG);
+    if ((fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > REFUSED_LOG_MAX) fs.rmSync(file, { force: true });
+    fs.appendFileSync(file, JSON.stringify({ at, where, projectId: projectId ?? null, problems }) + "\n");
+  } catch {}
+}
 
 // Cardboard's own GUI save projection, cut out of the editor bundle at build time (scripts/carton/fmsv.js).
 let gui = null;
@@ -66,15 +92,19 @@ function remembered(p) {
 
 // ---------------------------------------------------------------- one Carton per bundle
 const opened = new Map(); // bundlePath → Promise<LocalCarton | null>
+const startable = (project) => !projectProblems({ format: "cardboard-project", project }).length;
 function open(bundlePath, { projectId, doc } = {}) {
   if (!bundlePath) return Promise.resolve(null);
   let p = opened.get(bundlePath);
   if (!p) {
     p = (async () => {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
-      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
-      // A project without history yet starts from its document on disk (§16, main@1).
+      // (in the bundle, or in app data where a synced, network or FAT folder keeps it: L15)
+      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db")) || (!!id && existingCartonDbs({ projectDir: bundlePath, projectId: id }).length > 0);
+      // A project without history yet starts from its document on disk (§16, main@1), never from one Cardboard can't
+      // read (laptop, build 915eb36: its first version would be a project with no name).
       let first = exists ? null : doc ?? readProject(bundlePath);
+      if (first && !startable(first)) throw new Error("its project.json can't be read by Cardboard, so its history doesn't start from it");
       // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
       // person's actor and the replica's name; cb gets the helper that syncs headlessly).
       const more = await extOpenOptions({ bundlePath, projectId: id });
@@ -87,7 +117,7 @@ function open(bundlePath, { projectId, doc } = {}) {
         // project without one does; without this its history stayed off for good ("holds no project").
         if (first || !/holds no project/.test(errText(e))) throw e;
         first = doc ?? readProject(bundlePath);
-        if (!first) throw e;
+        if (!first || !startable(first)) throw e;
         lc = await openWith(first);
       }
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);
@@ -103,6 +133,37 @@ function open(bundlePath, { projectId, doc } = {}) {
   return p;
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
+// recover(): bundlePath → {text, out} for the damaged file last read through its history
+const recovered = new Map();
+// Whose a carton.db is, read without opening it as a history (nothing is moved, set aside or written): its project id
+// and whether this computer made it. null: it can't be read.
+async function historyOwner(dbPath) {
+  let machine;
+  try {
+    const raw = new DatabaseSync(dbPath, { readOnly: true, timeout: 2000 });
+    try { machine = JSON.parse(raw.prepare(`SELECT v FROM "_carton" WHERE k = ?`).get("machine")?.v ?? "null") ?? undefined; } catch { machine = undefined; } finally { raw.close(); }
+  } catch { return null; }
+  let store;
+  try { store = await openSqliteStore(dbPath, { readOnly: true }); } catch { return null; }
+  try { return { projectId: (await store.get("meta", ["project"]))?.projectId ?? null, mine: isThisMachine(machine) }; }
+  catch { return null; }
+  finally { await store.close().catch(() => {}); }
+}
+// The name a project last had in its history: the newest version that has one, on the current cut, then the others
+// (at most 256 versions looked at). null: none.
+async function lastName(lc) {
+  const c = lc.carton;
+  const cuts = [c.cut, ...(await c.cuts()).filter((x) => x.id !== c.cut && !x.shallow).map((x) => x.id)];
+  let looked = 0;
+  for (const cut of cuts) {
+    for (const v of await c.log({ cut, limit: 64 }).catch(() => [])) {
+      if (++looked > 256) return null;
+      const doc = await c.checkout(v.ref).catch(() => null);
+      if (typeof doc?.name === "string" && doc.name.trim()) return doc.name;
+    }
+  }
+  return null;
+}
 
 // A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
 // project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
@@ -468,6 +529,13 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     }
     return { doc, status: "materialized" };
   }
+  // A save Cardboard couldn't read back (no name: laptop, build 915eb36) is never a version either: history keeps no
+  // such state, so the next saves still land. The store's write of it is refused at the install; the old file stays.
+  const problems = projectProblems({ format: "cardboard-project", project: doc }, () => base);
+  if (problems.length) {
+    refuseProject(bundlePath, doc?.id, problems, "change");
+    return { doc, status: "rejected", reason: "the project would have " + problems.join("; ") };
+  }
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
   if (!lc) return { doc, status: "off" };
   const c = lc.carton;
@@ -604,17 +672,25 @@ const forCardboard = (project) => structuredClone(project);
 // project.json already shows head. (Through Cardboard's store: materializeIn, cb's `after`, sync's bring-in and pull.)
 // `given`: the state a write just made when this handle can't read it (a write still pending on a shared cut, which the
 // holder answered with its head: WriteOp `head`); the file never shows it yet.
+// The bundles whose head was last refused for project.json (headProject), with what was wrong: the History panel and cb
+// say so after a write, which otherwise looks done (Review of fix/restore-root, finding 3).
+const headRefusals = new Map();
+const HEAD_REFUSED = "This is saved in History, but the project file wasn't changed: Cardboard couldn't have opened it that way. Restore another version.";
 async function headProject(bundlePath, current, given) {
   return (await headAt(bundlePath, current, given))?.project ?? null;
 }
 // headProject, with the version it was made from (`ref`).
 async function headAt(bundlePath, current, given) {
+  headRefusals.delete(bundlePath);
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
   const head = given?.doc ? given : await lc.carton.head();
   const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
+  // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
+  const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
+  if (problems.length) return headRefusals.set(bundlePath, problems), refuseProject(bundlePath, current?.id, problems, "head"), null;
   await setRev(lc, out.stateUpdatedAt, head.ref);
   return { project: out, ref: head.ref };
 }
@@ -711,6 +787,9 @@ function takeOverIfAbandoned(dir) {
 async function withInstallLock(bundle, fn) {
   const dir = path.join(bundle, ".carton", "install.lock"), owner = path.join(dir, "owner"), t0 = Date.now();
   const me = process.pid + "." + Math.random().toString(16).slice(2);
+  // A bundle whose history is kept in app data (a synced, network or FAT folder: L15) may have no .carton/ yet: without
+  // it no project could be made there with Carton on (cb project create failed: ENOENT on the lock).
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
   for (;;) {
     try { fs.mkdirSync(dir); fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, me })); break; } catch (e) {
       if (e.code !== "EEXIST") throw e;
@@ -751,6 +830,18 @@ async function install(tmp, file, seenStamp, rev, envelope) {
 }
 async function installFile(tmp, file, seenStamp, rev, envelope) {
   const bundle = path.dirname(file);
+  // A project.json Cardboard couldn't read back is never installed, whoever wrote it: the old file stays (false: the store
+  // reads the disk again). The envelope writeNow stringified is checked as it is (no parse); a file without one is read.
+  if (path.basename(file) === "project.json") {
+    let env = envelope;
+    if (env === undefined) try { env = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch { env = null; }
+    const problems = projectProblems(env, () => readProject(bundle));
+    if (problems.length) {
+      refuseProject(bundle, env?.project?.id, problems, "save");
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+  }
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   // (A new project's first write: project.json isn't there yet, so its id and first state come from what the store is
   // writing, and history starts with it. Laptop #9: opened without them, cb's `project create` said history was off
@@ -953,6 +1044,45 @@ export const cardboard14 = {
   cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
+  // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
+  headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
+  // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
+  // refuses, so the project left the library and cb found nothing. When the reader refuses a bundle's project.json and
+  // the bundle's history is in .carton/carton.db, the reader gets the file with the name the project last had in that
+  // history (else its folder's): the library lists it again, cb finds it (history, cut list, restore), and the editor
+  // opens it with its History, where Restore of a good version brings the rest back. Nothing is written here, and
+  // history never starts from such a file (an existing carton.db only). Only a JSON file with the project's id; any other
+  // damage stays as it was. The answer is kept per bundle while the file is the same.
+  async recover({ bundlePath, text }) {
+    if (!bundlePath || typeof text !== "string") return null;
+    const hit = recovered.get(bundlePath);
+    if (hit?.text === text) return hit.out;
+    let env;
+    try { env = JSON.parse(text); } catch { return null; }
+    const p = env?.project;
+    if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id) return null;
+    // The history, wherever it is kept (the bundle, or app data for a synced, network or FAT folder), read before
+    // anything opens it: every carton.db there must be this project's and made on this computer. Another project's
+    // (a stale or copied .carton) would put its versions into this one; another computer's would be set aside on open,
+    // and a new history started.
+    const dbs = existingCartonDbs({ projectDir: bundlePath, projectId: p.id });
+    if (!dbs.length) return null;
+    for (const db of dbs) {
+      const owner = await historyOwner(db);
+      if (owner?.projectId === p.id && owner.mine) continue;
+      return warnOnce("recover-owner:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard, and its history there is ${owner ? (owner.mine ? "another project's" : "another computer's") : "unreadable"}: not used`), null;
+    }
+    const lc = await open(bundlePath, { projectId: p.id });
+    if (!lc || lc.carton.projectId !== p.id) return null;
+    const name = (typeof p.name === "string" && p.name.trim()) ? p.name : (await lastName(lc)) ?? (path.basename(bundlePath, ".cardboard").trim() || "Untitled Project");
+    const out = { ...env, format: "cardboard-project", project: { ...p, name, ...(typeof p.updatedAt === "string" ? {} : { updatedAt: new Date(typeof p.stateUpdatedAt === "number" ? p.stateUpdatedAt : Date.now()).toISOString() }) }, media: Array.isArray(env.media) ? env.media : [] };
+    const left = projectProblems(out);
+    if (left.length) return warnOnce("recover:" + bundlePath, `project ${p.id}'s project.json can't be read, even through its history (${left.join("; ")})`), null;
+    warnOnce("recovered:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard (${projectProblems(env).join("; ")}); it is listed through its history: restore a version in History to bring it back`);
+    const json = JSON.stringify(out);
+    recovered.set(bundlePath, { text, out: json });
+    return json;
+  },
   async sawDisk({ bundlePath, doc }) {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
     if (!lc || (await refOf(lc, doc.stateUpdatedAt))) return;
@@ -1133,6 +1263,7 @@ export const cardboard14 = {
           const agents = views.isAgent(card);
           const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+          else if (headRefusals.has(bundlePath)) throw new Error(HEAD_REFUSED);
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
           if (card && !agents) for (const x of await keptHere()) {
@@ -1365,7 +1496,9 @@ export const internals = {
     return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
   }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev),
   // The bundles this process has a Carton open for (a staging folder's must be gone once Open Project returns).
-  openBundles: () => [...opened.keys()] };
+  openBundles: () => [...opened.keys()],
+  // A bundle's LocalCarton, as this process opens it (tests that make a project's history as an older build left it).
+  open: (bundlePath) => open(bundlePath) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {
