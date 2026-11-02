@@ -3,12 +3,29 @@
 // what it is, then one example or consequence.
 
 export const STATUS = {
-  verified: { label: "Verified", tip: "Re-checked by a second, independent run, which got the same answer." },
-  measured: { label: "Measured", tip: "From our lab's runs against real Cloudflare deployments, read back from Cloudflare's own analytics. Not yet re-checked by a second run." },
-  estimated: { label: "Estimated", tip: "Worked out from Carton's code and Cloudflare's docs, not measured yet. The lab is measuring it; the page updates when it lands." },
+  verified: { label: "Verified", tip: "Re-checked by an independent verifier: either re-run on real Cloudflare deployments, or recomputed from the lab's own run records and the code path. A revised value is the verifier's." },
+  measured: { label: "Measured", tip: "From our lab's runs against real Cloudflare deployments, read back from Cloudflare's own analytics. Not confirmed by the re-check." },
+  estimated: { label: "Estimated", tip: "Not measured: the model's own figure, worked out from Carton's code and Cloudflare's docs. It still counts in the bill, so the page tells you." },
   assumed: { label: "Assumed", tip: "A usage setting: how you or your team would work. Change it to match yours." },
-  documented: { label: "Documented", tip: "Cloudflare's published limit. The lab didn't push past it (it stayed under half of every daily limit), so this is what the docs say, not what we saw." },
-  missing: { label: "Not measured", tip: "The measurement file has no value for this. The calculator uses the model's built-in estimate instead, shown here." },
+  documented: { label: "Documented", tip: "Cloudflare's published limit. The lab didn't push past it on purpose, so this is what the docs say, not what we saw." },
+  missing: { label: "Not measured", tip: "The measurement file has no value for this. The calculator uses the model's own figure instead, shown here." },
+};
+
+/** The verifier's verdicts, in words, and the column's "?". */
+export const VERDICTS = {
+  confirmed: "Re-run: confirmed",
+  "confirmed-from-data": "Recomputed: confirmed",
+  revised: "Revised",
+  "not-verified": "Not verified",
+};
+export const RECHECK_TIP = "A second agent, independent of the lab, checked every input. Re-run: it ran the case again on the real deployments and got the same answer. Recomputed: it re-read Cloudflare's analytics for the lab's runs with its own code and checked the code path, without a new run. Revised: it found a better value, which the calculator now uses (the lab's is shown under it). n and the range are the verifier's own runs.";
+
+/** Extra lab measurements the bill doesn't use, and why. */
+export const EXTRA_NOTES = {
+  editRoomCpuMs: "Durable Objects bill time awake, not CPU",
+  presenceMsgPerSecWhileDragging: "the web app's rate; the rate is a setting above",
+  presenceFanoutPerMsg: "frames going out to teammates aren't charged",
+  viewMiBPerGet: "already in the per-MiB read counts",
 };
 
 export const SETTINGS = {
@@ -19,10 +36,13 @@ export const SETTINGS = {
   idleHoursPerDay: "Hours a day the project stays open with nobody editing, like Cardboard left open over lunch. The connection stays up with a small keepalive every 25 s, which Cloudflare answers without waking the room, so this should cost close to nothing.",
   savesPerMinute: "How often a person's changes are sent while they edit. Cardboard groups your changes into saves; each save is one message to the project's room. 2 a minute is a steady pace.",
   agentEditsPerDay: "Edits AI agents make for each person a day: the Director, subagents, Claude Code. Each one reaches the room exactly like a person's save.",
-  dragShare: "The share of editing time someone drags the playhead or a clip. While they drag, Carton sends their cursor and playhead to teammates up to 10 times a second. 5% is about 9 minutes of a 3-hour session.",
+  dragShare: "The share of editing time someone's cursor or playhead is moving and shared with teammates. 5% is about 9 minutes of a 3-hour session. With the Cardboard app, count the time you're clicking, typing or scrolling: it sends an update then, at most once a second.",
+  presenceRate: "How many cursor and playhead updates a second go to the room while someone drags. The Cardboard app sends at most 1 a second (on clicks, keys and scrolling, nothing after 30 s idle); the Carton web app sends 10 (its drag ghosts, capped by the sync client). Each update is a Durable Object request (20 for the price of 1 on Paid).",
+  newProjectsPerMonth: "How many projects each team shares for the first time a month. The first time costs a few dozen rows written once: the room takes in the cut, and each person's first edit registers their copy.",
+  writeCap: "An optional safety limit on how much a deployment stores a day (fix/cf-write-cap). Off unless you set it; the lab's servers had it on. With it on, every stored file first books its size with a counter: one more Durable Object request and row each.",
   connectsPerDay: "How often a person's app connects to the project a day: opening it, waking the laptop, changing Wi-Fi. Each connect costs one Worker request and one full-price Durable Object request.",
   footageHoursPerMonth: "Hours of new footage each person adds to the shared project a month. Carton uploads a small preview copy of each clip (the proxy) so teammates can watch it without the original.",
-  previewMbps: "How sharp the preview copy is. Carton encodes 720p at about 2 Mbit/s today, about 0.9 GB an hour of footage. A sharper preview means more to upload, store and read; the other choices show what that would cost.",
+  previewMbps: "How sharp the preview copy is. Carton encodes 720p at about 2 Mbit/s today, about 0.9 GB an hour of footage. A sharper preview means more to store and read; the other choices show what that would cost.",
   shareOriginals: "Also upload the camera originals, the full-quality files. Off by default in Carton: originals only move when the owner opts in or a teammate asks. They're large: 4K at 100 Mbit/s is about 45 GB an hour.",
   originalMbps: "The camera files' bitrate: how much data a second of footage takes. Phones record 4K at about 50 Mbit/s, mirrorless cameras 100–200, ProRes several hundred.",
   retentionMonths: "How long shared media is kept before it's deleted. Storage bills for every month it's kept, so with 3 months you're always paying for about three months of footage.",
@@ -35,8 +55,8 @@ export const SETTINGS = {
 export const LINES = {
   fee: "Workers Paid's monthly fee, once for the whole account. It includes 10 million Worker requests, 1 million Durable Object requests, 50 million rows written and more each month. Workers Free has no fee.",
   edits: "Each save or agent edit is a message to the project's room (a Durable Object), which stores it and sends it to everyone else. It costs Durable Object requests (20 messages for the price of 1 on Paid), rows written and a few milliseconds of room time.",
-  presence: "While someone drags, their cursor and playhead go to teammates up to 10 times a second; these are never stored. While anyone's active, the room also checks every minute for people who went silent, so their cursor disappears. Each check is an alarm: one request and one row written.",
-  connections: "Opening the project and reconnecting: a Worker request and a full-price Durable Object request each. Also the room's hourly upkeep (moving old changes into an archive), and any cost of sessions left open while nobody edits.",
+  presence: "While someone drags, their cursor and playhead go to teammates: at most 1 update a second from the Cardboard app, 10 from the web app; these are never stored. While anyone's active, the room also checks every minute for people who went silent, so their cursor disappears. Each check is an alarm: one request and one row written.",
+  connections: "Opening the project and reconnecting: a Worker request, and three Durable Object requests (the upgrade, the hello, the close), billed in full. Also the room's hourly upkeep (moving old changes into an archive), sessions left open while nobody edits (measured: free, the room sleeps), and the few rows a newly shared project writes once.",
   segments: "Uploading the preview copy in short segments. Each segment costs a few Worker requests, R2 writes (Class A) and checks (Class B). With the vault instead of R2: Durable Object requests and rows written.",
   originals: "Uploading camera originals, when you share them: resumable uploads in 8 MiB parts, each a Worker request and a few R2 writes. A dropped connection only costs the parts in flight.",
   storage: "Keeping the shared previews (and originals) for the months you chose. In R2: $0.015 a GB-month past 10 free. In the vault: $0.20 a GB-month past the 5 included on Paid; on Free, 5 GB in all.",
@@ -73,28 +93,35 @@ export const LIMITS = {
     tip: "On Cloudflare's free plan, the server code handling one request may use at most 10 milliseconds of processor time. Time spent waiting on the network or storage doesn't count. Go over it and Cloudflare stops the request (error 1102). Carton's upload chunks used far more before a fix, so big uploads failed; with the fix (in the lab build, not merged yet) they stream through and stay under it.",
     check: "cpu",
   },
-  "worker-memory-128mb": { name: "128 MB memory per Worker", tip: "Each Worker gets 128 MB of memory, shared by the requests it's handling at that moment. Hold a big file in memory and a request can be killed, even one that would fit alone." },
+  "isolate-memory-128mb": { name: "128 MB memory per Worker", tip: "Each Worker gets 128 MB of memory, shared by the requests it's handling at that moment. Hold a big file in memory and a request can be killed, even one that would fit alone." },
   "request-body-100mb": { name: "100 MB per request", tip: "On Cloudflare's Free and Pro plans, one request can carry at most 100 MB. Bigger, and Cloudflare refuses it before the Worker even sees it (HTTP 413). That's why big files go up in parts." },
-  "ws-message-32mib": { name: "32 MiB per WebSocket message", tip: "One message over a live connection (a WebSocket) can be at most 32 MiB. Send a bigger one and Cloudflare closes the connection." },
-  subrequests: { name: "Subrequests per request", tip: "Calls one request makes to other services, like storage. Free allows 50 to the outside world and 1,000 to Cloudflare's own services per request. A request that checks thousands of files at once would run out." },
-  "do-value-2mb": { name: "2 MB per database row", tip: "One row in a Durable Object's database can hold at most 2 MB, so bigger data has to be split across rows." },
-  "daily-workers-requests": { name: "100,000 Worker requests a day (Free)", tip: FREE_CHECKS.workersReq, check: "workersReq" },
-  "daily-do-requests": { name: "100,000 Durable Object requests a day (Free)", tip: FREE_CHECKS.doReq, check: "doReq" },
-  "daily-do-duration": { name: "13,000 GB-s a day (Free)", tip: FREE_CHECKS.doGBs, check: "doGBs" },
-  "daily-rows-written": { name: "100,000 rows written a day (Free)", tip: FREE_CHECKS.doRowsWritten, check: "doRowsWritten" },
-  "do-object-storage": { name: "1 GB per Durable Object (10 GB on Paid)", tip: FREE_CHECKS.doObjectGB, check: "doObjectGB" },
-  "do-storage-5gb": { name: "5 GB of Durable Object storage (Free)", tip: FREE_CHECKS.doStorageGB, check: "doStorageGB" },
-  "r2-free-monthly": { name: "R2's monthly free allowance", tip: "R2 is free up to 10 GB-month of storage, 1 million writes (Class A) and 10 million reads (Class B) a month, on either Workers plan. Past that it bills; it never stops working." },
+  "websocket-message-32mib": { name: "32 MiB per WebSocket message", tip: "One message over a live connection (a WebSocket) can be at most 32 MiB. Send a bigger one and Cloudflare closes the connection." },
+  "subrequests-1000": { name: "Subrequests per request", tip: "Calls one request makes to other services, like storage. Free allows 50 to the outside world and 1,000 to Cloudflare's own services per request. A request that checks thousands of files at once would run out." },
+  "do-row-2mb": { name: "2 MB per database row", tip: "One row in a Durable Object's database can hold at most 2 MB, so bigger data has to be split across rows." },
   "dead-link": { name: "A link that dies silently", tip: "A connection that dies without closing (Wi-Fi gone, a router hiccup) can look open for minutes. Not a Cloudflare limit, but it decides how soon edits arrive after an outage." },
+  "refused-session-retry-storm": { name: "A refused client retrying", tip: "Not a Cloudflare limit: an app whose session the server refuses, retrying in a tight loop. On Workers Free, one such app could use up the whole account's 100,000 requests a day, taking everyone offline until midnight UTC.", check: "workersReq" },
+  "daily-limits-free": { name: "Workers Free's daily limits", tip: "Workers Free allows, each day for the whole account: 100,000 Worker requests, 100,000 Durable Object requests, 13,000 GB-s of Durable Object time, 5 million rows read and 100,000 rows written. Past one, those requests fail until midnight UTC.", check: "daily" },
+  "lab-daily-write-cap": { name: "The lab's daily write cap", tip: "Not a Cloudflare limit: an optional cap on how much a deployment stores a day (fix/cf-write-cap), which the lab's servers ran with. The \"Daily write cap on\" setting adds its cost." },
+  "vault-orphan-uploads": { name: "Abandoned uploads in the vault", tip: "Without R2, an upload that's abandoned half-way leaves its parts in the vault, where they count against Workers Free's 5 GB and bill on Paid. Not a Cloudflare limit.", check: "doStorageGB" },
+  "request-canceled-on-disconnect": { name: "Work cut off when a client leaves", tip: "Cloudflare stops a request's work when the client hangs up, unless the server asks for more time. An upload killed mid-way could leave its bookkeeping half-done." },
+  "node-connect-attempt-250ms": { name: "Slow links and Node's 250 ms connect", tip: "Not a Cloudflare limit: Node gives up on each server address after 250 ms, so on a very slow link (≈400 ms round trip) every connection failed before a fix." },
+  "do-rows-written-free-vault": { name: "Rows written without R2 (Free)", tip: "Without R2, every MiB uploaded writes about 4 rows in the vault, and Workers Free allows 100,000 rows written a day: about 25 GB of uploads a day for the whole account.", check: "doRowsWritten" },
+  "wrangler-tail-drops-events": { name: "Lab tooling: the log stream drops events", tip: "Not a limit on Carton: Cloudflare's live log stream, which the lab used to count requests, is best effort and drops events when busy. The lab counts requests from the apps' own logs instead." },
+  "do-object-storage": { name: "1 GB per Durable Object (10 GB on Paid)", tip: "One Durable Object can hold at most 1 GB on Free and 10 GB on Paid. Without R2, a project's media all sits in one object (its vault), so the media you keep must fit, on either plan. Past it, writes fail until data is deleted.", check: "doObjectGB" },
+  "r2-free-monthly": { name: "R2's monthly free allowance", tip: "R2 is free up to 10 GB-month of storage, 1 million writes (Class A) and 10 million reads (Class B) a month, on either Workers plan. Past that it bills; it never stops working." },
 };
 
 export const METRICS = {
   p50: "The median: half of the measurements were at least this fast. What a typical edit or upload feels like.",
   p90: "9 in 10 were at least this fast; 1 in 10 took longer. A fair 'slow moment'.",
-  p99: "99 in 100 were at least this fast: the rare worst case you'd still notice now and then.",
-  runs: "How many separate test runs this row combines. One run is a first look, not a guarantee.",
+  p99: "99 in 100 were at least this fast: the rare worst case. With 60 edits in a run, it's about the run's slowest edit, so one slow edit can decide it.",
+  runs: "How many separate test runs this row combines. One run is a first look, not a guarantee; with fewer than 3 runs, p90 and p99 are the slowest run.",
   convergence: "From the moment one person makes an edit until every other party has it, confirmed by the server.",
+  time: "Wall-clock time from start to finish, as the person waiting would see it.",
   duration: "Wall-clock time from start to finish, as the person waiting would see it.",
+  "offline-shown": "From the link going dead until the app shows it's offline.",
+  reconnect: "From the link coming back until the app is connected again.",
+  "catch-up": "From the link coming back until every edit made offline is confirmed by the server.",
 };
 
 export const NETWORKS = {
@@ -106,13 +133,33 @@ export const NETWORKS = {
 };
 
 export const SCENARIOS = {
-  sync: { name: "Live sync", tip: "Several people and agents editing one cut at once, each a real Carton client on its own simulated network. The number is how long an edit takes to show up for everyone else." },
+  sync: { name: "Live sync", tip: "Several people and agents editing one cut at once, each a real Carton client on its own simulated network." },
   flap: { name: "Flapping link", tip: "The connection drops for 5 s every 30 s while people keep editing. Edits made in a gap wait for the link to come back; nothing is lost." },
-  outage: { name: "5-minute outage", tip: "One person loses the connection for 5 minutes and keeps editing offline. The number is how long their edits took to reach the others once the link was back." },
-  upload: { name: "Upload", tip: "Sharing a file: from starting the upload until teammates can fetch it. Uploads are resumable in parts." },
-  preview: { name: "Preview ready", tip: "From a clip being shared until a teammate can start playing it: the first 2 s piece of the preview, uploaded and fetched." },
+  syncOutage: { name: "Live sync through a 5-minute outage", tip: "One person loses the connection for 5 minutes and keeps editing offline; the time is for every edit to reach everyone." },
+  "outage-offline-shown": { name: "Outage: the app notices", tip: "A 5-minute outage, with the dead-link fix." },
+  "outage-reconnect": { name: "Outage: back online", tip: "A 5-minute outage, with the dead-link fix." },
+  "outage-catch-up": { name: "Outage: offline edits caught up", tip: "A 5-minute outage, with the dead-link fix." },
+  preview: { name: "Preview ready", tip: "From a clip being shared until a teammate can start playing it: the preview's first 2 s piece, uploaded and fetched." },
+  upload: { name: "Upload of the original", tip: "Sharing a camera original: from starting the upload until it's stored. Uploads are resumable in parts." },
+  full: { name: "Teammate has the original", tip: "From the upload starting until a teammate can open the original (its first MiB fetched)." },
   download: { name: "Download", tip: "A teammate fetching a shared file." },
+  dedup: { name: "Sharing the same file again", tip: "A file the server already has: Carton notices and sends nothing." },
+  proxyShare: { name: "Publishing a 10-minute preview", tip: "The app encodes the 720p preview and uploads it in 2 s segments as it goes, as Carton does today." },
+  proxyPlay: { name: "Playing a 10-minute preview", tip: "A teammate plays the whole preview from the start, fetching and checking every segment as fast as it can." },
 };
+
+/** Words for what sets one speed row apart from the others in its group (matched on its id). */
+export const VARIANTS = [
+  [/-before-fix\b|-before-fix$/, "before the upload fix"],
+  [/resume-kill/, "uploader killed mid-way, then resumed"],
+  [/resume-hole/, "link cut mid-way, then resumed"],
+  [/baseline-old-client|-old$/, "old client (before the dead-link fix)"],
+  [/-fixed$/, "with the dead-link fix"],
+  [/after-connect-fix/, "with the slow-link connect fix"],
+  [/before-connect-fix/, "before the slow-link connect fix"],
+  [/after-part-lock-fix/, "with the part-lock fix"],
+  [/before-part-lock-fix/, "before the part-lock fix"],
+];
 
 export const GLOSSARY = [
   ["Worker", "A small program Cloudflare runs in its data centres close to you, started fresh for each request. Carton's Worker checks who you are, then hands your connection to the project's room or streams a file to storage."],
@@ -142,30 +189,41 @@ export const INPUT_LABELS = {
   editWorkerCpuMs: "Worker CPU per edit",
   editArchiveRowsWritten: "Rows written when an edit is archived",
   changeBytes: "Bytes per stored change",
+  editRoomCpuMs: "Room CPU per edit",
+  adoptRowsWritten: "Rows written when a project is first shared",
+  replicaRowsWritten: "Rows written per person's first edit in a project",
   connWorkerReq: "Worker requests per connect",
   connWorkerCpuMs: "Worker CPU per connect",
   connDoReq: "Durable Object requests per connect",
   connRowsWritten: "Rows written per connect",
   connRowsRead: "Rows read per connect",
   connGBs: "Room time per connect (GB-s)",
-  presenceMsgPerSecWhileDragging: "Presence messages a second while dragging",
-  presenceDoReq: "Durable Object requests per presence message",
-  presenceGBs: "Room time per presence message (GB-s)",
+  presenceMsgPerSecWhileDragging: "Presence frames a second while dragging (web app)",
+  presenceDoReq: "Durable Object requests per presence frame",
+  presenceGBs: "Room time per presence frame (GB-s)",
+  presenceRowsWritten: "Rows written per presence frame",
+  presenceFanoutPerMsg: "Frames sent to each watcher per frame",
   presenceAlarmPerHour: "Presence checks an hour",
+  presenceAlarmDoReqPerHour: "Durable Object requests an hour for presence checks",
+  presenceAlarmRowsWritten: "Rows written per presence check",
+  presenceAlarmGBs: "Room time per presence check (GB-s)",
   upkeepAlarmPerHour: "Upkeep alarms an editing hour",
-  alarmRowsWritten: "Rows written per alarm",
-  alarmGBs: "Room time per alarm (GB-s)",
   idleDoReqPerHour: "Durable Object requests per idle hour",
   idleGBsPerHour: "Room time per idle hour (GB-s)",
   idleRowsWrittenPerHour: "Rows written per idle hour",
-  gbWorkerReq: "Worker requests per GB uploaded",
-  gbWorkerCpuMs: "Worker CPU per GB uploaded",
+  gbWorkerReq: "Worker requests per GB uploaded (R2)",
+  gbWorkerCpuMs: "Worker CPU per GB uploaded (R2)",
   gbR2ClassA: "R2 Class A per GB uploaded",
   gbR2ClassB: "R2 Class B per GB uploaded",
   gbDoReq: "Durable Object requests per GB uploaded (R2)",
+  gbVaultWorkerReq: "Worker requests per GB uploaded (vault)",
+  gbVaultWorkerCpuMs: "Worker CPU per GB uploaded (vault)",
   gbVaultDoReq: "Vault requests per GB uploaded",
   gbVaultRowsWritten: "Vault rows written per GB uploaded",
   gbVaultGBs: "Vault time per GB uploaded (GB-s)",
+  writeCapDoReqPerGB: "Write-cap requests per GB written (cap on)",
+  writeCapReservesPerSegment: "Write-cap reserves per preview segment (cap on)",
+  writeCapRowsPerReserve: "Rows written per write-cap reserve (cap on)",
   segWorkerReq: "Worker requests per preview segment",
   segWorkerCpuMs: "Worker CPU per preview segment",
   segR2ClassA: "R2 Class A per preview segment",
@@ -175,19 +233,28 @@ export const INPUT_LABELS = {
   viewWorkerReqPerMiB: "Worker requests per MiB played",
   viewClassBPerMiB: "R2 Class B per MiB played",
   viewWorkerCpuMsPerMiB: "Worker CPU per MiB played",
-  viewVaultRowsReadPerMiB: "Vault rows read per MiB played",
+  viewMiBPerGet: "MiB per R2 read while playing",
+  viewVaultDoReqPerSegment: "Vault requests per segment played",
+  viewVaultRowsReadPerSegment: "Vault rows read per segment played",
   viewVaultGBsPerMiB: "Vault time per MiB played (GB-s)",
 };
 
 /** Which bill line each input feeds, to group the inputs table. */
 export const INPUT_GROUPS = [
-  ["Live edits", ["editDoReq", "editRowsWritten", "editRowsRead", "editGBs", "editWorkerCpuMs", "editArchiveRowsWritten", "changeBytes"]],
-  ["Cursors and playheads", ["presenceMsgPerSecWhileDragging", "presenceDoReq", "presenceGBs", "presenceAlarmPerHour", "alarmRowsWritten", "alarmGBs"]],
-  ["Connections and idle time", ["connWorkerReq", "connWorkerCpuMs", "connDoReq", "connRowsWritten", "connRowsRead", "connGBs", "upkeepAlarmPerHour", "idleDoReqPerHour", "idleGBsPerHour", "idleRowsWrittenPerHour"]],
+  ["Live edits", ["editDoReq", "editRowsWritten", "editRowsRead", "editGBs", "editWorkerCpuMs", "editArchiveRowsWritten", "changeBytes", "editRoomCpuMs"]],
+  ["Cursors and playheads", ["presenceDoReq", "presenceGBs", "presenceRowsWritten", "presenceAlarmPerHour", "presenceAlarmDoReqPerHour", "presenceAlarmRowsWritten", "presenceAlarmGBs", "presenceMsgPerSecWhileDragging", "presenceFanoutPerMsg"]],
+  ["Connections, idle time and new projects", ["connWorkerReq", "connWorkerCpuMs", "connDoReq", "connRowsWritten", "connRowsRead", "connGBs", "upkeepAlarmPerHour", "idleDoReqPerHour", "idleGBsPerHour", "idleRowsWrittenPerHour", "adoptRowsWritten", "replicaRowsWritten"]],
   ["Preview uploads", ["segWorkerReq", "segWorkerCpuMs", "segR2ClassA", "segR2ClassB", "segVaultDoReq", "segVaultRowsWritten"]],
-  ["Camera originals", ["gbWorkerReq", "gbWorkerCpuMs", "gbR2ClassA", "gbR2ClassB", "gbDoReq", "gbVaultDoReq", "gbVaultRowsWritten", "gbVaultGBs"]],
-  ["Playback", ["viewWorkerReqPerMiB", "viewClassBPerMiB", "viewWorkerCpuMsPerMiB", "viewVaultRowsReadPerMiB", "viewVaultGBsPerMiB"]],
+  ["Playback", ["viewWorkerReqPerMiB", "viewClassBPerMiB", "viewWorkerCpuMsPerMiB", "viewMiBPerGet", "viewVaultDoReqPerSegment", "viewVaultRowsReadPerSegment", "viewVaultGBsPerMiB"]],
+  ["Camera originals", ["gbWorkerReq", "gbWorkerCpuMs", "gbR2ClassA", "gbR2ClassB", "gbDoReq", "gbVaultWorkerReq", "gbVaultWorkerCpuMs", "gbVaultDoReq", "gbVaultRowsWritten", "gbVaultGBs"]],
+  ["The optional daily write cap", ["writeCapDoReqPerGB", "writeCapReservesPerSegment", "writeCapRowsPerReserve"]],
 ];
+
+/** The page's notes on the bill. */
+export const NOTES = {
+  previewPath: "Most of the bill at scale, and most of Workers Free's daily requests, is the preview path: uploading preview segments and teammates playing them (about 10 Worker requests per segment published and 10 per MiB played). A change that cuts those requests is in progress.",
+  sparseEdits: "Room time per edit was measured with edits arriving about twice a second. In one run with an edit every 15 s, each edit woke the room and used about 2.7× the room time (one run, not repeated).",
+};
 
 export const CHART = {
   title: "Monthly cost against number of teams",

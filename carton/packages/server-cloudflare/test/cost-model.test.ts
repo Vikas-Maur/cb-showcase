@@ -52,8 +52,8 @@ test("the vault keeps media in Durable Object storage: $0.20 a GB-month past 5, 
 
 test("incoming WebSocket messages bill 20:1 on Paid; connects and alarms bill in full", () => {
   // presence only: 10 teams × 20 days × 10 h × 3600 s × 100% dragging × 10 messages a second = 72M messages
-  const s: Partial<Settings> = { people: 1, teams: 10, days: 20, hoursPerDay: 10, dragShare: 1, footageHoursPerMonth: 0, plan: "paid", storage: "r2" };
-  const ws = only({ presenceMsgPerSecWhileDragging: 10, presenceDoReq: 1 });
+  const s: Partial<Settings> = { people: 1, teams: 10, days: 20, hoursPerDay: 10, dragShare: 1, presenceRate: 10, footageHoursPerMonth: 0, plan: "paid", storage: "r2" };
+  const ws = only({ presenceDoReq: 1 });
   const b = M.bill(s, ws, prices);
   const doReq = b.meters.find((m) => m.key === "doReq")!;
   close(doReq.wsMessages!, 72e6);
@@ -145,7 +145,8 @@ test("playback: each person plays a share of every teammate's proxies; a solo ed
   // 5 people × 4 teammates × 10 h × 900 MB × 50% = 90 GB read
   const u = M.usage({ ...M.PRESETS.team5.settings, viewShare: 0.5 }, {});
   close((u.derived.viewedMiB * 1024 * 1024) / 1e9, 90);
-  close(u.activities.playback.r2ClassB, u.derived.viewedMiB * M.INPUT_DEFAULTS.viewClassBPerMiB);
+  // reads go per segment: the per-MiB input was measured with 0.626 MiB segments, so 0.477 MiB ones read more per MiB
+  close(u.activities.playback.r2ClassB, u.derived.viewedMiB * M.INPUT_DEFAULTS.viewClassBPerMiB * (M.REF_SEGMENT_MIB / u.derived.segMiB));
 });
 
 test("connects, idle sessions and the room's alarms are their own line", () => {
@@ -257,8 +258,9 @@ test("the vault is one Durable Object per project: 1 GB on Free, 10 GB on Paid, 
 });
 
 test("one object's duration never passes the month's wall-clock time", () => {
-  // 500 people dragging 24 h a day: presence alone would be 86,400 GB-s a day; one room can be awake 86,400 s × 0.128 GB
-  const u = M.usage({ people: 500, days: 30, hoursPerDay: 24, dragShare: 1, footageHoursPerMonth: 0 }, {});
+  // 500 people dragging 24 h a day at the web app's 10 a second: presence alone would be about 70,000 GB-s a day; one
+  // room can be awake 86,400 s × 0.128 GB
+  const u = M.usage({ people: 500, days: 30, hoursPerDay: 24, dragShare: 1, presenceRate: 10, footageHoursPerMonth: 0 }, {});
   const room = u.activities.edits.doGBs + u.activities.presence.doGBs + u.activities.connections.doGBs;
   close(room, 30 * 86_400 * 0.128);
   assert.equal(u.derived.roomCapped, true);
@@ -290,7 +292,7 @@ test("one boundary for 'fits': maxTeams, over and the curve agree, floating-poin
 test("CPU per request is an average of each kind of request", () => {
   const fc = M.freeCheck({ ...solo, shareOriginals: true }, {}, prices);
   assert.equal(fc.cpu.basis, "average");
-  close(fc.cpu.worst!.ms, 6); // 750 ms over 125 requests per GB
+  close(fc.cpu.worst!.ms, 381.9 / 126.7); // the lab's CPU per GB over its requests per GB
 });
 
 test("odd settings never throw or give a non-finite bill", () => {
@@ -299,4 +301,84 @@ test("odd settings never throw or give a non-finite bill", () => {
     assert.ok(Number.isFinite(r.total) && Number.isFinite(r.perUser), JSON.stringify(s));
     assert.doesNotThrow(() => M.curve(s as never, undefined, prices));
   }
+});
+
+test("cursor updates: 1 a second from the Cardboard app by default, 10 from the web app", () => {
+  const base: Partial<Settings> = { ...M.PRESETS.team5.settings };
+  assert.equal(M.normalizeSettings(base).presenceRate, 1);
+  const app = M.usage(base, {});
+  const web = M.usage({ ...base, presenceRate: M.PRESENCE_RATES.web }, {});
+  // 5 people × 20 days × 3 h × 3,600 s × 5% dragging × 1 a second = 54,000 frames a month
+  close(app.derived.presenceMsgs, 54_000);
+  close(web.derived.presenceMsgs, 540_000);
+  close(web.activities.presence.doReqWs, 10 * app.activities.presence.doReqWs);
+});
+
+test("the daily write cap is off by default; on, it adds its counter's requests and rows", () => {
+  const s: Partial<Settings> = { ...solo, shareOriginals: true, originalMbps: 100 };
+  const off = M.usage(s, {});
+  const on = M.usage({ ...s, writeCap: true }, {});
+  assert.equal(off.activities.originals.doReq, 0); // gbDoReq is 0 for a default deployment
+  close(on.activities.originals.doReq - off.activities.originals.doReq, off.derived.originalsGB * M.INPUT_DEFAULTS.writeCapDoReqPerGB);
+  close(on.activities.segments.doReq - off.activities.segments.doReq, off.derived.segments * 3);
+  close(on.activities.segments.doRowsWritten - off.activities.segments.doRowsWritten, off.derived.segments * 3);
+});
+
+test("a newly shared project writes its one-off rows: the adoption, and 2 per person", () => {
+  const s: Partial<Settings> = { people: 5, newProjectsPerMonth: 2, connectsPerDay: 0, hoursPerDay: 0, agentEditsPerDay: 0, footageHoursPerMonth: 0 };
+  close(M.usage(s, only({ adoptRowsWritten: 64, replicaRowsWritten: 2 })).activities.connections.doRowsWritten, 2 * (64 + 5 * 2));
+});
+
+test("build-data: verdicts set each status; revised values replace the lab's; estimates are listed, never silent", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cost-build-"));
+  const lab = (value: number, status = "measured") => ({ value, unit: "u", status, n: 3, min: value, max: value, runs: ["r1"], how: "how" });
+  const measured = {
+    schema: 1, generated: "2026-11-02T03:07:43Z", source: { commit: "3a02b402" },
+    inputs: { editDoReq: lab(1.033), editRowsWritten: lab(1.188), gbWorkerCpuMs: lab(381.9), gbDoReq: lab(153.7), segR2ClassA: lab(9, "estimated"), labOnly: lab(5) },
+    speeds: [{ id: "sync-4g-5p-r2", what: "live sync", network: "4g", storage: "r2", parties: 5, metric: "convergence", p50: 154, p90: 167, p99: 255, unit: "ms", runs: 3, status: "measured" },
+      { id: "sync-good-2p-nor2", what: "live sync", network: "good", storage: "nor2", parties: 2, metric: "convergence", p50: 103, p90: 110, p99: 123, unit: "ms", runs: 3, status: "measured" }],
+    limits: [{ id: "worker-cpu-10ms", status: "measured", value: "10 ms", observed: "o", carton: "c", runs: [] }],
+    networkProfiles: { good: "20 Mbit/s" },
+  };
+  const verified = {
+    checked: { commit: "3a02b402" },
+    inputs: {
+      editDoReq: { verdict: "confirmed", theirs: 1.033, ours: 1, n: 9, min: 1, max: 1.033, note: "re-ran" },
+      editRowsWritten: { verdict: "revised", theirs: 1.188, ours: 1.025, n: 9, min: 1.025, max: 1.025, note: "one-off rows per replica" },
+      gbWorkerCpuMs: { verdict: "not-verified", theirs: 381.9, ours: null, n: 0, note: "no re-run" },
+      gbDoReq: { verdict: "revised", theirs: 153.7, ours: 0, n: 0, note: "all write cap" },
+    },
+    speeds: {
+      "sync-4g-5p-r2": { verdict: "confirmed", ours: { p50: 155, p90: 176, p99: 435 }, runs: 3, note: "p99 NOT confirmed: one retransmit" },
+      "sync-good-2p-nor2": { verdict: "confirmed-from-data", ours: { p50: 103, p90: 110, p99: 123 }, runs: 3, note: "recomputed" },
+    },
+  };
+  writeFileSync(join(dir, "m.json"), JSON.stringify(measured));
+  writeFileSync(join(dir, "v.json"), JSON.stringify(verified));
+  execFileSync(process.execPath, [site("build-data.mjs"), join(dir, "m.json"), site("prices.json"), "--verified", join(dir, "v.json"), "--out", join(dir, "d.json")], { stdio: "pipe" });
+  const d = JSON.parse(readFileSync(join(dir, "d.json"), "utf8"));
+  assert.equal(d.inputs.editDoReq.status, "verified");
+  assert.equal(d.inputs.editDoReq.value, 1.033); // confirmed: the lab's value stands
+  assert.equal(d.inputs.editRowsWritten.status, "verified");
+  assert.equal(d.inputs.editRowsWritten.value, 1.025); // revised: the verifier's value…
+  assert.equal(d.inputs.editRowsWritten.was, 1.188); // …and the lab's kept
+  assert.equal(d.inputs.gbWorkerCpuMs.status, "measured");
+  assert.equal(d.inputs.gbDoReq.value, 0);
+  assert.equal(d.inputs.writeCapDoReqPerGB.value, 153.7); // the write cap's traffic, back for the setting
+  assert.equal(d.inputs.segR2ClassA.status, "estimated"); // the file says estimated: it stays visible as such
+  assert.ok(d.estimatedInputs.includes("segR2ClassA"));
+  assert.ok(d.estimatedInputs.includes("viewClassBPerMiB")); // missing from the file: the model's figure, Estimated
+  assert.equal(d.inputs.viewClassBPerMiB.source, "model");
+  assert.deepEqual(d.extraInputs, ["labOnly"]);
+  const s4g = d.speeds.find((x: { id: string }) => x.id === "sync-4g-5p-r2");
+  assert.equal(s4g.status, "verified");
+  assert.equal(s4g.unconfirmed.p99, "not confirmed (one slow edit decides it)");
+  const sNor2 = d.speeds.find((x: { id: string }) => x.id === "sync-good-2p-nor2");
+  assert.equal(sNor2.storage, "vault");
+  assert.equal(sNor2.status, "verified");
+  assert.ok(d.limits.some((l: { id: string }) => l.id === "do-object-storage")); // Cloudflare's documented limits are added
 });

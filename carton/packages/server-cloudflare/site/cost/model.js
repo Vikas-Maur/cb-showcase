@@ -31,64 +31,107 @@
 const MIB = 1024 * 1024;
 /** Memory a Durable Object is billed for, GB (Cloudflare bills the 128 MB allocation). */
 const DO_MEMORY_GB = 0.128;
-/** The segment the lab's per-MiB playback inputs were measured with: 2 s of the 720p proxy at 2 Mbit/s. */
-export const REF_SEGMENT = { seconds: 2, mbps: 2 };
+/**
+ * The proxy segment the lab's per-MiB playback inputs were measured with: the app's own 720p encode of a 10-minute
+ * source, 301 parts in 188.53 MiB (0.626 MiB each; proxy-r2-play runs, lab/cloudflare 3a02b402). Reads go per
+ * segment, so per-MiB playback costs scale with REF_SEGMENT_MIB / the segment's size.
+ */
+export const REF_SEGMENT_MIB = 188.53 / 301;
 /** Rows the room keeps before archiving older changes (server §18 default, ARCHIVE_KEEP). */
 export const ARCHIVE_KEEP = 10_000;
 /**
  * Free plan: incoming WebSocket messages counted 1:1 against the 100,000 Durable Object requests a day. Cloudflare's
  * pricing page applies its 20:1 ratio "for compute requests billing-only"; whether the Free plan's daily cap counts
- * messages 1:1 or 20:1 isn't documented, so this stays on the safe side until the lab's daily-limit run says.
+ * messages 1:1 or 20:1 isn't documented, so this stays on the safe side.
  */
 export const FREE_WS_RATIO = 1;
 
-/** Every per-operation input with its fallback value: used when data.json lacks a key ("not measured"). */
+/**
+ * Every per-operation input the model reads, with its fallback value. The keys are the lab's (measured.json on
+ * lab/cloudflare); the values are its final, re-checked figures (3a02b402 with the verifier's revisions), so a page
+ * without data.json still prices sensibly, and data.json overrides them. A key data.json lacks shows as Estimated.
+ */
 export const INPUT_DEFAULTS = Object.freeze({
-  editDoReq: 1.225,
-  editRowsWritten: 2.17,
-  editRowsRead: 0.97,
-  editGBs: 0.00156,
+  // live edits: per edit (the lab's dense runs, about 2 edits a second into one room)
+  editDoReq: 1.033,
+  editRowsWritten: 1.025,
+  editRowsRead: 0.9417,
+  editGBs: 0.001691,
   editWorkerCpuMs: 0,
   editArchiveRowsWritten: 1,
   changeBytes: 600,
+  // once per new shared project: the room adopts the cut; each person's first push registers their replica
+  adoptRowsWritten: 64,
+  replicaRowsWritten: 2,
+  // a connect: the upgrade, the hello, the close
   connWorkerReq: 1,
-  connWorkerCpuMs: 3,
-  connDoReq: 1,
-  connRowsWritten: 2,
-  connRowsRead: 20,
-  connGBs: 0.002,
-  presenceMsgPerSecWhileDragging: 10,
+  connWorkerCpuMs: 1.05,
+  connDoReq: 3,
+  connRowsWritten: 0.15,
+  connRowsRead: 1.15,
+  connGBs: 0.008125,
+  // presence frames, and the room's check every minute while anyone shows presence
   presenceDoReq: 1,
-  presenceGBs: 0.0002,
+  presenceGBs: 0.0001614,
+  presenceRowsWritten: 0.002462,
   presenceAlarmPerHour: 60,
+  presenceAlarmDoReqPerHour: 60,
+  presenceAlarmRowsWritten: 1,
+  presenceAlarmGBs: 0.0006972,
   upkeepAlarmPerHour: 1,
-  alarmRowsWritten: 1,
-  alarmGBs: 0.0003,
   idleDoReqPerHour: 0,
   idleGBsPerHour: 0,
   idleRowsWrittenPerHour: 0,
-  gbWorkerReq: 125,
-  gbWorkerCpuMs: 750,
-  gbR2ClassA: 480,
-  gbR2ClassB: 125,
+  // camera originals, per GB (10^9 bytes) uploaded: with R2, and without (the vault)
+  gbWorkerReq: 126.7,
+  gbWorkerCpuMs: 381.9,
+  gbR2ClassA: 476.8,
+  gbR2ClassB: 140.6,
   gbDoReq: 0,
-  gbVaultDoReq: 240,
-  gbVaultRowsWritten: 2861,
-  gbVaultGBs: 30,
-  segWorkerReq: 6,
-  segWorkerCpuMs: 2,
-  segR2ClassA: 3,
-  segR2ClassB: 3,
+  gbVaultWorkerReq: 128.5,
+  gbVaultWorkerCpuMs: 246.9,
+  gbVaultDoReq: 137.8,
+  gbVaultRowsWritten: 4070,
+  gbVaultGBs: 14.22,
+  // the optional daily write cap (fix/cf-write-cap): its counter, per GB written and per blob write
+  writeCapDoReqPerGB: 153.7,
+  writeCapReservesPerSegment: 3,
+  writeCapRowsPerReserve: 1,
+  // preview segments published (the app's 2 s CMAF segments), per segment
+  segWorkerReq: 10.06,
+  segWorkerCpuMs: 18.1,
+  segR2ClassA: 2.977,
+  segR2ClassB: 4.577,
   segVaultDoReq: 6,
   segVaultRowsWritten: 6,
-  viewWorkerReqPerMiB: 4.2,
-  viewClassBPerMiB: 4.2,
-  viewWorkerCpuMsPerMiB: 6,
-  viewVaultRowsReadPerMiB: 2.1,
+  // playback, per MiB played at REF_SEGMENT_MIB segments
+  viewWorkerReqPerMiB: 9.601,
+  viewClassBPerMiB: 10.05,
+  viewWorkerCpuMsPerMiB: 13.2,
+  viewVaultDoReqPerSegment: 3,
+  viewVaultRowsReadPerSegment: 6,
   viewVaultGBsPerMiB: 0.01,
 });
 
-/** Preview (collab proxy) quality presets, Mbit/s. Carton encodes the 720p one today. */
+/**
+ * How the model's own figure was reached, for the inputs the lab's file doesn't carry (the page shows them as
+ * Estimated, with this as the explanation).
+ */
+export const INPUT_NOTES = Object.freeze({
+  editArchiveRowsWritten: "Once a project passes 10,000 changes, each old change moves to a compressed archive file and its row is deleted; Cloudflare bills a delete as a row written (room.ts, the pricing page). Not measured: the lab's runs never reached 10,000 changes.",
+  changeBytes: "A change row's size in the room's database until it's archived: an estimate from the row layout, not measured.",
+  replicaRowsWritten: "From the verifier's fit over 81 edit runs (rows = 64.5 + 2 × parties + 1.025 × edits, no residual): a person's first push to a project writes 2 rows once. Not a separate input in the lab's file.",
+  upkeepAlarmPerHour: "The room's upkeep (archiving old changes, sweeping expired envelopes) is due an hour after an edit or a hello: at most one an editing hour per project (room.ts). Priced like a presence-check alarm. Not measured.",
+  writeCapDoReqPerGB: "Only with the optional daily write cap on: one request to its counter per blob write. The lab's measured counter traffic (153.7 per GB, an upper bound: other runs shared the counter); the code path gives about 122.",
+  writeCapReservesPerSegment: "Only with the daily write cap on: each preview segment makes 3 blob writes (bytes, manifest, list entry), each reserved on the counter (write-cap.ts). From the code.",
+  writeCapRowsPerReserve: "Only with the daily write cap on: each reserve writes a row in the counter's room (the verifier, from write-cap.ts); no lab input carries it.",
+  segVaultDoReq: "Without R2, a segment's 3 writes, the damage check and 2 heads go to the vault: 6 vault requests (the lab's request structure per segment, measured on R2). Not measured on the vault.",
+  segVaultRowsWritten: "Without R2, a segment is 3 objects (bytes, manifest, list entry), each a record row and a 1 MiB chunk row (blob-do.ts); deleting it later costs the same. Not measured on the vault.",
+  viewVaultDoReqPerSegment: "Without R2, a segment played is 3 signed reads (list entry, manifest, bytes), each one request to the vault (the lab's read structure per segment, measured on R2). Not measured on the vault.",
+  viewVaultRowsReadPerSegment: "Without R2, each of a segment's 3 objects reads its record row and its 1 MiB chunk row (blob-do.ts); a segment over 1 MiB reads a chunk row per MiB. Not measured on the vault.",
+  viewVaultGBsPerMiB: "Without R2, the vault is awake about 80 ms per MiB it serves: an estimate, not measured.",
+});
+
 export const PREVIEW_QUALITY = Object.freeze({ "540p": 1, "720p": 2, "1080p": 5 });
 
 /** The usage profile's defaults (all assumptions). */
@@ -101,7 +144,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   savesPerMinute: 2,
   agentEditsPerDay: 150,
   dragShare: 0.05,
+  presenceRate: 1,
   connectsPerDay: 6,
+  newProjectsPerMonth: 1,
   footageHoursPerMonth: 10,
   previewMbps: 2,
   shareOriginals: false,
@@ -111,7 +156,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
   storage: "r2",
   plan: "free",
   segmentSeconds: 2,
+  writeCap: false,
 });
+
+/** Cursor and playhead updates a second while dragging: the Cardboard app and the Carton web app. */
+export const PRESENCE_RATES = Object.freeze({ cardboard: 1, web: 10 });
 
 export const PRESETS = Object.freeze({
   solo: { label: "Solo editor", settings: { people: 1, teams: 1, plan: "free" } },
@@ -166,7 +215,9 @@ export function normalizeSettings(sIn) {
     savesPerMinute: within(s.savesPerMinute, d.savesPerMinute, 0, 600),
     agentEditsPerDay: within(s.agentEditsPerDay, d.agentEditsPerDay, 0, 1e6),
     dragShare: within(s.dragShare, d.dragShare, 0, 1),
+    presenceRate: within(s.presenceRate, d.presenceRate, 0, 60),
     connectsPerDay: within(s.connectsPerDay, d.connectsPerDay, 0, 1e6),
+    newProjectsPerMonth: within(s.newProjectsPerMonth, d.newProjectsPerMonth, 0, 1000),
     footageHoursPerMonth: within(s.footageHoursPerMonth, d.footageHoursPerMonth, 0, 10_000),
     previewMbps: within(s.previewMbps, d.previewMbps, 0.01, 1000),
     shareOriginals: typeof s.shareOriginals === "boolean" ? s.shareOriginals : d.shareOriginals,
@@ -176,6 +227,7 @@ export function normalizeSettings(sIn) {
     storage: s.storage === "vault" ? "vault" : s.storage === "r2" ? "r2" : d.storage,
     plan: s.plan === "paid" ? "paid" : s.plan === "free" ? "free" : d.plan,
     segmentSeconds: within(s.segmentSeconds, d.segmentSeconds, 0.5, 3600),
+    writeCap: typeof s.writeCap === "boolean" ? s.writeCap : d.writeCap,
   };
 }
 
@@ -222,25 +274,29 @@ export function usage(settingsIn, inputsIn) {
   else e.r2ClassA = archiveFiles;
 
   // presence: cursors and playheads while someone drags, plus the room's minute check while anyone shows presence
-  const presenceMsgs = editHours * 3600 * s.dragShare * m.presenceMsgPerSecWhileDragging;
-  const presenceAlarms = editHours * m.presenceAlarmPerHour; // per person-hour: an upper bound when teammates overlap
+  // (frames at the app's rate: 1 a second from Cardboard, 10 from the Carton web app)
+  const presenceMsgs = editHours * 3600 * s.dragShare * s.presenceRate;
+  // per person-hour: an upper bound when teammates' hours overlap (one room checks once for all of them)
+  const presenceAlarms = editHours * m.presenceAlarmPerHour;
   const p = act.presence;
   p.doReqWs = presenceMsgs * m.presenceDoReq;
-  p.doGBs = presenceMsgs * m.presenceGBs + presenceAlarms * m.alarmGBs;
-  p.doReq = presenceAlarms;
-  p.doRowsWritten = presenceAlarms * m.alarmRowsWritten;
+  p.doGBs = presenceMsgs * m.presenceGBs + presenceAlarms * m.presenceAlarmGBs;
+  p.doRowsWritten = presenceMsgs * m.presenceRowsWritten + presenceAlarms * m.presenceAlarmRowsWritten;
+  p.doReq = editHours * m.presenceAlarmDoReqPerHour;
 
-  // connections: opening the project, reconnects, open-but-idle sessions, the room's hourly upkeep alarm
+  // connections: opening the project, reconnects, open-but-idle sessions, the room's hourly upkeep alarm (priced like a
+  // presence check), and once per new shared project the room's adoption of the cut and each person's first push
   const connects = personDays * s.connectsPerDay;
   const idleHours = personDays * s.idleHoursPerDay;
   const upkeepAlarms = s.days * s.hoursPerDay * m.upkeepAlarmPerHour; // one room per team
+  const oneOffRows = s.newProjectsPerMonth * (m.adoptRowsWritten + s.people * m.replicaRowsWritten);
   const c = act.connections;
   c.workersReq = connects * m.connWorkerReq;
   c.workersCpuMs = connects * m.connWorkerCpuMs;
   c.doReq = connects * m.connDoReq + idleHours * m.idleDoReqPerHour + upkeepAlarms;
-  c.doGBs = connects * m.connGBs + idleHours * m.idleGBsPerHour + upkeepAlarms * m.alarmGBs;
+  c.doGBs = connects * m.connGBs + idleHours * m.idleGBsPerHour + upkeepAlarms * m.presenceAlarmGBs;
   c.doRowsRead = connects * m.connRowsRead;
-  c.doRowsWritten = connects * m.connRowsWritten + idleHours * m.idleRowsWrittenPerHour + upkeepAlarms * m.alarmRowsWritten;
+  c.doRowsWritten = connects * m.connRowsWritten + idleHours * m.idleRowsWrittenPerHour + upkeepAlarms * m.presenceAlarmRowsWritten + oneOffRows;
 
   // preview uploads: the collab proxy, uploaded as segments of `segmentSeconds` while it encodes
   const footageHours = s.people * s.footageHoursPerMonth;
@@ -263,20 +319,31 @@ export function usage(settingsIn, inputsIn) {
     g.r2ClassA = segments * m.segR2ClassA;
     g.r2ClassB = segments * m.segR2ClassB;
   }
+  // the optional daily write cap: a reserve on its counter per blob write, each a request and a row
+  if (s.writeCap) {
+    g.doReq += segments * m.writeCapReservesPerSegment;
+    g.doRowsWritten += segments * m.writeCapReservesPerSegment * m.writeCapRowsPerReserve;
+  }
 
   // camera originals: only when shared; resumable multipart uploads in 8 MiB parts
   const originalsGB = s.shareOriginals ? (footageHours * s.originalMbps * 1e6 * 3600) / 8 / 1e9 : 0;
   const o = act.originals;
-  o.workersReq = originalsGB * m.gbWorkerReq;
-  o.workersCpuMs = originalsGB * m.gbWorkerCpuMs;
   if (vault) {
+    o.workersReq = originalsGB * m.gbVaultWorkerReq;
+    o.workersCpuMs = originalsGB * m.gbVaultWorkerCpuMs;
     o.doReq = originalsGB * m.gbVaultDoReq;
     o.doRowsWritten = originalsGB * m.gbVaultRowsWritten;
     o.doGBs = originalsGB * m.gbVaultGBs;
   } else {
+    o.workersReq = originalsGB * m.gbWorkerReq;
+    o.workersCpuMs = originalsGB * m.gbWorkerCpuMs;
     o.r2ClassA = originalsGB * m.gbR2ClassA;
     o.r2ClassB = originalsGB * m.gbR2ClassB;
     o.doReq = originalsGB * m.gbDoReq;
+  }
+  if (s.writeCap) {
+    o.doReq += originalsGB * m.writeCapDoReqPerGB;
+    o.doRowsWritten += originalsGB * m.writeCapDoReqPerGB * m.writeCapRowsPerReserve;
   }
 
   // media storage: each month's media, kept `retentionMonths` (steady state). Deleting a month's media from the vault
@@ -291,17 +358,17 @@ export function usage(settingsIn, inputsIn) {
   } else st.r2StorageGB = storedGB;
 
   // playback: each person plays `viewShare` of every teammate's proxies once (played media is cached on disk); reads
-  // go per segment, so the per-MiB inputs (measured with 2 s at 2 Mbit/s) scale with the segment's size
+  // go per segment, so the per-MiB inputs (measured at REF_SEGMENT_MIB segments) scale with the segment's size
   const viewedMiB = (s.people * Math.max(0, s.people - 1) * s.footageHoursPerMonth * proxyBytesPerHour * s.viewShare) / MIB;
-  const refSegMiB = (REF_SEGMENT.mbps * 1e6 * REF_SEGMENT.seconds) / 8 / MIB;
-  const perSeg = refSegMiB / Math.max(segMiB, 1e-9);
+  const perSeg = REF_SEGMENT_MIB / Math.max(segMiB, 1e-9);
+  const segmentsViewed = viewedMiB / Math.max(segMiB, 1e-9);
   const v = act.playback;
   v.workersReq = viewedMiB * m.viewWorkerReqPerMiB * perSeg;
   v.workersCpuMs = viewedMiB * m.viewWorkerCpuMsPerMiB * perSeg;
   if (vault) {
-    v.doReq = viewedMiB * m.viewWorkerReqPerMiB * perSeg;
-    // one 1 MiB row per MiB of a segment, rounded up (the input is per MiB at the reference segment, one row)
-    v.doRowsRead = viewedMiB * m.viewVaultRowsReadPerMiB * perSeg * Math.ceil(segMiB);
+    v.doReq = segmentsViewed * m.viewVaultDoReqPerSegment;
+    // each object read is its record row and its 1 MiB chunk rows: the input counts one chunk for the bytes
+    v.doRowsRead = segmentsViewed * (m.viewVaultRowsReadPerSegment - 1 + Math.ceil(segMiB));
     v.doGBs = viewedMiB * m.viewVaultGBsPerMiB;
   } else v.r2ClassB = viewedMiB * m.viewClassBPerMiB * perSeg;
 
@@ -447,7 +514,7 @@ export function freeCheck(settingsIn, inputsIn, prices) {
   const cpu = [
     { what: "a connect", ms: m.connWorkerReq ? m.connWorkerCpuMs / m.connWorkerReq : 0, used: u.totals.workersReq > 0 && u.derived.connects > 0 },
     { what: "a preview-segment request", ms: m.segWorkerReq ? m.segWorkerCpuMs / m.segWorkerReq : 0, used: u.derived.segments > 0 },
-    { what: "an upload part", ms: m.gbWorkerReq ? m.gbWorkerCpuMs / m.gbWorkerReq : 0, used: u.derived.originalsGB > 0 },
+    { what: "an upload part", ms: s.storage === "vault" ? (m.gbVaultWorkerReq ? m.gbVaultWorkerCpuMs / m.gbVaultWorkerReq : 0) : m.gbWorkerReq ? m.gbWorkerCpuMs / m.gbWorkerReq : 0, used: u.derived.originalsGB > 0 },
     { what: "a playback read", ms: m.viewWorkerReqPerMiB ? m.viewWorkerCpuMsPerMiB / m.viewWorkerReqPerMiB : 0, used: u.derived.viewedMiB > 0 },
   ].filter((x) => x.used);
   const cpuLimit = F.workersCpuMsPerRequest ?? 10;
@@ -512,8 +579,9 @@ function suggest(b, inputsIn, prices, fc) {
         if (s.storage === "vault") options.push({ text: "Keep media in R2 instead of the vault.", total: tryWith({ storage: "r2" }) });
         break;
       case "presence": {
-        const r = resolveInputs(inputsIn).presenceMsgPerSecWhileDragging;
-        options.push({ text: `Send cursor and playhead updates ${r / 2} times a second instead of ${r} while dragging (a Carton client setting).`, total: tryWith({}, { presenceMsgPerSecWhileDragging: r / 2 }) });
+        const r = s.presenceRate;
+        if (r > PRESENCE_RATES.cardboard) options.push({ text: `Send cursor and playhead updates ${PRESENCE_RATES.cardboard} a second, as the Cardboard app does, instead of ${r}.`, total: tryWith({ presenceRate: PRESENCE_RATES.cardboard }) });
+        else options.push({ text: "Share the cursor and playhead for less of the time: half the \"share of time dragging\" halves the frames.", total: tryWith({ dragShare: s.dragShare / 2 }) });
         break;
       }
       case "edits":

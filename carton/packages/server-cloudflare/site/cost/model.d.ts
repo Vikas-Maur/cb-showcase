@@ -12,7 +12,9 @@ export interface Settings {
   savesPerMinute: number;
   agentEditsPerDay: number;
   dragShare: number;
+  presenceRate: number;
   connectsPerDay: number;
+  newProjectsPerMonth: number;
   footageHoursPerMonth: number;
   previewMbps: number;
   shareOriginals: boolean;
@@ -22,6 +24,7 @@ export interface Settings {
   storage: Storage;
   plan: Plan;
   segmentSeconds: number;
+  writeCap: boolean;
 }
 
 export type InputKey = keyof typeof INPUT_DEFAULTS;
@@ -78,17 +81,21 @@ export interface Suggestion { driver: ActivityKey | "limit" | "capacity" | null;
 export interface Result extends Bill { free: FreeCheck; driver: Line | null; suggestion: Suggestion }
 export interface Series { key: string; storage: Storage; plan: Plan; maxTeams: number; capacity: Capacity; points: { teams: number; total: number | null }[] }
 
-export const REF_SEGMENT: { seconds: number; mbps: number };
+export const REF_SEGMENT_MIB: number;
+export const PRESENCE_RATES: Readonly<{ cardboard: number; web: number }>;
+export const INPUT_NOTES: Readonly<Partial<Record<InputKey, string>>>;
 export const ARCHIVE_KEEP: number;
 export const FREE_WS_RATIO: number;
 export const INPUT_DEFAULTS: Readonly<{
   editDoReq: number; editRowsWritten: number; editRowsRead: number; editGBs: number; editWorkerCpuMs: number; editArchiveRowsWritten: number; changeBytes: number;
+  adoptRowsWritten: number; replicaRowsWritten: number;
   connWorkerReq: number; connWorkerCpuMs: number; connDoReq: number; connRowsWritten: number; connRowsRead: number; connGBs: number;
-  presenceMsgPerSecWhileDragging: number; presenceDoReq: number; presenceGBs: number; presenceAlarmPerHour: number; upkeepAlarmPerHour: number; alarmRowsWritten: number; alarmGBs: number;
+  presenceDoReq: number; presenceGBs: number; presenceRowsWritten: number; presenceAlarmPerHour: number; presenceAlarmDoReqPerHour: number; presenceAlarmRowsWritten: number; presenceAlarmGBs: number; upkeepAlarmPerHour: number;
   idleDoReqPerHour: number; idleGBsPerHour: number; idleRowsWrittenPerHour: number;
-  gbWorkerReq: number; gbWorkerCpuMs: number; gbR2ClassA: number; gbR2ClassB: number; gbDoReq: number; gbVaultDoReq: number; gbVaultRowsWritten: number; gbVaultGBs: number;
+  gbWorkerReq: number; gbWorkerCpuMs: number; gbR2ClassA: number; gbR2ClassB: number; gbDoReq: number; gbVaultWorkerReq: number; gbVaultWorkerCpuMs: number; gbVaultDoReq: number; gbVaultRowsWritten: number; gbVaultGBs: number;
+  writeCapDoReqPerGB: number; writeCapReservesPerSegment: number; writeCapRowsPerReserve: number;
   segWorkerReq: number; segWorkerCpuMs: number; segR2ClassA: number; segR2ClassB: number; segVaultDoReq: number; segVaultRowsWritten: number;
-  viewWorkerReqPerMiB: number; viewClassBPerMiB: number; viewWorkerCpuMsPerMiB: number; viewVaultRowsReadPerMiB: number; viewVaultGBsPerMiB: number;
+  viewWorkerReqPerMiB: number; viewClassBPerMiB: number; viewWorkerCpuMsPerMiB: number; viewVaultDoReqPerSegment: number; viewVaultRowsReadPerSegment: number; viewVaultGBsPerMiB: number;
 }>;
 export const PREVIEW_QUALITY: Readonly<Record<"540p" | "720p" | "1080p", number>>;
 export const DEFAULT_SETTINGS: Readonly<Settings>;

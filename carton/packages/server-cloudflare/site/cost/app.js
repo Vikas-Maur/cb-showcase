@@ -33,7 +33,8 @@ const money = (x) => {
   if (!Number.isFinite(x)) return "–";
   if (x === 0) return "$0";
   if (x < 0.01) return "<$0.01";
-  if (x < 1000) return `$${x.toFixed(2)}`;
+  // half a cent rounds up (5.255 is 5.25499… in binary floating point)
+  if (x < 1000) return `$${(Math.round(x * 100 + 1e-6) / 100).toFixed(2)}`;
   return `$${Math.round(x).toLocaleString("en-US")}`;
 };
 const axisMoney = (x) => (x >= 1e6 ? `$${x / 1e6}M` : x >= 1e3 ? `$${x / 1e3}k` : x >= 1 ? `$${x}` : `$${x.toFixed(2)}`);
@@ -58,7 +59,7 @@ const dur = (ms) => {
   return `${m} min${sec ? ` ${sec} s` : ""}`;
 };
 const pct = (x) => `${(x * 100).toFixed(x < 0.1 && x > 0 ? 1 : 0)}%`;
-const sigNum = (x) => (x === 0 ? "0" : Math.abs(x) < 0.01 ? x.toPrecision(2) : x.toLocaleString("en-US", { maximumFractionDigits: Math.abs(x) < 10 ? 3 : 0 }));
+const sigNum = (x) => (typeof x !== "number" || !Number.isFinite(x) ? "–" : x === 0 ? "0" : Math.abs(x) < 0.01 ? x.toPrecision(2) : x.toLocaleString("en-US", { maximumFractionDigits: Math.abs(x) < 10 ? 3 : 0 }));
 
 // ------------------------------------------------------------------------------------------------ tooltips
 let tipSeq = 0;
@@ -81,10 +82,20 @@ function q(text, name) {
   return withTip(h("button", { type: "button", class: "tip", "aria-label": `What is ${name}?` }, "?"), text);
 }
 /** A status badge that explains itself. */
-function badge(status, extra) {
+function badge(status, extra, label) {
   const st = T.STATUS[status] ?? T.STATUS.missing;
-  const b = h("button", { type: "button", class: `badge ${T.STATUS[status] ? status : "missing"}` }, h("i", { "aria-hidden": "true" }), st.label);
+  const b = h("button", { type: "button", class: `badge ${T.STATUS[status] ? status : "missing"}` }, h("i", { "aria-hidden": "true" }), label ?? st.label);
   return withTip(b, extra ? `${st.tip} ${extra}` : st.tip);
+}
+const fmtRange = (min, max) => (min === null || min === undefined || max === null || max === undefined ? "" : min === max ? sigNum(min) : `${sigNum(min)}–${sigNum(max)}`);
+/** The badge for an input: its status, and for a verified one how the re-check got there. */
+function inputBadge(v) {
+  if (!v) return badge("estimated");
+  if (v.status === "verified" && v.was !== undefined) return badge("verified", `Revised by the re-check: was ${sigNum(v.was)}, now ${sigNum(v.value)}, because: ${v.check?.note ?? "see the verifier's report."}`, "Verified · revised");
+  if (v.status === "verified") return badge("verified", v.verdict === "confirmed-from-data" ? `The verifier recomputed it from the lab's own records and the code path, without a new run of its own. ${v.check?.note ?? ""}` : `The verifier re-ran it and got ${v.check?.value !== null && v.check?.value !== undefined ? sigNum(v.check.value) : "the same"}. ${v.check?.note ?? ""}`);
+  if (v.verdict === "not-verified") return badge("measured", `The re-check couldn't confirm it: ${v.check?.note ?? ""}`);
+  if (v.source === "model") return badge("estimated", "The measurement file has no value for it, so the model's own figure is used.");
+  return badge(v.status);
 }
 
 function place(trigger, bubble) {
@@ -196,11 +207,13 @@ const FIELDS = [
     { key: "savesPerMinute", label: "Saves a minute", min: 0, max: 60, step: 0.5 },
     { key: "agentEditsPerDay", label: "Agent edits per person a day", min: 0, max: 100_000, step: 10 },
     { key: "dragShare", label: "Share of time dragging", min: 0, max: 100, step: 1, unit: "%", percent: true },
+    { key: "presenceRate", label: "Cursor updates a second while dragging", type: "select", stack: true, options: [[M.PRESENCE_RATES.cardboard, "1 a second (the Cardboard app)"], [M.PRESENCE_RATES.web, "10 a second (the Carton web app)"]] },
     { key: "connectsPerDay", label: "Connects a day", min: 0, max: 1000, step: 1 },
+    { key: "newProjectsPerMonth", label: "New shared projects per team a month", min: 0, max: 1000, step: 1 },
   ] },
   { legend: "Media", fields: [
     { key: "footageHoursPerMonth", label: "Footage per person a month", min: 0, max: 10_000, step: 1, unit: "h" },
-    { key: "previewMbps", label: "Preview quality", type: "select", options: Object.entries(M.PREVIEW_QUALITY).map(([k, v]) => [v, `${k} · ${v} Mbit/s`]) },
+    { key: "previewMbps", label: "Preview quality", type: "select", stack: true, options: Object.entries(M.PREVIEW_QUALITY).map(([k, v]) => [v, `${k} · ${v} Mbit/s${k === "720p" ? " (Carton's today)" : ""}`]) },
     { key: "shareOriginals", label: "Share camera originals", type: "check" },
     { key: "originalMbps", label: "Originals' bitrate", min: 1, max: 5000, step: 10, unit: "Mbit/s", when: (st) => st.shareOriginals },
     { key: "retentionMonths", label: "Keep media for", min: 0, max: 120, step: 1, unit: "months" },
@@ -210,6 +223,7 @@ const FIELDS = [
   { legend: "Where it runs", fields: [
     { key: "storage", label: "Media storage", type: "segs", options: [["r2", "R2"], ["vault", "Vault (no R2)"]] },
     { key: "plan", label: "Workers plan", type: "segs", options: [["free", "Free"], ["paid", "Paid ($5)"]] },
+    { key: "writeCap", label: "Daily write cap on", type: "check" },
   ] },
 ];
 
@@ -232,7 +246,7 @@ function settingsPanel() {
         const input = h("input", { id, type: "number", inputmode: "decimal", min: f.min, max: f.max, step: f.step, onchange: (e) => numChange(f, e.target), oninput: (e) => numChange(f, e.target, true) });
         control = f.unit ? h("div", { class: "unit" }, input, h("span", { "aria-hidden": "true", text: f.unit })) : input;
       }
-      fs.append(h("div", { class: `field${f.type === "segs" ? " stack" : ""}`, "data-key": f.key }, label, control));
+      fs.append(h("div", { class: `field${f.type === "segs" || f.stack ? " stack" : ""}`, "data-key": f.key }, label, control));
     }
     form.append(fs);
   }
@@ -301,9 +315,34 @@ function render() {
   if (!DATA) return;
   const r = M.compute(settings, INPUTS, DATA.prices);
   results.replaceChildren(totalCard(r), h("div", { class: "two" }, freeCard(r), driverCard(r)), billCard(r), metersCard(r));
+  renderEstimates(r);
   live.textContent = r.plan === "paid" && !r.capacity.ok ? "The vault can't hold this." : `${money(r.total)} a month, ${moneyPer(r.perUser)} per user. ${r.free.fits ? "Fits Workers Free." : "Doesn't fit Workers Free."}`;
   renderChart();
   renderLimitsAtSettings(r);
+}
+
+// Estimated inputs never drive the bill silently: a banner counts them, and names the ones that move this bill (each
+// doubled in turn; any change counts).
+const estimatesBanner = h("p", { class: "banner", hidden: true });
+function renderEstimates(r) {
+  // worked out here, not taken from data.json's list: a key the file lacks, or marks estimated, is an estimate
+  const keys = Object.keys(M.INPUT_DEFAULTS).filter((k) => !INPUTS[k] || INPUTS[k].status === "estimated");
+  if (!keys.length) {
+    estimatesBanner.hidden = true;
+    return;
+  }
+  const values = Object.fromEntries(Object.entries(INPUTS).map(([k, v]) => [k, v?.value]));
+  const moving = keys.filter((k) => {
+    const doubled = M.bill(settings, { ...values, [k]: (values[k] ?? M.INPUT_DEFAULTS[k]) * 2 + 1e-6 }, DATA.prices).total;
+    return Math.abs(doubled - r.total) >= 0.005;
+  });
+  const names = (ks) => ks.map((k) => T.INPUT_LABELS[k] ?? k).join("; ");
+  estimatesBanner.hidden = false;
+  estimatesBanner.replaceChildren(
+    h("b", { text: `${keys.length} input${keys.length === 1 ? " is an estimate" : "s are estimates"}, not measurements. ` }),
+    moving.length ? `${moving.length === 1 ? "One changes" : `${moving.length} change`} this bill: ${names(moving)}. ` : "None of them changes this bill. ",
+    h("a", { href: "#inputs", text: "See what's measured" }),
+    q(`Estimated: ${names(keys)}. The lab didn't measure these (most are only used without R2, or with the optional write cap), so the model's own figures stand in. "Changes this bill" means doubling it moves the total.`, "the estimates"));
 }
 
 function totalCard(r) {
@@ -362,7 +401,7 @@ function freeCard(r) {
   }
   if (fc.cpu.worst) list.append(h("li", {}, h("div", { class: "row" },
     h("span", { class: "name" }, "CPU per request (10 ms)", q(T.FREE_CHECKS.cpu, "the CPU limit")),
-    h("span", { class: "num muted", text: `about ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})` }))));
+    h("span", { class: "num muted long", text: `about ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})` }))));
   card.append(list);
   return card;
 }
@@ -421,10 +460,17 @@ function billCard(r) {
       h("td", { class: "r num", "data-label": "Cost", text: money(l.cost) }),
       h("td", { class: "r num", "data-label": "Share", text: total > 0 ? pct(l.cost / total) : "–" })));
   }
+  const pathCost = (lines.find((l) => l.key === "segments")?.cost ?? 0) + (lines.find((l) => l.key === "playback")?.cost ?? 0);
+  const values = Object.fromEntries(Object.entries(INPUTS).map(([k, v]) => [k, v?.value]));
+  const sparse = M.bill(r.settings, { ...values, editGBs: (values.editGBs ?? M.INPUT_DEFAULTS.editGBs) * 2.7 }, DATA.prices).total - total;
+  const notes = h("div", { class: "notes" },
+    h("p", { class: "note" }, h("b", { text: "The preview path. " }), T.NOTES.previewPath, pathCost > 0 && total > 0 ? ` In this bill: ${money(pathCost)}, ${pct(pathCost / total)}.` : ""),
+    h("p", { class: "note" }, h("b", { text: "Edits spread out. " }), T.NOTES.sparseEdits, sparse >= 0.005 ? ` At that rate this bill would be ${money(total + sparse)} (+${money(sparse)}).` : " At that rate this bill wouldn't change (room time stays inside what's included)."));
   card.append(h("div", {}, h("table", { class: "tbl rt" },
     h("thead", {}, h("tr", {}, h("th", { text: "Line" }), h("th", { class: "r", text: "A month" }), h("th", { class: "r", text: "Share" }))),
     tbody,
     h("tfoot", {}, h("tr", {}, h("td", { class: "first", "data-label": "", text: "Total" }), h("td", { class: "r num", "data-label": "Total", text: money(total) }), h("td", { class: "r num", "data-label": "Per user", text: `${moneyPer(r.perUser)} / user` }))))));
+  card.append(notes);
   return card;
 }
 
@@ -626,6 +672,12 @@ function limitsSection() {
 function renderLimitsAtSettings(r) {
   const fc = r.free;
   for (const [key, td] of limitRows) {
+    if (key === "daily") {
+      const daily = fc.sorted.filter((c) => !c.total);
+      const first = daily.find((c) => c.maxTeams !== Infinity);
+      td.textContent = `${daily.map((c) => `${c.name.replace(/ a day$/, "")} ${pct(c.used / c.limit)}`).join(", ")} of the daily limits${first ? `; the first to go is ${first.name.toLowerCase()}, past ${teamsWord(first.maxTeams)}` : ""}.`;
+      continue;
+    }
     if (key === "cpu") {
       td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : "; the per-request maximum isn't measured"}.` : "–";
       continue;
@@ -647,11 +699,21 @@ function renderLimitsAtSettings(r) {
 }
 
 // ------------------------------------------------------------------------------------------------ speeds
-const KIND_ORDER = ["sync", "flap", "outage", "preview", "upload", "download"];
+const KIND_ORDER = ["sync", "flap", "syncOutage", "outage-offline-shown", "outage-reconnect", "outage-catch-up", "preview", "upload", "full", "download", "dedup", "proxyShare", "proxyPlay"];
 const NET_ORDER = ["none", "good", "4g", "3g", "bad"];
+/** The scenario a speed row belongs to, from its id (and metric): the groups of the table. */
 const kindOf = (sp) => {
-  const k = sp.id.split("-")[0];
-  return T.SCENARIOS[k] ? k : "other";
+  const head = sp.id.split("-")[0];
+  if (head === "sync") return /-flap-/.test(sp.id) ? "flap" : /-outage-/.test(sp.id) ? "syncOutage" : "sync";
+  if (head === "outage") return `outage-${sp.metric}`;
+  if (head === "proxy") return /play/.test(sp.id) ? "proxyPlay" : "proxyShare";
+  return T.SCENARIOS[head] ? head : `other:${sp.what}`;
+};
+/** What sets one row apart in its group, in words: before or after a fix, an interrupted upload. */
+const variantOf = (sp) => {
+  const tags = [];
+  for (const [re, words] of T.VARIANTS) if (re.test(sp.id)) tags.push(words);
+  return tags.join(", ");
 };
 const netName = (n) => T.NETWORKS[n]?.label ?? n;
 const netTip = (n) => {
@@ -686,19 +748,25 @@ function speedsSection() {
       const kind = kindOf(sp);
       if (kind !== lastKind) {
         const sc = T.SCENARIOS[kind];
-        const metric = sp.metric === "convergence" ? T.METRICS.convergence : T.METRICS.duration;
+        const metric = T.METRICS[sp.metric] ?? T.METRICS.time;
         tbody.append(h("tr", { class: "group" }, h("td", { colspan: 7 }, h("span", { class: "cellname" }, sc?.name ?? sp.what, q(`${sc?.tip ?? sp.what} ${metric}`, (sc?.name ?? "this scenario").toLowerCase())))));
         lastKind = kind;
       }
-      const who = sp.parties && kind !== "preview" ? `${sp.parties} parties` : sp.sizeMB ? `${sp.sizeMB} MB` : "";
+      const who = sp.parties ? `${sp.parties} parties` : sp.sizeMB ? `${sp.sizeMB.toLocaleString("en-US")} MB` : "";
+      const variant = variantOf(sp);
       const fails = sp.p50 === null;
+      const cell = (p) => {
+        if (sp.unconfirmed?.[p]) return h("td", { class: "r num", "data-label": p }, sp[p] === null ? "–" : dur(sp[p]), h("span", { class: "sub", text: sp.unconfirmed[p] }));
+        return h("td", { class: "r num", "data-label": p, text: p === "p50" && fails ? "failed" : sp[p] === null ? "–" : dur(sp[p]) });
+      };
+      const how = sp.status !== "verified" ? undefined
+        : sp.verdict === "confirmed" ? `The verifier re-ran this case (${sp.check?.runs ?? "?"} runs) and got p50/p90 within 15%: ${sp.check?.note ?? ""}`
+        : "The verifier recomputed p50, p90 and p99 exactly from the lab's per-run records (not re-run).";
       tbody.append(h("tr", {},
-        h("td", { class: "first", "data-label": "Case" }, h("span", { class: "cellname" }, [who, netName(sp.network)].filter(Boolean).join(" · "), q(netTip(sp.network), `the ${netName(sp.network)} network`))),
-        h("td", { class: "r num", "data-label": "p50", text: fails ? "failed" : dur(sp.p50) }),
-        h("td", { class: "r num", "data-label": "p90", text: fails ? "–" : dur(sp.p90) }),
-        h("td", { class: "r num", "data-label": "p99", text: sp.p99 === null ? "–" : dur(sp.p99) }),
+        h("td", { class: "first", "data-label": "Case" }, h("span", { class: "cellname" }, [who, netName(sp.network)].filter(Boolean).join(" · "), q(netTip(sp.network), `the ${netName(sp.network)} network`)), variant ? h("span", { class: "sub", text: variant }) : null),
+        cell("p50"), cell("p90"), cell("p99"),
         h("td", { class: "r num", "data-label": "Runs", text: String(sp.runs) }),
-        h("td", { "data-label": "Status" }, badge(sp.status)),
+        h("td", { "data-label": "Status" }, badge(sp.status, how, sp.verdict === "confirmed" ? "Verified · re-run" : undefined)),
         h("td", { class: "note", "data-label": "Note", text: sp.note || "" })));
     }
     if (!rows.length) tbody.append(h("tr", {}, h("td", { colspan: 7, class: "muted", text: "Not measured on this network with this storage yet." })));
@@ -714,20 +782,38 @@ function speedsSection() {
 // ------------------------------------------------------------------------------------------------ inputs
 function inputsSection() {
   const tbody = h("tbody");
+  const listed = new Set();
   for (const [group, keys] of T.INPUT_GROUPS) {
-    tbody.append(h("tr", { class: "group" }, h("td", { colspan: 5, text: group })));
-    for (const k of keys) tbody.append(inputRow(k, INPUTS[k]));
+    tbody.append(h("tr", { class: "group" }, h("td", { colspan: 6, text: group })));
+    for (const k of keys) {
+      listed.add(k);
+      // a lab-only key the file doesn't have: nothing to show
+      if (!(k in M.INPUT_DEFAULTS) && !INPUTS[k]) continue;
+      tbody.append(inputRow(k, INPUTS[k], !(k in M.INPUT_DEFAULTS)));
+    }
   }
-  if (DATA.extraInputs?.length) {
-    tbody.append(h("tr", { class: "group" }, h("td", { colspan: 5, text: "Also measured (not used by the model yet)" })));
-    for (const k of DATA.extraInputs) tbody.append(inputRow(k, INPUTS[k], true));
+  // anything else: model inputs no group lists, and lab inputs the model doesn't read
+  const rest = [...Object.keys(M.INPUT_DEFAULTS), ...(DATA.extraInputs ?? [])].filter((k) => !listed.has(k) && (k in M.INPUT_DEFAULTS || INPUTS[k]));
+  if (rest.length) {
+    tbody.append(h("tr", { class: "group" }, h("td", { colspan: 6, text: "Also in the file" })));
+    for (const k of rest) tbody.append(inputRow(k, INPUTS[k], !(k in M.INPUT_DEFAULTS)));
   }
   return h("section", { class: "block", id: "inputs", "aria-labelledby": "inputs-h" },
     h("h2", { class: "display", id: "inputs-h", text: "What's measured, and what's a guess" }),
     h("p", { class: "lead" }, "Every per-operation number the calculator uses, with where it comes from. ",
-      h("span", { text: DATA.measured?.generated ? `Measurement file of ${DATA.measured.generated.slice(0, 10)}${DATA.measured.source?.commit ? ` (lab/cloudflare @ ${DATA.measured.source.commit})` : ""}.` : "" })),
+      h("span", { text: (() => {
+        if (!DATA.measured?.generated) return "";
+        // the commit that holds the file (the verifier's), else the one the file names (its generator's HEAD)
+        const commit = (DATA.verified?.commit || DATA.measured.source?.commit || "").slice(0, 8);
+        const check = DATA.verified ? ` Re-checked by an independent verifier on ${DATA.verified.at.slice(0, 10)}.` : "";
+        return `Measurement file of ${DATA.measured.generated.slice(0, 10)}${commit ? ` (lab/cloudflare @ ${commit})` : ""}.${check}`;
+      })() })),
     h("div", { class: "card" }, h("table", { class: "tbl rt" },
-      h("thead", {}, h("tr", {}, h("th", { text: "Input" }), h("th", { class: "r", text: "Value" }), h("th", { text: "Status" }), h("th", { class: "r", text: "Runs" }), h("th", { class: "r", text: "Range" }))),
+      h("thead", {}, h("tr", {},
+        h("th", { text: "Input" }), h("th", { class: "r", text: "Value" }), h("th", { text: "Status" }),
+        h("th", {}, h("span", { class: "thx" }, "Re-check", q(T.RECHECK_TIP, "the re-check"))),
+        h("th", { class: "r" }, h("span", { class: "thx" }, "Lab runs", q("How many of the lab's runs the value comes from, and the lowest and highest a run gave. The value is their median.", "the lab's runs"))),
+        h("th", { class: "r", text: "Lab range" }))),
       tbody)));
 }
 function inputRow(k, v, extra = false) {
@@ -735,13 +821,17 @@ function inputRow(k, v, extra = false) {
   const missing = !v;
   const value = missing ? M.INPUT_DEFAULTS[k] : v.value;
   const unit = v?.unit ?? "";
-  const how = missing ? `Not in the measurement file. The model uses its own estimate: ${sigNum(value)}.` : v.how || "No description in the measurement file.";
+  const how = missing ? `Not in the measurement file. The model uses its own figure: ${sigNum(value)}.` : v.how || "No description in the measurement file.";
+  const note = extra ? `${k} · not used in the bill${T.EXTRA_NOTES[k] ? `: ${T.EXTRA_NOTES[k]}` : ""}` : k;
+  const c = v?.check;
+  const verdict = !v?.verdict ? "–" : `${T.VERDICTS[v.verdict] ?? v.verdict}${c && c.n ? ` · n=${c.n}` : ""}${c ? (fmtRange(c.min, c.max) ? ` · ${fmtRange(c.min, c.max)}` : "") : ""}`;
   return h("tr", {},
-    h("td", { class: "first", "data-label": "Input" }, h("span", { class: "cellname" }, label, q(how, label.toLowerCase())), h("span", { class: "sub", text: extra ? `${k} · not used by the model` : k })),
-    h("td", { class: "r num", "data-label": "Value" }, sigNum(value ?? 0), unit ? h("span", { class: "sub", text: unit }) : null),
-    h("td", { "data-label": "Status" }, badge(missing ? "missing" : v.status)),
-    h("td", { class: "r num", "data-label": "Runs", text: v?.n ? String(v.n) : "–" }),
-    h("td", { class: "r num", "data-label": "Range", text: v && v.min !== null && v.max !== null && v.min !== undefined ? `${sigNum(v.min)}–${sigNum(v.max)}` : "–" }));
+    h("td", { class: "first", "data-label": "Input" }, h("span", { class: "cellname" }, label, q(how, label.toLowerCase())), h("span", { class: "sub", text: note })),
+    h("td", { class: "r num", "data-label": "Value" }, sigNum(value ?? 0), v?.was !== undefined ? h("span", { class: "sub", text: `lab: ${sigNum(v.was)}` }) : null, unit ? h("span", { class: "sub", text: unit }) : null),
+    h("td", { "data-label": "Status" }, inputBadge(missing ? null : v)),
+    h("td", { class: "small", "data-label": "Re-check", text: verdict }),
+    h("td", { class: "r num", "data-label": "Lab runs", text: v?.n ? String(v.n) : "–" }),
+    h("td", { class: "r num", "data-label": "Lab range", text: fmtRange(v?.min, v?.max) || "–" }));
 }
 
 // ------------------------------------------------------------------------------------------------ glossary
@@ -763,6 +853,11 @@ function asOf() {
   el.replaceChildren(`Prices as of ${date}, from Cloudflare: `,
     ...(p.sources ?? []).flatMap((src, i) => [i ? " · " : "", h("a", { href: src.url, rel: "noopener", text: src.name })]),
     ". All in US dollars.");
+  // what the numbers rest on: the lab's file and the re-check
+  const ins = Object.keys(M.INPUT_DEFAULTS).map((k) => INPUTS[k]?.status ?? "estimated");
+  const n = (st) => ins.filter((x) => x === st).length;
+  const lab = DATA.measured?.generated ? `Measurements of ${DATA.measured.generated.slice(0, 10)}` : "Measurements";
+  el.append(h("br"), `${lab}: ${n("verified")} of ${ins.length} inputs verified by an independent re-check, ${n("measured")} measured, ${n("estimated")} estimated.`);
 }
 
 async function load() {
@@ -797,6 +892,7 @@ async function load() {
       h("h2", { class: "display", id: "calc-h", text: "The calculator" }),
       h("p", { class: "lead", text: "Start from a preset, then change anything. The bill updates as you type." }),
       note ? h("p", { class: "alert", text: note }) : null,
+      estimatesBanner,
       presets,
       h("div", { class: "calc" }, settingsPanel(), results),
       live,

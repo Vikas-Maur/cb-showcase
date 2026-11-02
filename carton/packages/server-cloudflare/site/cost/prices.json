@@ -115,5 +115,19 @@
   "rounding": "Durable Objects: \"billable usage is the amount consumed in excess of the included monthly allocation. This billable usage is rounded up to the next billable unit\" (a million requests, GB-s or rows; a GB-month). R2: \"Cloudflare rounds up your usage to the next billing unit\" (a million operations, a GB-month). Workers requests and CPU: no rounding documented.",
   "perObject": "A SQLite-backed Durable Object holds at most 10 GB on Workers Paid, 1 GB on the Free plan; past it, writes fail (SQLITE_FULL) while reads and deletes still work.",
   "durationShared": "Duration is billed in wall-clock time while the object is active, shared across all requests active on it at once."
- }
+ },
+ "documentedLimits": [
+  {
+   "id": "do-object-storage",
+   "value": "1 GB in one Durable Object on Free, 10 GB on Paid (Cloudflare's Durable Objects limits page)",
+   "observed": "Not pushed to the limit. The lab's 1 GiB vault uploads (1.07 GB) completed in one vault on Workers Free (2026-11-01 and 11-02), so the 1 GB wasn't enforced at that size.",
+   "carton": "Without R2, a project's media all sits in one vault object, so the media it keeps must fit this, on either plan. Past it, writes fail (SQLITE_FULL); reads and deletes still work. Keep media in R2."
+  },
+  {
+   "id": "r2-free-monthly",
+   "value": "R2: 10 GB-month of storage, 1 million Class A and 10 million Class B a month free, on either Workers plan",
+   "observed": "The lab stayed far under it (its R2 use is in CF-VERIFY.md).",
+   "carton": "Past it, R2 bills; it never stops working. Its free amounts are monthly, not daily."
+  }
+ ]
 }
