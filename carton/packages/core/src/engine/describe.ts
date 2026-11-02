@@ -132,7 +132,10 @@ function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group>
   }
   return groups;
 }
-/** `base` plus the records `ops` insert: the doc a label looks records up in (`describe`'s `names`, made once for many). */
+/**
+ * `base` plus the records `ops` insert, as a new doc: the doc a label looks records up in (`describe`'s `names`, made
+ * once for many rows, and read as it is then: who holds a part is indexed on it).
+ */
 export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
   const added = new Map<string, Rec[]>();
   for (const op of ops) {
@@ -142,7 +145,7 @@ export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
     if (!l) added.set(c, (l = []));
     l.push(op.value as Rec);
   }
-  if (!added.size) return base;
+  // a doc of its own even with nothing added: heldParts keys its index on it
   const named: Doc = { ...base };
   for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
   return named;
@@ -306,21 +309,29 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
  * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
  * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
  * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
- * is still told. Who names what is read once per call (a restore of many titles stays linear). Part's key → holder's.
+ * is still told. Who names what is read once per call (a restore of many titles stays linear), and once per `names`
+ * doc (describe's, `namingDoc(base, allOps)`: base plus all of a larger set's inserts) for the rows of one Fold plan,
+ * so a duplicate another row inserts counts too (review of the merge: each row rebuilt it). Part's key → holder's.
  */
-function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+// by `names` doc, then "collection\0field": the value → the keys of every record whose field holds it
+const NAMERS = new WeakMap<Doc, Map<string, Map<unknown, Set<unknown>>>>();
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, names?: Doc): Map<string, string> {
   const out = new Map<string, string>();
   const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
-  // by "collection\0field": the value → the keys of every record whose field holds it (base, then inserted)
-  const index = new Map<string, Map<unknown, Set<unknown>>>();
+  let index = names && NAMERS.get(names);
+  if (!index) {
+    index = new Map();
+    if (names) NAMERS.set(names, index);
+  }
   const namers = (coll: string, field: string, hk: string) => {
     const at = coll + "\0" + field;
-    let m = index.get(at);
+    let m = index!.get(at);
     if (!m) {
       const add = (v: unknown, id: unknown) => (m!.get(v) ?? m!.set(v, new Set()).get(v)!).add(id);
-      index.set(at, (m = new Map()));
-      for (const h of (base[coll] as Rec[] | undefined) ?? EMPTY) add(h[field], h[hk]);
-      for (const [, g] of groups) {
+      index!.set(at, (m = new Map()));
+      // `names` holds base and every insert of the set; else base, then what these ops insert
+      for (const h of ((names ?? base)[coll] as Rec[] | undefined) ?? EMPTY) add(h[field], h[hk]);
+      if (!names) for (const [, g] of groups) {
         const w = g.coll === coll && whole(g);
         if (w && w.op === "insert") add((w.value as Rec)?.[field], g.id);
       }
@@ -482,7 +493,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     for (const p of sp.parts) split.set(p.key, null);
   }
   // a part with the record holding it: told with it (heldParts)
-  for (const k of heldParts(groups, base, schema).keys()) split.set(k, null);
+  for (const k of heldParts(groups, base, schema, names).keys()) split.set(k, null);
   for (const [key, g] of groups) {
     const sp = split.get(key);
     if (sp === null) continue; // a split's part, or a part held by another record: told with it

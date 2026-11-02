@@ -101,6 +101,16 @@ test("prod3 P3-B: a clip moved onto a track the same fold adds names it; an unna
   // the dialog's row: W1's ops alone, named from all of the fold
   const row = ops.filter((op) => op.op !== "remap" && op.path[0] === "timelineItems");
   assert.deepEqual(describe(row, before, S, null, namingDoc(before, ops, S)), ["Moved 'W1' to track 'Text 1', font size 100 → 150"]);
+  // review of the merge: rows described with one names doc share who holds what, over all of the set: a title's row
+  // with its entry, while another row adds a duplicate naming the same entry, tells the entry (it is the duplicate's too)
+  const t7 = { ...titleItem(7), startTime: 7, endTime: 8 }, copy = { ...t7, id: "t7copy" };
+  const more = fromHost(project([clip(), w1, t7, copy], [video, textMedia("tm1", "W1"), textMedia("tm7", "W7")]));
+  const all = diff(before, more, S);
+  const t7row = all.filter((op) => op.op !== "remap" && (op.path[1] === "t7" || op.path[1] === "tm7"));
+  assert.deepEqual(describe(t7row, before, S), ["Added title 'W7' on 'Titles' at 7.0 s"], "alone, the row's title holds it");
+  const names = namingDoc(before, all, S);
+  assert.deepEqual(describe(t7row, before, S, null, names).sort(), ["Added media 'Text: W7'", "Added title 'W7' on 'Titles' at 7.0 s"]);
+  assert.equal(describe(t7row, before, S, null, names).length, 2, "the same doc again: the same answer");
   // with nothing to name the track: not "to track another track"
   assert.deepEqual(describe(row, before, S), ["Moved 'W1' to another track, font size 100 → 150"]);
 });
