@@ -1,6 +1,7 @@
 // The vault's sweep of abandoned uploads (blob-do.ts) in workerd, with the runtime's own alarms. An unfinished upload
-// lives VAULT_UPLOAD_TTL_MS untouched (5 s here, so its sweep comes due within the test), and one sweep alarm deletes
-// at most VAULT_SWEEP_ROWS rows (4 here, so a few MiB take several alarms). The test worker's `__sweep` route reads the
+// lives VAULT_UPLOAD_TTL_MS untouched (5 s here, so its sweep comes due within the test; it is taken up to TTL/8 later,
+// the interval at which parts and listings write its touch), and one sweep alarm deletes at most VAULT_SWEEP_ROWS rows
+// (4 here, so a few MiB take several alarms) and reads at most 8 times that. The test worker's `__sweep` route reads the
 // vault's tables and alarm without waking its code, and counts the rows it wrote; `__legacy` makes a vault as code from
 // before the sweep left it.
 import { after, describe, test } from "node:test";
@@ -41,6 +42,7 @@ interface Sweep {
   rows: number;
   alarmsSet: number;
   passes: number[];
+  passReads: number[];
 }
 const state = async (name: string): Promise<Sweep> => (await fetch(vaultUrl(name, "/__sweep"))).json() as Promise<Sweep>;
 const has = (s: Sweep, id: string) => s.uploads.some((u) => u.id === id);
@@ -111,7 +113,7 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     await old.uploadPart(2, bytes(10)); // 1 chunk
     const oldTouched = Date.now(); // its last part was written by now
     let s = await state(name);
-    assert.ok(s.alarm !== null && s.alarm <= oldTouched + TTL, "an alarm is pending, due by the old upload's expiry");
+    assert.ok(s.alarm !== null && s.alarm <= oldTouched + TTL + TTL / 8, "an alarm is pending, due by the old upload's expiry");
     assert.deepEqual([s.parts[old.uploadId], s.chunks[old.uploadId]], [2, 3]);
 
     await sleep(TTL * 0.6);
@@ -155,13 +157,14 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     await up.uploadPart(1, bytes(5 * MiB + 1)); // 6 chunks
     await up.uploadPart(2, bytes(3 * MiB)); // 3 chunks
     await state(name); // counts from here
-    // rows: 1 upload + 9 chunks + 2 parts = 12, so passes of 4: [upload, 3 chunks] [4 chunks] [2 chunks, 2 parts]
+    // rows: 1 upload + 9 chunks + 2 parts = 12, so passes of 4: [upload, 3 chunks] and the walk's state row (the upload
+    // whose data is left), [4 chunks], [2 chunks, 2 parts], then the walk ends and clears its state row
     const passes: number[] = [];
     let s = await until(name, "the big upload is swept", (s) => (passes.push(...s.passes), gone(s, up.uploadId)));
     s = await until(name, "no alarm is left", (s) => (passes.push(...s.passes), s.alarm === null), 5000);
     passes.push(...(await state(name)).passes);
     // an alarm that deletes nothing: one that found the upload not yet expired, or the last, finding nothing left
-    assert.deepEqual(passes.filter((r) => r > 0), [4, 4, 4], `rows written by each alarm: ${passes.join(", ")}`);
+    assert.deepEqual(passes.filter((r) => r > 0), [5, 4, 4, 1], `rows written by each alarm: ${passes.join(", ")}`);
   });
 
   test("a part written or a listing keeps an upload alive past its first expiry", async () => {
@@ -202,7 +205,7 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     s = await state(name);
     const touched = s.uploads.find((u) => u.id === "legacy")?.touched ?? 0;
     assert.ok(touched >= t0 - 100 && touched <= t1 + 100, "the old upload counts as touched when the new code first ran");
-    assert.ok(s.alarm !== null && s.alarm >= t0 + TTL - 100 && s.alarm <= t1 + TTL + 100, `armed for its expiry (${s.alarm === null ? "none" : s.alarm - t0} ms from the read)`);
+    assert.ok(s.alarm !== null && s.alarm >= t0 + TTL - 100 && s.alarm <= t1 + TTL + TTL / 8 + 100, `armed for its expiry (${s.alarm === null ? "none" : s.alarm - t0} ms from the read)`);
     assert.equal(s.alarmsSet, 1);
 
     // the migrated tables take new uploads as before
@@ -214,6 +217,38 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     await until(name, "no alarm is left", (s) => s.alarm === null, 5000);
     assert.equal((await v.get("m/kept"))?.byteLength, 10);
     assert.equal((await v.get("m/new"))?.byteLength, 10);
+  });
+
+  // cf review finding 7: the sweep's row budget bounded what it deleted, not what it read. Its expiry query read every
+  // upload's parts (their times), and finding the data of swept uploads read every part in the vault and listed every
+  // such upload before the budget applied, on every alarm: a backlog cost rows read in proportion to its size, again
+  // and again. Each alarm's reads must stay bounded by the budget, whatever the backlog.
+  test("a backlog is swept with each alarm's rows read bounded by its budget, not by the backlog (cf review finding 7)", async (t) => {
+    const name = `sweep-r-${Date.now()}`;
+    const v = doBlobStore(vaultNs, name);
+    const N = 40;
+    const ids: string[] = [];
+    for (let i = 0; i < N; i++) {
+      const up = await v.createMultipart(`m/backlog-${i}`);
+      await up.uploadPart(1, bytes(100, i));
+      ids.push(up.uploadId);
+    }
+    await state(name); // counts from here
+    const passes: number[] = [], reads: number[] = [];
+    const take = (s: Sweep) => (passes.push(...s.passes), reads.push(...s.passReads), s);
+    await until(name, "the backlog is swept", (s) => (take(s), ids.every((id) => gone(s, id))), 120_000);
+    await until(name, "no alarm is left", (s) => (take(s), s.alarm === null), 10_000);
+    take(await state(name));
+    const deleted = passes.reduce((a, b) => a + b, 0);
+    const read = reads.reduce((a, b) => a + b, 0);
+    t.diagnostic(`rows written per alarm: ${passes.join(" ")} (total ${deleted}); rows read per alarm: ${reads.join(" ")} (total ${read})`);
+    // rows: N uploads × (its row, 1 part, 1 chunk); each alarm deletes at most the budget (4), plus the sweep's own
+    // bookkeeping row
+    assert.ok(passes.every((w) => w <= 4 + 1), `rows written by each alarm: ${passes.join(", ")}`);
+    assert.ok(deleted >= 3 * N, `${deleted} rows written for ${3 * N} rows of backlog`);
+    // read: at most 8 × the budget an alarm, and about as many rows as it deletes, in total
+    assert.ok(Math.max(...reads) <= 8 * 4, `rows read by each alarm: ${reads.join(", ")}`);
+    assert.ok(read <= 4 * deleted, `${read} rows read in all to delete ${deleted}`);
   });
 
   // cf review finding 1: the touch of a part is its row, written once its whole body is in. A resumed upload whose last
@@ -261,6 +296,24 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     assert.equal(s.parts[id], undefined);
   });
 
+  test("a vault from the sweep's first version keeps an upload whose part is recent, and deletes the data that version left", async () => {
+    const name = `sweep-f-${Date.now()}`;
+    const v = doBlobStore(vaultNs, name);
+    await v.head("m/none");
+    // made more than a TTL ago, with a part written just now: by its own `touched` alone it would be swept at once
+    assert.equal((await fetch(vaultUrl(name, `/__first?k=m%2Factive&age=${TTL + 2000}`), { method: "POST" })).status, 204);
+    await v.head("m/none"); // the migration runs, and the sweep is armed
+    let s = await state(name);
+    assert.ok(has(s, "active"), JSON.stringify(s));
+    assert.ok(s.uploads.find((u) => u.id === "active")!.touched! >= Date.now() - 2000, "the upload's touch is its newest part's");
+    s = await until(name, "the leftover data is deleted", (s) => !s.parts.leftover && !s.chunks.leftover);
+    assert.ok(has(s, "active"), "the upload with a recent part is kept");
+    assert.ok(!has(s, "leftover"), "the row made for the leftover data is gone with it");
+    const up = await v.resumeMultipart("m/active", "active");
+    assert.equal((await up.complete([{ partNumber: 1, etag: '"pactive"' }])).size, 3);
+    assert.deepEqual([...((await v.get("m/active")) ?? [])], [1, 2, 3]);
+  });
+
   // The cost the sweep adds (Cloudflare bills rows written, setAlarm as one too): none per part, none per create
   // while an alarm is pending, a listing at most one row an hour (TTL/8 here).
   test("rows written: a create 1 (and one alarm when none is pending), a part 1 plus 1 per MiB, a listing none within the touch interval", async () => {
@@ -268,6 +321,7 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     const v = doBlobStore(vaultNs, name);
     await v.head("m/none"); // the vault's tables are made, and its alarm checked (none pending, no upload)
     await state(name);
+    const createdAt = Date.now();
     const up = await v.createMultipart("m/one");
     let s = await state(name);
     assert.deepEqual([s.rows, s.alarmsSet], [1, 1], "the first create: its row and the alarm");
@@ -277,12 +331,13 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     await up.uploadPart(1, bytes(2 * MiB + 1));
     const partAt = Date.now();
     s = await state(name);
-    assert.deepEqual([s.rows, s.alarmsSet], [4, 0], "a part: its row and 3 chunks, as before the sweep");
+    // the part came within TTL/8 of the create (the upload's touch) unless the box stalled for that long
+    if (partAt - createdAt < TTL / 8 - 50) assert.deepEqual([s.rows, s.alarmsSet], [4, 0], "a part: its row and 3 chunks, as before the sweep");
     await up.listParts();
     const listed = Date.now();
     s = await state(name);
-    // the listing came within TTL/8 of the part unless the box stalled for that long
-    if (listed - partAt < TTL / 8 - 50) assert.deepEqual([s.rows, s.alarmsSet], [0, 0], "a listing soon after a part: nothing written");
+    // the listing came within TTL/8 of the upload's touch unless the box stalled for that long
+    if (listed - createdAt < TTL / 8 - 50) assert.deepEqual([s.rows, s.alarmsSet], [0, 0], "a listing soon after a part: nothing written");
     await sleep(TTL / 8 + 100);
     await up.listParts();
     await up.listParts();

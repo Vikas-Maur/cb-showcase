@@ -6,9 +6,11 @@
 //   /__test/legacy/<project>?at= the room as code from before `maintain_at` left it: its alarm at `at`, no due time
 //   /__test/due/<project>        the room's recorded maintenance due time and its alarm
 //   /__test/vault/<name>/__sweep  the vault's uploads, parts, chunks and alarm, and since the last report: the SQL rows
-//                                written, the alarms set, and the rows each alarm wrote (the sweep's tests)
+//                                written, the alarms set, and the rows each alarm wrote and read (the sweep's tests)
 //   /__test/vault/<name>/__legacy the vault as code from before the sweep left it: uploads and parts with no time
 //                                columns, one upload with a part, no alarm; then a new instance over that state
+//   /__test/vault/<name>/__first  the vault as the sweep's first version left it: time columns, no walk state, an
+//                                upload made `age` ms ago with a part written now, and a swept upload's leftover data
 import worker, { ProjectRoom as Room, BlobVault as Vault } from "../src/worker.ts";
 import { doSqlStorage } from "../src/storage.ts";
 import { storageChecks } from "../../conformance/src/hosts/storage-checks.ts";
@@ -16,16 +18,19 @@ import { AUTH_HEADER, PROJECT_HEADER } from "../src/room.ts";
 import type { DurableObjectNamespace, DurableObjectState, DurableObjectStorage, ExecutionContext } from "../src/cf.ts";
 import type { Env } from "../src/env.ts";
 
-// BlobVault as deployed, over a storage that counts what it writes: each statement's rowsWritten (Cloudflare bills
-// rows written) and each setAlarm (billed as a row written too). Everything but the two routes above goes to it.
+// BlobVault as deployed, over a storage that counts what it writes and reads: each statement's rowsWritten and rowsRead
+// (Cloudflare bills both) and each setAlarm (billed as a row written too). Everything but the two routes above goes to
+// it.
 export class BlobVault {
   readonly #ctx: DurableObjectState;
   readonly #env: Env;
   #vault: Vault;
-  #cursors: { readonly rowsWritten: number }[] = [];
+  #cursors: { readonly rowsWritten: number; readonly rowsRead: number }[] = [];
   #rows = 0;
+  #reads = 0;
   #alarmsSet = 0;
   #passes: number[] = [];
+  #passReads: number[] = [];
   constructor(ctx: DurableObjectState, env: Env) {
     this.#ctx = ctx;
     this.#env = env;
@@ -53,7 +58,7 @@ export class BlobVault {
   }
   // a statement's rowsWritten is final once it has run; the vault runs each one within the event that made it
   #fold(): void {
-    for (const c of this.#cursors) this.#rows += c.rowsWritten;
+    for (const c of this.#cursors) (this.#rows += c.rowsWritten), (this.#reads += c.rowsRead);
     this.#cursors = [];
   }
   async fetch(req: Request): Promise<Response> {
@@ -72,9 +77,11 @@ export class BlobVault {
         rows: this.#rows,
         alarmsSet: this.#alarmsSet,
         passes: this.#passes,
+        passReads: this.#passReads,
       };
       this.#rows = this.#alarmsSet = 0;
       this.#passes = [];
+      this.#passReads = [];
       return Response.json(out);
     }
     if (url.pathname === "/__legacy") {
@@ -89,14 +96,32 @@ export class BlobVault {
       this.#vault = this.#make(); // deployed anew: nothing of the old instance remains
       return new Response(null, { status: 204 });
     }
+    if (url.pathname === "/__first") {
+      for (const t of ["part_chunks", "parts", "uploads", "vault_sweep"]) sql.exec(`DROP TABLE IF EXISTS ${t}`);
+      sql.exec("CREATE TABLE uploads (id TEXT PRIMARY KEY, key TEXT, ctype TEXT, touched INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID");
+      sql.exec("CREATE TABLE parts (id TEXT, n INTEGER, etag TEXT, size INTEGER, at INTEGER, PRIMARY KEY (id, n)) WITHOUT ROWID");
+      sql.exec("CREATE TABLE part_chunks (id TEXT, n INTEGER, c INTEGER, data BLOB, PRIMARY KEY (id, n, c)) WITHOUT ROWID");
+      const now = Date.now(), made = now - Number(url.searchParams.get("age"));
+      // an upload made long ago whose last part is recent: that version took an upload's touch from its parts' `at`
+      sql.exec("INSERT INTO uploads (id, key, ctype, touched) VALUES ('active', ?, NULL, ?)", url.searchParams.get("k"), made);
+      sql.exec(`INSERT INTO parts (id, n, etag, size, at) VALUES ('active', 1, '"pactive"', 3, ?)`, now);
+      sql.exec("INSERT INTO part_chunks (id, n, c, data) VALUES ('active', 1, 0, x'010203')");
+      // what its sweep left of an upload whose row it had deleted
+      sql.exec(`INSERT INTO parts (id, n, etag, size, at) VALUES ('leftover', 1, '"pleft"', 3, ?)`, made);
+      sql.exec("INSERT INTO part_chunks (id, n, c, data) VALUES ('leftover', 1, 0, x'040506')");
+      await this.#ctx.storage.deleteAlarm();
+      this.#vault = this.#make();
+      return new Response(null, { status: 204 });
+    }
     return this.#vault.fetch(req);
   }
   async alarm(): Promise<void> {
     this.#fold();
-    const before = this.#rows;
+    const before = this.#rows, read = this.#reads;
     await this.#vault.alarm();
     this.#fold();
     this.#passes.push(this.#rows - before);
+    this.#passReads.push(this.#reads - read);
   }
 }
 

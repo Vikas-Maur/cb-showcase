@@ -15,10 +15,19 @@
 // uninstalled) kept its parts in DO storage forever, against Free's 5 GB and billed by the GB-month on Paid: R2 has a
 // lifecycle rule for this, the vault had nothing. Now an unfinished upload untouched for VAULT_UPLOAD_TTL_MS (24 h) is
 // deleted from the vault's alarm. "Touched" is made, a part written, or its parts listed, and it costs no row per part:
-// an upload's last touch is the latest of its own `touched` (set when it is made, and by a listing at most once an
-// hour) and its parts' `at`, a column of the row each part writes anyway. The alarm is set only when none is pending
-// (setAlarm is a row written too), for the oldest upload's expiry, and a vault with no upload has none: an idle vault
-// never wakes.
+// the upload's `touched` is set when it is made, and by a part or a listing at most once every TOUCH_EVERY (an hour, or
+// an eighth of a shorter TTL), so an upload's last touch is less than that after its `touched`, and the sweep takes it
+// once `touched` is more than the TTL plus that ago (up to an hour late), reading no part's time. The alarm is set only
+// when none is pending (setAlarm is a row written too), for the oldest upload's expiry, and a vault with no upload has
+// none: an idle vault never wakes.
+//
+// What one alarm reads is bounded, as what it deletes is (cf review, 2026-11-02: the expiry query read every upload's
+// parts for their times, and finding the data of swept uploads read every part in the vault and listed every such
+// upload before the budget applied, on every alarm, so a backlog cost rows read in proportion to its size again and
+// again). The sweep walks the uploads in id order from a cursor kept in one row (`vault_sweep`, with the smallest live
+// touch seen so far and the upload whose data is being deleted), and stops at VAULT_SWEEP_ROWS rows deleted or 8 times
+// that read, whichever comes first; the next alarm, a second later, goes on from there. A full walk gives the oldest
+// upload's expiry, when the next one is due.
 //
 // A part being received holds its upload. Its touch is the part's row, written once the whole body is in, so a resumed
 // upload whose last touch was nearly a TTL ago could expire while a part's body was still arriving: the alarm deleted
@@ -42,6 +51,10 @@ const WINDOW = 16 << 20;
 const UPLOAD_TTL_MS = 24 * 3600_000;
 const SWEEP_ROWS = 500;
 const SWEEP_AGAIN_MS = 1000;
+// Rows one alarm reads, at most, per row it may delete.
+const READS_PER_ROW = 8;
+// An upload's `touched` is written by a part or a listing at most this often (or an eighth of a shorter TTL).
+const TOUCH_EVERY_MS = 3600_000;
 // How long a part request that receives no bytes still holds its upload (at most the TTL).
 const LEASE_IDLE_MS = 300_000;
 const DDL = [
@@ -50,10 +63,16 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, key TEXT, ctype TEXT, touched INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS parts (id TEXT, n INTEGER, etag TEXT, size INTEGER, at INTEGER, PRIMARY KEY (id, n)) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS part_chunks (id TEXT, n INTEGER, c INTEGER, data BLOB, PRIMARY KEY (id, n, c)) WITHOUT ROWID`,
+  // the sweep's walk: the last upload id it passed ('' between walks), the smallest live touch seen on this walk, and
+  // the upload it unlinked whose data it is still deleting
+  `CREATE TABLE IF NOT EXISTS vault_sweep (k INTEGER PRIMARY KEY, cursor TEXT NOT NULL, low INTEGER, gone TEXT) WITHOUT ROWID`,
 ];
 
-// When upload `u` was last touched: made or listed (its `touched`), or a part written (the newest part's `at`).
-const LAST_TOUCH = "max(u.touched, coalesce((SELECT max(p.at) FROM parts p WHERE p.id = u.id), 0))";
+interface SweepState {
+  cursor: string;
+  low: number | null;
+  gone: string | null;
+}
 
 type Row = Record<string, unknown>;
 type VaultEnv = Pick<Env, "VAULT_UPLOAD_TTL_MS" | "VAULT_SWEEP_ROWS">;
@@ -71,6 +90,8 @@ export class BlobVault {
   readonly #state: DurableObjectState;
   readonly #ttl: number;
   readonly #sweepRows: number;
+  readonly #sweepReads: number;
+  readonly #touchEvery: number;
   #ready = false;
   // What this instance knows of the sweep's alarm: undefined = not checked yet, null = none (no upload), or the time
   // it is due. Once it is known, a request costs no storage call for it.
@@ -83,6 +104,8 @@ export class BlobVault {
     this.#sql = state.storage.sql;
     this.#ttl = positive(env?.VAULT_UPLOAD_TTL_MS, UPLOAD_TTL_MS);
     this.#sweepRows = Math.floor(positive(env?.VAULT_SWEEP_ROWS, SWEEP_ROWS));
+    this.#sweepReads = READS_PER_ROW * this.#sweepRows;
+    this.#touchEvery = Math.min(TOUCH_EVERY_MS, this.#ttl / 8);
   }
 
   #all(q: string, ...p: unknown[]): Row[] {
@@ -91,11 +114,19 @@ export class BlobVault {
 
   #init(): void {
     if (this.#ready) return;
+    const had = new Set(this.#all("SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => String(r.name)));
     for (const q of DDL) this.#sql.exec(q);
     // A vault made before the sweep has neither time column. Its uploads' age is unknown, so they count as touched now
     // (the new column's default for the rows already there, which rewrites no row): swept a full TTL after this code
     // first runs, unless their uploader comes back. Their parts get no time; the upload's covers them.
     if (!this.#hasColumn("uploads", "touched")) this.#sql.exec(`ALTER TABLE uploads ADD COLUMN touched INTEGER NOT NULL DEFAULT ${Date.now()}`);
+    else if (had.has("uploads") && !had.has("vault_sweep")) {
+      // A vault from the sweep's first version (never released): its parts didn't write `touched`, and its sweep left
+      // swept uploads' data with no row to find it by. Once: each upload's touch takes its newest part's, and that data
+      // gets an expired row, which this walk deletes.
+      this.#sql.exec("UPDATE uploads SET touched = max(touched, coalesce((SELECT max(p.at) FROM parts p WHERE p.id = uploads.id), touched))");
+      this.#sql.exec("INSERT INTO uploads (id, key, ctype, touched) SELECT DISTINCT id, '', NULL, 0 FROM parts WHERE id NOT IN (SELECT id FROM uploads)");
+    }
     if (!this.#hasColumn("parts", "at")) this.#sql.exec("ALTER TABLE parts ADD COLUMN at INTEGER");
     this.#ready = true;
   }
@@ -215,7 +246,11 @@ export class BlobVault {
             if (q.has("len") && Number(q.get("len")) !== got.size) return fail("InvalidPart", `part ${n}: ${got.size} bytes arrived, ${q.get("len")} declared`);
             const data = got.data;
             const etag = this.#state.storage.transactionSync(() => {
-              if (!this.#upload(id, key)) return null;
+              const up = this.#upload(id, key);
+              if (!up) return null;
+              // the upload's own touch, at most once every #touchEvery: the sweep reads no part's time
+              const now = Date.now();
+              if (now - Number(up.touched) >= this.#touchEvery) this.#sql.exec("UPDATE uploads SET touched = ? WHERE id = ?", now, id);
             this.#sql.exec("DELETE FROM part_chunks WHERE id = ? AND n = ?", id, n);
             this.#sql.exec("DELETE FROM parts WHERE id = ? AND n = ?", id, n);
             const etag = `"p${randomId().slice(0, 16)}"`;
@@ -235,11 +270,11 @@ export class BlobVault {
           const id = q.get("id") ?? "";
           const up = this.#upload(id, key);
           if (!up) return fail("NoSuchUpload", `no multipart upload ${id} for ${key}`, 404);
-          const rows = this.#all("SELECT n, etag, size, at FROM parts WHERE id = ? ORDER BY n", id);
-          // a listing (a resume) touches the upload, at most once an hour (an eighth of a shorter TTL): a client that
-          // lists in a loop costs no row each time
-          const now = Date.now(), last = Math.max(Number(up.touched), ...rows.map((r) => Number(r.at ?? 0)));
-          if (now - last >= Math.min(3600_000, this.#ttl / 8)) this.#sql.exec("UPDATE uploads SET touched = ? WHERE id = ?", now, id);
+          const rows = this.#all("SELECT n, etag, size FROM parts WHERE id = ? ORDER BY n", id);
+          // a listing (a resume) touches the upload, at most once every #touchEvery: a client that lists in a loop costs
+          // no row each time
+          const now = Date.now();
+          if (now - Number(up.touched) >= this.#touchEvery) this.#sql.exec("UPDATE uploads SET touched = ? WHERE id = ?", now, id);
           return json(rows.map((r) => ({ partNumber: Number(r.n), etag: r.etag, size: Number(r.size) })));
         }
         case "POST /mp/complete": {
@@ -344,11 +379,11 @@ export class BlobVault {
 
   // ---------------------------------------------------------------- the sweep of abandoned uploads
 
-  // Makes sure the sweep's alarm is pending while any upload is. Checked once per instance (one getAlarm, then a read
-  // of the uploads if none is pending) and known after that. The check runs on any request, not only on uploads: that
-  // is what reaches a vault from before the sweep, whose uploads have no alarm. `created`: an upload was just made, so
-  // a vault known to need no alarm needs one now. A pending alarm is never moved: it is due by the oldest upload's
-  // expiry, since a newer upload or a touch only expires later.
+  // Makes sure the sweep's alarm is pending while any upload is. Checked once per instance (one getAlarm, then a
+  // bounded read if none is pending) and known after that. The check runs on any request, not only on uploads: that is
+  // what reaches a vault from before the sweep, whose uploads have no alarm. `created`: an upload was just made, so a
+  // vault known to need no alarm needs one now. A pending alarm is never moved: it is due by the oldest upload's expiry,
+  // since a newer upload or a touch only expires later.
   async #keepSwept(created = false): Promise<void> {
     if (typeof this.#alarmAt === "number") return; // pending, or running: the alarm re-arms for what remains
     if (this.#alarmAt === null && !created) return;
@@ -361,53 +396,118 @@ export class BlobVault {
     this.#alarmAt = next;
   }
 
-  // When the sweep must next run: now if a swept upload's data is left, else the oldest upload's expiry, or null when
-  // there is no upload at all.
+  // When the sweep must next run, with no alarm pending: now if a walk is under way, else the oldest upload's expiry,
+  // or null when there is no upload. Reads at most what one alarm may: a vault with more uploads than that is left to
+  // the alarm's walk, now.
   #nextSweep(): number | null {
-    if (this.#all("SELECT 1 FROM parts WHERE id NOT IN (SELECT id FROM uploads) LIMIT 1").length) return Date.now();
-    const t = this.#all(`SELECT min(${LAST_TOUCH}) AS t FROM uploads u`)[0]?.t;
-    return t === null || t === undefined ? null : Number(t) + this.#ttl;
+    const st = this.#sweepState((q, ...p) => this.#all(q, ...p));
+    if (st.cursor || st.gone) return Date.now();
+    const rows = this.#all("SELECT touched FROM uploads LIMIT ?", this.#sweepReads + 1);
+    if (!rows.length) return null;
+    if (rows.length > this.#sweepReads) return Date.now();
+    return Math.min(...rows.map((r) => Number(r.touched))) + this.#ttl + this.#touchEvery;
   }
 
-  // The sweep: deletes unfinished uploads untouched for the TTL, at most #sweepRows rows per alarm (one 5 GB upload is
-  // about 5000 rows), and comes back a second later while more remain. Then the alarm is set for the oldest remaining
-  // upload's expiry, or not at all when none is left.
+  // The sweep, one alarm's pass: at most #sweepRows rows deleted and #sweepReads read, then the next alarm a second
+  // later while the walk goes on, or at the oldest remaining upload's expiry when it is done (none when no upload is
+  // left).
   async alarm(): Promise<void> {
     this.#alarmAt = undefined; // until it is re-armed below: if this throws, the next request checks again
     this.#init();
     const now = Date.now();
-    const more = this.#state.storage.transactionSync(() => this.#sweep(now, now - this.#ttl, this.#sweepRows));
-    const next = more ? now + SWEEP_AGAIN_MS : this.#nextSweep();
+    const pass = this.#state.storage.transactionSync(() => this.#sweep(now));
+    const next = pass.done ? pass.next : now + SWEEP_AGAIN_MS;
     const at = next === null ? null : Math.max(next, now + SWEEP_AGAIN_MS);
     // set outright: the alarm now running may still read as pending
     if (at !== null) await this.#state.storage.setAlarm(at);
     this.#alarmAt = at;
   }
 
-  /** One pass of the sweep, deleting at most `budget` rows; true if rows may be left for another. */
-  #sweep(now: number, before: number, budget: number): boolean {
-    // The expired uploads' own rows go first, so a late part, listing or completion finds no upload, never one with
-    // half its data gone (a completion would make a truncated object). One with a part arriving is in use: touched now
-    // (its expiry a full TTL on, so the alarm doesn't come back for it every second), never swept.
-    const expired = this.#all(`SELECT id FROM uploads u WHERE ${LAST_TOUCH} <= ? LIMIT ?`, before, budget);
-    for (const r of expired) {
-      if (this.#leased(String(r.id), now)) this.#sql.exec("UPDATE uploads SET touched = ? WHERE id = ?", now, r.id);
-      else this.#sql.exec("DELETE FROM uploads WHERE id = ?", r.id);
+  #sweepState(q: (sql: string, ...p: unknown[]) => Row[]): SweepState {
+    const r = q("SELECT cursor, low, gone FROM vault_sweep WHERE k = 0")[0];
+    return r ? { cursor: String(r.cursor), low: r.low === null ? null : Number(r.low), gone: r.gone === null ? null : String(r.gone) } : { cursor: "", low: null, gone: null };
+  }
+
+  /**
+   * One pass of the walk. It goes on from the state row: first the rest of an unlinked upload's data, then the uploads
+   * after the cursor, in id order. An expired one is unlinked (its row deleted first, so a late part, listing or
+   * completion finds no upload, never one with half its data gone) and its data deleted; one with a part arriving is
+   * touched now instead (its expiry a full TTL on); a live one's touch is the walk's lowest so far. `done`: the walk
+   * reached the last upload, and `next` is when the oldest left expires.
+   */
+  #sweep(now: number): { done: boolean; next: number | null } {
+    let read = 0;
+    const q = (sql: string, ...p: unknown[]): Row[] => {
+      const c = this.#sql.exec<Row>(sql, ...p);
+      const rows = c.toArray();
+      read += c.rowsRead;
+      return rows;
+    };
+    const st0 = this.#sweepState(q), st = { ...st0 };
+    const horizon = now - this.#ttl - this.#touchEvery;
+    let budget = this.#sweepRows;
+    let done = false, next: number | null = null;
+    // Reads left, keeping a few for the state row's write and the row a ranged delete reads past its range: a pass
+    // never reads more than #sweepReads.
+    const room = () => this.#sweepReads - read - 4;
+    walk: while (budget > 0 && room() > 0) {
+      if (st.gone) {
+        // a row deleted is read twice (found, then deleted)
+        const n = Math.min(budget, Math.floor(room() / 2));
+        if (n < 1) break;
+        const left = this.#dropData(st.gone, n, q);
+        budget -= left.deleted;
+        if (!left.more) st.gone = null;
+        continue;
+      }
+      // one row more than the rows it may delete: what an expired upload's data leaves of the budget is spent first
+      const limit = Math.min(budget + 1, room() - 1);
+      if (limit < 1) break;
+      const batch = q("SELECT id, touched FROM uploads WHERE id > ? ORDER BY id LIMIT ?", st.cursor, limit);
+      for (const r of batch) {
+        const id = String(r.id), touched = Number(r.touched);
+        st.cursor = id;
+        if (touched > horizon) {
+          st.low = Math.min(st.low ?? touched, touched);
+          continue;
+        }
+        budget--;
+        if (this.#leased(id, now)) {
+          q("UPDATE uploads SET touched = ? WHERE id = ?", now, id);
+          st.low = Math.min(st.low ?? now, now);
+        } else {
+          q("DELETE FROM uploads WHERE id = ?", id);
+          st.gone = id;
+        }
+        continue walk; // its data, or the budget, before the rest of the batch
+      }
+      if (batch.length < limit) {
+        // past the last upload: the walk is done
+        done = true;
+        next = st.low === null ? null : st.low + this.#ttl + this.#touchEvery;
+        st.cursor = "";
+        st.low = null;
+        break;
+      }
     }
-    if ((budget -= expired.length) <= 0) return true;
-    // Then the data of uploads that are gone, chunks before parts, both in key order: an upload's parts rows stay
-    // while any of its chunks do, which is how the next pass finds what this one left.
-    for (const { id } of this.#all("SELECT DISTINCT id FROM parts WHERE id NOT IN (SELECT id FROM uploads)")) {
-      const chunks = this.#all("SELECT n, c FROM part_chunks WHERE id = ? ORDER BY n, c LIMIT ?", id, budget);
-      const lc = chunks[chunks.length - 1];
-      if (lc) this.#sql.exec("DELETE FROM part_chunks WHERE id = ? AND (n, c) <= (?, ?)", id, lc.n, lc.c);
-      if ((budget -= chunks.length) <= 0) return true;
-      const parts = this.#all("SELECT n FROM parts WHERE id = ? ORDER BY n LIMIT ?", id, budget);
-      const lp = parts[parts.length - 1];
-      if (lp) this.#sql.exec("DELETE FROM parts WHERE id = ? AND n <= ?", id, lp.n);
-      if ((budget -= parts.length) <= 0) return true;
+    if (st.cursor !== st0.cursor || st.low !== st0.low || st.gone !== st0.gone) {
+      if (!st.cursor && st.low === null && !st.gone) q("DELETE FROM vault_sweep WHERE k = 0");
+      else q("INSERT OR REPLACE INTO vault_sweep (k, cursor, low, gone) VALUES (0, ?, ?, ?)", st.cursor, st.low, st.gone);
     }
-    return false;
+    return { done, next };
+  }
+
+  /** Deletes up to `budget` rows of an unlinked upload's data, chunks before parts, both in key order. */
+  #dropData(id: string, budget: number, q: (sql: string, ...p: unknown[]) => Row[]): { deleted: number; more: boolean } {
+    const chunks = q("SELECT n, c FROM part_chunks WHERE id = ? ORDER BY n, c LIMIT ?", id, budget);
+    const lc = chunks[chunks.length - 1];
+    if (lc) q("DELETE FROM part_chunks WHERE id = ? AND (n, c) <= (?, ?)", id, lc.n, lc.c);
+    if (chunks.length >= budget) return { deleted: chunks.length, more: true };
+    const parts = q("SELECT n FROM parts WHERE id = ? ORDER BY n LIMIT ?", id, budget - chunks.length);
+    const lp = parts[parts.length - 1];
+    if (lp) q("DELETE FROM parts WHERE id = ? AND n <= ?", id, lp.n);
+    const deleted = chunks.length + parts.length;
+    return { deleted, more: deleted >= budget };
   }
 }
 

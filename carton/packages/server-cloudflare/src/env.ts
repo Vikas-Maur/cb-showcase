@@ -47,9 +47,9 @@ export interface Env {
   WRITE_CAP_OPS_PER_DAY?: string;
   // The DO-blob fallback's sweep of abandoned uploads (blob-do.ts): a multipart upload neither completed nor aborted,
   // untouched (made, a part written, its parts listed) for VAULT_UPLOAD_TTL_MS, is deleted with its parts (default
-  // 86400000, 24 h, as an R2 lifecycle rule would). VAULT_SWEEP_ROWS is the most rows one sweep alarm deletes (default
-  // 500; the next alarm comes a second later while more remain). Set them for tests and the lab; a deployment needs
-  // neither.
+  // 86400000, 24 h, as an R2 lifecycle rule would; up to an hour later, the interval at which parts write its touch).
+  // VAULT_SWEEP_ROWS is the most rows one sweep alarm deletes (default 500), and 8 times it the most it reads; the next
+  // alarm comes a second later while more remain. Set them for tests and the lab; a deployment needs neither.
   VAULT_UPLOAD_TTL_MS?: string;
   VAULT_SWEEP_ROWS?: string;
 }
