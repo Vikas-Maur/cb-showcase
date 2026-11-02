@@ -57,7 +57,20 @@ export interface SyncClientOptions {
   maxBehind?: number;
   /** false: one push message in flight at a time (a sensitivity row of the load test). Default true. */
   pipeline?: boolean;
+  /**
+   * Reconnecting: the first retry after a drop waits `backoffMs` (default 500), as it always did; each further failure
+   * in a row doubles the wait, with jitter (half to all of it), up to `maxBackoffMs` (default 15 s: no worse than a dead
+   * link's 10 s connect timeout already made it), or up to `unauthorizedBackoffMs` (default 5 min) while the host refuses
+   * the session, which retrying with the same token can't fix. A connection the host answers starts over. A fixed
+   * half-second retry made a client whose session was refused try 86 times a minute against a deployed Worker, two
+   * billed Worker requests each (the upgrade and the transport's probe): one stuck client, about 2.5 times the Workers
+   * Free plan's daily requests (cf-lab). `maxBackoffMs` = `backoffMs` keeps the old fixed retry.
+   */
   backoffMs?: number;
+  maxBackoffMs?: number;
+  unauthorizedBackoffMs?: number;
+  /** Jitter's randomness (default Math.random; the simulation passes its seeded one). */
+  random?: () => number;
   timers?: Timers;
   /**
    * Run `fn` after `costMs` of the pusher's work (a rebase holds the engine thread). Default: soon, on a timer. The
@@ -169,6 +182,10 @@ export class SyncClient {
   /** For hand-off tests: upload again on the next connection instead of asking `branchStatus` first. */
   reuploadOnReconnect = false;
   tamper: ((ch: Change) => Change) | undefined;
+  /** Connection attempts that failed, or closed before the hello's answer, in a row (the backoff's exponent). */
+  private failures = 0;
+  /** The last failed connect's transport code (`unauthorized` backs off longer). */
+  private lastFailure: string | undefined;
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
@@ -283,6 +300,7 @@ export class SyncClient {
         // why it couldn't connect (a refused token, no host): an owner shows it (REQ-8)
         // a transport that says why in a code (server-node's TransportError: unreachable, unauthorized, …) is read by it
         const code = typeof (e as { code?: unknown } | null)?.code === "string" ? (e as { code: string }).code : undefined;
+        this.lastFailure = code;
         if (!this.stopped) this.emit({ type: "error", error: `connect: ${e instanceof Error ? e.message : String(e)}`, ...(code ? { code } : {}) });
       }
       if (this.stopped) {
@@ -320,7 +338,7 @@ export class SyncClient {
       }
       c?.close();
       this.setStatus("offline");
-      await new Promise<void>((r) => (this.retry = this.timers.setTimeout(r, this.o.backoffMs ?? 500)));
+      await new Promise<void>((r) => (this.retry = this.timers.setTimeout(r, this.backoff())));
       this.retry = null;
     }
   }
@@ -332,7 +350,17 @@ export class SyncClient {
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
-    if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
+    this.lastFailure = undefined; // it had connected: the host took the session
+    if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.backoff());
+  }
+  /** The wait before the next connection attempt (see `backoffMs`), counting this failure. */
+  private backoff(): number {
+    const base = this.o.backoffMs ?? 500;
+    const cap = Math.max(base, this.lastFailure === "unauthorized" ? (this.o.unauthorizedBackoffMs ?? 300_000) : (this.o.maxBackoffMs ?? 15_000));
+    const n = this.failures++;
+    if (n === 0 || cap === base) return base;
+    const d = Math.min(cap, base * 2 ** Math.min(n, 20));
+    return d / 2 + (this.o.random ?? Math.random)() * (d / 2);
   }
   private failRequests(why: string): void {
     for (const r of this.requests.values()) r.reject(new Error(`history request lost: ${why}`));
@@ -504,6 +532,8 @@ export class SyncClient {
           if (m.type === "hello") {
             if (m.more) return this.send(this.hello()); // more rows to catch up on
             this.caughtUp = true;
+            this.failures = 0; // the host answered: the next drop retries quickly again
+            this.lastFailure = undefined;
             this.setStatus(this.queue.pending(b).length ? "syncing" : "up-to-date");
             for (const w of this.waiters.splice(0)) w(true);
             this.emit({ type: "online" });
