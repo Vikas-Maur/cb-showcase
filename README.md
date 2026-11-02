@@ -468,6 +468,12 @@ What changes with it on:
   the cut's start names no one. A clip without a name is named by its media's file name.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
+- **A project is never left unreadable.** History's oldest row, "Started the cut", is where the history of a project
+  Carton took in begins, before the project itself (the next version): it has nothing to preview, restore or make a
+  cut from, so History doesn't offer those, and `cb restore`, `cb cut new --from` and `cb publish` refuse it, naming
+  the version that holds the project. (Restoring it used to write a `project.json` with no name and nothing in it, and
+  the project vanished from the library.) No writer puts a `project.json` on disk that Cardboard couldn't read back,
+  or one whose name was removed: the old file stays, and the refusal is logged in the bundle's `.carton\refused.log`.
 
 The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):
 

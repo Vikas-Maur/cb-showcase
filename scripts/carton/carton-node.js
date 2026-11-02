@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, branchToken } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
@@ -30,6 +30,30 @@ const warnOnce = (key, msg) => {
   console.warn("[carton] " + msg);
 };
 const errText = (e) => (e && e.message) || String(e);
+
+// ---------------------------------------------------------------- never a project Cardboard can't read
+// Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name and empty tracks and media, and
+// the project left Cardboard's library. Every project.json this process writes is checked first (@carton/cardboard's
+// projectProblems: what Cardboard 1.4.0's reader needs, and a name): one that fails is not written, the old file stays,
+// and the refusal is logged, in the console (at most once every 10 s per project) and in the bundle's
+// .carton/refused.log (one JSON line each: when, which writer, what was wrong; never the project's own text).
+const REFUSED_LOG = "refused.log", REFUSED_LOG_MAX = 256 * 1024;
+const refusedSaid = new Map();
+function refuseProject(bundlePath, projectId, problems, where) {
+  const at = Date.now(), key = (bundlePath ?? projectId) + "\0" + where;
+  if (!(at - (refusedSaid.get(key) ?? 0) < 10_000)) {
+    refusedSaid.set(key, at);
+    console.warn(`[carton] kept project.json of project ${projectId ?? "?"}: the ${where} would have written one Cardboard can't read (${problems.join("; ")})`);
+  }
+  if (!bundlePath) return;
+  try {
+    const dir = path.join(bundlePath, ".carton");
+    if (!fs.existsSync(dir)) return;
+    const file = path.join(dir, REFUSED_LOG);
+    if ((fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > REFUSED_LOG_MAX) fs.rmSync(file, { force: true });
+    fs.appendFileSync(file, JSON.stringify({ at, where, projectId: projectId ?? null, problems }) + "\n");
+  } catch {}
+}
 
 // Cardboard's own GUI save projection, cut out of the editor bundle at build time (scripts/carton/fmsv.js).
 let gui = null;
@@ -453,6 +477,13 @@ async function afterSave(lc, bundlePath, after) {
 
 async function commit({ bundlePath, base, doc, actor, meta }) {
   if (meta?.materialize) return { doc, status: "materialized" };
+  // A save Cardboard couldn't read back (no name: laptop, build 915eb36) is never a version either: history keeps no
+  // such state, so the next saves still land. The store's write of it is refused at the install; the old file stays.
+  const problems = projectProblems({ format: "cardboard-project", project: doc }, () => base);
+  if (problems.length) {
+    refuseProject(bundlePath, doc?.id, problems, "change");
+    return { doc, status: "rejected", reason: "the project would have " + problems.join("; ") };
+  }
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
   if (!lc) return { doc, status: "off" };
   const c = lc.carton;
@@ -596,6 +627,9 @@ async function headProject(bundlePath, current, given) {
   const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
+  // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
+  const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
+  if (problems.length) return refuseProject(bundlePath, current?.id, problems, "head"), null;
   await setRev(lc, out.stateUpdatedAt, head.ref);
   return out;
 }
@@ -729,6 +763,18 @@ async function install(tmp, file, seenStamp, rev, envelope) {
 }
 async function installFile(tmp, file, seenStamp, rev, envelope) {
   const bundle = path.dirname(file);
+  // A project.json Cardboard couldn't read back is never installed, whoever wrote it: the old file stays (false: the store
+  // reads the disk again). The envelope writeNow stringified is checked as it is (no parse); a file without one is read.
+  if (path.basename(file) === "project.json") {
+    let env = envelope;
+    if (env === undefined) try { env = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch { env = null; }
+    const problems = projectProblems(env, () => readProject(bundle));
+    if (problems.length) {
+      refuseProject(bundle, env?.project?.id, problems, "save");
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+  }
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   // (A new project's first write: project.json isn't there yet, so its id and first state come from what the store is
   // writing, and history starts with it. Laptop #9: opened without them, cb's `project create` said history was off

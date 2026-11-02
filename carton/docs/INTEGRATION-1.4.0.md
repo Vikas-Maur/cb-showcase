@@ -189,7 +189,17 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    it (the panel shows those once) and no other.
 6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
-
+7. **Never a project Cardboard can't read** (laptop, build 915eb36: Restore of "Started the cut", the empty root an
+   imported project's history starts from, wrote a `project.json` with no name and empty tracks and media; 1.4.0's
+   loader (`ti`: `qW`, `zW`) refuses a file without a name, so the project left the library and `cb` found nothing).
+   Core refuses to restore an empty version or make a cut from one (`EmptyVersion`), and History and `cb` don't offer
+   it. Every `project.json` a Carton-on process writes is checked first (`@carton/cardboard`'s `projectProblems`: what
+   that reader needs in the fields Carton writes, and a name a project had is never removed): the commit of a store
+   mutation (no version is made of it), head going into the file (`headProject`, the Materializer), and the install
+   itself, both copies. A refused write keeps the old file, and the refusal goes to the console and to the bundle's
+   `.carton/refused.log` (when, which writer, what was wrong; never the project's text). A head that has no name (a
+   teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
+   until a good version is restored.
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`
   loses some in stock 1.4.0).

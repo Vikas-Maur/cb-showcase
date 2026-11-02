@@ -1,0 +1,176 @@
+// Restore and "New cut from here" on "Started the cut" (laptop, build 915eb36, reproduced twice): the History panel's
+// oldest row is main@0, the empty root an imported project's history starts from. Restoring it wrote a project.json
+// with no name and empty tracks and media; Cardboard's library dropped the project, and `cb history` and `cb cut list`
+// found nothing. Here, through Cardboard's real library worker, cb and bundles (support.js):
+//   1. the root is offered nothing, and asking anyway (the panel, cb, MCP) changes nothing;
+//   2. no writer puts a project.json Cardboard can't read on disk: the old file stays, the refusal is logged.
+// Run alone or through slot.sh:
+//   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> CARTON_TEST_DIR=<scratch> node --test --test-concurrency=1 scripts/carton/test/sync/restore-root.test.js
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs"), path = require("path");
+const { spawnSync } = require("child_process");
+const S = require("./support.js");
+
+const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS };
+const bundleOf = (pc) => path.join(pc.root, "Demo.cardboard");
+const envOf = (pc) => JSON.parse(fs.readFileSync(path.join(bundleOf(pc), "project.json"), "utf8"));
+const must = (r, what) => { assert.equal(r.code, 0, what + ": " + r.out + r.err); return r; };
+const names = (list) => list.map((p) => p.name);
+const refusedLog = (pc) => { try { return fs.readFileSync(path.join(bundleOf(pc), ".carton", "refused.log"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+// What the person sees of a project: its name, its tracks and clips, its media library (ids, file names, kinds).
+const shape = (p) => ({
+  name: p.name,
+  aspectRatio: p.aspectRatio,
+  tracks: (p.tracks ?? []).map((x) => x.id),
+  items: (p.timelineItems ?? []).map((x) => [x.id, x.type, x.startTime, x.endTime, x.fontSize ?? null]),
+  media: (p.media ?? []).map((m) => [m.id, m.data?.type, m.data?.fileName]),
+});
+
+/**
+ * Runs `body` (an async function's source, given `f`, the built facade, and `args`) in a process of its own with the
+ * computer's environment, as one of its processes would (a facade loaded in the test process keeps the first
+ * computer's identity, and would take another computer's carton.db for a copied one). Answers what body returns.
+ */
+function asProcess(pc, b, body, args) {
+  const code = `const f = require(${JSON.stringify(path.join(b.carton, "carton-node.cjs"))});
+    (async (f, args) => { ${body} })(f, JSON.parse(process.argv[1])).then((r) => { process.stdout.write("\\n@@" + JSON.stringify(r ?? null)); process.exit(0); }, (e) => { process.stdout.write("\\n@@" + JSON.stringify({ error: String(e?.stack ?? e) })); process.exit(0); });`;
+  const r = spawnSync(process.execPath, ["-e", code, JSON.stringify(args)], { env: pc.env, encoding: "utf8", timeout: 120_000 });
+  const out = (r.stdout ?? "").split("\n@@").pop();
+  let v;
+  try { v = JSON.parse(out); } catch { throw new Error("facade process: " + r.stdout + r.stderr); }
+  if (v?.error) throw new Error("facade process: " + v.error);
+  return v;
+}
+
+/** The History panel as the editor opens it (carton.ui), with its calls answered. */
+async function panel(pc, projectId, client) {
+  const msgs = () => pc.events().filter((e) => e.change?.kind === "carton" && e.change.client === client).map((e) => e.change.message);
+  assert.equal((await pc.call("carton.ui", { projectId, client, message: { t: "hello" } }))?.status, "ok");
+  const init = await S.until(() => msgs().find((x) => x.t === "init"), 20_000, "the panel");
+  let n = 0;
+  const call = async (method, ...args) => {
+    const id = ++n;
+    await pc.call("carton.ui", { projectId, client, message: { t: "call", id, method, args } });
+    return S.until(() => msgs().find((x) => x.t === "ret" && x.id === id), 20_000, "the panel's answer to " + method);
+  };
+  // the rows the panel shows now (init's, updated by later history messages)
+  const rows = () => {
+    const all = [...init.history];
+    for (const m of msgs()) if (m.t === "history") for (const [i, v] of m.rows) all[i] = v;
+    return all;
+  };
+  return { init, call, rows };
+}
+
+/** A computer with the seeded project (made, a clip added, two agent edits), its worker started. */
+async function seeded(b, name) {
+  const pc = await S.computer(name, b);
+  S.seed(pc, b);
+  await pc.startWorker();
+  const id = (await pc.call("projects.list"))[0].id;
+  return { pc, id };
+}
+
+test("1. Restore and New cut from here on \"Started the cut\": not offered, refused if asked, the project unchanged", t, async () => {
+  const b = await S.build();
+  const { pc, id } = await seeded(b, "root-restore");
+  try {
+    const before = shape(envOf(pc).project);
+    assert.equal(before.name, "Demo");
+    assert.ok(before.tracks.length && before.items.length && before.media.length, "the seeded project has tracks, clips and media");
+    const p = await panel(pc, id, "root-panel");
+    const root = p.rows().find((v) => v.seq === 0);
+    assert.equal(root.summary, "Started the cut");
+    assert.equal(root.empty, true, "the panel's row says it holds nothing (no Preview, New cut from here or Restore)");
+    assert.ok(p.rows().filter((v) => v.seq > 0).every((v) => !v.empty), "only the root");
+    // asked anyway (an older page, a script): refused in plain words, nothing written
+    const r = await p.call("restore", root.ref);
+    assert.equal(r.ok, false);
+    assert.match(r.error, /^Nothing to restore: that version is empty/);
+    const c = await p.call("newCut", "From the start", root.ref);
+    assert.equal(c.ok, false);
+    assert.match(c.error, /^Nothing to make a cut from: that version is empty/);
+    assert.deepEqual(shape(envOf(pc).project), before, "project.json as it was");
+    assert.deepEqual(names(await pc.call("projects.list")), ["Demo"], "still in the library");
+    // cb, while the app runs: the same, in cb history's words
+    for (const argv of [["restore", "Demo", "main@0"], ["revert", "Demo", "main@0"], ["cut", "new", "Demo", "From the start", "--from", "main@0"], ["publish", "Demo", "main@0"]]) {
+      const x = pc.cb(argv);
+      assert.equal(x.code, 1, argv.join(" ") + ": " + x.out + x.err);
+      assert.match(x.out + x.err, /main@0 is where the history starts, before the project was added: there is nothing in it to (restore|make a cut from|publish)\. The project as it was first saved is main@1\./);
+    }
+    const h = must(pc.cb(["history", "Demo"]), "history").json();
+    assert.equal(h.versions.at(-1).version, "main@0");
+    assert.equal(h.versions.at(-1).empty, true);
+    assert.equal((await S.projectOf(pc, id)).name, "Demo");
+    assert.deepEqual(shape(envOf(pc).project), before);
+    assert.deepEqual(must(pc.cb(["cut", "list", "Demo"]), "cut list").json().cuts.map((x) => x.name), ["Main cut"], "no cut was made");
+    // the project as it came in (main@1: made, nothing in it yet) restores as any version does, with its name
+    const ok = await p.call("restore", root.ref.replace(/@0$/, "@1"));
+    assert.equal(ok.ok, true, ok.error);
+    await S.until(() => (envOf(pc).project.timelineItems ?? []).length === 0, 20_000, "the restore in project.json");
+    assert.equal(envOf(pc).project.name, "Demo");
+    assert.deepEqual(names(await pc.call("projects.list")), ["Demo"]);
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("2. no writer puts a project.json Cardboard can't read on disk: the old file stays, the refusal is logged", t, async () => {
+  const b = await S.build();
+  const { pc, id } = await seeded(b, "root-guard");
+  try {
+    const file = path.join(bundleOf(pc), "project.json");
+    const before = fs.readFileSync(file, "utf8");
+    // the worker's store, as an editor page that lost the name would save (the whole project, its name owned)
+    const doc = await S.projectOf(pc, id);
+    const { name: _gone, ...nameless } = doc;
+    await pc.call("projects.updateScoped", { ...nameless, timelineItems: [], tracks: [], stateUpdatedAt: Date.now() }, { ownedFields: ["name", "tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } }).catch(() => null);
+    assert.equal(fs.readFileSync(file, "utf8"), before, "project.json byte for byte");
+    assert.deepEqual(names(await pc.call("projects.list")), ["Demo"], "still in the library");
+    assert.equal((await S.projectOf(pc, id)).name, "Demo", "the store reads the file again");
+    const log = refusedLog(pc);
+    assert.ok(log.some((l) => l.where === "change" && l.problems.includes("no name") && l.projectId === id), "not a version: " + JSON.stringify(log));
+    assert.ok(log.some((l) => l.where === "save" && l.problems.includes("no name") && l.projectId === id), "not written: " + JSON.stringify(log));
+    const h = must(pc.cb(["history", "Demo"]), "history").json();
+    assert.ok(!h.versions.some((v) => v.kind === "edit" && v.by?.id === "person"), "history holds no version of it");
+    assert.ok(!JSON.stringify(log).includes("Demo"), "the log holds no text of the project's");
+    // the facade's install itself (both copies of the store install through it), fed broken documents
+    const env = JSON.parse(before);
+    const brokens = [
+      { ...env, project: { ...env.project, name: undefined, tracks: [], timelineItems: [], media: [] } },
+      { ...env, project: { ...env.project, name: "   " } },
+      { ...env, project: { ...env.project, id: undefined } },
+      { ...env, project: { ...env.project, media: [{ data: { type: "video" } }] } },
+      { ...env, media: "nope" },
+    ];
+    const installed = asProcess(pc, b, `
+      const fs = require("fs"), path = require("path"), out = [];
+      for (const broken of args.brokens) {
+        const tmp = path.join(args.bundle, ".project.json." + Math.random().toString(16).slice(2) + ".tmp");
+        fs.writeFileSync(tmp, JSON.stringify(broken));
+        out.push([await f.cardboard14.install(tmp, args.file, undefined, broken.project.stateUpdatedAt, broken), fs.existsSync(tmp)]);
+      }
+      // and one without the envelope (read from the temp file)
+      const tmp = path.join(args.bundle, ".project.json.noenv.tmp");
+      fs.writeFileSync(tmp, JSON.stringify(args.brokens[0]));
+      out.push([await f.cardboard14.install(tmp, args.file), fs.existsSync(tmp)]);
+      return out;`, { brokens, bundle: bundleOf(pc), file });
+    assert.deepEqual(installed, Array(brokens.length + 1).fill([false, false]), "each refused, its temp file gone");
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+    // Cardboard's own reader can't take what was refused: the library drops a project with no name
+    const probe = path.join(pc.root, "Probe.cardboard");
+    fs.mkdirSync(probe);
+    fs.writeFileSync(path.join(probe, "project.json"), JSON.stringify({ ...env, project: { ...env.project, id: env.project.id + "-probe", name: undefined, media: [] }, media: [] }));
+    assert.deepEqual(names(await pc.call("projects.list")), ["Demo"], "a nameless project.json is not a project to Cardboard");
+    fs.rmSync(probe, { recursive: true, force: true });
+    // a good save after all that lands as usual
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 155 } : undefined));
+    await S.until(() => envOf(pc).project.timelineItems.some((i) => i.fontSize === 155), 20_000, "the save in project.json");
+    assert.equal(envOf(pc).project.name, "Demo");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
