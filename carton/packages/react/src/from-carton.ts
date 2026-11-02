@@ -1163,6 +1163,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * ("Split 'clip.mp4' at 4.0 s"). Returns, per joined row, the record to credit it to: the first part, which whoever
    * split it made.
    */
+  /** A fold's ops by record (`items/c1`), root fields by name: one row of the Fold dialog each. */
+  const byRecord = (ops: readonly Op[]) => {
+    const groups = new Map<string, Op[]>();
+    for (const op of ops) {
+      if (op.op === "remap") continue;
+      const p = op.path;
+      const key = schema.collections[String(p[0])] ? pathKey(p.slice(0, 2)) : pathKey(p.slice(0, 1));
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = []));
+      g.push(op);
+    }
+    return groups;
+  };
+  // Both cuts' heads as a plan saw them: a split row left out is checked against the cuts as they are at the fold.
+  const headsOf = async (fromId: string, intoId: string) => (await Promise.all([fromId, intoId].map(async (cut) => (await carton.log({ cut, limit: 1 }))[0]?.ref.seq ?? 0))).join("|");
+  let planHeads = "";
   const joinSplits = (groups: Map<string, Op[]>, ops: readonly Op[], doc: Doc, joined?: Map<string, string[]>) => {
     const creditOf = new Map<string, string>();
     for (const sp of splits(ops, doc, schema)) {
@@ -1284,6 +1300,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       for (const c of cardList) planCards.set(c.path, c);
       planNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
+      planHeads = await headsOf(fromId, intoId);
       // the cut folded into names the cards' clips (and every change below): read once
       const intoDoc = cardList.length || r.preview ? (await carton.head(intoId)).doc : undefined;
       const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId, intoDoc));
@@ -1292,15 +1309,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const preview = r.preview;
       if (!preview) return { ...base, conflicts: cardsOut, partial: false };
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
-      const groups = new Map<string, Op[]>();
-      for (const op of preview.ops) {
-        if (op.op === "remap") continue;
-        const p = op.path;
-        const key = schema.collections[String(p[0])] ? pathKey(p.slice(0, 2)) : pathKey(p.slice(0, 1));
-        let g = groups.get(key);
-        if (!g) groups.set(key, (g = []));
-        g.push(op);
-      }
+      const groups = byRecord(preview.ops);
       // a split clip is one row, left out whole (fold() adds its parts' keys)
       const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
       const changes: FoldChange[] = [];
@@ -1372,7 +1381,16 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // What earlier partial folds left out (UI audit P1-4): each one's rows fold in together, as "fold in the rest"
       // (a revert of its inverse), after the new changes; leaving any of its rows out keeps all of them for later.
       const restRows = new Set([...planRest.values()].flatMap((x) => x.ids));
-      const leaveOut = o.leaveOut.filter((id) => !restRows.has(id)).flatMap((id) => [id, ...(planJoined.get(id) ?? [])]);
+      // A split row left out stands for the clip and its parts. If either cut moved since the plan (its parts split
+      // again, say), they are found again in what the fold would bring now, so no part of it comes in (review P2).
+      let joined: ReadonlyMap<string, string[]> = planJoined;
+      if (o.leaveOut.some((id) => planJoined.has(id)) && (await headsOf(fromId, intoId)) !== planHeads) {
+        const now = (await carton.fold(fromId, { into: intoId, check: true, ...(o.allCards ? { missingBase: "all-cards" as const } : {}) })) as { preview?: { ops: Op[] } };
+        const fresh = new Map<string, string[]>();
+        if (now.preview) joinSplits(byRecord(now.preview.ops), now.preview.ops, (await carton.head(intoId)).doc, fresh);
+        joined = new Map([...planJoined].map(([k, parts]) => [k, fresh.get(k) ?? parts]));
+      }
+      const leaveOut = o.leaveOut.filter((id) => !restRows.has(id)).flatMap((id) => [id, ...(joined.get(id) ?? [])]);
       const rests = [...planRest].filter(([, x]) => !x.ids.some((id) => o.leaveOut.includes(id)));
       let r;
       try {

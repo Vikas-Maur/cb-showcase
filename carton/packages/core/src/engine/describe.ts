@@ -176,9 +176,11 @@ function findSplits(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schem
   if (!removed.length || added.length < 2) return out;
   const num = (r: Rec, f: string) => r[f] as number;
   // the same footage: every reference (a field named like an id) and the kind as they were, and the same name
+  const names = new Map<Rec, string>();
+  const named = (x: Rec) => names.get(x) ?? names.set(x, label(tl.collection, x)).get(x)!;
   const same = (r: Rec, x: Rec) => {
     for (const k of new Set([...Object.keys(r), ...Object.keys(x)])) if (k !== K && k !== tl.lane && (k === "type" || isIdKey(k)) && !deepEqual(r[k], x[k])) return false;
-    return label(tl.collection, r) === label(tl.collection, x);
+    return named(r) === named(x);
   };
   const used = new Set<string>();
   for (const R of removed) {
@@ -200,7 +202,7 @@ function findSplits(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schem
       }
       return x;
     };
-    const cands = added.filter((a) => !used.has(a.key) && same(r, a.rec));
+    const cands = added.filter((a) => !used.has(a.key) && same(r, a.rec)).sort((a, b) => num(a.rec, tl.start) - num(b.rec, tl.start) || num(a.rec, tl.end) - num(b.rec, tl.end) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     if (cands.length < 2) continue;
     const take = (parts: { key: string; rec: Rec }[], at: number[], ideals: Rec[]) => {
       for (const p of parts) used.add(p.key);
@@ -221,30 +223,26 @@ function findSplits(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schem
       take(chain, chain.slice(1).map((p) => num(p.rec, tl.start)), chain.map((p) => ideal(p.rec, num(p.rec, tl.start), num(p.rec, tl.end), back)));
       continue;
     }
-    // two parts: one where the split left it, the other changed since (it keeps the cut's source point, or without
-    // source points its length)
+    // two parts: one where the split left it (its anchor: from the start, or to the end, of the original on its track),
+    // the other changed since (it keeps the cut's source point, or without source points its length). Only anchors are
+    // paired (a bulk replacement with none costs nothing more), and a forward reading wins over a backward one whatever
+    // order the ops come in: core doesn't know which way a clip plays, and the two can both fit one pair
     const inside = (t: number) => t > s0 + SRC_EPS && t < e0 - SRC_EPS;
+    const onTrack = (a: { rec: Rec }) => a.rec[tl.lane] === r[tl.lane];
+    const lefts = cands.filter((a) => onTrack(a) && close(num(a.rec, tl.start), s0) && inside(num(a.rec, tl.end)));
+    const rights = cands.filter((b) => onTrack(b) && close(num(b.rec, tl.end), e0) && inside(num(b.rec, tl.start)));
+    if (!lefts.length && !rights.length) continue;
     const keeps = (p: Rec, x: Rec, left: boolean, back: boolean) => (hasSrc ? close(p[left !== back ? tl.sourceEnd : tl.source], x[left !== back ? tl.sourceEnd : tl.source]) : close(num(p, tl.end) - num(p, tl.start), num(x, tl.end) - num(x, tl.start)));
-    const fits = (a: Rec, b: Rec, t: number) => {
-      for (const back of hasSrc ? [false, true] : [false]) {
-        const ia = ideal(a, s0, t, back),
-          ib = ideal(b, t, e0, back);
-        if (keeps(a, ia, true, back) && keeps(b, ib, false, back)) return [ia, ib];
-      }
-      return null;
-    };
-    found: for (const a of cands)
-      for (const b of cands) {
-        if (a === b) continue;
-        const ts: number[] = [];
-        if (a.rec[tl.lane] === r[tl.lane] && close(num(a.rec, tl.start), s0) && inside(num(a.rec, tl.end))) ts.push(num(a.rec, tl.end));
-        if (b.rec[tl.lane] === r[tl.lane] && close(num(b.rec, tl.end), e0) && inside(num(b.rec, tl.start))) ts.push(num(b.rec, tl.start));
-        for (const t of ts) {
-          const f = fits(a.rec, b.rec, t);
-          if (f) {
-            take([a, b], [t], f);
-            break found;
-          }
+    const pairs: [{ key: string; rec: Rec }, { key: string; rec: Rec }, number][] = [];
+    for (const a of lefts) for (const b of cands) if (a !== b) pairs.push([a, b, num(a.rec, tl.end)]);
+    for (const b of rights) for (const a of cands) if (a !== b) pairs.push([a, b, num(b.rec, tl.start)]);
+    found: for (const back of hasSrc ? [false, true] : [false])
+      for (const [a, b, t] of pairs) {
+        const ia = ideal(a.rec, s0, t, back),
+          ib = ideal(b.rec, t, e0, back);
+        if (keeps(a.rec, ia, true, back) && keeps(b.rec, ib, false, back)) {
+          take([a, b], [t], [ia, ib]);
+          break found;
         }
       }
   }
@@ -381,7 +379,8 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     if (sp === null) continue; // a split's part: told with it
     if (sp) {
       // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
-      // its times, track and plain values (a transition or a fade the split itself dropped is no change of its own)
+      // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,
+      // keyframes it rescaled, are no change of their own)
       const name = `'${label(sp.coll, sp.rec)}'`;
       const said: string[] = [`Split ${name} at ${and(sp.at.map(fmtT))}`];
       sp.parts.forEach(({ rec, ideal }, i) => {
@@ -392,8 +391,15 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
           const v = rec[f],
             was = ideal[f];
           const timing = f === tl!.start || f === tl!.end || f === tl!.source || f === tl!.sourceEnd || f === tl!.lane;
-          const plainV = (x: unknown) => x !== undefined && (x === null || typeof x !== "object");
-          if (timing ? !close(v, was) : plainV(v) && plainV(was) && v !== was) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          const plainV = (x: unknown) => x === null || typeof x !== "object";
+          if (timing) {
+            if (!close(v, was)) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          } else if (was === undefined) {
+            if (v !== undefined) ops.push({ op: "set", path: [sp.coll, id, f], value: v }); // set on the part since
+          } else if (v === undefined) {
+            if (plainV(was)) ops.push({ op: "unset", path: [sp.coll, id, f] }); // a value cleared (a transition, a fade: the split's)
+          } else if (plainV(v) && plainV(was) && v !== was) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          // a structure in both that differs (keyframes): the split rescales those; not told as a change of the part
         }
         if (!ops.length) return;
         const doc = { ...base, [sp.coll]: [...((base[sp.coll] as Rec[] | undefined) ?? EMPTY), ideal] };

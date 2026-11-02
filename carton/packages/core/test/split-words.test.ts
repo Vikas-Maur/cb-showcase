@@ -124,3 +124,36 @@ test("the Fold dialog keeps a split's records together (splits())", () => {
   assert.deepEqual(core.splits(ops, d, schema), [{ collection: "items", removed: "c1", parts: ["p1", "p2"] }]);
   assert.deepEqual(core.splits([{ op: "set", path: ["items", "c2", "opacity"], value: 0.5 }], d, schema), []);
 });
+
+test("review: the same split reads the same whatever order its ops come in (forward before backward)", () => {
+  const d = base();
+  // right part moved over the left part's old place: a backward reading (split at 6.0 s) fits the same records too
+  const ops = save(d, splitAt(4, ([a, b]) => [a, { ...b, startTime: 0, endTime: 6 }]));
+  const want = ["Split 'clip.mp4' at 4.0 s, moved its right part 4.0 s → 0.0 s"];
+  assert.deepEqual(core.describe(ops, d, schema), want);
+  assert.deepEqual(core.describe([...ops].reverse(), d, schema), want);
+});
+
+test("review: a value set on a part, or cleared, in the same version is told; what the split drops is not", () => {
+  const d = base();
+  (d.items as Rec[])[0] = { ...(d.items as Rec[])[0]!, volume: 0.8 };
+  const ops = save(d, splitAt(4, ([a, b]) => {
+    const { volume: _v, ...right } = b;
+    return [{ ...a, blur: 3 }, right];
+  }));
+  assert.deepEqual(core.describe(ops, d, schema), ["Split 'clip.mp4' at 4.0 s, set its left part blur to 3, cleared volume on its right part"]);
+});
+
+test("review: a bulk replacement of many clips of one footage is no split, and costs no pairing", () => {
+  const n = 400;
+  const items = Array.from({ length: n }, (_, i) => clip(`o${i}`, i * 10, i * 10 + 10));
+  const d: Doc = { ...base(), items };
+  // fresh clips of the same footage, every one shifted by 3 s: nothing starts or ends where a removed one did
+  const after = items.map((it, i) => ({ ...it, id: `n${i}`, startTime: (it.startTime as number) + 3, endTime: (it.endTime as number) + 3 }));
+  const ops = core.diff(d, { ...d, items: after }, schema);
+  const t0 = performance.now();
+  const lines = core.describe(ops, d, schema);
+  const ms = performance.now() - t0;
+  assert.ok(!lines.some((l) => l.startsWith("Split")), "no split");
+  assert.ok(ms < 2000, `bounded work: ${ms.toFixed(0)} ms`);
+});

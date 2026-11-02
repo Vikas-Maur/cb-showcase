@@ -91,3 +91,30 @@ test("#2: a split is one change in the Fold dialog, 'Split 'clip.mp4' at 2.0 s',
     await carton.close();
   }
 });
+
+test("review P2: a split row left out stays out whole when its part was split again after the plan was shown", async () => {
+  const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), cutName: "Main cut" }, actor: alice });
+  const ui = fromCarton(carton, { me: alice });
+  try {
+    await ui.ready;
+    const main = carton.cut;
+    const alt = await carton.fork("Alt cut");
+    await carton.switchTo(alt.id);
+    const a = clip("a", 0, 6);
+    const p2 = { ...a, id: "p2", startTime: 2, trimStart: 2 };
+    await carton.commit({ ops: [{ op: "remove", path: ["items", "a"] }, { op: "insert", path: ["items", "p1"], value: { ...a, id: "p1", endTime: 2, trimEnd: 2 } }, { op: "insert", path: ["items", "p2"], value: p2 }] });
+    await ui.settled();
+    const plan = await ui.planFold(alt.id, main);
+    const split = plan.changes.find((c) => c.summary.startsWith("Split"))!;
+    assert.ok(split, JSON.stringify(plan.changes));
+    // while the dialog is open, the right part is split again on the cut folded in
+    await carton.commit({ cut: alt.id, ops: [{ op: "remove", path: ["items", "p2"] }, { op: "insert", path: ["items", "p3"], value: { ...p2, id: "p3", endTime: 4, trimEnd: 4 } }, { op: "insert", path: ["items", "p4"], value: { ...p2, id: "p4", startTime: 4, trimStart: 4 } }] });
+    const r = await ui.fold(alt.id, main, { choices: {}, leaveOut: [split.id] });
+    assert.deepEqual(r, { ok: true });
+    const ids = ((await carton.head(main)).doc.items as Rec[]).map((x) => x.id).sort();
+    assert.deepEqual(ids, ["a", "b"], "none of the split's parts came in");
+  } finally {
+    ui.dispose();
+    await carton.close();
+  }
+});
