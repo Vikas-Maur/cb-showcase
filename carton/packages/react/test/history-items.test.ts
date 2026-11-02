@@ -182,3 +182,37 @@ test("panel-author: a restore's or a fold of the rest's Undo is offered as soon 
   assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
   ui.dispose();
 });
+
+test("P1-4 (review #1): a left-out change edited on Main since isn't offered, and folding in the others never trips on it", async () => {
+  const { carton, ui, main, v } = await alt();
+  await ui.planFold(v.id, main);
+  assert.equal((await ui.fold(v.id, main, { leaveOut: ["items/b", "items/d"], choices: {} })).ok, true);
+  await carton.commit({ cut: main, ops: [set("b", "name", "Main's own")], author: alice });
+  const plan = await ui.planFold(v.id, main);
+  assert.deepEqual(plan.changes.map((c) => c.summary), ["Changed 'D' color \"red\" → \"black\""], "only what is still left out");
+  const r = await ui.fold(v.id, main, { leaveOut: [], choices: {} });
+  assert.deepEqual([r.ok, r.conflicts?.length ?? 0, ui.conflicts().length], [true, 0, 0], "no card for the change Main made since");
+  const head = (await carton.head(main)).doc;
+  assert.deepEqual([item(head, "b").name, item(head, "d").color], ["Main's own", "black"]);
+  assert.equal((await ui.planFold(v.id, main)).changes.length, 0, "nothing left");
+  ui.dispose();
+});
+
+test("P1-4 (review #2): undoing 'Fold in the rest' offers the rest again, on its row and in Fold in", async () => {
+  const { carton, ui, main, v } = await alt();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  const inv = (await rows(ui))[0]!;
+  assert.equal(inv.foldRest, true);
+  assert.equal((await ui.foldRest(inv.id)).ok, true);
+  await settle();
+  assert.equal((await ui.planFold(v.id, main)).changes.length, 0);
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true, "Undo the fold of the rest");
+  assert.equal(item((await carton.head(main)).doc, "d").color, "red");
+  await settle();
+  const row = ui.history().at("all", ui.history().indexOf("all", inv.id))!;
+  assert.equal(row.foldRest, true, "its row offers the rest again");
+  assert.equal((await ui.planFold(v.id, main)).changes.length, 1, "and Fold in lists it");
+  ui.dispose();
+});

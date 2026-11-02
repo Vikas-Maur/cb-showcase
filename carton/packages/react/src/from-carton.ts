@@ -967,6 +967,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   const invalidateRest = (id: string) => {
     restGen.set(id, (restGen.get(id) ?? 0) + 1);
+    // folded in, then its records changed again (an Undo of "Fold in the rest" leaves it out again, review #2): the
+    // state decides again
+    restDone.delete(id);
     if (!restDecision.delete(id)) return;
     showRest(id);
   };
@@ -1104,7 +1107,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // Cards of the last fold plan, by path: the fold's choices and "Keep both" read the real cards, not placeholders.
   const planCards = new Map<string, ConflictCard>();
   // What earlier partial folds of the plan's cut left out (UI audit P1-4): each partial fold's inverse change → its rows.
-  const planRest = new Map<string, string[]>();
+  // `ops`: what folding in those rows does (a record changed on the cut since isn't offered, review #1); `whole`: they
+  // are all its records, so it folds in as "Fold in the rest" (a revert of its inverse) rather than as those ops.
+  const planRest = new Map<string, { ids: string[]; ops: Op[]; whole: boolean }>();
   // Whether the plan had anything new to fold in (changes or cards), beyond what was left out earlier.
   let planNew = false;
   const planKey = (from: string, into: string) => `${from}>${into}`;
@@ -1144,10 +1149,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const at = `${intoId}@${p.ref.seq}`;
       const [doc, d] = await Promise.all([carton.checkout(at), carton.diff(at, `${intoId}@${p.ref.seq - 1}`)]);
       const groups = new Map<string, Op[]>();
+      let whole = true;
       for (const op of d.ops) {
         if (op.op === "remap") continue;
         // still left out: the head holds what the partial fold set back (a record changed since isn't offered)
-        if (!deepEqual(getIn(head, op.path, schema), getIn(doc, op.path, schema))) continue;
+        if (!deepEqual(getIn(head, op.path, schema), getIn(doc, op.path, schema))) {
+          whole = false;
+          continue;
+        }
         const key = recordOf(pathKey(op.path));
         (groups.get(key) ?? groups.set(key, []).get(key)!).push(op);
       }
@@ -1159,7 +1168,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         ids.push(id);
         out.push({ id, summary: engine.describe(ops, doc, schema).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
       }
-      if (ids.length) planRest.set(p.change, ids);
+      if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
     return out;
   };
@@ -1309,9 +1318,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const common = { into: intoId, author: opts.me, ...(choices ? { choices } : {}), ...(o.allCards ? { missingBase: "all-cards" as const } : {}) };
       // What earlier partial folds left out (UI audit P1-4): each one's rows fold in together, as "fold in the rest"
       // (a revert of its inverse), after the new changes; leaving any of its rows out keeps all of them for later.
-      const restRows = new Set([...planRest.values()].flat());
+      const restRows = new Set([...planRest.values()].flatMap((x) => x.ids));
       const leaveOut = o.leaveOut.filter((id) => !restRows.has(id));
-      const rests = [...planRest].filter(([, ids]) => !ids.some((id) => o.leaveOut.includes(id))).map(([inverse]) => inverse);
+      const rests = [...planRest].filter(([, x]) => !x.ids.some((id) => o.leaveOut.includes(id)));
       let r;
       try {
         r = !planNew ? ({ status: "up-to-date" } as const) : leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: [...leaveOut] }) : await carton.fold(fromId, common);
@@ -1335,18 +1344,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       planFor = "";
       if (r.status === "rejected") return await refresh(), { ok: false, error: r.reason };
       if (r.status !== "confirmed" && r.status !== "pending" && r.status !== "up-to-date") return await refresh(), { ok: false, error: r.dialog.text };
-      for (const inverse of rests) {
-        const res = await carton.revert(inverse, { author: opts.me, cut: intoId });
+      // What earlier partial folds left out: each as "Fold in the rest" when all of it is still left out, else exactly
+      // the changes shown (a revert would also take back what was changed on the cut since: a card the plan never
+      // showed, review #1). A clash with an edit made since the plan is a card in the stack, as Fold in the rest's.
+      let carded = false;
+      for (const [inverse, x] of rests) {
+        const res = x.whole ? await carton.revert(inverse, { author: opts.me, cut: intoId }) : await carton.commit({ cut: intoId, ops: x.ops, author: opts.me });
         if (res.status === "conflicts") {
           addCards(res.cards, undefined, intoId);
-          await refresh();
-          return { ok: false, conflicts };
+          carded = true;
+          continue;
         }
         if (res.status === "rejected") return await refresh(), { ok: false, error: res.reason };
-        markRestDone(inverse);
+        if (x.whole) markRestDone(inverse);
       }
       await refresh();
-      return { ok: true };
+      return carded ? { ok: true, conflicts } : { ok: true };
     },
     async resolve(id, choice) {
       const entry = cardEntries.get(id);
