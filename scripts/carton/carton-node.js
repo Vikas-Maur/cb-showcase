@@ -344,7 +344,10 @@ const meOf = (lc) => {
 // The app's Ctrl+Z and redo (H6): the person's undo group in the editor's session (`since`, the bridge's), only what was
 // made from the app (`app`). An undo whose inverse clashes with a later change of the same thing changes nothing
 // (core): its cards are kept for the person and shown in the open History panels' conflict stack, each saying why in
-// plain words (laptop report 90c4127, bug 6), so the person can keep the newer value or take theirs back.
+// plain words (laptop report 90c4127, bug 6), so the person can keep the newer value or take theirs back. An undo or
+// redo records only the inverse of what its change recorded (core never infers a ripple for it), so the undo of a drag
+// isn't a "closed gap" that the undo of the split before it clashes with (laptop report #2, bug 6:
+// test/sync/undo-split.test.js).
 const STEP_REASON = {
   undo: "Not undone: this changed after your edit. Keep yours to undo it here anyway.",
   redo: "Not redone: this changed after your undo. Keep yours to redo it here anyway.",

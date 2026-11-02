@@ -91,6 +91,8 @@ export interface Planned {
   kind: ChangeKind;
   intent?: Intent;
   extra: { reverts: ChangeId | ChangeId[] };
+  /** Its intent is exactly the inverse of what the changes it reverts recorded (§8): none is inferred (HistoryCommit). */
+  inverse: true;
 }
 
 /** A commit's base when the caller holds the doc (GUI base in engine memory, a view's last applied state). */
@@ -117,6 +119,12 @@ export interface HistoryCommit {
   /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
+  /**
+   * An undo, redo or revert core planned (Planned): its intent is the inverse of what its changes recorded, so no remap
+   * is inferred from its ops. The undo of a plain drag pulls the clip back over the gap it left, which reads as a
+   * closed gap; recorded as a ripple delete, it made the undo of a split before it clash (laptop report #2, bug 6).
+   */
+  inverse?: boolean;
 }
 
 export type FoldResult =
