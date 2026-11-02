@@ -164,6 +164,10 @@ test("Carton on: the stage's text editor asks the bridge before it opens; the st
   assert.equal(count(editor, 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(E(!1),S({kind:"edit-text"'), 1, "Enter on a selected title");
   assert.equal(count(editor, 'if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;const{selectTimelineItem:ze,setEditingTextItemId:It}'), 1, "a double-click on a title or caption");
   assert.equal(count(editor, "__carton?.refuse"), 2, "and nowhere else");
+  // regress prod3: in a preview the stage's text and caption toolbars aren't shown (vn: what both are given); U is the
+  // editor's store, whose state the bridge's adopt sets (cartonPreview), as the text toolbar itself reads it
+  assert.equal(count(editor, "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B,bounds:pe,canvasRect:et,scale:b.scale}:null"), 1, "the toolbars' props, none in a preview");
+  assert.equal(count(editor, 'vn?.item.type==="caption"&&c.jsx(TB,{...vn}),vn?.item.type==="text"&&c.jsx(BB,{...vn})'), 1, "both toolbars render from it");
   const guard = store.indexOf("function me(){return _v()?(xv(),!0):!1}const Ede=me,"), hook = store.indexOf("ne.setState=tN(");
   const between = store.slice(guard, hook);
   assert.ok(guard > 0 && hook > guard && between.includes(",Rde=t=>{") && between.endsWith(";") && between.length < 2000, "me and Rde in one statement list, right before the hook");

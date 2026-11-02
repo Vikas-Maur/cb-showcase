@@ -369,6 +369,11 @@ if (mode === "--cli") {
     // other branch, is refused by Cardboard's guard already.
     replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
     replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
+    // Regress prod3 (baseline P3-9 family): in a read-only preview a selected title or caption still showed the stage's
+    // text toolbar (font, size, bold, alignment…), which Cardboard's guard then refused. It isn't shown there: nothing
+    // in a preview looks editable. The preview's opening and its Return both replace the timeline (the bridge's adopt),
+    // so the stage renders again then and reads the store's state as it is.
+    replace("vn=B&&pe&&!p&&ct&&!ue&&!M&&!x?{item:B", "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B");
     prepend(require("./carton/editor-panel"));
   });
   // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose
