@@ -740,6 +740,8 @@ export class History {
         kind: some ? "merge" : c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
         ...(some ? { rejected: [...(c!.rejected ?? [])] } : {}),
       };
+      // "fold in the rest": a revert of a partial fold's inverse (final re-check P3-12b)
+      if (c?.kind === "revert" && typeof c.reverts === "string" && this.#byId.get(c.reverts)?.kind === "partial-revert") v.restOf = c.reverts;
       const h = this.#hash.get(id);
       if (h) v.hash = h;
       if (named) v.name = named.name;

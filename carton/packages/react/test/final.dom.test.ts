@@ -92,3 +92,18 @@ test(name("final N4: an opened version of one change offers \"Hide the change\";
   }
   await m.unmount();
 });
+
+// Baseline P3-12b: "Folded the rest of 'Client review' into 'Main cut'" showed the ↺ (restore) mark; a fold shows the fold
+// mark, as "Folded 'Client review' into 'Main cut': 1 of 2 changes" does. (fromCarton gives it the fold kind:
+// from-carton.test.ts.)
+test(name("final P3-12b: the rest of a partial fold has the fold mark, an undo the ↺ mark"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(async () => { ui.addVersion({ kind: "fold", summary: "Folded the rest of 'Client review' into 'Main cut': 1 change" } as never); });
+  await act(async () => { ui.addVersion({ kind: "undo", summary: "Undid the restore" } as never); });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const icon = (text: string) => $$(m.container, ".carton-version").find((r) => r.textContent?.includes(text))?.querySelector("[data-icon]")?.getAttribute("data-icon");
+  assert.equal(icon("Folded the rest of"), "fold");
+  assert.equal(icon("Undid the restore"), "restore");
+  await m.unmount();
+});
