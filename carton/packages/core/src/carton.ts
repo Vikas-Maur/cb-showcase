@@ -19,7 +19,7 @@ import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
-import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
+import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import type {
@@ -304,6 +304,13 @@ export interface Carton {
   share(cut?: string): Promise<CutRecord>;
   /** Fold in some of it: everything except the rejected record paths, which an inverse change lists. */
   foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult>;
+  /**
+   * What partial folds of cut `from` into `into` (default: current cut) left out and is still left out (UI audit P1-4:
+   * "you can fold in the rest later"), newest first: each partial fold's inverse change, its version and who folded,
+   * and the paths it left out. Folding in the rest is `revert(change)`; a plain `fold` of `from` doesn't bring it in
+   * (§5.3). Empty once the rest is folded in, its fold is undone, or `into` changed those records since.
+   */
+  leftOut(from: string, opts?: { into?: string }): Promise<{ change: ChangeId; ref: StateRef; at: number; author: Actor | null; rejected: PathKey[] }[]>;
 
   /** Compare: ops and plain-language changes from `a` to `b` (default `b`: current head), with the shot diff. */
   diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean }): Promise<DiffResult>;
@@ -1470,19 +1477,70 @@ class CartonImpl implements Carton {
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
     });
     if (!opts.summary || !versions.length) return versions;
-    // one state per page, walked forward: each version is described against the state just before it
-    const lo = versions[versions.length - 1]!.ref.seq;
+    // one state per page, walked forward: each version is described against the state just before it. A fold-some's
+    // version (UI audit P1-3) is its fold and partial revert together, so the walk starts before its fold.
     const log = this.#h.changes(cut);
+    let lo = versions[versions.length - 1]!.ref.seq;
+    if (lo > 1 && completedAt(log, lo - 1)) lo--;
     let doc = E.fork(this.#h.stateOf(nodeId(cut, Math.max(0, lo - 1)))!, this.schema);
-    const summary = new Map<number, string>();
+    const words = new Map<number, { summary: string; details?: string[] }>();
+    const name = (id: string) => this.#h.cut(id)?.name;
+    // "Folded 'Client review' into 'Main cut'": the cut folded in by name (a copy's lineage node has none)
+    const fold = (m: ConfirmedChange, rest = false) => {
+      const from = m.mergeOf && name(m.mergeOf.branchId);
+      return `Folded ${rest ? "the rest of " : ""}${from ? `'${from}'` : "another copy"} into '${name(cut) ?? "this cut"}'`;
+    };
+    const records = (ops: readonly Op[]) => new Set(ops.filter((op) => op.op !== "remap").map((op) => (this.schema.collections[op.path[0] as string] ? `${op.path[0]}/${op.path[1]}` : String(op.path[0])))).size;
+    const changes = (n: number, of?: number) => (of !== undefined ? `${n} of ${of} change${of === 1 ? "" : "s"}` : `${n} change${n === 1 ? "" : "s"}`);
+    let byId: Map<string, ConfirmedChange> | null = null;
+    const find = (id: unknown) => (typeof id === "string" ? (byId ??= new Map(log.map((c) => [c.id, c]))).get(id) : undefined);
+    let pairBase: Doc | null = null;
     for (let s = Math.max(1, lo); s <= versions[0]!.ref.seq; s++) {
       const c = log[s - 1]!;
-      // an import is the whole project arriving: one line, not its first field ("Changed the project name …")
-      const first = c.name ?? (c.kind === "import" ? "Imported the project" : E.describe(c.ops, doc, this.schema, c.intent)[0]);
-      if (first) summary.set(s, first);
-      doc = E.apply(doc, c.ops, this.schema);
+      if (completedAt(log, s)) {
+        pairBase = E.fork(doc, this.schema);
+        doc = E.apply(doc, c.ops, this.schema);
+        continue;
+      }
+      // the version's own ops, described against the state before it: a fold-some's are its fold's and partial
+      // revert's together (described before the walk applies them: apply writes into the walk's state)
+      let after: Doc, ops: readonly Op[], v: { summary: string; lines: string[] };
+      if (pairBase) {
+        after = E.apply(E.fork(doc, this.schema), c.ops, this.schema);
+        ops = E.diff(pairBase, after, this.schema);
+        v = E.describeVersion(ops, pairBase, this.schema);
+      } else {
+        ops = c.ops;
+        v = E.describeVersion(ops, doc, this.schema, c.intent);
+        after = E.apply(doc, c.ops, this.schema);
+      }
+      let summary = v.summary;
+      const merged = pairBase ? find(c.reverts) : c.mergeOf ? c : undefined;
+      if (c.kind === "import") summary = "Imported the project"; // the whole project arriving: one line, not its first field
+      else if (merged && pairBase) summary = `${fold(merged)}: ${changes(records(ops), records(merged.ops))}`;
+      else if (merged) summary = records(ops) ? `${fold(merged)}: ${changes(records(ops))}` : fold(merged);
+      else if (c.kind === "restore") summary = "Restored an earlier version";
+      else if (c.kind === "revert") {
+        // "Fold in the rest" reverts a partial fold's inverse
+        const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;
+        if (m?.mergeOf) summary = `${fold(m, true)}: ${changes(records(ops))}`;
+      }
+      if (c.name) summary = c.name;
+      const details = c.kind !== "import" && v.lines.length && (v.lines.length > 1 || v.lines[0] !== summary) ? v.lines : undefined;
+      if (summary || details) words.set(s, { summary, ...(details ? { details } : {}) });
+      doc = after;
+      pairBase = null;
     }
-    return versions.map((v) => (summary.has(v.ref.seq) ? { ...v, summary: summary.get(v.ref.seq)! } : v));
+    return versions.map((v) => {
+      const w = words.get(v.ref.seq);
+      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}) } : v;
+    });
+  }
+  async leftOut(from: string, opts: { into?: string } = {}) {
+    const into = opts.into ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh(into);
+    return this.#h.leftOut(into, from).map((c) => ({ change: c.id, ref: { branchId: into, seq: c.seq, pending: [] }, at: c.at, author: this.#who(c.author, c.id), rejected: [...(c.rejected ?? [])] }));
   }
   async diff(a: StateRef | string, b?: StateRef | string, opts: { shots?: boolean } = {}): Promise<DiffResult> {
     const cur = this.#h.current;
@@ -1828,11 +1886,12 @@ class CartonImpl implements Carton {
       const from = this.#h.canon(cut.forkOf);
       const source = cut.source ?? parseNode(from).branchId;
       const src = this.#h.cut(source);
-      // the versions after the one published, as log() lists them: a withdraw row (H1) or a squashed change is none
+      // the versions after the one published, as log() lists them: a withdraw row (H1), a squashed change or a
+      // fold-some's fold half (its partial revert is the version, UI audit P1-3) is none
       let versions = 0;
       if (src && !src.shallow && this.#h.head(source) !== from) {
         const log = this.#h.changes(source), at = parseNode(from);
-        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto) versions++;
+        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto && !completedAt(log, s + 1)) versions++;
       }
       out.push({ cut, from, source, newer: versions > 0, versions });
     }

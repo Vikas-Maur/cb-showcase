@@ -265,6 +265,12 @@ const MEDIA_LABELS: Record<string, string> = {
   "shared.t1": "small files",
 };
 
+// Carton's own media fields in an editor's words, never their values (UI audit P1-2: sharing footage wrote a version
+// titled `Set 'clip.mp4' content to "8291f1d9…"`, a content hash): sharing links the file for teammates, and the
+// facts, proxy and small files added later update it.
+const SHARING = { set: "Linked %s for sharing", changed: "Updated %s for sharing", cleared: "Unlinked %s from sharing" };
+const MEDIA_PHRASES = { contentHash: { ...SHARING, changed: "Linked %s for sharing" }, shared: SHARING };
+
 /** The T1 kinds of PLAN §11 (`@carton/media`'s `T1_KINDS`): poster, filmstrip, peaks, transcript, analysis, LUT, .context, recipe. */
 export const SHARED_T1_KINDS = ["poster", "filmstrip", "peaks", "transcript", "analysis", "lut", "context", "recipe"] as const;
 /**
@@ -325,6 +331,7 @@ export const cardboardSchema: Schema = defineSchema({
       only: true, // the versioned subset: data.code.source (text), data.content, data.fileName, data.type, contentHash, shared
       noun: "media",
       labels: MEDIA_LABELS,
+      phrases: MEDIA_PHRASES,
       fields: {
         contentHash: { kind: "leaf" },
         shared: sharedMedia,

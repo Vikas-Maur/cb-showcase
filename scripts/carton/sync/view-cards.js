@@ -207,6 +207,13 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
         });
         return lastOut;
       };
+      // "Preview" of a side (UI audit P1-6): fromCarton's conflictRef reads its own sides, which are turned round here.
+      // Its "theirs" is head (the person's value, shown now) and its "mine" the card's `theirs` (the agent's), so
+      // Preview of the agent's side showed the person's timeline and yours the agent's. A side asked for here is
+      // mapped back, as `resolve` maps a pick.
+      const baseRef = ui.conflictRef;
+      if (typeof baseRef === "function")
+        ui.conflictRef = (id, side) => baseRef.call(ui, id, isAgent(handle.cardFor(id)) && side !== "both" ? (side === "mine" ? "theirs" : "mine") : side);
       if (watching.has(lc)) return;
       watching.add(lc);
       // An agent's `cb resolve --keep mine` is a commit: once its card is closed too (a moment later, cb's next call),

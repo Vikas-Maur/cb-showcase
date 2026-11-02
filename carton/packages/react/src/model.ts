@@ -254,6 +254,11 @@ export interface FoldChange {
   readonly at: number;
   /** Can't be left out on its own (a project-level field): it is folded in with the rest. */
   readonly locked?: boolean;
+  /**
+   * Left out of an earlier partial fold (UI audit P1-4, "you can fold in the rest later"): that fold's id. Changes with
+   * the same id fold in together, or stay left out together.
+   */
+  readonly leftOut?: string;
 }
 
 export interface FoldPlan {

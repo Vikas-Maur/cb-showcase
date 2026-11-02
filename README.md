@@ -485,6 +485,18 @@ What changes with it on:
   cut is kept beside the cut, not in it, so a Cardboard with an earlier Carton still edits and renames that cut; it
   travels with a `.cbproj` that includes history and with a shared cut to a teammate who joins it, and a maker that
   isn't a well-formed name shows as no one.
+- **What each version did** (UI audit, 2026-11-02): a version of several changes reads as one line ("Moved
+  'clip.mp4', changed 'W1' and 'W2'"), and "3 changes" beside it opens the full list. A fold reads "Folded 'Client
+  review' into 'Main cut': 3 changes", a restore "Restored an earlier version". No version shows an id or a hash:
+  sharing footage reads "Linked 'clip.mp4' for sharing" (it read `Set 'clip.mp4' content to "8291f1d9…"`), and a clip
+  dragged onto a new track names that track. **Fold in some of it** is one version, "Folded 'Client review' into 'Main
+  cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
+  made: the undoing of what was left out). **You can fold in the rest later** is true now: the next Fold in lists what
+  was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
+  in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
+  recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the
+  one its turn's end names. A conflict card's "Preview" of the agent's side shows the agent's edit (it showed yours,
+  and yours showed the agent's). After Restore or "Fold in the rest", Undo offers that version at once.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
 - **A project is never left unreadable.** History's oldest row, "Started the cut", is where the history of a project
