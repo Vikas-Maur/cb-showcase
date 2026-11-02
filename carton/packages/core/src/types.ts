@@ -255,6 +255,13 @@ export interface ConfirmedChange extends Change {
   squashedInto?: number;
   /** A squashed change: the hash of its version's state before it was squashed (its identity in others' lineage). */
   squashedHash?: string;
+  /**
+   * A shared cut's withdraw row (H1): the server spent the id of an edit a rebase emptied (no ops, authored
+   * `{kind: "system", id: "withdraw"}`). It keeps its seq and id, so the id can never land later, but it is never a
+   * version: `log()` leaves it out (so History, `cb history`, the Compare and Fold pickers and their counts do), and a
+   * `change` event carrying it only moves the head. Its ref names the same state as the seq before it.
+   */
+  withdrawn?: boolean;
 }
 
 /** A pending change in a replica's queue: every version it had (each rebase adds one), newest last. */
