@@ -5,6 +5,7 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { VirtualList } from "../src/virtual.ts";
+import { dayNumber } from "../src/history-groups.ts";
 import { createMockUi } from "../src/mock.ts";
 import { commentsSkin } from "../src/comments/skin.ts";
 import { cardboardSkin } from "../src/skin/cardboard.ts";
@@ -166,5 +167,37 @@ test(name("regress P3-12: a version of one change offers \"Show the change\""), 
   const toggle = $(m.container, ".carton-version-expand")!;
   assert.equal(toggle.getAttribute("aria-label"), "Show the change");
   assert.equal(toggle.textContent, "1 change");
+  await m.unmount();
+});
+
+// The laptop's run of #2 (docs/regress/ui, bug-days-jump-*): "Yesterday" opened from the keyboard, so its header is the
+// picked row; scrolled down into it; a version arrives. The list jumped back with that header at the top, every time.
+test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolled into, a version arrives: the place holds"), async () => {
+  const now = new Date(2026, 10, 2, 5, 0).getTime();
+  const ui = createMockUi({ versions: 400, now });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const list = $(m.container, "[role=listbox]")!;
+  const yesterday = () => $$(m.container, ".carton-day").find((d) => d.id.endsWith(`-day:${dayNumber(now) - 1}`));
+  const picked = () => (list.getAttribute("aria-activedescendant") ?? "").endsWith(`-day:${dayNumber(now) - 1}`);
+  // ↓ from the top until Yesterday's header is the picked row (the list follows it), then Enter opens it
+  for (let i = 0; i < 400 && !picked(); i++)
+    await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+  assert.ok(picked(), "Yesterday's header is picked");
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
+  assert.match(yesterday()!.textContent ?? "", /^Yesterday/);
+  assert.equal(yesterday()!.getAttribute("aria-expanded"), "false", "folded (a long History)");
+  await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  await flush();
+  assert.equal(yesterday()!.getAttribute("aria-expanded"), "true", "opened");
+  const top = ty(yesterday()!.closest(".carton-vrow")!);
+  list.scrollTop = top + 52 * 12;
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
+  const before = list.scrollTop;
+  for (let i = 0; i < 3; i++) {
+    await act(async () => { ui.addVersion(); });
+    await flush();
+  }
+  assert.equal(list.scrollTop, before + 3 * 52, "moved only by the three rows that arrived above, never back to Yesterday's header");
   await m.unmount();
 });
