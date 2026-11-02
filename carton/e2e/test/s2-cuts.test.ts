@@ -91,7 +91,8 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   const rest2 = await untilShown(m, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
   const top = (await cbOk(m, ["history", "--limit", "3"])).versions[0];
   t.diagnostic(JSON.stringify({ afterRest: top }));
-  assert.equal(top.kind, "revert", `folding in the rest reverts the inverse change: ${JSON.stringify(top)}`);
+  // it reverts the inverse change, and `cb history` lists it as the fold it finishes (regress prod3: it read `revert`)
+  assert.deepEqual([top.kind, top.rest, String(top.change).endsWith(".rest")], ["merge", true, true], `folding in the rest: ${JSON.stringify(top)}`);
   assert.equal(named(rest2, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
   assert.equal((await cbOk(m, ["fold", CUT, "--check"])).status, "up-to-date");
 });
