@@ -1,0 +1,2186 @@
+{
+ "tool": "cf-lab-laptop",
+ "version": 2,
+ "build": {
+  "commit": "68dd0493264c",
+  "branch": "HEAD",
+  "dirty": false,
+  "untracked": false,
+  "builtAt": "2026-11-02T02:51:54.207Z",
+  "transportDeadLink": true
+ },
+ "startedAt": "2026-11-02T16:33:07.421Z",
+ "finishedAt": "2026-11-02T16:36:30.945Z",
+ "host": "https://carton-lab-r2.vikasmaur10.workers.dev",
+ "projectId": "laptop-20261102020754",
+ "config": {
+  "createdAt": "2026-11-02T02:07:56.944Z",
+  "expiresAt": "2026-11-04T02:07:56.944Z"
+ },
+ "run": "aa3dcf96",
+ "args": {
+  "uploadMB": 100,
+  "downloadMiB": 16,
+  "edits": 60,
+  "intervalMs": 1000,
+  "holeMs": 45000,
+  "holeEdits": 5,
+  "uploadEditMs": 3000,
+  "shaped": {
+   "kbps": 1000,
+   "delayMs": 100,
+   "edits": 20,
+   "holeMs": 0
+  },
+  "maxMinutes": 20,
+  "partMiB": null,
+  "concurrency": null,
+  "skip": [],
+  "transport": null
+ },
+ "env": {
+  "node": "v24.19.0",
+  "platform": "win32",
+  "arch": "x64",
+  "osRelease": "10.0.26300",
+  "cpus": 12,
+  "cpuModel": "12th Gen Intel(R) Core(TM) i5-12450HX",
+  "memGB": 17
+ },
+ "steps": {
+  "probe": {
+   "dnsMs": [
+    1061,
+    1,
+    1
+   ],
+   "tcpConnectMs": {
+    "n": 5,
+    "p50": 120,
+    "p90": 388,
+    "p99": 388,
+    "max": 388,
+    "mean": 168,
+    "values": [
+     120,
+     100,
+     147,
+     388,
+     87
+    ]
+   },
+   "tlsHandshakeMs": {
+    "n": 5,
+    "p50": 191,
+    "p90": 393,
+    "p99": 393,
+    "max": 393,
+    "mean": 239,
+    "values": [
+     135,
+     301,
+     191,
+     176,
+     393
+    ]
+   },
+   "healthMs": [
+    1310,
+    190,
+    221,
+    227,
+    224,
+    172,
+    361,
+    273,
+    222,
+    362
+   ],
+   "healthWarmMs": {
+    "n": 9,
+    "p50": 224,
+    "p90": 361,
+    "p99": 362,
+    "max": 362,
+    "mean": 250,
+    "values": [
+     190,
+     221,
+     227,
+     224,
+     172,
+     361,
+     273,
+     222,
+     362
+    ]
+   },
+   "healthFailed": 0,
+   "cloudflare": {
+    "colo": "HKG",
+    "loc": "IN",
+    "http": "http/1.1",
+    "tls": "TLSv1.3"
+   },
+   "wsConnectMs": [
+    777,
+    1057,
+    667,
+    1052,
+    996
+   ],
+   "stepMs": 15532,
+   "loopLagMs": {
+    "p50": 15.8,
+    "p99": 24.5,
+    "max": 36.3
+   }
+  },
+  "sync": {
+   "upToDateMs": {
+    "A": 1591,
+    "B": 1030
+   },
+   "editingMs": 59013,
+   "settled": true,
+   "settleMs": 163,
+   "convergenceMs": {
+    "n": 60,
+    "p50": 150,
+    "p90": 484,
+    "p99": 1695,
+    "max": 2395,
+    "mean": 286,
+    "values": [
+     119,
+     132,
+     123,
+     108,
+     144,
+     171,
+     145,
+     170,
+     115,
+     159,
+     129,
+     123,
+     135,
+     143,
+     244,
+     484,
+     111,
+     104,
+     113,
+     109,
+     121,
+     150,
+     348,
+     98,
+     170,
+     156,
+     281,
+     2395,
+     1561,
+     914,
+     470,
+     141,
+     144,
+     150,
+     186,
+     194,
+     123,
+     149,
+     1695,
+     680,
+     106,
+     521,
+     121,
+     128,
+     186,
+     212,
+     144,
+     163,
+     189,
+     202,
+     225,
+     151,
+     115,
+     121,
+     127,
+     340,
+     171,
+     287,
+     318,
+     147
+    ]
+   },
+   "otherHoldsItMs": {
+    "n": 60,
+    "p50": 150,
+    "p90": 475,
+    "p99": 1692,
+    "max": 2395,
+    "mean": 286,
+    "values": [
+     119,
+     129,
+     123,
+     107,
+     144,
+     171,
+     145,
+     170,
+     114,
+     159,
+     129,
+     112,
+     135,
+     139,
+     244,
+     475,
+     111,
+     104,
+     113,
+     109,
+     121,
+     150,
+     348,
+     98,
+     170,
+     156,
+     281,
+     2395,
+     1561,
+     914,
+     469,
+     141,
+     144,
+     150,
+     186,
+     194,
+     123,
+     149,
+     1692,
+     680,
+     106,
+     521,
+     121,
+     128,
+     186,
+     212,
+     138,
+     163,
+     189,
+     202,
+     225,
+     151,
+     110,
+     121,
+     125,
+     340,
+     171,
+     287,
+     318,
+     147
+    ]
+   },
+   "ownConfirmMs": {
+    "n": 60,
+    "p50": 150,
+    "p90": 484,
+    "p99": 1695,
+    "max": 2395,
+    "mean": 286,
+    "values": [
+     115,
+     132,
+     122,
+     108,
+     144,
+     171,
+     141,
+     170,
+     115,
+     159,
+     128,
+     123,
+     134,
+     143,
+     243,
+     484,
+     111,
+     103,
+     113,
+     109,
+     121,
+     150,
+     348,
+     98,
+     169,
+     156,
+     280,
+     2395,
+     1561,
+     914,
+     470,
+     140,
+     144,
+     150,
+     186,
+     193,
+     123,
+     149,
+     1695,
+     678,
+     106,
+     521,
+     121,
+     127,
+     186,
+     211,
+     144,
+     162,
+     189,
+     202,
+     225,
+     150,
+     115,
+     118,
+     127,
+     339,
+     171,
+     287,
+     318,
+     140
+    ]
+   },
+   "unseenPairs": 0,
+   "edits": 60,
+   "lost": 0,
+   "lostIds": [],
+   "unsettled": 0,
+   "absorbed": 0,
+   "rejected": 0,
+   "conflictCards": 0,
+   "editsWithConflictCards": 0,
+   "duplicateRows": 0,
+   "orderMismatches": 0,
+   "missingPerReplica": {
+    "A": 0,
+    "B": 0
+   },
+   "sameState": true,
+   "heads": {
+    "A": 60,
+    "B": 60
+   },
+   "clientStats": {
+    "A": {
+     "pushMsgs": 30,
+     "changesSent": 30,
+     "rejects": 0,
+     "acks": 30,
+     "duplicates": 0,
+     "rebases": 2,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    },
+    "B": {
+     "pushMsgs": 30,
+     "changesSent": 30,
+     "rejects": 0,
+     "acks": 30,
+     "duplicates": 0,
+     "rebases": 1,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    }
+   },
+   "timelines": {
+    "A": [
+     {
+      "atMs": 12,
+      "ev": "status",
+      "detail": "connecting"
+     },
+     {
+      "atMs": 1451,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 1592,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 1592,
+      "ev": "online"
+     },
+     {
+      "atMs": 2668,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 2779,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 4664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 4786,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 6660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 6804,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 8664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 8805,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 10669,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 10783,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 12670,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 12797,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 14672,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 14806,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 16662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 16905,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 18660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 18771,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 20662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 20775,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 22662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 22782,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 24665,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 25013,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 26663,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 26832,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 28660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 28940,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 30661,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 32063,
+      "ev": "rebase",
+      "detail": "1"
+     },
+     {
+      "atMs": 32222,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 32667,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 33137,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 34666,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 34810,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 36660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 36846,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 38665,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 38788,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 40661,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 42352,
+      "ev": "rebase",
+      "detail": "1"
+     },
+     {
+      "atMs": 42355,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 42670,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 42775,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 44661,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 44782,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 46664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 46850,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 48657,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 48802,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 50664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 50853,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 52665,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 52890,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 54671,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 54786,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 56662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 56789,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 58658,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 58829,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 60664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 60982,
+      "ev": "status",
+      "detail": "up-to-date"
+     }
+    ],
+    "B": [
+     {
+      "atMs": 1608,
+      "ev": "status",
+      "detail": "connecting"
+     },
+     {
+      "atMs": 2534,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 2638,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 2638,
+      "ev": "online"
+     },
+     {
+      "atMs": 3672,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 3803,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 5660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 5768,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 7660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 7830,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 9664,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 9834,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 11665,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 11824,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 13659,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 13782,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 15673,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 15816,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 17672,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 18156,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 19662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 19765,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 21668,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 21777,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 23660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 23810,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 25661,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 25759,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 27663,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 27819,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 29669,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 32221,
+      "ev": "rebase",
+      "detail": "1"
+     },
+     {
+      "atMs": 32575,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 33659,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 33800,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 35662,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 35813,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 37673,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 37866,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 39674,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 39823,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 41672,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 42350,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 43659,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 44179,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 45671,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 45798,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 47670,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 47881,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 49660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 49821,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 51669,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 51871,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 53660,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 53810,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 55659,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 55777,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 57673,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 58012,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 59673,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 59960,
+      "ev": "status",
+      "detail": "up-to-date"
+     },
+     {
+      "atMs": 61670,
+      "ev": "status",
+      "detail": "syncing"
+     },
+     {
+      "atMs": 61810,
+      "ev": "status",
+      "detail": "up-to-date"
+     }
+    ]
+   },
+   "stepMs": 61841,
+   "loopLagMs": {
+    "p50": 15.9,
+    "p99": 31.8,
+    "max": 67.6
+   }
+  },
+  "offline": {
+   "upToDateMs": 1419,
+   "statusWhenLinkCameBack": "connecting",
+   "cutMs": 45000,
+   "editsDuringCut": {
+    "C": 5,
+    "A": 5
+   },
+   "believedOnlineAtCommit": 4,
+   "heldBytesMax": 3330,
+   "settled": true,
+   "wentOffline": true,
+   "offlineAfterCutMs": 30015,
+   "offlineWhy": "the link is dead: no answer from the host in 15000 ms",
+   "connectAttemptsDuringCut": 2,
+   "onlineAfterLinkBackMs": 1072,
+   "upToDateAfterLinkBackMs": 1072,
+   "catchUp": {
+    "ownEditsConfirmedMs": 1072,
+    "peerHoldsThemMs": 136,
+    "holdsPeersEditsMs": 1072,
+    "allSettledMs": 1104
+   },
+   "ownEditsConfirmedAfterLinkBackMs": [
+    1072,
+    1072,
+    1072,
+    1072,
+    1072
+   ],
+   "peerConfirmDuringCutMs": {
+    "n": 5,
+    "p50": 151,
+    "p90": 202,
+    "p99": 202,
+    "max": 202,
+    "mean": 165,
+    "values": [
+     148,
+     151,
+     127,
+     202,
+     197
+    ]
+   },
+   "reconnects": 1,
+   "timeline": [
+    {
+     "atMs": 8503,
+     "ev": "status",
+     "detail": "syncing"
+    },
+    {
+     "atMs": 31015,
+     "ev": "status",
+     "detail": "offline"
+    },
+    {
+     "atMs": 31015,
+     "ev": "offline",
+     "detail": "the link is dead: no answer from the host in 15000 ms"
+    },
+    {
+     "atMs": 31530,
+     "ev": "status",
+     "detail": "connecting"
+    },
+    {
+     "atMs": 41556,
+     "ev": "error",
+     "detail": "unreachable: connect: couldn't connect to the host: no answer in 10000 ms"
+    },
+    {
+     "atMs": 41556,
+     "ev": "status",
+     "detail": "offline"
+    },
+    {
+     "atMs": 42067,
+     "ev": "status",
+     "detail": "connecting"
+    },
+    {
+     "atMs": 46953,
+     "ev": "status",
+     "detail": "syncing"
+    },
+    {
+     "atMs": 47075,
+     "ev": "rebase",
+     "detail": "1"
+    },
+    {
+     "atMs": 47075,
+     "ev": "online"
+    },
+    {
+     "atMs": 47076,
+     "ev": "status",
+     "detail": "up-to-date"
+    }
+   ],
+   "edits": 10,
+   "lost": 0,
+   "lostIds": [],
+   "unsettled": 0,
+   "absorbed": 1,
+   "rejected": 0,
+   "conflictCards": 1,
+   "editsWithConflictCards": 1,
+   "duplicateRows": 0,
+   "orderMismatches": 0,
+   "missingPerReplica": {
+    "A": 0,
+    "C": 0
+   },
+   "sameState": true,
+   "heads": {
+    "A": 69,
+    "C": 69
+   },
+   "clientStats": {
+    "A": {
+     "pushMsgs": 35,
+     "changesSent": 35,
+     "rejects": 0,
+     "acks": 35,
+     "duplicates": 0,
+     "rebases": 2,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    },
+    "C": {
+     "pushMsgs": 4,
+     "changesSent": 4,
+     "rejects": 0,
+     "acks": 0,
+     "duplicates": 0,
+     "rebases": 1,
+     "reconnects": 2,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    }
+   },
+   "proxy": {
+    "conns": 4,
+    "upBytes": 4648,
+    "downBytes": 8849,
+    "heldMaxBytes": 3330,
+    "errors": []
+   },
+   "stepMs": 49577,
+   "loopLagMs": {
+    "p50": 16,
+    "p99": 30.7,
+    "max": 55
+   }
+  },
+  "upload": {
+   "sizeBytes": 100000000,
+   "hashMs": 239,
+   "partial": {
+    "ms": 53734,
+    "doneBytes": 0,
+    "sentBytes": 0,
+    "mbps": 0
+   },
+   "liveSync": {
+    "everyMs": 3000,
+    "convergenceMs": {
+     "n": 17,
+     "p50": 234,
+     "p90": 3202,
+     "p99": 4192,
+     "max": 4192,
+     "mean": 1284,
+     "values": [
+      138,
+      143,
+      234,
+      1671,
+      3728,
+      3202,
+      4192,
+      1205,
+      3030,
+      116,
+      1490,
+      126,
+      2086,
+      120,
+      115,
+      122,
+      111
+     ]
+    },
+    "otherHoldsItMs": {
+     "n": 18,
+     "p50": 1205,
+     "p90": 3202,
+     "p99": 4192,
+     "max": 4192,
+     "mean": 1312,
+     "values": [
+      137,
+      143,
+      232,
+      1638,
+      3728,
+      3202,
+      1836,
+      4192,
+      1205,
+      3030,
+      116,
+      1490,
+      126,
+      2086,
+      120,
+      110,
+      122,
+      111
+     ]
+    },
+    "ownConfirmMs": {
+     "n": 17,
+     "p50": 234,
+     "p90": 3200,
+     "p99": 4190,
+     "max": 4190,
+     "mean": 1283,
+     "values": [
+      138,
+      143,
+      234,
+      1671,
+      3727,
+      3200,
+      4190,
+      1205,
+      3029,
+      116,
+      1490,
+      126,
+      2086,
+      120,
+      115,
+      116,
+      111
+     ]
+    },
+    "unseenPairs": 0,
+    "edits": 18,
+    "lost": 0,
+    "lostIds": [],
+    "unsettled": 0,
+    "absorbed": 1,
+    "rejected": 0,
+    "conflictCards": 1,
+    "editsWithConflictCards": 1,
+    "duplicateRows": 0,
+    "orderMismatches": 0,
+    "missingPerReplica": {
+     "A": 0,
+     "B": 0
+    },
+    "sameState": true,
+    "heads": {
+     "A": 87,
+     "B": 87
+    },
+    "clientStats": {
+     "A": {
+      "pushMsgs": 44,
+      "changesSent": 44,
+      "rejects": 1,
+      "acks": 44,
+      "duplicates": 0,
+      "rebases": 6,
+      "reconnects": 1,
+      "withdraws": 2,
+      "envelopesSent": 0,
+      "envelopesReceived": 0
+     },
+     "B": {
+      "pushMsgs": 9,
+      "changesSent": 9,
+      "rejects": 0,
+      "acks": 9,
+      "duplicates": 0,
+      "rebases": 1,
+      "reconnects": 1,
+      "withdraws": 0,
+      "envelopesSent": 0,
+      "envelopesReceived": 0
+     }
+    }
+   },
+   "failed": "DailyWriteCap: This host's daily write limit is reached (8589528001 bytes, 3928 writes stored today). It resets at 00:00 UTC. (HTTP 429)",
+   "stepMs": 55627,
+   "loopLagMs": {
+    "p50": 16.1,
+    "p99": 51.6,
+    "max": 151.5
+   }
+  },
+  "shaped": {
+   "link": {
+    "kbps": 1000,
+    "delayMsEachWay": 100
+   },
+   "joinMs": 1635,
+   "settled": true,
+   "fromShaped": {
+    "convergenceMs": {
+     "n": 10,
+     "p50": 385,
+     "p90": 465,
+     "p99": 571,
+     "max": 571,
+     "mean": 407,
+     "values": [
+      333,
+      384,
+      440,
+      372,
+      385,
+      465,
+      342,
+      360,
+      416,
+      571
+     ]
+    },
+    "otherHoldsItMs": {
+     "n": 10,
+     "p50": 270,
+     "p90": 352,
+     "p99": 457,
+     "max": 457,
+     "mean": 299,
+     "values": [
+      250,
+      268,
+      337,
+      259,
+      270,
+      352,
+      241,
+      252,
+      300,
+      457
+     ]
+    },
+    "ownConfirmMs": {
+     "n": 10,
+     "p50": 385,
+     "p90": 465,
+     "p99": 571,
+     "max": 571,
+     "mean": 407,
+     "values": [
+      333,
+      384,
+      440,
+      372,
+      385,
+      465,
+      342,
+      360,
+      416,
+      571
+     ]
+    },
+    "unseenPairs": 0
+   },
+   "toShaped": {
+    "convergenceMs": {
+     "n": 10,
+     "p50": 287,
+     "p90": 352,
+     "p99": 358,
+     "max": 358,
+     "mean": 299,
+     "values": [
+      358,
+      259,
+      265,
+      310,
+      340,
+      261,
+      287,
+      283,
+      352,
+      271
+     ]
+    },
+    "otherHoldsItMs": {
+     "n": 10,
+     "p50": 287,
+     "p90": 352,
+     "p99": 358,
+     "max": 358,
+     "mean": 299,
+     "values": [
+      358,
+      259,
+      265,
+      310,
+      340,
+      261,
+      287,
+      283,
+      352,
+      271
+     ]
+    },
+    "ownConfirmMs": {
+     "n": 10,
+     "p50": 170,
+     "p90": 236,
+     "p99": 257,
+     "max": 257,
+     "mean": 187,
+     "values": [
+      257,
+      145,
+      151,
+      193,
+      236,
+      157,
+      170,
+      168,
+      234,
+      162
+     ]
+    },
+    "unseenPairs": 0
+   },
+   "edits": 20,
+   "lost": 0,
+   "lostIds": [],
+   "unsettled": 0,
+   "absorbed": 0,
+   "rejected": 0,
+   "conflictCards": 0,
+   "editsWithConflictCards": 0,
+   "duplicateRows": 0,
+   "orderMismatches": 0,
+   "missingPerReplica": {
+    "A": 0,
+    "D": 0
+   },
+   "sameState": true,
+   "heads": {
+    "A": 107,
+    "D": 107
+   },
+   "clientStats": {
+    "A": {
+     "pushMsgs": 54,
+     "changesSent": 54,
+     "rejects": 1,
+     "acks": 54,
+     "duplicates": 0,
+     "rebases": 6,
+     "reconnects": 1,
+     "withdraws": 2,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    },
+    "D": {
+     "pushMsgs": 10,
+     "changesSent": 10,
+     "rejects": 0,
+     "acks": 10,
+     "duplicates": 0,
+     "rebases": 0,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    }
+   },
+   "proxy": {
+    "conns": 1,
+    "upBytes": 7312,
+    "downBytes": 10218,
+    "heldMaxBytes": 7040,
+    "errors": []
+   },
+   "stepMs": 20938,
+   "loopLagMs": {
+    "p50": 16.2,
+    "p99": 31.8,
+    "max": 37.9
+   }
+  }
+ },
+ "failures": [
+  {
+   "step": "upload",
+   "error": "DailyWriteCap: This host's daily write limit is reached (8589528001 bytes, 3928 writes stored today). It resets at 00:00 UTC. (HTTP 429)"
+  }
+ ],
+ "bytes": {
+  "up": 0,
+  "down": 0
+ },
+ "replicaA": {
+  "timeline": [
+   {
+    "atMs": 12,
+    "ev": "status",
+    "detail": "connecting"
+   },
+   {
+    "atMs": 1451,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 1591,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 1591,
+    "ev": "online"
+   },
+   {
+    "atMs": 2667,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 2779,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 4664,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 4786,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 6660,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 6804,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 8664,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 8805,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 10669,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 10783,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 12669,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 12797,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 14671,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 14806,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 16661,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 16905,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 18660,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 18770,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 20662,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 20775,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 22661,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 22782,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 24665,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 25012,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 26663,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 26832,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 28659,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 28939,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 30660,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 32063,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 32222,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 32667,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 33136,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 34666,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 34810,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 36660,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 36846,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 38665,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 38787,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 40661,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 42352,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 42355,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 42669,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 42775,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 44661,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 44782,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 46664,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 46850,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 48657,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 48801,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 50663,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 50853,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 52665,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 52890,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 54671,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 54786,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 56662,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 56789,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 58658,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 58829,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 60664,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 60981,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 76568,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 76716,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 84073,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 84223,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 91575,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 91702,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 99060,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 99262,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 106572,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 106769,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 110445,
+    "ev": "overwritten"
+   },
+   {
+    "atMs": 113042,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 113179,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 119032,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 119266,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 125033,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 128760,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 131035,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 131239,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 132129,
+    "ev": "reject",
+    "detail": "overlap"
+   },
+   {
+    "atMs": 132129,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 132870,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 137031,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 138235,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 138236,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 143029,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 143063,
+    "ev": "rebase",
+    "detail": "1"
+   },
+   {
+    "atMs": 143144,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 149028,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 149154,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 155047,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 155167,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 161029,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 161145,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 169697,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 169954,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 171689,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 171834,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 173695,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 173846,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 175686,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 175879,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 177700,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 177936,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 179690,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 179847,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 181690,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 181859,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 183693,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 183861,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 185690,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 185924,
+    "ev": "status",
+    "detail": "up-to-date"
+   },
+   {
+    "atMs": 187693,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 187854,
+    "ev": "status",
+    "detail": "up-to-date"
+   }
+  ],
+  "stats": {
+   "pushMsgs": 54,
+   "changesSent": 54,
+   "rejects": 1,
+   "acks": 54,
+   "duplicates": 0,
+   "rebases": 6,
+   "reconnects": 1,
+   "withdraws": 2,
+   "envelopesSent": 0,
+   "envelopesReceived": 0
+  }
+ },
+ "totalMs": 203527
+}
