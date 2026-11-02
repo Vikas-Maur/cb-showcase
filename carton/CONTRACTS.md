@@ -37,7 +37,7 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 | `SequencerStorage` | sync `exec(sql, ...params)` and `transaction(fn)` (DO `ctx.storage.sql`, node:sqlite) | inside server-cloudflare, server-node |
 | `SequencerHost` | `url`, `close()`; feeds authenticated `SequencerConnection`s to `createSequencer` | server-cloudflare, server-node |
 | `Transport` | `connect(url, {token})` → ordered, at-most-once message connection | WebSocket, in-process |
-| `BlobStore` | put/get (ranges)/head/delete/list, multipart with resume | blob-r2, blob-s3, blob-fs, blob-memory |
+| `BlobStore` | put/get (ranges)/head/delete/list, multipart with resume; optional `getWithInfo` (the info and the bytes in one call, so a host's signed read is one storage call, not a head and a get) | blob-r2, blob-s3, blob-fs, blob-memory |
 | `AuthProvider` | `verify(token)` → `{account, credential, role, projectId, branches?, expires}` | demo HMAC (server) |
 | `Hasher` | async `sha256(bytes)`, optional `sha256HexSync(text)` (core uses it for state hashes) | node:crypto (local), WebCrypto |
 | `ProxyEncoder` | `probe()`, `encode(input, output, profile)` | Cardboard proxy, NVENC → QSV → AMF → libx264 |

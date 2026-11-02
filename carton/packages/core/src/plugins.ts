@@ -202,6 +202,11 @@ export interface ByteRange {
   length?: number;
 }
 
+/** `BlobStore.getWithInfo`'s answer: the object's info, and its bytes in `range` (none for a range past the end). */
+export type BlobWithInfo =
+  | { info: BlobInfo; range: { offset: number; length: number }; body: ReadableStream<Uint8Array> }
+  | { info: BlobInfo; range: null; body: null };
+
 export interface MultipartUpload {
   readonly key: string;
   readonly uploadId: string;
@@ -239,6 +244,14 @@ export interface BlobStore {
   get(key: string, range?: ByteRange): Promise<Uint8Array | null>;
   /** Streaming read for large media (optional). */
   getStream?(key: string, range?: ByteRange): Promise<ReadableStream<Uint8Array> | null>;
+  /**
+   * A streaming read that also gives the object's info and the range it covers (optional): one storage request where
+   * `head` then `getStream` is two. A host serving a signed URL needs the size and type before the bytes; R2 bills each
+   * call, so its signed reads cost half as much with this (cf-lab). Same answers as `head` and `getStream`: `null` when
+   * the key is absent; `range` is the bytes the body holds, clipped at the end; a range starting at or past the end of a
+   * non-empty object, or any range of an empty one, answers `range: null` with no body (HTTP 416).
+   */
+  getWithInfo?(key: string, range?: ByteRange): Promise<BlobWithInfo | null>;
   head(key: string): Promise<BlobInfo | null>;
   delete(key: string): Promise<void>;
   list(prefix: string, opts?: { cursor?: string; limit?: number }): Promise<{ blobs: BlobInfo[]; cursor?: string }>;
