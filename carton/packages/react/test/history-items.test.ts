@@ -216,3 +216,16 @@ test("P1-4 (review #2): undoing 'Fold in the rest' offers the rest again, on its
   assert.equal((await ui.planFold(v.id, main)).changes.length, 1, "and Fold in lists it");
   ui.dispose();
 });
+
+// Final re-check, baseline P3-2: the panel's row for an Undo right after a Restore says what it undid.
+test("baseline P3-2: an Undo right after a Restore reads \"Undid the restore\", its changes in its details", async () => {
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "name", "A1"), set("b", "name", "B1")], author: alice });
+  await ui.restore(`${carton.cut}@0`);
+  await settle();
+  assert.equal((await rows(ui))[0]!.summary, "Restored an earlier version");
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
+  const u = (await rows(ui))[0]!;
+  assert.deepEqual([u.kind, u.summary, u.details?.length], ["undo", "Undid the restore", 2]);
+  ui.dispose();
+});

@@ -118,3 +118,28 @@ test("P1-4 (review #2): folding in the rest, then undoing that, leaves the rest 
   assert.equal((await c.redo(undefined, { cut: main, author: alice })).status, "confirmed");
   assert.deepEqual(await c.leftOut(v.id, { into: main }), []);
 });
+
+// Final re-check, baseline P3-2: an Undo right after a Restore read as a fresh edit ("Added effect 'sharpen' on
+// 'clip.mp4'"), with nothing naming the restore. It says what it undid, as a restore and a fold say what they were;
+// its changes are its details. The redo of it says so too.
+test("baseline P3-2: the undo of a restore says it undid the restore, its redo that it redid it; the changes are listed", async () => {
+  const c = await open();
+  const main = c.cut;
+  await c.commit({ ops: [set("a", "name", "A1")], author: alice });
+  await c.commit({ ops: [set("b", "name", "B1")], author: alice });
+  await c.restore(`${main}@1`, { author: alice });
+  assert.equal((await top(c, main)).summary, "Restored an earlier version");
+  assert.equal((await c.undo(undefined, { author: alice })).status, "confirmed");
+  const u = await top(c, main);
+  assert.equal(u.kind, "undo");
+  assert.equal(u.summary, "Undid the restore");
+  assert.deepEqual(u.details, ['Changed \'b\' name "b" → "B1"'], "what the undo changed");
+  assert.equal((await c.redo(undefined, { author: alice })).status, "confirmed");
+  const r = await top(c, main);
+  assert.equal(r.summary, "Redid the restore");
+  assert.deepEqual(r.details, ['Changed \'B1\' name "B1" → "b"']);
+  // any other undo still reads as what it did
+  await c.commit({ ops: [set("c", "name", "C1")], author: alice });
+  await c.undo(undefined, { author: alice });
+  assert.equal((await top(c, main)).summary, 'Changed \'C1\' name "C1" → "c"');
+});

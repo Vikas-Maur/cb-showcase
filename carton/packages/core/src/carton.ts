@@ -1543,6 +1543,10 @@ class CartonImpl implements Carton {
       else if (merged && pairBase) summary = `${fold(merged)}: ${changes(records(ops), records(merged.ops))}`;
       else if (merged) summary = records(ops) ? `${fold(merged)}: ${changes(records(ops))}` : fold(merged);
       else if (c.kind === "restore") summary = "Restored an earlier version";
+      // an undo of a restore, and the redo of that, say so (baseline P3-2: it read as a fresh edit); others read as
+      // what they did
+      else if (c.kind === "undo" && find(c.reverts)?.kind === "restore") summary = "Undid the restore";
+      else if (c.kind === "revert" && find(find(c.reverts)?.kind === "undo" ? find(c.reverts)!.reverts : undefined)?.kind === "restore") summary = "Redid the restore";
       else if (c.kind === "revert") {
         // "Fold in the rest" reverts a partial fold's inverse
         const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;
