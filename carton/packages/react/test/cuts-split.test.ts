@@ -125,7 +125,7 @@ const withMedia = defineSchema({
   collections: {
     tracks: { seq: true },
     items: { parent: { field: "trackId", collection: "tracks" }, groups: [{ name: "time", fields: ["startTime", "endTime", "trimStart", "trimEnd", "playbackSpeed"], algebra: timeAlgebra(TL) }] },
-    media: { nounOf: (r) => ((r.data as Rec | undefined)?.type === "text" ? null : undefined) },
+    media: { nounOf: (r) => ((r.data as Rec | undefined)?.type === "text" ? null : undefined), partOf: { collection: "items", field: "mediaItemId" } },
   },
   timeline: TL,
   label: (coll, r) => String((r as Rec | undefined)?.name ?? (r as { data?: Rec } | undefined)?.data?.fileName ?? coll),
@@ -150,6 +150,33 @@ test("N-1: a title deleted with its own media entry is one row in the Fold dialo
     assert.deepEqual(await ui.fold(alt.id, main, { choices: {}, leaveOut: [plan.changes[0]!.id] }), { ok: true });
     const head = (await carton.head(main)).doc;
     assert.deepEqual([(head.items as Rec[]).map((r) => r.id).sort(), (head.media as Rec[]).map((r) => r.id).sort()], [["w1", "w2"], ["tm1", "tm2"]], "left out together");
+  } finally {
+    ui.dispose();
+    await carton.close();
+  }
+});
+
+test("N-1 (review #2): an entry two titles share (a duplicate) is its own row: leaving out one title's delete keeps the entry it needs", async () => {
+  const title = (id: string, k: number): Rec => ({ id, type: "text", trackId: "t1", mediaItemId: "tm1", startTime: k, endTime: k + 1, trimStart: 0, trimEnd: 1, name: "W1" });
+  const doc: Doc = { name: "Film", tracks: [{ id: "t1", [POS]: "V" }], items: [title("w1", 1), title("w1copy", 3)], media: [{ id: "tm1", data: { type: "text", fileName: "Text: W1" } }] };
+  const carton = await Carton.open({ adapter: mediaAdapter, store: createMemoryStore(), init: { doc, cutName: "Main cut" }, actor: alice });
+  const ui = fromCarton(carton, { me: alice });
+  try {
+    await ui.ready;
+    const main = carton.cut;
+    const alt = await carton.fork("Alt cut");
+    await carton.switchTo(alt.id);
+    await carton.commit({ ops: [{ op: "remove", path: ["items", "w1"] }, { op: "remove", path: ["items", "w1copy"] }, { op: "remove", path: ["media", "tm1"] }] });
+    await ui.settled();
+    const plan = await ui.planFold(alt.id, main);
+    assert.equal(plan.changes.length, 3, "each title, and the entry they share: " + JSON.stringify(plan.changes.map((c) => c.summary)));
+    const entry = plan.changes.find((c) => /Text: W1/.test(c.summary))!;
+    const copy = plan.changes.find((c) => c.id.includes("w1copy"))!;
+    assert.ok(entry && copy, JSON.stringify(plan.changes.map((c) => [c.id, c.summary])));
+    // the duplicate's delete and the entry left out: the duplicate keeps its entry
+    assert.deepEqual(await ui.fold(alt.id, main, { choices: {}, leaveOut: [copy.id, entry.id] }), { ok: true });
+    const head = (await carton.head(main)).doc;
+    assert.deepEqual([(head.items as Rec[]).map((r) => r.id), (head.media as Rec[]).map((r) => r.id)], [["w1copy"], ["tm1"]]);
   } finally {
     ui.dispose();
     await carton.close();
