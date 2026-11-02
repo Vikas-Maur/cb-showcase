@@ -262,8 +262,12 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
       return c ? { ...d, ...c, data: { ...((d.data as Rec | undefined) ?? {}), ...((c.data as Rec | undefined) ?? {}) } } : { ...d, id: m.id };
     };
     out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m), m), out[ITEMS] as Rec[]));
-    // P1-1: every entry complete for Cardboard's editor (its dates from the file or what was kept, else the project's)
-    out[MEDIA] = (out[MEDIA] as Rec[]).map((m) => completeEntry(m, cur));
+  }
+  // P1-1: every entry complete for Cardboard's editor, also the file's own when the doc never versioned media (review
+  // of fix/recover-save #4): its dates from the entry, else what was kept of that media (looked up for an entry with
+  // every other detail too: review #3), else the project's
+  if (Array.isArray(out[MEDIA])) {
+    out[MEDIA] = (out[MEDIA] as Rec[]).map((m) => completeEntry(m, cur, m && typeof m.id === "string" && !(readableDate(m.createdAt) && readableDate(m.addedAt)) ? known?.(m.id, m) : null));
   }
   return out;
 }
@@ -298,9 +302,10 @@ export function completeEntry(m: Rec, project: Readonly<Record<string, unknown>>
   let out = m;
   const c = readableDate(m.createdAt), a = readableDate(m.addedAt);
   if (!c || !a) {
+    // each date its own first (the entry's, then the one kept for it), then the other one (review #3)
     const kc = readableDate(kept?.createdAt) ? kept.createdAt : undefined, ka = readableDate(kept?.addedAt) ? kept.addedAt : undefined;
-    const createdAt = c ? m.createdAt : a ? m.addedAt : kc ?? ka ?? projectDate(project);
-    out = { ...out, createdAt, addedAt: a ? m.addedAt : !c && ka ? ka : createdAt };
+    const createdAt = c ? m.createdAt : kc ?? (a ? m.addedAt : ka) ?? projectDate(project);
+    out = { ...out, createdAt, addedAt: a ? m.addedAt : ka ?? createdAt };
   }
   const d = m.data as Rec | undefined;
   if (d && typeof d === "object" && d.type === "text" && Object.keys(TEXT_DEFAULTS).some((k) => d[k] === undefined)) {

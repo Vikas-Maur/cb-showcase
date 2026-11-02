@@ -99,9 +99,30 @@ test("P1-1: the loaders' completion takes the dates kept for that media before t
   const out = completeMedia(recovered, known).media as Rec[];
   assert.deepEqual([out[0]!.createdAt, out[0]!.addedAt], [kept.createdAt, kept.addedAt], "the clip's real dates");
   assert.deepEqual([out[1]!.createdAt, out[1]!.addedAt], [CREATED, CREATED], "nothing kept for a title: the project's");
-  assert.equal((out[0]!.data as Rec).size, recovered.media[0]!.data.size, "only the dates: its other details are the materializer's business");
+  assert.equal((out[0]!.data as Rec).size, (recovered.media[0]!.data as Rec).size, "only the dates: its other details are the materializer's business");
   // an entry with its own dates never asks
   let asked = 0;
   completeMedia(completeMedia(recovered), () => (asked++, kept));
   assert.equal(asked, 0);
+});
+
+test("review of fix/recover-save #3, #4: each missing date from its own kept field first; kept dates for an entry with every other detail; the file's own media when the doc never versioned them", () => {
+  const clip = { id: "v0", createdAt: "2026-10-30T08:00:00.000Z", addedAt: "2026-10-30T08:01:00.000Z", data: { type: "video", fileName: "clip.mp4", src: "cardboard-media://media/v0", size: 1, duration: 3 } };
+  const kept = mediaDetails(clip)!;
+  const doc = fromHost({ ...recovered, media: [clip] });
+  const at = (e: Rec) => { const m = (materializeProject(doc, { ...broken, media: [e] }, () => kept).media as Rec[])[0]!; return [m.createdAt, m.addedAt]; };
+  // every detail but the dates (lacksDetails is false): the kept dates, not the project's
+  const { createdAt: _c, addedAt: _a, ...dateless } = clip;
+  assert.deepEqual(at(dateless), [clip.createdAt, clip.addedAt]);
+  // one of them: the other from what was kept, not copied from the one it has
+  assert.deepEqual(at({ ...clip, addedAt: undefined }), [clip.createdAt, clip.addedAt]);
+  assert.deepEqual(at({ ...clip, createdAt: undefined }), [clip.createdAt, clip.addedAt]);
+  // the loaders' completion follows the same rule
+  const loaded = (completeMedia({ ...broken, media: [{ ...clip, addedAt: undefined }] }, () => kept).media as Rec[])[0]!;
+  assert.deepEqual([loaded.createdAt, loaded.addedAt], [clip.createdAt, clip.addedAt]);
+  // an old doc with no media collection: the file's own entries are kept, and completed
+  const { media: _m, ...noMedia } = fromHost(recovered);
+  const kept0 = materializeProject(noMedia as typeof doc, { ...broken, media: [{ id: "t", data: { type: "text", content: "x" } }] }).media as Rec[];
+  assert.equal(kept0.length, 1);
+  assert.doesNotThrow(() => p9(kept0[0]!));
 });
