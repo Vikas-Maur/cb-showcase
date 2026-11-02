@@ -391,7 +391,7 @@ test("ui-words: authors in words an editor knows: You (a cb you typed too), prod
   assert.equal(toUiActor({ kind: "human", id: "person" }, alice, g).name, "Teammate");
 });
 
-test("ui-words: the import row is the person's ('Imported the project', You); the cut's start names no one", async () => {
+test("ui-words: the import row is the person's ('Started the project's history', You, never 'Imported' for a created project: UI audit P2-18); the cut's start names no one", async () => {
   const me: Actor = { kind: "human", id: "person", group: "alice@laptop" };
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: me });
   const ui = make(carton, { me });
@@ -399,7 +399,7 @@ test("ui-words: the import row is the person's ('Imported the project', You); th
   await settle();
   const rows = ui.history().all!();
   const imp = rows.find((v) => v.kind === "import")!;
-  assert.equal(imp.summary, "Imported the project");
+  assert.equal(imp.summary, "Started the project's history");
   assert.deepEqual([imp.author.isYou, imp.author.kind], [true, "human"]);
   const root = rows.find((v) => v.seq === 0)!;
   assert.deepEqual([root.summary, root.author.kind, root.author.name], ["Started the cut", "system", ""]);

@@ -357,7 +357,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       at: c.at,
       author: ui(c.author),
       kind,
-      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Imported the project" : ""),
+      // The import row is where Carton started keeping the project's versions: for a project made in Cardboard as much
+      // as for one brought in, so it never says "Imported" (UI audit P2-18).
+      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Started the project's history" : ""),
       ...(prev?.details ? { details: prev.details } : {}),
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
