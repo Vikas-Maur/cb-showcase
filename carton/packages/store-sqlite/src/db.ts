@@ -130,6 +130,17 @@ function withCode(e: unknown): unknown {
 export const CHECKPOINT_EVERY_WRITES = 1000;
 /** And every this many ms on an idle timer, for the frames other processes add. */
 export const CHECKPOINT_EVERY_MS = 30_000;
+/**
+ * At open, a WAL file larger than this is checkpointed at once (SQLite's own trigger, 1,000 frames of 4 KiB). A smaller
+ * one is checkpointed OPEN_CHECKPOINT_DELAY_MS after open (perf/apply-latency): a checkpoint copies the frames into the
+ * database file and syncs it, and a short `cb` call, which exits before then, left that to the processes that stay
+ * open (the app's library worker, a sync helper, an MCP server), which still run it. The WAL file's size bounds the
+ * frames in it, so a short process never leaves more than this unchecked. (SQLite shrinks the file only to
+ * journal_size_limit, 16 MiB: one a burst grew past this bound keeps the checkpoint at open, as before. A smaller
+ * journal_size_limit would end that, but SQLite truncates inside COMMIT, under the write lock: left as it was.)
+ */
+export const OPEN_CHECKPOINT_BYTES = 1000 * 4096;
+export const OPEN_CHECKPOINT_DELAY_MS = 2000;
 
 export class BusyError extends Error {
   readonly code = "CARTON_DB_BUSY";
@@ -162,6 +173,7 @@ export class Db {
   #checkpointQueued = false;
   #deferCheckpoints = false;
   #walTimer: ReturnType<typeof setInterval> | null = null;
+  #openTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Open a connection and set it up. Waits asynchronously if another process is creating the same file. `verify`
@@ -261,15 +273,42 @@ export class Db {
   // VERIFIED.md S3; S3c: p99 -14%, worst -80% with this change). It is off (wal_autocheckpoint=0), and a PASSIVE
   // checkpoint (what the automatic one is too) runs on its own turn of the event loop: after CHECKPOINT_EVERY_WRITES
   // of this connection's writes, every CHECKPOINT_EVERY_MS on an idle timer (for frames that short `cb` processes
-  // add), and once at open (for a WAL a crash left behind); a caller that never yields gets it inline before its next
-  // write past twice the budget (writeNow). A PASSIVE checkpoint with nothing new to copy does no I/O, so the timer is
-  // cheap. While any store has the file open the WAL is bounded by those, except that a reader keeping an old
-  // snapshot open stops the WAL from being reused until it lets go (true of SQLite's own checkpoint too). (The WAL
-  // file's size is no guide: after a checkpoint SQLite reuses it from the start without shrinking it.)
+  // add), and once after open (for a WAL a crash or short processes left behind: at once when its file is past
+  // OPEN_CHECKPOINT_BYTES, else OPEN_CHECKPOINT_DELAY_MS later, which a short process doesn't live to); a caller that
+  // never yields gets it inline before its next write past twice the budget (writeNow). A PASSIVE checkpoint with
+  // nothing new to copy does no I/O, so the timer is cheap. While any store has the file open the WAL is bounded by
+  // those, except that a reader keeping an old snapshot open stops the WAL from being reused until it lets go (true of
+  // SQLite's own checkpoint too). (After a checkpoint SQLite reuses the WAL from the start, shrinking the file only to
+  // journal_size_limit: so its size bounds the frames in it, and is no guide below that.)
   #watchWal(): void {
-    this.#queueCheckpoint();
+    if (this.#walBytes() > OPEN_CHECKPOINT_BYTES) this.#queueCheckpoint();
+    else {
+      this.#openTimer = setTimeout(() => { this.#openTimer = null; this.#queueCheckpoint(); }, OPEN_CHECKPOINT_DELAY_MS);
+      this.#openTimer.unref?.();
+    }
     this.#walTimer = setInterval(() => this.#queueCheckpoint(), CHECKPOINT_EVERY_MS);
     this.#walTimer.unref?.();
+  }
+
+  /**
+   * The size of this database's WAL file, in bytes; Infinity when it can't be told (so the caller checkpoints, as
+   * before). The WAL is beside the file SQLite opened, which isn't the path given when that is a symlink to the
+   * database file (review: the WAL then is the target's): SQLite's own name for it is used.
+   */
+  #walBytes(): number {
+    let file = this.path;
+    try {
+      const main = (this.raw.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
+      if (main && !main.file) return 0; // a memory or temporary database: no WAL file
+      if (main?.file) file = main.file;
+    } catch {
+      return Infinity;
+    }
+    try {
+      return fs.statSync(`${file}-wal`).size;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? 0 : Infinity; // no WAL yet: nothing left behind
+    }
   }
 
   #queueCheckpoint(): void {
@@ -332,6 +371,7 @@ export class Db {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#walTimer) clearInterval(this.#walTimer);
+    if (this.#openTimer) clearTimeout(this.#openTimer);
     this.#stmts.clear();
     this.raw.close();
   }

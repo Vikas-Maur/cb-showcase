@@ -9,8 +9,18 @@ module.exports = String.raw`var __cartonCli = (() => {
   let api;
   // resources/cli → resources/carton
   // If carton-node.cjs can't load, cb is Cardboard's, as with Carton off.
+  // perf/apply-latency: every cb process with Carton on loads carton-node.cjs (1.2 MB), and V8 compiled it from source
+  // each time, twice per agent's print-and-apply round trip. Node's compile cache keeps that work between runs (in
+  // <os temp>/node-compile-cache, checked against each file's contents, so a new build compiles once and an entry
+  // that doesn't match is ignored). It covers what this process loads from here on: Carton, and any of Cardboard's
+  // own modules loaded later. Electron's Node (24) has it; NODE_COMPILE_CACHE / NODE_DISABLE_COMPILE_CACHE still
+  // decide. A Node without it, or a cache folder that can't be written, loads as before. With Carton off, never asked.
+  const compileCache = () => {
+    try { const m = require("node:module"); if (typeof m.enableCompileCache === "function") m.enableCompileCache(); } catch {}
+  };
   const carton = () => {
     if (api === undefined) {
+      compileCache();
       try { api = require(path.join(process.env.CARTON_DIR || require("node:url").fileURLToPath(new URL("../carton/", import.meta.url)), "carton-node.cjs")).cardboard14; }
       catch (e) { api = null; console.warn("[carton] Carton didn't load; cb runs without it:", e?.message ?? e); }
     }
