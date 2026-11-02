@@ -20,8 +20,12 @@ const live = new Set<ReturnType<typeof spawn>>();
 // a failed assertion must not leave a child holding the test process open through its pipes
 const killAll = () => { for (const p of live) if (p.exitCode === null) p.kill("SIGKILL"); live.clear(); };
 
+// A child is only who its test says: none of the identity markers of the shell running the tests (a Claude Code, Codex,
+// Gemini or Cursor terminal, a declared agent), so the terminal user stays one (review of fix/ui-regress #3).
+const IDENTITY = /^(CARDBOARD_ACTOR|CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|GEMINI_CLI|CURSOR_TRACE_ID|CARTON_AGENT|CODEX_.*)$/;
+const plainEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !IDENTITY.test(k)));
 function proc(script: string, args: string[], env: Record<string, string> = {}) {
-  const p = spawn(process.execPath, [here(script), ...args], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, CARDBOARD_ACTOR: "", CLAUDECODE: "", ...env } });
+  const p = spawn(process.execPath, [here(script), ...args], { stdio: ["pipe", "pipe", "inherit"], env: { ...plainEnv, ...env } });
   live.add(p);
   p.on("exit", () => live.delete(p));
   const lines: any[] = [];

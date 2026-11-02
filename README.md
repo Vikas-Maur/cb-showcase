@@ -473,6 +473,8 @@ What changes with it on:
   300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer.
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
+  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
+  with its text up to about eight lines, then scrolls, and has no resize grip.
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
   once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
