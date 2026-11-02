@@ -1,0 +1,13 @@
+{
+  // Tests run in Node with a happy-dom document, so they need both the DOM and the Node types.
+  "extends": "../../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "declaration": false
+  },
+  "include": [
+    ".",
+    "../src"
+  ]
+}

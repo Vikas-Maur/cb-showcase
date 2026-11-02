@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.node.json",
+  "include": [
+    "src",
+    "test"
+  ],
+  "exclude": [
+    "src/cardboard/fixtures"
+  ]
+}

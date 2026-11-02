@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "paths": {
+      "@carton/core": [
+        "../core/dist/index.d.ts"
+      ],
+      "@carton/core/plugins": [
+        "../core/dist/plugins.d.ts"
+      ],
+      "@carton/store-sqlite": [
+        "../store-sqlite/dist/index.d.ts"
+      ],
+      "@carton/cardboard": [
+        "../cardboard/dist/index.d.ts"
+      ],
+      "@carton/cardboard/node": [
+        "../cardboard/dist/node/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

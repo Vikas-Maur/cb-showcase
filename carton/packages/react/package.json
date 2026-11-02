@@ -1,0 +1,57 @@
+{
+  "name": "@carton/react",
+  "version": "0.1.0",
+  "description": "Headless hooks and unstyled components for Carton (history, cuts, fold in, conflict cards, compare, watch the changes, presence, sync status), with a skin that looks native in Cardboard. Works under preact/compat.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock": "./src/mock.ts",
+    "./skin/cardboard": "./src/skin/cardboard.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./mock": {
+        "types": "./dist/mock.d.ts",
+        "default": "./dist/mock.js"
+      },
+      "./skin/cardboard": {
+        "types": "./dist/skin/cardboard.d.ts",
+        "default": "./dist/skin/cardboard.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\" && node --import ./test/preact-alias.ts --test --test-concurrency=2 \"test/**/*.dom.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "gallery": "node gallery/build.mjs",
+    "screens": "node gallery/build.mjs && node gallery/screens.mjs",
+    "bench": "node gallery/build.mjs && node bench/run.mjs"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@carton/comments": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/store-memory": "0.1.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.3.0",
+    "happy-dom": "^21.0.4",
+    "preact": "^10.29.8",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

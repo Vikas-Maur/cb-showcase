@@ -1,0 +1,198 @@
+// Fold in (§0.1: merge). Shows what folding one cut into another brings in, in plain words, lets you leave some of it
+// out ("fold in some of it", partial accept, §5.3 / R2-14), and asks you to pick on any conflict card before folding.
+// Leaving changes out is recorded, so "you can fold in the rest later".
+
+import { createElement as h, useMemo, useRef, useState } from "react";
+import { when } from "../format.ts";
+import { useAction, useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
+import { Icon } from "../icons.ts";
+import type { Conflict, ConflictChoice, FoldPlan, FoldResult } from "../model.ts";
+import { ConflictCard } from "./ConflictCard.ts";
+import { ActorName, Avatar, Button, Dialog } from "./ui.ts";
+
+/** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
+const sigOf = (c: Conflict) => c.sig ?? `${c.title}|${c.mine.summary}|${c.mine.where ?? ""}|${c.theirs.summary}|${c.theirs.where ?? ""}`;
+
+export interface FoldInDialogProps {
+  fromCutId: string;
+  intoCutId: string;
+  onClose: () => void;
+  /** Called after a successful fold (default: onClose). */
+  onDone?: (r: FoldResult) => void;
+  /** Use this plan instead of asking the view model (gallery). */
+  plan?: FoldPlan;
+}
+
+export function FoldInDialog(p: FoldInDialogProps) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const locale = useLocale();
+  const now = useNow();
+  // §13: after "bring it in with every difference shown as a card", the plan and the fold use the 2-way compare.
+  const [allCards, setAllCards] = useState(false);
+  const loaded = useAsync(
+    () => (p.plan ? Promise.resolve(p.plan) : ui.planFold(p.fromCutId, p.intoCutId, allCards ? { allCards } : undefined)),
+    [ui, p.fromCutId, p.intoCutId, p.plan, allCards],
+  );
+  const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
+  // Each pick remembers the card it was made on (its fingerprint). A card whose values changed since (a racing edit,
+  // seen when the plan reloads) is a different card: its old pick no longer counts (R3-1, R4-1).
+  const [picks, setPicks] = useState<Readonly<Record<string, { choice: ConflictChoice; sig: string }>>>({});
+  const [result, setResult] = useState<FoldResult | null>(null);
+  const [fold, busy] = useAction(async () => {
+    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices: choicesFor(planRef.current), ...(allCards ? { allCards } : {}) });
+    setResult(r);
+    // Done: hand the result to the host, or just close.
+    if (r.ok) (p.onDone ?? p.onClose)(r);
+    // New cards (someone edited since the plan was shown): show the plan as it is now, with its cards (R2-5). A card
+    // that came back was not the one picked on (new, or its values changed), so its old pick goes too (R3-1).
+    else if (r.conflicts?.length) {
+      const back = new Set(r.conflicts.map((c) => c.id));
+      setPicks((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !back.has(id))));
+      loaded.reload();
+    }
+    return r;
+  });
+
+  const plan = loaded.status === "ready" ? loaded.value : null;
+  const total = plan?.changes.length ?? 0;
+  const taking = total - left.size;
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  // The picks that still match the cards on screen; only these are sent.
+  const choicesFor = (pl: FoldPlan | null): Record<string, ConflictChoice> => {
+    const out: Record<string, ConflictChoice> = {};
+    for (const c of pl?.conflicts ?? []) {
+      const pk = picks[c.id];
+      if (pk && pk.sig === sigOf(c)) out[c.id] = pk.choice;
+    }
+    return out;
+  };
+  const choices = choicesFor(plan);
+  const unpicked = plan ? plan.conflicts.filter((c) => !choices[c.id]).length : 0;
+  const title = plan ? words.foldTitle(plan.from.label, plan.into.label) : words.foldSomeOfIt;
+
+  // A change an earlier partial fold left out comes with that fold's other left-out changes (UI audit P1-4): they
+  // fold in, or stay left out, together
+  const toggle = (id: string) =>
+    setLeft((s) => {
+      const n = new Set(s);
+      const group = plan?.changes.find((c) => c.id === id)?.leftOut;
+      const ids = group ? plan!.changes.filter((c) => c.leftOut === group).map((c) => c.id) : [id];
+      const out = !n.has(id);
+      for (const x of ids) if (out) n.add(x);
+      else n.delete(x);
+      return n;
+    });
+
+  const body = useMemo(() => {
+    if (loaded.status === "loading") return h("p", { className: "carton-muted" }, words.loading);
+    if (loaded.status === "error") return h("p", { className: "carton-error", role: "alert" }, words.failed);
+    return null;
+  }, [loaded.status, words]);
+
+  const canSplit = plan?.partial !== false;
+  const content = plan?.missingBase
+    ? [
+        h("p", { key: "mb", className: "carton-fold-missing", role: "alert" }, plan.missingBase),
+        h("div", { key: "mba", className: "carton-card-actions" }, h(Button, { onClick: () => setAllCards(true) }, words.foldAllCards)),
+      ]
+    : plan
+    ? [
+        total === 0 && !plan.conflicts.length
+          ? h("p", { key: "none", className: "carton-empty" }, words.foldNothing)
+          : h(
+              "fieldset",
+              { key: "changes", className: "carton-fold-changes" },
+              h(
+                "legend",
+                { className: "carton-fold-legend" },
+                h("span", null, words.foldChanges(total)),
+                !canSplit ? h("span", { className: "carton-fold-bulk" }, words.foldAllOrNothing) : total > 1
+                  ? h(
+                      "span",
+                      { className: "carton-fold-bulk" },
+                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set()), disabled: left.size === 0 }, words.selectAll),
+                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set(plan.changes.filter((c) => !c.locked).map((c) => c.id))), disabled: left.size === plan.changes.filter((c) => !c.locked).length }, words.selectNone),
+                    )
+                  : null,
+              ),
+              h(
+                "ul",
+                { className: "carton-fold-list" },
+                ...plan.changes.map((c) =>
+                  h(
+                    "li",
+                    { key: c.id, className: "carton-fold-change", "data-left": left.has(c.id) ? "" : undefined },
+                    h(
+                      "label",
+                      null,
+                      !canSplit
+                        ? h("span", { "aria-hidden": true })
+                        : c.locked
+                          ? // A project-level change comes with the rest (core's partial accept inverts records only).
+                            h("input", { type: "checkbox", className: "carton-check", checked: true, disabled: true, title: words.foldLocked, "aria-label": words.foldLocked })
+                          : h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }),
+                      h("span", { className: "carton-fold-text" }, c.summary),
+                      h(
+                        "span",
+                        { className: "carton-fold-meta" },
+                        c.leftOut ? h("span", { className: "carton-fold-tag", title: words.foldLeftOutTogether }, words.foldLeftOutEarlier) : null,
+                        h(Avatar, { actor: c.author, size: 14, named: true }),
+                        h(ActorName, { actor: c.author }),
+                        h("time", null, when(c.at, now, locale, words.justNow)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        plan.conflicts.length
+          ? h(
+              "div",
+              { key: "cards", className: "carton-fold-cards" },
+              h("p", { className: "carton-fold-cards-head" }, words.foldConflicts(plan.conflicts.length)),
+              ...plan.conflicts.map((c) =>
+                h(ConflictCard, { key: c.id, conflict: c, picked: choices[c.id], onPick: (ch: ConflictChoice) => setPicks((s) => ({ ...s, [c.id]: { choice: ch, sig: sigOf(c) } })) }),
+              ),
+            )
+          : null,
+        plan.warnings.length
+          ? h(
+              "div",
+              { key: "warn", className: "carton-fold-warnings", role: "note" },
+              h("p", null, h(Icon, { name: "warning", size: 14 }), words.foldWarnings),
+              h("ul", null, ...plan.warnings.map((w, i) => h("li", { key: i }, w))),
+            )
+          : null,
+        result && !result.ok
+          ? h("p", { key: "err", className: "carton-error", role: "alert" }, result.conflicts?.length ? words.foldChangedSince : (result.error ?? words.failed))
+          : null,
+      ]
+    : body;
+
+  const partial = plan && taking < total;
+  return h(Dialog, {
+    title,
+    onClose: p.onClose,
+    className: "carton-fold",
+    children: content,
+    footer: [
+      partial ? h("span", { key: "later", className: "carton-fold-later" }, words.foldRestLater) : h("span", { key: "sp" }),
+      h(Button, { key: "c", onClick: p.onClose }, words.cancel),
+      h(
+        Button,
+        {
+          key: "go",
+          variant: "primary",
+          icon: "fold",
+          busy,
+          disabled: !plan || !!plan.missingBase || (taking === 0 && !plan.conflicts.length) || unpicked > 0,
+          title: unpicked > 0 ? words.foldConflicts(unpicked) : undefined,
+          onClick: () => void fold(),
+        },
+        busy ? words.folding : partial ? words.foldSome(taking, total) : words.foldAll,
+      ),
+    ],
+  });
+}

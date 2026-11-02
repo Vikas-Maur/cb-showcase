@@ -48,6 +48,13 @@ replace(`t.thumbnailIds&&!e.thumbnailIds?.length&&(r.thumbnailIds=t.thumbnailIds
 // Recipe installs don't wait for it, so a rejection was unhandled and ended the CLI.
 replace(`n.background&&a.push($p(e,f,EP(e,t,F,n)))`, `n.background&&a.push($p(e,f,__cbSettled(EP(e,t,F,n),F,n)))`);
 
+// 6. Open Project's staging folder is removed with the rename's retry (see patch-worker.js 6). The CLI's entry
+// (patch-cli.js) defines __cbRetryBusy; a run without it removes as before.
+replace(
+  `await En(ke(i,Gf)).catch(()=>null)&&await jE(i,{recursive:!0,force:!0})`,
+  `await En(ke(i,Gf)).catch(()=>null)&&await(__cbWin&&globalThis.__cbRetryBusy||(f=>f()))(()=>jE(i,{recursive:!0,force:!0}),["EPERM","EBUSY","EACCES","ENOTEMPTY"])`,
+);
+
 // The helpers go after the module's require shim, which they use. Last, since they name the
 // VideoToolbox encoders.
 const shim = `const require = __createRequire(import.meta.url);\n`;

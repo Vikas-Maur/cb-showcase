@@ -1,0 +1,12 @@
+{
+  // Node-side test files plus the browser sources they serve, so both DOM and Node types.
+  "extends": "../../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": [
+    ".",
+    "../src",
+    "../bench"
+  ]
+}

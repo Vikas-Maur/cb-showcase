@@ -1,0 +1,41 @@
+{
+  "name": "@carton/server-cloudflare",
+  "version": "0.1.0",
+  "description": "SequencerHost for Cloudflare: a Worker plus one SQLite-backed Durable Object per project (Hibernation API), R2 blobs.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "dev": "wrangler dev --persist-to .wrangler/state"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0",
+    "@carton/cardboard": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/blob-memory": "0.1.0",
+    "@carton/host-http": "0.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.0",
+    "@carton/conformance": "0.1.0",
+    "@carton/server-node": "0.1.0",
+    "@carton/media": "0.1.0"
+  }
+}

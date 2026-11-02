@@ -1,0 +1,43 @@
+{
+  "name": "carton",
+  "private": true,
+  "description": "Carton: git for video, plus live collaboration, for Cardboard. npm workspace root.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "workspaces": [
+    "packages/core",
+    "packages/store-memory",
+    "packages/store-sqlite",
+    "packages/store-idb",
+    "packages/blob-memory",
+    "packages/http-node",
+    "packages/blob-fs",
+    "packages/blob-s3",
+    "packages/server",
+    "packages/host-http",
+    "packages/server-node",
+    "packages/server-cloudflare",
+    "packages/media",
+    "packages/cardboard",
+    "packages/local",
+    "packages/cli-mcp",
+    "packages/react",
+    "packages/comments",
+    "packages/conformance",
+    "e2e",
+    "apps/web"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "node scripts/build.mjs",
+    "size": "node scripts/size.mjs",
+    "deploy:cloudflare": "node packages/server-cloudflare/build-site.mjs && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml",
+    "deploy:cloudflare:web": "node apps/web/build.mjs --out packages/server-cloudflare/dist/site && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

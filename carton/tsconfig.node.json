@@ -1,0 +1,8 @@
+{
+  // Packages that run only in Node or Electron (hosts, file-system plug-ins, the CLI, tests).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"]
+  }
+}

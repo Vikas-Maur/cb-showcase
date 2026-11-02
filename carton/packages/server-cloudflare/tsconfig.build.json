@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "paths": {
+      "@carton/core": [
+        "../core/dist/index.d.ts"
+      ],
+      "@carton/core/plugins": [
+        "../core/dist/plugins.d.ts"
+      ],
+      "@carton/server": [
+        "../server/dist/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}

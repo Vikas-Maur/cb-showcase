@@ -1,0 +1,49 @@
+// R2-08 (C10): ⌘Z in the app undoes the person's own edits (and in-app agent turns) from this session, as stock
+// Cardboard: an external `cb` (a terminal agent, no window) is not on the undo stack, and a teammate's change is never
+// reverted by ⌘Z. (The user's choice after the laptop test of 90c4127; system-v11's R2-08 had ⌘Z revert the cb.)
+import test from "node:test";
+import assert from "node:assert/strict";
+import { doc, clips, set } from "../sim/world.ts";
+import { Agent } from "../sim/agent.ts";
+import { A, world, until, runFor, assertConverged, report, ENGINE } from "../helpers.ts";
+
+const find = (d: A.SimDoc, id: string) => d.timelineItems!.find((i) => i.id === id)!;
+
+export function register(): void {
+  test(`R2-08 ⌘Z undoes only your own edits: an external cb and the teammate's later change survive every ⌘Z [${ENGINE}]`, async (t) => {
+    const w = world({ seed: 100 });
+    const m1 = w.replica({ name: "m1-alice", link: w.net.link({ rtt: 100 }) });
+    const m2 = w.replica({ name: "m2-bob", link: w.net.link({ rtt: 100 }) });
+    const b = w.shared(doc({ items: clips(5) }), [m1, m2]);
+    await m1.startApp();
+    await m2.startApp();
+    const gui = m1.worker!.gui!;
+    gui.edit((d) => { find(d, "c2").opacity = 0.4; }, [["timelineItems/c2/opacity", 0.4]]);
+    await runFor(w, 1000);
+    const cc = new Agent(m1, { name: "claude-code (terminal)", hooked: false });
+    const r = await until(w, cc.cb({ kind: "ops", write: true, ops: [set("c1", "name", "by Claude Code")] }));
+    assert.equal(r.status, "confirmed");
+    await runFor(w, 500);
+    m2.worker!.gui!.edit((d) => { find(d, "c3").name = "by Bob"; }, [["timelineItems/c3/name", "by Bob"]]);
+    await runFor(w, 2000);
+    assert.ok(gui.undo.every((e) => e.actor !== "human:m2-bob"), "the teammate's change is not in the undo stack");
+
+    assert.ok(gui.undo.every((e) => e.actor !== cc.actor.id), "the terminal agent's change is not in the undo stack");
+
+    const z1 = gui.cmdZ()!;
+    assert.equal(z1.reverted, gui.saves[0]!.id, "⌘Z reverts Alice's own edit, not the terminal agent's cb change");
+    await runFor(w, 2000);
+    const head = m1.store.optimistic(b).doc;
+    assert.equal(A.item(head, "c2")!.opacity, 1, "Alice's own edit undone");
+    assert.equal(A.item(head, "c1")!.name, "by Claude Code", "the terminal agent's change kept");
+    assert.equal(A.item(head, "c3")!.name, "by Bob", "Bob's later change kept");
+
+    const z2 = gui.cmdZ();
+    assert.equal(z2, null, "nothing left: the terminal agent's and Bob's changes are not Alice's to undo");
+    await runFor(w, 2000);
+    assert.equal(A.item(m2.store.optimistic(b).doc, "c3")!.name, "by Bob");
+    assert.equal(A.item(m2.store.optimistic(b).doc, "c1")!.name, "by Claude Code");
+    assertConverged(w, b, [m1, m2]);
+    report(t, { undone: [z1.label] });
+  });
+}

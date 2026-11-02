@@ -1,0 +1,39 @@
+/* The gallery page itself (not part of the package): a dark page like Cardboard's window, and stand-ins for the
+   parts of Cardboard's UI the components sit next to (top bar, timeline), drawn with its own colours. */
+:root{color-scheme:dark}
+html,body{margin:0;background:#0a0a0a;color:#d9d9d9;font:14px/1.4 Geist,ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.g-head{padding:24px 32px 8px}
+.g-head h1{margin:0;font-size:18px;font-weight:600;color:#f5f5f5}
+.g-head p{margin:4px 0 0;color:#999;font-size:13px}
+.g-section{padding:16px 32px}
+.g-caption{display:flex;align-items:baseline;gap:12px;margin-bottom:8px}
+.g-caption h2{margin:0;font-size:13px;font-weight:600;color:#c2c2c2}
+.g-caption p{margin:0;font-size:12px;color:#737373}
+.g-frame{background:#151515;border-radius:12px;box-shadow:0 0 0 1px #ffffff0d;overflow:hidden}
+.g-grid{display:flex;align-items:flex-start;gap:0;padding:0 0}
+.g-grid > .g-section, .g-col > .g-section{padding-right:0}
+.g-col{display:flex;flex-direction:column}
+.g-stack{display:flex;flex-direction:column;gap:14px;align-items:flex-start}
+.g-stack > .carton-published{align-self:stretch}
+.g-row{display:flex;gap:8px;flex-wrap:wrap}
+.g-chip{background:#0a0a0a;border-radius:8px;padding:2px}
+.g-cuts{display:flex;align-items:flex-start}
+.g-topbar{display:flex;align-items:center;gap:10px;height:50px;padding:0 12px;background:#0a0a0a}
+.g-tab{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:8px;background:#1f1f1f;color:#f5f5f5;font-size:14px;font-weight:600}
+.g-tab-dim{background:transparent;color:#a3a3a3;font-weight:500}
+.g-tab-thumb{width:28px;height:18px;border-radius:4px;background:linear-gradient(135deg,#f5f5f5,#e04848 60%,#2a4a8a)}
+.g-sep{width:1px;height:20px;background:#ffffff14;margin:0 2px}
+.g-flex{flex:1}
+.g-ratio{color:#d9d9d9;font-size:14px;font-weight:500;padding:0 6px}
+.g-export{height:30px;padding:0 10px;border:0;border-radius:6px;background:#f4f4f4;color:#1a1a1a;font:600 14px Geist,system-ui,sans-serif}
+.g-export span{font-weight:400;font-size:12px;color:#737373;margin-left:4px}
+.g-timeline{position:relative;width:100%;height:262px;background:#1a1a1a;border-radius:8px;overflow:hidden}
+.g-ruler{position:absolute;left:0;right:0;top:0;height:28px;border-bottom:1px solid #000}
+.g-ruler span{position:absolute;top:8px;font-size:11px;color:#999;transform:translateX(-50%)}
+.g-track{position:absolute;left:0;right:0;border-bottom:1px solid #000}
+.g-track-name{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:12px;color:#c2c2c2}
+.g-track::before{content:"";position:absolute;left:0;top:0;bottom:0;width:116px;background:#151515;border-right:1px solid #000}
+.g-track-name{z-index:1}
+.g-clip{position:absolute;top:6px;bottom:6px;border-radius:4px;padding:3px 7px;font-size:11.5px;font-weight:500;color:#fff;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-shadow:inset 0 0 0 1px #ffffff1a}
+.g-playhead{position:absolute;top:22px;bottom:0;width:2px;background:#f5f5f5;z-index:3}
+.g-dialog-host{position:relative;height:860px;transform:translateZ(0);background:radial-gradient(80% 60% at 50% 30%,#1d1d1d,#101010)}

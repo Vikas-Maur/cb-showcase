@@ -1,0 +1,10 @@
+{
+  // The platform-neutral part (browsers, Workers, Node): no node:* types, so it can't reach for a Node-only API.
+  "extends": "../../tsconfig.base.json",
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/node"
+  ]
+}

@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:,">
+<title>What's new · Cardboard showcase</title>
+<meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
+<!-- The changelog: one static page, no script. Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
+     beside the files in fonts/), the free faces closest to cardboard.ai/changelog's own. -->
+<link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face{font-family:"Fraunces";src:url(/changelog/fonts/fraunces-latin-opsz.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Geist";src:url(/changelog/fonts/geist-variable.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+:root{--display:"Fraunces",Georgia,"Times New Roman",serif;--sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--text:#d4d4d4;--muted:#8a8a8a;--line:rgba(255,255,255,.12)}
+*{box-sizing:border-box}
+html{background:#000;color:#fff;-webkit-text-size-adjust:100%}
+body{margin:0;font-family:var(--sans);font-size:16px;line-height:1.7;letter-spacing:.01em;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+a{color:inherit}
+.display{font-family:var(--display);font-weight:340;font-variation-settings:"opsz" 72;letter-spacing:-.015em}
+
+.top{display:flex;align-items:center;justify-content:space-between;max-width:1320px;margin:0 auto;padding:18px 24px}
+.brand{font-family:var(--display);font-weight:340;font-variation-settings:"opsz" 72;font-size:22px;letter-spacing:-.01em;text-decoration:none}
+.btn{display:inline-flex;align-items:center;height:34px;padding:0 14px;border-radius:10px;background:#fff;color:#000;font-size:14px;font-weight:600;letter-spacing:0;text-decoration:none}
+.btn:hover{background:#e5e5e5}
+button.btn{border:0;font-family:var(--sans);line-height:1;cursor:pointer}
+.btn.dark{background:#1f1f1f;color:#fff}
+.btn.dark:hover{background:#2a2a2a}
+.nav{display:flex;align-items:center;gap:8px}
+.nav .link{color:#a3a3a3;font-size:15px;text-decoration:none;padding:0 10px;letter-spacing:0}
+.nav .link:hover,.nav .link[aria-current]{color:#fff}
+@media (max-width:640px){.top{padding:14px 16px}.brand{font-size:20px}.nav{gap:6px}.nav .link{padding:0 6px;font-size:14px}.nav .btn{padding:0 10px;font-size:13px;height:32px}}
+
+.hero{text-align:center;padding:96px 24px 40px}
+.hero h1{margin:0;font-size:56px;line-height:1.1}
+.hero p{margin:20px auto 0;max-width:560px;color:var(--muted);font-size:18px;font-weight:500;line-height:1.55;letter-spacing:0}
+
+main{max-width:968px;margin:0 auto;padding:40px 24px 0}
+article{display:grid;grid-template-columns:220px minmax(0,1fr);gap:64px;padding:72px 0 88px}
+article+article{border-top:1px solid rgba(255,255,255,.06)}
+aside{position:sticky;top:32px;align-self:start;border-left:1px solid rgba(255,255,255,.15);padding-left:16px}
+time{display:block;font-size:16px;font-weight:500;line-height:1.4;color:rgba(255,255,255,.9);letter-spacing:0}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}
+.tag{display:inline-flex;padding:2px 12px;border:1px solid rgba(255,255,255,.15);border-radius:999px;font-family:var(--mono);font-size:12px;line-height:20px;color:#d4d4d4;text-decoration:none;letter-spacing:0}
+a.tag:hover{border-color:rgba(255,255,255,.3);background:rgba(255,255,255,.05);color:#fff}
+.tag.preview{color:#fcd34d;border-color:rgba(252,211,77,.35)}
+
+.media{margin:0 0 40px;border-radius:16px;overflow:hidden;background:#0c0c0c;box-shadow:0 24px 80px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.06)}
+.media img{display:block;width:100%;height:auto}
+.media.card{display:flex;justify-content:center;padding:40px 24px;background:radial-gradient(120% 90% at 50% 0%,#1d1d1d 0%,#0c0c0c 70%)}
+.media.card img{width:340px;max-width:100%;border-radius:12px}
+
+h2{margin:0 0 24px;font-size:40px;line-height:1.1;font-weight:340;color:#fff;text-wrap:balance}
+h3{margin:36px 0 6px;font-size:20px;line-height:1.25;font-weight:500;letter-spacing:-.01em;color:#fff}
+p{margin:0 0 16px;color:var(--text)}
+.lead{font-size:18px;line-height:1.65;color:#e5e5e5}
+code{font-family:var(--mono);font-size:.875em;padding:1px 5px;border-radius:5px;background:rgba(255,255,255,.08);color:#e5e5e5;letter-spacing:0}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px 32px;margin:32px 0 28px;padding:28px 0 0;border-top:1px solid var(--line)}
+.stat b{display:block;font-family:var(--display);font-weight:340;font-variation-settings:"opsz" 72;letter-spacing:-.015em;font-size:34px;line-height:1.1;color:#fff;white-space:nowrap}
+.stat b s{text-decoration:none;color:#6b6b6b}
+.stat span{display:block;margin-top:8px;font-size:14px;line-height:1.5;color:var(--muted);letter-spacing:0}
+.how{font-size:13px;line-height:1.6;color:#737373;letter-spacing:0;margin-top:20px}
+.stats-how{margin:-12px 0 8px}
+
+details{border-top:1px solid var(--line)}
+details:last-of-type{border-bottom:1px solid var(--line)}
+article details:first-of-type{margin-top:40px}
+summary{display:flex;align-items:center;justify-content:space-between;padding:14px 0;font-size:15px;font-weight:500;color:#fff;cursor:pointer;list-style:none;letter-spacing:0}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"";flex:none;width:24px;height:24px;border:1px solid rgba(255,255,255,.18);border-radius:999px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23d4d4d4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center/12px no-repeat;transition:transform .2s}
+details[open] summary::after{transform:rotate(180deg)}
+summary:hover::after{border-color:rgba(255,255,255,.35)}
+summary:focus-visible{outline:2px solid rgba(255,255,255,.4);outline-offset:4px;border-radius:4px}
+details ul{margin:0;padding:0 0 18px;list-style:none}
+details li{position:relative;padding:5px 0 5px 18px;font-size:14px;line-height:1.6;color:#d9d9d9;letter-spacing:0}
+details li::before{content:"";position:absolute;left:2px;top:14px;width:5px;height:5px;border-radius:50%;background:#5c5c5c}
+details li b{color:#fff;font-weight:500}
+.note{margin-top:24px;font-size:14px;line-height:1.6;color:var(--muted);letter-spacing:0}
+
+.signoff{max-width:968px;margin:0 auto;padding:8px 24px 0}
+.signoff p{margin:0 0 0 284px;font-size:18px;font-style:italic;line-height:1.6;color:#d4d4d4}
+footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px solid rgba(255,255,255,.06);font-size:13px;line-height:1.6;color:#6b6b6b;letter-spacing:0}
+
+@media (max-width:820px){
+  .hero{padding:64px 20px 24px}
+  .hero h1{font-size:40px}
+  .hero p{font-size:16px}
+  main{padding:16px 20px 0}
+  article{grid-template-columns:1fr;gap:24px;padding:48px 0 56px}
+  aside{position:static;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+  aside .tags{margin-top:0}
+  h2{font-size:30px}
+  .lead{font-size:17px}
+  .media{margin-bottom:28px}
+  .stat b{font-size:28px}
+  .signoff{padding:0 20px}
+  .signoff p{margin-left:0;font-size:16px}
+  footer{margin-top:64px;padding:24px 20px 40px}
+}
+@media (prefers-reduced-motion:reduce){summary::after{transition:none}}
+.nav .btn{gap:6px}
+.nav .btn svg{width:15px;height:15px;flex:none}
+@media (max-width:480px){.brand{font-size:18px;white-space:nowrap}.nav .btn{width:32px;padding:0;justify-content:center}.nav .btn .lbl{display:none}}
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">Cardboard showcase</a>
+  <!-- The same bar as the landing page. GitHub and Download are placeholders for now: buttons, so a click does nothing
+       on this script-free page. -->
+  <nav class="nav">
+    <a class="link" href="/changelog/" aria-current="page">Changelog</a>
+    <button class="btn dark" type="button" data-placeholder="github" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></button>
+    <button class="btn" type="button" data-placeholder="windows-download" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></button>
+  </nav>
+</header>
+
+<section class="hero">
+  <h1 class="display">What’s new</h1>
+  <p>Everything we’ve built on Cardboard&nbsp;1.4.0, newest first.</p>
+</section>
+
+<main>
+
+<article id="5">
+  <aside>
+    <time datetime="2026-11-01">November 1, 2026</time>
+    <div class="tags"><a class="tag" href="#5" aria-label="Link to update 5">#5</a><span class="tag preview">Preview</span></div>
+  </aside>
+  <div>
+    <h2 class="display">Sharing: edit one project together, live</h2>
+    <p class="lead">Share a project and edit it with your team at the same time. Everyone’s edits show up as they happen, and nobody’s work overwrites anyone else’s.</p>
+
+    <h3>Share from the title bar</h3>
+    <p>Click the Share icon in Cardboard’s title bar, enter the live server’s address and your name, and the project is shared. Then make invite links that can edit, comment, or only watch. Teammates paste the link under Join a shared project, and the project appears in their library with its history.</p>
+
+    <h3>See each other work</h3>
+    <p>Edits arrive as they happen, and avatars show who’s in the project. Each person’s edits are shown under their own name, and a teammate’s agent as theirs: “Leo’s Director”.</p>
+
+    <h3>Keep working offline</h3>
+    <p>Lose the connection and keep editing: your edits wait (“Offline: 3 edits waiting”), then sync when you’re back. If someone changed the same thing meanwhile, you get a conflict card instead of a lost edit.</p>
+
+    <details>
+      <summary>Improvements</summary>
+      <ul>
+        <li><b>Light on the network.</b> Footage stays on your computer until you share it. Small preview copies go up first, in short pieces a teammate can play while the rest uploads; full originals only when someone needs them.</li>
+        <li><b>Runs on Cloudflare’s free plan.</b> The live server runs on Cloudflare, or on any computer with Node. Storage, the server and sign-in are plug-ins that can be swapped.</li>
+      </ul>
+    </details>
+    <p class="note">Sharing is in preview and needs Carton on (<code>CARDBOARD_CARTON=1</code>). Names are typed when you share or join; sign-in, a members list and email invites come later.</p>
+  </div>
+</article>
+
+<article id="4">
+  <aside>
+    <time datetime="2026-11-01">November 1, 2026</time>
+    <div class="tags"><a class="tag" href="#4" aria-label="Link to update 4">#4</a><span class="tag preview">Preview</span></div>
+  </aside>
+  <div>
+    <figure class="media card"><img src="/changelog/img/conflict-card.webp" width="680" height="476" alt="A conflict card: you set a clip's opacity to 90% while the Director set it to 50%. Both edits are kept, with buttons Keep yours and Keep Director's."></figure>
+    <h2 class="display">Carton: version history for video</h2>
+    <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
+
+    <h3>Nothing gets overwritten</h3>
+    <p>Before, two saves at the same moment, say yours and the Director’s, could quietly undo one of them, even on different clips. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
+
+    <h3>Every version, and who made it</h3>
+    <p>History keeps every version, where Cardboard 1.4.0 keeps only the newest 20. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+
+    <h3>Undo only what’s yours</h3>
+    <p>Ctrl+Z undoes your own edits and the agent turns you started, never a teammate’s. A whole Director turn can be undone at once.</p>
+
+    <h3>Cuts: try another version of the edit</h3>
+    <p>Make a separate cut, like a 30-second version or a client version, without copying any media. When you like it, fold all of it, or just part of it, back into the main cut.</p>
+
+    <h3>Made to drop into Cardboard</h3>
+    <p>Carton is one TypeScript module with no outside dependencies. It runs on Mac, Windows and Linux, in browsers and on Cloudflare. Every outside service it uses is a plug-in that can be swapped.</p>
+
+    <details>
+      <summary>Improvements</summary>
+      <ul>
+        <li><b>New <code>cb</code> commands.</b> <code>cut</code>, <code>fold</code>, <code>credits</code>, <code>restore</code>, <code>compare</code>, <code>conflicts</code>, <code>resolve</code> and <code>publish</code>. Git’s words work too: <code>branch</code>, <code>merge</code>, <code>log</code>, <code>blame</code>, <code>revert</code>.</li>
+        <li><b>Tools for agents.</b> The Director and your own agents get cuts, folds, credits and publishing as tools.</li>
+        <li><b>Credits.</b> Select a clip to see who last changed it, down to the subagent.</li>
+        <li><b>A steady timeline for agents.</b> While the Director works, the timeline file it reads doesn’t change under it. Your edits carry on in the editor and meet its edits through Carton.</li>
+        <li><b>Bring in their changes.</b> Fold a teammate’s exported <code>.cbproj</code> into your project.</li>
+      </ul>
+    </details>
+    <details>
+      <summary>Fixes &amp; housekeeping</summary>
+      <ul>
+        <li>An agent’s edit to an old copy of the timeline is merged against the version it came from. Cardboard merged it against the current timeline and could undo newer edits.</li>
+        <li>Exported <code>.cbproj</code> files never carry your history database or this computer’s paths.</li>
+        <li>Opening a project on Windows retries when antivirus or the search indexer briefly holds a file.</li>
+        <li>At final integration, all 24 test jobs passed (every test group on Linux and Windows, plus macOS): 6,844 tests, 0 failures.</li>
+      </ul>
+    </details>
+    <p class="note">Carton is in preview. It’s off unless Cardboard starts with <code>CARDBOARD_CARTON=1</code>, and with it off the editor works as it always has. It still needs a full run on a Windows laptop with real footage before it’s switched on by default.</p>
+  </div>
+</article>
+
+<article id="3">
+  <aside>
+    <time datetime="2026-10-31">October 31, 2026</time>
+    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a></div>
+  </aside>
+  <div>
+    <h2 class="display">An idle editor that stays idle</h2>
+    <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab. Now the editor rests when nothing moves.</p>
+    <div class="stats">
+      <div class="stat"><b><s>20.3% →</s> 0.7%</b><span>of a CPU core, one project open, window on screen, nothing moving</span></div>
+      <div class="stat"><b><s>64.8% →</s> 2.0%</b><span>of a CPU core, four projects open, window on screen, nothing moving</span></div>
+      <div class="stat"><b>Unchanged</b><span>playback: about 143 frames per second and 1.1 cores, before and after</span></div>
+    </div>
+    <p>It still reacts at once when something could move the preview: resizing the window or a panel, zooming or panning the preview, dragging. It keeps up while things move, and rests half a second after they stop.</p>
+    <p class="how">Measured on a laptop with a 144&nbsp;Hz screen, plugged in: the build before against the build after, 5 alternating runs each, medians (4 each for playback). A separate re-run with different tools got similar results. A window that’s completely covered was already paused by Windows, in both builds.</p>
+  </div>
+</article>
+
+<article id="2">
+  <aside>
+    <time datetime="2026-10-30">October 30, 2026</time>
+    <div class="tags"><a class="tag" href="#2" aria-label="Link to update 2">#2</a></div>
+  </aside>
+  <div>
+    <h2 class="display">Smoother playback, and a prompt box that behaves</h2>
+    <p class="lead">We played real projects on a Windows laptop and fixed what got in the way.</p>
+    <div class="stats">
+      <div class="stat"><b><s>26–37 →</s> 78–88</b><span>frames per second for a graphic with a video inside, while playing, with both changes below</span></div>
+      <div class="stat"><b><s>17–20 →</s> 4–6</b><span>editor stutters over 50&nbsp;ms in 19&nbsp;s of that playback, from using the NVIDIA GPU</span></div>
+    </div>
+    <p class="how stats-how">Measured on a Windows laptop with two GPUs, plugged in: the build before against the build after, 3 alternating runs each, each in its own fresh instance.</p>
+
+    <h3>Graphics play smoothly</h3>
+    <p>A graphic with a video inside waited for each exact video frame before drawing the next, even with the video off screen, and froze for seconds when a decode was slow. While playing, it now draws with the newest frame that’s ready: on the same GPU, that alone took it from about 40 to about 73 frames per second. Paused or scrubbing, you still see the exact frame.</p>
+
+    <h3>The fast GPU on laptops</h3>
+    <p>On a laptop with two GPUs, Cardboard drew everything on the power-saving one, which borrows system memory, while the NVIDIA card sat idle. Plugged in, Cardboard now uses the NVIDIA card. On battery it stays on the power-saving one, and Windows’ own per-app setting still wins.</p>
+
+    <h3>Play means play</h3>
+    <p>After a seek, Play waited for audio from muted tracks and hidden clips that would never be heard. It now waits only for sound you’ll hear, and pressing Play a second time starts at once.</p>
+
+    <h3>Prompt badges you can click</h3>
+    <p>Badges in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) are now one piece. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser. The arrow keys and Backspace treat a badge as a single character, so it can’t break into loose text.</p>
+
+    <details>
+      <summary>Fixes &amp; housekeeping</summary>
+      <ul>
+        <li>The timeline redraws after a GPU reset. It used to stay black.</li>
+        <li>The playhead stays in view when you step frames or drag it past the edge; the timeline scrolls to follow.</li>
+        <li>Clicking the timeline takes the keyboard from the prompt box, so Space plays instead of typing a space.</li>
+        <li>The editor’s left rail shows its tooltips.</li>
+        <li>A benchmark kit, and a “baseline” build of Cardboard’s own pipeline to compare against, so every speed claim can be re-run on the same machine.</li>
+        <li>A study re-implementation of how Cardboard merges an edited timeline: the groundwork for Carton.</li>
+      </ul>
+    </details>
+  </div>
+</article>
+
+<article id="1">
+  <aside>
+    <time datetime="2026-10-29">October 29, 2026</time>
+    <div class="tags"><a class="tag" href="#1" aria-label="Link to update 1">#1</a></div>
+  </aside>
+  <div>
+    <figure class="media"><img src="/changelog/img/windows.webp" width="1240" height="738" loading="lazy" decoding="async" alt="Cardboard running on Windows: the tab strip as the title bar with Windows' window buttons, the Library, the preview, the timeline and the agent chat."></figure>
+    <h2 class="display">Cardboard on Windows</h2>
+    <p class="lead">Cardboard only ships for Apple Silicon Macs. We turned its Mac app into a Windows app, with Windows versions of every tool it bundles. It’s one download, with nothing to install.</p>
+
+    <h3>Feels like a Windows app</h3>
+    <p>The tab strip is the title bar, with Windows’ own minimize, maximize and close buttons, Snap Layouts included. The app menu opens from Cardboard’s logo, or with Alt or F10, and every menu shortcut still works.</p>
+
+    <h3>The Director works on Windows</h3>
+    <p>The built-in Claude Code agent, its Python tools and the <code>cb</code> command line work from Git Bash, cmd and PowerShell. Cardboard also finds the Claude Code and Codex you installed yourself.</p>
+
+    <h3>Your NVIDIA GPU does the heavy lifting</h3>
+    <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU. Timeline thumbnails come from keyframes instead of decoding every frame.</p>
+
+    <h3>A Windows keyboard</h3>
+    <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, Enter answers the Director’s questions, and a new shortcut that clashes with another one is caught.</p>
+
+    <h3>Import a whole folder</h3>
+    <p>Use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+
+    <details>
+      <summary>Fixes &amp; housekeeping</summary>
+      <ul>
+        <li><b>Imports no longer lose clips.</b> Windows refuses to replace a file something is reading, so a save during an import could fail and drop a clip. Saves now retry.</li>
+        <li>Closing the window quits Cardboard. After a failed import step it used to keep running with no window.</li>
+        <li>Clips left without thumbnails after quitting mid-import get them when the project reopens.</li>
+        <li>Notifications show on Windows, and the taskbar button flashes when the Director needs you.</li>
+        <li>Cardboard says “this PC” and “File Explorer” where it said “this Mac” and “Finder”.</li>
+        <li>An activity log records how a session went: shortcuts, menus, waits and errors. Never what you type.</li>
+        <li>One script builds the whole app from scratch, and a GitHub workflow publishes it as a single self-extracting download.</li>
+      </ul>
+    </details>
+    <p class="note">Still Mac-only: automatic updates, Gemini Argon, and the one-click install for Claude Code and Codex. Install those two yourself, then press “Check again” in Settings → Agents.</p>
+  </div>
+</article>
+
+</main>
+
+<div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change. Every number here was checked independently before it went up.</p></div>
+
+<footer>An independent project built on Cardboard&nbsp;1.4.0 for macOS. It isn’t made by, or affiliated with, the Cardboard team.</footer>
+</body>
+</html>

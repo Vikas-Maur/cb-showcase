@@ -1,0 +1,34 @@
+{
+  "name": "@carton/server",
+  "version": "0.1.0",
+  "description": "The pure sequencer core (createSequencer): validates and orders pushes, never merges, keeps no document state. Runs inside any SequencerHost.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/comments": "0.1.0",
+    "@carton/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/conformance": "0.1.0"
+  }
+}

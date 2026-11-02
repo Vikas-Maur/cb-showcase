@@ -7,17 +7,20 @@
 // The CLI imports it as an ES module binding, which follows the module object only once synced.
 // Injected into the library worker (patch-worker.js) and the CLI (patch-cli.js). Not into main: it has
 // retries of its own for its writes (4 tries, 50 ms apart), which this would multiply.
+// The retry itself is globalThis.__cbRetryBusy(op, codes), for the other one-off calls that need it: Open Project's
+// removal of its staging folder (patch-worker.js 6, patch-cli-media.js 6). Windows only; elsewhere it isn't defined.
 module.exports = String.raw`if (process.platform === "win32" && !globalThis.__cbRenameRetry) {
   globalThis.__cbRenameRetry = true;
-  const fsp = require("fs/promises"), rename = fsp.rename;
-  fsp.rename = async (from, to) => {
+  globalThis.__cbRetryBusy = async (op, codes = ["EPERM", "EBUSY", "EACCES"]) => {
     for (let i = 0; ; i++) {
-      try { return await rename(from, to); } catch (e) {
-        if (i >= 8 || !["EPERM", "EBUSY", "EACCES"].includes(e?.code)) throw e;
+      try { return await op(); } catch (e) {
+        if (i >= 8 || !codes.includes(e?.code)) throw e;
         await new Promise((r) => setTimeout(r, 10 * 2 ** Math.min(i, 5)));
       }
     }
   };
+  const fsp = require("fs/promises"), rename = fsp.rename;
+  fsp.rename = (from, to) => globalThis.__cbRetryBusy(() => rename(from, to));
   require("module").syncBuiltinESMExports();
 }
 `;

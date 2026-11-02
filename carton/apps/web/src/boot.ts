@@ -1,0 +1,206 @@
+// Opening a project in the editor (the chunk main.ts loads behind the join screen): the store, Carton, the push lock,
+// the live head, presence, media, the view model for @carton/react, and the editor itself.
+
+import { createElement as h } from "react";
+import type { Root } from "react-dom/client";
+import { parseNode, type Actor, type Carton, type CutRecord, type Doc, type SyncError } from "@carton/core";
+import { fromCarton, CartonProvider } from "@carton/react";
+import { openIdbStore } from "@carton/store-idb";
+import { webSocketTransport } from "@carton/server-node/transport";
+import { App } from "./app.ts";
+import { gatedTransport, openEditorComments, type ShownVersion } from "./comments.ts";
+import { injectCommentsSkin } from "@carton/react";
+import { describeCardWith } from "./cards.ts";
+import { parseDescriptor, watchHash } from "./descriptor.ts";
+import { ensureWatchFile } from "./watch-file.ts";
+import { ImageCache } from "./images.ts";
+import { LiveDoc } from "./live-doc.ts";
+import { startMedia } from "./media-client.ts";
+import { PresenceSender } from "./presence.ts";
+import { holdPushLock, openProject, putBlob, readBlob, readDescriptor } from "./project.ts";
+import type { KeyStore, Session } from "./session.ts";
+import { rememberProject } from "./projects.ts";
+import { Uploads, addVideo } from "./upload.ts";
+
+/** A small observable value for the views (no framework store needed). */
+function cell<T>(v: T) {
+  const ls = new Set<() => void>();
+  return {
+    get: () => v,
+    set: (x: T) => {
+      v = x;
+      for (const l of ls) l();
+    },
+    subscribe: (l: () => void) => (ls.add(l), () => void ls.delete(l)),
+  };
+}
+
+export async function boot({ session, name, root, keys, baseUrl, message }: { session: Session; name: string; root: Root; keys: KeyStore; baseUrl: string; message: (title: string, text: string) => void }): Promise<void> {
+  message("Opening…", "Loading the project and catching up with your teammates.");
+  // the account is unique per install (main.ts accountFor); `name` is only what people see
+  const me: Actor = { kind: "human", id: session.account, name, group: session.account };
+  const store = await openIdbStore(session.projectId, { name: `carton:${session.projectId}:${session.account}` });
+  // the descriptor is kept in this browser, so a project opened before reopens offline (its state is in the store)
+  const cached = keys.get(`carton.descriptor.${session.projectId}`);
+  const known = cached ? parseDescriptor(cached) : await readDescriptor(session);
+  if (!cached) keys.set(`carton.descriptor.${session.projectId}`, JSON.stringify(known));
+  // one transport for the document sync and the comments; "Go offline" closes the comments' connection too
+  let offline = false;
+  const gate = gatedTransport(webSocketTransport(), () => !offline);
+  const { carton, descriptor } = await openProject({ session, me, store, transport: gate.transport, autoConnect: false, descriptor: known });
+  // who is behind this replica, by account and name: the host names comment authors (and History's people) from it
+  const who = carton.identity();
+  if (who?.id !== session.account || who.name !== name) await carton.setIdentity({ id: session.account, name });
+  const waiting = cell(false);
+  // why the current cut's sync is failing (a host refusing this client, H-SV): shown in place of the sync words
+  const syncProblem = cell<SyncError | null>(carton.sync?.error() ?? null);
+  carton.on((e) => {
+    if (e.type === "sync-error" || e.type === "sync") syncProblem.set(carton.sync?.error() ?? null);
+  });
+  // the landing page's list: this browser made or joined it
+  rememberProject(keys, { projectId: session.projectId, name: descriptor.name, role: session.role });
+  const lock = await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set, () => location.reload());
+  const live = await LiveDoc.open(carton);
+  // Timecoded comments on the same transport, URL and token (REQ-C3). Only the tab holding the push lock shares them,
+  // as with edits; viewers read. Placed again when the head on screen moves (LiveDoc), not on every presence event.
+  // A History preview is on screen instead of the head: comments are placed on it and new ones pinned to it. A preview
+  // whose version can't be named ({cut, seq}) takes no new comment (it would land on the head's content).
+  injectCommentsSkin(document);
+  const previewDoc = cell<Doc | null>(null);
+  let shown: ShownVersion | null = null;
+  let unnamed = false;
+  const { comments, ui: commentsView } = await openEditorComments({
+    carton,
+    sync: lock.holding() ? { transport: gate.transport, url: session.wsUrl, token: () => session.token() } : null,
+    versions: {
+      on: (l) => {
+        const offs = [live.subscribe(l), previewDoc.subscribe(l)];
+        return () => offs.forEach((off) => off());
+      },
+    },
+    shown: () => shown,
+    canComment: () => session.role !== "viewer" && !waiting.get() && !unnamed,
+  });
+  const presence = new PresenceSender((s) => carton.sync?.presence(s));
+  const images = new ImageCache((key) => readBlob(session, key));
+  const media = startMedia({ baseUrl, projectId: session.projectId, token: () => session.token() });
+  // media URLs only once the Service Worker controls this page: a <video> asking before then goes to the network,
+  // gets nothing, and stays broken after the worker takes over (review R2-2). Editing doesn't wait for it.
+  const mediaReady = cell(false);
+  media.ready.then(() => mediaReady.set(true), () => {});
+  session.onToken(() => media.refreshToken());
+
+  // Publishing gives a watch link: the Published cut is handed to the host as its own shared cut, and a viewer
+  // invite (owners only) lets anyone with the link watch it (§0.1 "Published cut: what the share link shows").
+  const links = new Map<string, string>();
+  const watchFile = (rec: CutRecord) =>
+    ensureWatchFile(rec, descriptor, { read: (k) => readBlob(session, k), put: (k, b, t) => putBlob(session, k, b, t), checkout: (c) => carton.checkout(c), keys });
+  const watchLink = async (rec: CutRecord): Promise<string | undefined> => {
+    if (!rec.forkOf || session.role !== "owner") return undefined;
+    // the cut must be on the host before anyone can watch it (a publish whose hand-off didn't finish)
+    if (rec.sequencer.kind === "local") await carton.share(rec.id);
+    await watchFile(rec);
+    const saved = keys.get(`carton.watch.${rec.id}`);
+    if (saved) return saved;
+    // scoped to the Published cut: the link reads that cut and nothing else (REQ-4, REQ-5)
+    const invite = await session.invite("viewer", 30 * 24 * 3600_000, [rec.id]);
+    const url = `${baseUrl}/watch.html${watchHash({ projectId: session.projectId, cut: rec.id, invite })}`;
+    keys.set(`carton.watch.${rec.id}`, url);
+    return url;
+  };
+  const publishing: Carton["publish"] = async (opts) => {
+    const rec = await carton.publish(opts);
+    await carton.share(rec.id);
+    const url = await watchLink((await carton.cuts()).find((c) => c.id === rec.id) ?? rec);
+    if (url) links.set(rec.id, url);
+    return rec;
+  };
+  // fromCarton sees this handle with publish going through the host, and every write refused while another tab of
+  // this person holds the push lock (its edits would sit in a queue nobody pushes); everything else is the handle
+  const WRITES = new Set<PropertyKey>(["commit", "undo", "fold", "foldSome", "restore", "revert", "publish", "fork", "renameCut", "name", "share"]);
+  const otherTab = () => Promise.reject(new Error("This project is open in another tab. Edit it there, or close that tab: this one takes over."));
+  const handle = new Proxy(carton, {
+    get(t, k) {
+      if (waiting.get() && WRITES.has(k)) return otherTab;
+      if (k === "publish") return publishing;
+      const v = Reflect.get(t, k, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  for (const c of await carton.cuts()) if (c.kind === "published") void watchLink(c).then((u) => u && links.set(c.id, u), () => {}); // retried on the next open
+
+  const ui = fromCarton(handle, {
+    me,
+    group: me.group,
+    clipName: (id) => {
+      const r = ((live.doc.timelineItems ?? []) as { id: string; name?: string; captionText?: string }[]).find((x) => x.id === id);
+      return r ? String(r.name ?? (r.captionText ? `Caption "${r.captionText}"` : id)) : id;
+    },
+    shareUrl: (cut) => links.get(cut.id),
+    describeCard: describeCardWith(() => live.doc),
+    onPreview: (pv) => {
+      let at: { branchId: string; seq: number } | null = null;
+      try {
+        at = pv ? parseNode(pv.ref) : null;
+      } catch {
+        at = null;
+      }
+      shown = pv && at && Number.isInteger(at.seq) ? { cut: at.branchId, seq: at.seq, doc: pv.doc as Doc } : null;
+      unnamed = !!pv && !shown;
+      previewDoc.set(pv ? (pv.doc as Doc) : null);
+    },
+  });
+  ui.subscribe("cuts", () => live.invalidate());
+
+  // only the tab holding the push lock ever connects (§6.2); the others stay read-only until it closes
+  const setOffline = async (off: boolean) => {
+    offline = off;
+    if (off) {
+      presence.stop();
+      gate.drop();
+      await carton.sync!.disconnect();
+    } else if (lock.holding()) {
+      await carton.sync!.connect().catch(() => false);
+      void comments.refresh(); // sends what waited; the comment sync reconnects on its own backoff
+    }
+  };
+  // real offline: the browser says the network went away; back online reconnects (unless the person chose offline)
+  addEventListener("offline", () => void carton.sync!.disconnect());
+  addEventListener("online", () => void (!offline && lock.holding() && carton.sync!.connect().catch(() => false)));
+  addEventListener("pagehide", () => presence.stop());
+  // presence isn't stored: say we're here when we (re)connect, and once to each teammate who appears
+  const heard = new Map<string, number>();
+  let lastSync = carton.sync!.status;
+  carton.on((e) => {
+    if (e.type === "sync") {
+      if (e.status === "up-to-date" && lastSync !== "up-to-date") presence.announce();
+      lastSync = e.status;
+    } else if (e.type === "presence" && e.state) {
+      const k = `${e.actor.kind}/${e.actor.id}`;
+      const was = heard.get(k);
+      heard.set(k, Date.now());
+      if (was === undefined || Date.now() - was > 30_000) presence.announce();
+    }
+  });
+
+  // Adding video from this browser (upload.ts): the host's largest upload, the files this page plays itself while
+  // they upload, and the uploads in progress.
+  const maxUploadBytes = await fetch(`${baseUrl}/api/host`).then(async (r) => (r.ok ? (((await r.json()) as { maxUploadBytes?: number | null }).maxUploadBytes ?? null) : null), () => null);
+  const local = new Map<string, string>();
+  const uploads = new Uploads();
+  const addFile = (file: File) => addVideo({ file, session, carton: handle, me, doc: () => live.doc, maxUploadBytes, local, jobs: uploads, baseUrl, committed: () => void live.refresh(), stillsUp: () => images.bump() });
+
+  // test and demo hooks (the e2e reads state through these; nothing secret: the page already holds it)
+  Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links, comments, uploads, hasBlob: (key: string) => session.api(`/blobs/head?key=${encodeURIComponent(key)}`).then(() => true, (e: { status?: number }) => (e.status === 404 ? false : Promise.reject(e))) } });
+
+  await ui.ready;
+  root.render(
+    h(
+      CartonProvider,
+      { ui },
+      h(App, { carton, ui, live, session, me, name, comments: commentsView, media: descriptor.media, uploads, addVideo: addFile, localUrl: (hash: string) => local.get(hash), presence, images, mediaUrl: media.url, mediaReady, syncProblem, previewDoc, waiting, setOffline, isOffline: () => offline }),
+    ),
+  );
+  presence.active("Joined");
+}
+

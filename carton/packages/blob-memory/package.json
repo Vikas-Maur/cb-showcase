@@ -1,0 +1,45 @@
+{
+  "name": "@carton/blob-memory",
+  "version": "0.1.0",
+  "description": "In-memory BlobStore plug-in (tests).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts",
+    "./rules": "./src/rules.ts",
+    "./signed": "./src/signed.ts",
+    "./scoped": "./src/scoped.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./rules": {
+        "types": "./dist/rules.d.ts",
+        "default": "./dist/rules.js"
+      },
+      "./signed": {
+        "types": "./dist/signed.d.ts",
+        "default": "./dist/signed.js"
+      },
+      "./scoped": {
+        "types": "./dist/scoped.d.ts",
+        "default": "./dist/scoped.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  }
+}

@@ -1,0 +1,375 @@
+// The loopback range server (PLAN §11, R2-12). ffmpeg-based agent tools (grab_frame, filmstrip, detect_scenes) can't
+// read Carton's leaf cache, but they all speak HTTP, and ffmpeg seeks with Range: a frame grab at 0:08 fetches the
+// index and the GOP it decodes, not the whole proxy. Verification, the leaf cache and the repair path all live behind
+// RangeSource; this file only speaks HTTP.
+//
+// Anything on this machine that can open a socket can reach it, so (PLAN §14):
+// - it binds 127.0.0.1 only, never 0.0.0.0;
+// - every URL carries a random token (`?t=`), compared in constant time;
+// - the Host header must name the loopback address and our port. A web page that points its own hostname at 127.0.0.1
+//   (DNS rebinding) sends its own name as Host, so it gets 403 even if it learnt the token;
+// - only GET and HEAD, only `/m/<64 hex>`. Error answers never echo the URL, so the token stays out of logs.
+//
+// Play first: bytes go out as the source yields them. A leaf that fails verification after some of its bytes went out
+// makes the source throw; the socket is then destroyed, so the client sees a broken response instead of a clean end,
+// stops, and asks again for the range, which the repair path has refetched by then (R2-11).
+
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { once } from "node:events";
+import { createServer, STATUS_CODES, type IncomingMessage, type OutgoingHttpHeaders, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { isMediaHash } from "../bytes.ts";
+import { parseRange } from "../http-range.ts";
+import { LeafMismatchError, type RangeSource } from "../range-source.ts";
+
+export interface RangeServerOptions {
+  source: RangeSource;
+  /** Loopback only. The option exists to say so; anything else throws. */
+  host?: "127.0.0.1";
+  /** 0 (the default) picks a free port. */
+  port?: number;
+  /** Defaults to 32 random bytes as hex. A caller-chosen token must be at least 32 characters. */
+  token?: string;
+  /**
+   * A connection that moves no bytes either way for this long is closed (default 60 s). A paused player holds its
+   * response open without reading; closing it frees the source read, and the player asks again when it needs more.
+   */
+  idleTimeoutMs?: number;
+  /** Called once per request when its response ends, however it ends. */
+  onRequest?: (info: RangeRequestInfo) => void;
+  /** Don't keep the process alive for this server alone. Off by default: a tool may be mid-read when main code ends. */
+  unref?: boolean;
+  /**
+   * Segmented proxies (stream.ts): the live HLS playlist of stream `id`, served at /s/<id>.m3u8, or null when unknown.
+   * `urlFor` gives the URL of each segment on this server (/m/<hash>), so a tool follows the stream while it uploads.
+   */
+  playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
+  /**
+   * A segment read through a playlist's URL (which names its stream) failed verification, on any attempt (a host that
+   * checks the damage removes the object, so the retry finds it gone, and still this is called): report the stream, so
+   * the next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports).
+   * Wire to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
+   */
+  reportDamage?: (stream: string, hash: string) => Promise<unknown>;
+  /**
+   * A segment read through a playlist's URL was not there (and no attempt failed verification). Wire to
+   * `(stream, hash) => reader.reportPartDamage(hash, "missing")`, which reports the stream only if a HEAD finds the part
+   * still gone: a part restored meanwhile isn't damage. Separate from `reportDamage`, so wiring made before it existed
+   * never reports a missing part without that check.
+   */
+  reportMissing?: (stream: string, hash: string) => Promise<unknown>;
+}
+
+export interface RangeRequestInfo {
+  method: string;
+  /** The media asked for, once the path parsed; null otherwise. */
+  hash: string | null;
+  /** 0 when the request ended before any answer went out. */
+  status: number;
+  /** The Range header as sent, or null. */
+  range: string | null;
+  /** The span this response carries: [offset, offset + length). */
+  offset: number;
+  length: number;
+  /** Body bytes handed to the socket. Less than `length` when the client left or the source failed. */
+  bytes: number;
+  /** The client closed the connection before the response ended. */
+  aborted: boolean;
+  /** What the source (or the handler) threw, e.g. LeafMismatchError. */
+  error?: unknown;
+  ms: number;
+}
+
+export interface RangeServer {
+  readonly port: number;
+  readonly token: string;
+  /** `http://127.0.0.1:<port>/m/<hash>?t=<token>`: what a tool gets. */
+  url(hash: string): string;
+  /** `http://127.0.0.1:<port>/s/<stream>.m3u8?t=<token>`: a segmented proxy as a live HLS playlist (needs `playlist`). */
+  playlistUrl(stream: string): string;
+  /** Stops listening, drops every connection (in-flight reads are aborted) and resolves once the server is closed. */
+  close(): Promise<void>;
+}
+
+export { parseRange, type ByteSpan } from "../http-range.ts";
+
+const MEDIA_PATH = "/m/";
+const STREAM_PATH = "/s/";
+const DEFAULT_TYPE = "application/octet-stream";
+
+export async function startRangeServer(opts: RangeServerOptions): Promise<RangeServer> {
+  const host = opts.host ?? "127.0.0.1";
+  if (host !== "127.0.0.1") throw new TypeError(`the range server binds 127.0.0.1 only, not ${String(host)}`);
+  const token = opts.token ?? randomBytes(32).toString("hex");
+  if (token.length < 32) throw new TypeError("a range server token must be at least 32 characters");
+  const expected = Buffer.from(token, "utf8");
+  const source = opts.source;
+  const onRequest = opts.onRequest;
+
+  const tokenOk = (given: string | null): boolean => {
+    if (given === null) return false;
+    const got = Buffer.from(given, "utf8");
+    // timingSafeEqual throws on unequal lengths. The token's length isn't secret, only its bytes are.
+    return got.length === expected.length && timingSafeEqual(got, expected);
+  };
+
+  let hostOk = (_host: string | undefined): boolean => false; // set once the port is known
+  let mediaUrl = (_hash: string, _ext?: string, _stream?: string): string => ""; // likewise
+
+  // Responses not closed yet. close() waits for them, so once it resolves every read it started has been told to abort
+  // and the caller can shut the source down. (onRequest waits for the reads themselves to end.)
+  let open = 0;
+  let drained: (() => void) | undefined;
+
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const t0 = performance.now();
+    const ac = new AbortController();
+    open++;
+    const info: RangeRequestInfo = {
+      method: req.method ?? "",
+      hash: null,
+      status: 0,
+      range: req.headers.range ?? null,
+      offset: 0,
+      length: 0,
+      bytes: 0,
+      aborted: false,
+      ms: 0,
+    };
+    let markClosed!: () => void;
+    const closed = new Promise<void>((r) => (markClosed = r));
+    res.once("close", () => {
+      if (!res.writableFinished) {
+        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error.
+        // (`info.bytes` counts bytes handed to the socket, not bytes the client got, so it can't tell a client that
+        // had everything from one that missed the tail: any close before we finished counts as an abort.)
+        if (info.error === undefined) info.aborted = true;
+        ac.abort();
+      }
+      // close() waits for responses, not for sources: a source that ignores its abort must not hold up shutdown.
+      if (--open === 0 && drained !== undefined) drained();
+      markClosed();
+    });
+
+    try {
+      await respond(req, res, ac, info);
+    } finally {
+      // Report once the response is closed AND this handler is done, the source's read included (its cleanup can
+      // outlast the socket: a client with a Content-Length ends at the last byte, before we leave our loop), so
+      // onRequest means "this request is completely over".
+      await closed;
+      if (onRequest !== undefined) {
+        info.status = res.headersSent ? res.statusCode : 0; // 0: it ended before any answer
+        info.ms = performance.now() - t0;
+        try {
+          onRequest(info);
+        } catch (e) {
+          process.emitWarning(`range server onRequest threw: ${String(e)}`);
+        }
+      }
+    }
+  };
+
+  const respond = async (req: IncomingMessage, res: ServerResponse, ac: AbortController, info: RangeRequestInfo): Promise<void> => {
+    let ofStream = ""; // the stream a playlist's segment URL names (s=)
+    const seen = { mismatch: false }; // a read of this request failed verification, on any attempt
+    try {
+      if (!hostOk(req.headers.host)) return reply(res, 403, CLOSE);
+      const url = req.url ?? "";
+      const q = url.indexOf("?");
+      const path = q < 0 ? url : url.slice(0, q);
+      const params = new URLSearchParams(q < 0 ? "" : url.slice(q + 1));
+      if (!tokenOk(q < 0 ? null : params.get("t"))) return reply(res, 403, CLOSE);
+      ofStream = params.get("s") ?? "";
+      const head = req.method === "HEAD";
+      // A request with another method may carry a body; closing is cheaper than reading it to keep the connection.
+      if (!head && req.method !== "GET") return reply(res, 405, { Allow: "GET, HEAD", ...CLOSE });
+      const stream = path.length === STREAM_PATH.length + 64 + 5 && path.startsWith(STREAM_PATH) && path.endsWith(".m3u8") ? path.slice(STREAM_PATH.length, -5) : "";
+      if (isMediaHash(stream) && opts.playlist) {
+        info.hash = stream;
+        const text = await opts.playlist(stream, (h) => mediaUrl(h, ".m4s", stream), ac.signal);
+        if (ac.signal.aborted) return;
+        if (text === null) return reply(res, 404);
+        const body = Buffer.from(text, "utf8");
+        // A live playlist changes as segments land: never cached, re-read by the tool every target duration.
+        res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Content-Length": body.length, "Cache-Control": "no-store" });
+        info.length = info.bytes = head ? 0 : body.length;
+        res.end(head ? undefined : body);
+        return;
+      }
+      // /m/<hash>, or /m/<hash>.mp4 / .m4s: ffmpeg's HLS demuxer only follows segment URLs with a media extension.
+      const name = path.startsWith(MEDIA_PATH) ? path.slice(MEDIA_PATH.length).replace(/\.(mp4|m4s)$/, "") : "";
+      const hash = name.length === 64 ? name : "";
+      if (!isMediaHash(hash)) return reply(res, 404);
+      info.hash = hash;
+
+      const stat = await source.stat(hash, ac.signal);
+      if (ac.signal.aborted) return;
+      if (stat === null) {
+        reply(res, 404);
+        await report(ofStream, hash, "missing");
+        return;
+      }
+      const size = stat.size;
+      const headers: OutgoingHttpHeaders = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": stat.contentType ?? DEFAULT_TYPE,
+        // The URL carries a token and the bytes are already in our leaf cache: no browser disk cache copies.
+        "Cache-Control": "no-store",
+        // Content-addressed, so the hash is a strong validator. It also lets If-Range work (below).
+        ETag: `"${hash}"`,
+      };
+      // RFC 9110: Range applies to GET only; If-Range with another validator means "send it all". An empty body has
+      // no satisfiable range, but 200 with nothing is what players and ffmpeg cope with, not 416.
+      const ifRange = req.headers["if-range"];
+      const span = head || size === 0 || (ifRange !== undefined && ifRange !== headers.ETag) ? null : parseRange(req.headers.range, size);
+      if (span === "unsatisfiable") return reply(res, 416, { ...headers, "Content-Range": `bytes */${size}` });
+      const status = span === null ? 200 : 206;
+      const offset = span === null ? 0 : span.start;
+      const length = span === null ? size : span.end - span.start + 1;
+      headers["Content-Length"] = length;
+      if (span !== null) headers["Content-Range"] = `bytes ${span.start}-${span.end}/${size}`;
+      info.offset = offset;
+      info.length = length;
+      if (head || length === 0) {
+        res.writeHead(status, headers);
+        res.end();
+        return;
+      }
+      await sendBody(res, source, hash, offset, length, status, headers, ac.signal, info, seen);
+    } catch (e) {
+      if (ac.signal.aborted) return; // the client left; there is no one to answer
+      info.error = e;
+      // Headers go out with the first body bytes (sendBody), so headersSent means the client has part of a body: break
+      // the response so it can't mistake it for a complete one. Before that, a plain 502 says "try again".
+      if (res.headersSent) res.destroy();
+      else reply(res, 502);
+      // A mismatch on the first attempt followed by a missing object on the retry is the mismatch: a host that checks a
+      // reported leaf removes the damaged object, so the retry can't find it.
+      const name = (e as Error)?.name;
+      const why = e instanceof LeafMismatchError || seen.mismatch ? "mismatch" : name === "MediaMissingError" ? "missing" : null;
+      if (why !== null && info.hash) await report(ofStream, info.hash, why);
+    }
+  };
+
+  const report = async (stream: string, hash: string, why: "mismatch" | "missing"): Promise<void> => {
+    const to = why === "mismatch" ? opts.reportDamage : opts.reportMissing;
+    if (to && isMediaHash(stream)) {
+      try {
+        await to(stream, hash);
+      } catch {
+        // best effort: the answer has gone out already
+      }
+    }
+  };
+
+  // requestTimeout covers receiving the request, which for GET and HEAD ends with the headers; 0 makes sure Node never
+  // times out a long response. headersTimeout bounds slow header senders, the idle timeout (below) stalled sockets.
+  const server = createServer({ requestTimeout: 0, headersTimeout: 10_000 }, (req, res) => {
+    handle(req, res).catch(() => res.destroy());
+  });
+  // Without a 'timeout' listener Node destroys a socket that went idle, which closes its response and aborts its read.
+  server.setTimeout(opts.idleTimeoutMs ?? 60_000);
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host, port: opts.port ?? 0 }, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  if (opts.unref) server.unref();
+  const port = (server.address() as AddressInfo).port;
+  const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
+  hostOk = (h) => h !== undefined && (h === allowed[0] || h.toLowerCase() === allowed[1]);
+  const query = `?t=${encodeURIComponent(token)}`;
+  mediaUrl = (hash, ext = "", stream) => `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${ext}${query}${stream ? `&s=${stream}` : ""}`;
+
+  let closing: Promise<void> | undefined;
+  return {
+    port,
+    token,
+    url(hash) {
+      if (!isMediaHash(hash)) throw new TypeError(`not a media hash: ${String(hash).slice(0, 80)}`);
+      return mediaUrl(hash);
+    },
+    playlistUrl(stream) {
+      if (!isMediaHash(stream)) throw new TypeError(`not a stream id: ${String(stream).slice(0, 80)}`);
+      return `http://127.0.0.1:${port}${STREAM_PATH}${stream}.m3u8${query}`;
+    },
+    close() {
+      closing ??= new Promise<void>((resolve) => {
+        // The server's 'close' can come before the dropped responses emit theirs, so wait for both.
+        let pending = 2;
+        const done = (): void => {
+          if (--pending === 0) resolve();
+        };
+        server.close(() => done());
+        if (open === 0) done();
+        else drained = done;
+        server.closeAllConnections();
+      });
+      return closing;
+    },
+  };
+}
+
+const CLOSE = { Connection: "close" };
+
+function reply(res: ServerResponse, status: number, extra?: OutgoingHttpHeaders): void {
+  const body = `${status} ${STATUS_CODES[status] ?? ""}\n`;
+  res.writeHead(status, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "no-store",
+    ...extra,
+  });
+  res.end(body);
+}
+
+/**
+ * Streams [offset, offset + length) from the source. Chunks go to the socket as they are, with no copy, so a source
+ * must not reuse a chunk's memory after yielding it. A false write waits for 'drain', which is what keeps a slow
+ * client from making us pull (and the source fetch) the whole file into memory.
+ */
+async function sendBody(
+  res: ServerResponse,
+  source: RangeSource,
+  hash: string,
+  offset: number,
+  length: number,
+  status: number,
+  headers: OutgoingHttpHeaders,
+  signal: AbortSignal,
+  info: RangeRequestInfo,
+  seen: { mismatch: boolean },
+): Promise<void> {
+  let sent = 0;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // A retry (below) only happens before any byte went out, so it asks for the same span.
+      for await (const chunk of source.read(hash, offset, length, signal)) {
+        if (signal.aborted) return;
+        // A source that yields past the end is trimmed (a view, not a copy) rather than overrunning Content-Length.
+        const c = chunk.length > length - sent ? chunk.subarray(0, length - sent) : chunk;
+        if (c.length === 0) continue;
+        // Headers wait for the first bytes, so a source that fails first can still get a clean 502.
+        if (!res.headersSent) res.writeHead(status, headers);
+        sent += c.length;
+        info.bytes = sent;
+        if (!res.write(c)) await once(res, "drain", { signal });
+        if (sent === length) break;
+      }
+      break;
+    } catch (e) {
+      // A leaf that failed verification before any of it reached the client costs the client nothing: read again,
+      // once. The repair path has refetched the leaf by then; a second failure is answered with 502.
+      if (e instanceof LeafMismatchError) seen.mismatch = true;
+      if (sent === 0 && attempt === 0 && e instanceof LeafMismatchError && !signal.aborted) continue;
+      throw e;
+    }
+  }
+  if (signal.aborted) return;
+  if (sent !== length) throw new Error(`media ${hash.slice(0, 12)}: the source ended after ${sent} of ${length} bytes`);
+  res.end();
+}

@@ -1,0 +1,44 @@
+{
+  "name": "@carton/conformance",
+  "version": "0.1.0",
+  "description": "Conformance suites: one per plug-in interface, plus the engine and system suites. A new plug-in is accepted when it passes its suite.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts",
+    "./engine": "./src/engine/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./engine": {
+        "types": "./dist/engine/index.d.ts",
+        "default": "./dist/engine/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0",
+    "@carton/store-memory": "0.1.0",
+    "@carton/blob-memory": "0.1.0",
+    "@carton/cardboard": "0.1.0",
+    "@carton/media": "0.1.0",
+    "@carton/local": "0.1.0",
+    "@carton/server": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/store-sqlite": "0.1.0"
+  }
+}

@@ -1,0 +1,107 @@
+// Where the end-to-end tests keep their files, and where the workspace's packages are.
+// Scratch: CARTON_E2E_TMP, else ~/gfv-scratch/carton/e2e-qa when that folder exists (the shared build box, whose /tmp
+// is a small tmpfs), else the OS temp folder (CI runners on Linux, Windows and macOS).
+import { existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const E2E = fileURLToPath(new URL("..", import.meta.url));
+export const WORKSPACE = join(E2E, "..");
+export const pkg = (name: string, ...rest: string[]): string => join(WORKSPACE, "packages", name, ...rest);
+export const support = (file: string): string => join(E2E, "support", file);
+
+/** The real home folder of the run (read before the scratch profile below replaces HOME). */
+export const REAL_HOME = process.env.CARTON_E2E_REAL_HOME ?? homedir();
+
+export function scratchRoot(): string {
+  const box = join(REAL_HOME, "gfv-scratch");
+  const dir = process.env.CARTON_E2E_TMP ?? (existsSync(box) ? join(box, "carton", "e2e-qa", "run") : join(tmpdir(), "carton-e2e"));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * One scratch profile for the whole run, this process and every process it starts: HOME, app data and the XDG folders
+ * inside scratch, so nothing (Carton's app-data placement, wrangler, ffmpeg) reads or writes the user's real profile.
+ * One for all, because store-sqlite tells machines apart by the home folder (its machine mark): a test process and its
+ * children with different homes would treat each other's carton.db as another machine's. What the processes need
+ * from the real home is passed explicitly (the 1.4.0 CLI, the scratch root).
+ */
+export function scratchProfile(): Record<string, string> {
+  const root = scratchRoot();
+  const home = join(root, "home");
+  mkdirSync(home, { recursive: true });
+  const env: Record<string, string> = {
+    CARTON_E2E_TMP: root,
+    CARTON_E2E_REAL_HOME: REAL_HOME,
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: join(home, "AppData", "Local"),
+    APPDATA: join(home, "AppData", "Roaming"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+  };
+  const cli = join(REAL_HOME, ".t3", "projects", "cardboard-showcase", "_inspect", "cardboard-1.4.0", "cli", "cardboard.mjs");
+  if (!process.env.CARTON_CARDBOARD_CLI && existsSync(cli)) env.CARTON_CARDBOARD_CLI = cli;
+  // Temp files inside scratch too. Windows: TEMP and TMP (holders use named pipes there, no path limit). POSIX: TMPDIR
+  // only while it is short: a lease holder whose bundle is deep puts its control socket in the temp folder, and a Unix
+  // socket path must fit 104 bytes on macOS (the socket's name takes about 46); a longer scratch keeps the OS temp
+  // folder, where those sockets (and nothing else of the suite) go.
+  const t = join(root, "t");
+  mkdirSync(t, { recursive: true });
+  if (process.platform === "win32") env.TEMP = env.TMP = t;
+  else if (t.length <= 50) env.TMPDIR = t;
+  return env;
+}
+Object.assign(process.env, scratchProfile());
+
+/**
+ * A machine's app-data folder (`<machine home>/appdata`), from its bundle `<machine home>/lib/<Name>.cardboard`: where
+ * carton.db goes when the bundle is in a synced folder, on a network share or on FAT/exFAT (§6.4, L15). Passed to every
+ * Carton open, so no placement ever reaches the real user profile, and two machines on one box never share one.
+ */
+export const dataDirFor = (bundle: string): string => join(dirname(dirname(resolve(bundle))), "appdata");
+
+/** Refuse to touch a file outside the scratch root (the user's real data is never opened). */
+export function assertInScratch(path: string, what: string): void {
+  const root = resolve(scratchRoot()) + sep;
+  if (!resolve(path).startsWith(root)) throw new Error(`${what} is outside the scratch folder (${path}); refusing to open it`);
+}
+
+/** A fresh folder for one scenario. */
+export const scratch = (name: string): string => mkdtempSync(join(scratchRoot(), `${name}-`));
+
+export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Polls `f` until it returns something truthy; throws with `what` after `ms`. */
+export async function until<T>(f: () => T | null | undefined | false | Promise<T | null | undefined | false>, ms = 30_000, what = "condition", every = 25): Promise<T> {
+  const end = Date.now() + ms;
+  let last: unknown = null;
+  for (;;) {
+    try {
+      const v = await f();
+      if (v) return v;
+    } catch (e) {
+      last = e;
+    }
+    if (Date.now() > end) throw new Error(`timed out after ${ms} ms waiting for ${what}${last ? ` (last error: ${(last as Error)?.message ?? last})` : ""}`);
+    await sleep(every);
+  }
+}
+
+/**
+ * Replace `to` with `from` as an editor's or agent's atomic save does. On Windows a rename over a file another process
+ * has open (Carton's materializer reading it) fails with EPERM/EBUSY for a moment; editors retry, so do we.
+ */
+export function renameRetry(from: string, to: string): void {
+  for (let i = 0; ; i++) {
+    try {
+      return renameSync(from, to);
+    } catch (e: any) {
+      if (i >= 50 || !["EPERM", "EBUSY", "EACCES"].includes(e?.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+}
