@@ -88,7 +88,10 @@ export class Tables {
   private heads = new Map<string, number>();
   private branches = new Map<string, StoredBranch | null>();
   private decl = new Map<string, Map<number, TailRow>>();
-  /** Withdraw rows (H1) counted after a Published cut's version: branch → at → up to which head, how many. */
+  /**
+   * Rows that are no version (withdraw rows, H1; fold-some fold halves) counted after a Published cut's version:
+   * branch → at → up to which head, how many.
+   */
   private withdrawsAfter = new Map<string, Map<number, { head: number; n: number }>>();
   private readonly declLimit: number;
   private readonly latestOnly: boolean;
@@ -190,10 +193,12 @@ export class Tables {
   }
 
   /**
-   * The versions a branch has after `at` (a Published cut's source, every watcher's hello): its rows after `at` less
-   * its withdraw rows (H1), which spend an id and are no version. Counted once, then only the rows past the head last
-   * counted, so a watcher asking every few seconds reads a row at most once. Archived rows (below the live ones) count
-   * as versions: their flags aren't read.
+   * The versions a branch has after `at` (a Published cut's source, every watcher's hello), as core's `log()` and
+   * `publications()` count them: its rows after `at` less its withdraw rows (H1), which spend an id and are no version,
+   * and less the fold half of each fold-some (laptop re-check P3: a fold `X` and its partial revert `X.inverse` right
+   * after it are one version, the partial revert's). Counted once, then only the rows past the head last counted, so a
+   * watcher asking every few seconds reads a row at most once. Archived rows (below the live ones) count as versions:
+   * their flags aren't read.
    */
   versionsAfter(branch: string, at: number): number {
     const head = this.head(branch);
@@ -204,7 +209,14 @@ export class Tables {
     if (!c || c.head > head) c = { head: at, n: 0 };
     if (c.head < head) {
       let n = c.n;
-      for (const r of this.all<{ flags: number }>("SELECT flags FROM changes WHERE branch = ? AND seq > ? AND seq <= ? AND (flags & ?) != 0", branch, c.head, head, FLAG_WITHDRAWN)) if (num(r.flags) & FLAG_WITHDRAWN) n++;
+      for (const r of this.all<{ seq: number; id: string; flags: number }>("SELECT seq, id, flags FROM changes WHERE branch = ? AND seq > ? AND seq <= ? AND ((flags & ?) != 0 OR id LIKE '%.inverse')", branch, c.head, head, FLAG_WITHDRAWN)) {
+        if (num(r.flags) & FLAG_WITHDRAWN) n++;
+        else if (String(r.id).endsWith(".inverse") && num(r.seq) - 1 > at) {
+          // a fold-some's partial revert: the fold right before it, not withdrawn, is no version of its own
+          const [f] = this.all<{ id: string; flags: number }>("SELECT id, flags FROM changes WHERE branch = ? AND seq = ?", branch, num(r.seq) - 1);
+          if (f && `${f.id}.inverse` === r.id && !(num(f.flags) & FLAG_WITHDRAWN)) n++;
+        }
+      }
       byAt.set(at, (c = { head, n }));
     }
     return head - at - c.n;

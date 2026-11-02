@@ -157,3 +157,42 @@ test("review: a bulk replacement of many clips of one footage is no split, and c
   assert.ok(!lines.some((l) => l.startsWith("Split")), "no split");
   assert.ok(ms < 2000, `bounded work: ${ms.toFixed(0)} ms`);
 });
+
+// Laptop re-check P3 (fold counts): Cardboard's editor drops autoReframe from both parts of a split (its save has no
+// such field for a new clip), which read "…, cleared auto reframe on its left part, cleared auto reframe on its right
+// part". What the host's split leaves off its parts (`splitDrops`) is the split's own, as a transition or a fade is.
+const dropping = core.defineSchema({ ...schema, collections: schema.collections, timeline: { ...TL, splitDrops: ["autoReframe"] } } as never);
+
+test("P3: a field the host's split drops from both parts is the split's; a real change to it is still told", () => {
+  const d = base();
+  (d.items as Rec[])[0] = { ...(d.items as Rec[])[0]!, autoReframe: true };
+  const drop = ([a, b]: [Rec, Rec]): [Rec, Rec] => {
+    const { autoReframe: _x, ...l } = a, { autoReframe: _y, ...r } = b;
+    return [l, r];
+  };
+  assert.deepEqual(core.describe(save(d, splitAt(4, drop)), d, dropping), ["Split 'clip.mp4' at 4.0 s"]);
+  // a schema that doesn't say its split drops it still tells it (nothing else changes for other hosts)
+  assert.match(core.describe(save(d, splitAt(4, drop)), d, schema)[0]!, /cleared autoReframe on its left part/);
+  // cleared on one part only (the other kept it): told
+  assert.deepEqual(core.describe(save(d, splitAt(4, ([a, b]) => [a, drop([a, b])[1]])), d, dropping), ["Split 'clip.mp4' at 4.0 s, cleared autoReframe on its right part"]);
+  // turned off on a part (a value, not dropped): told
+  assert.deepEqual(core.describe(save(d, splitAt(4, ([a, b]) => [{ ...a, autoReframe: false }, b])), d, dropping), ["Split 'clip.mp4' at 4.0 s, changed its left part autoReframe true → false"]);
+  // set on a part where the clip had none: told
+  const plain = base();
+  assert.deepEqual(core.describe(save(plain, splitAt(4, ([a, b]) => [a, { ...b, autoReframe: true }])), plain, dropping), ["Split 'clip.mp4' at 4.0 s, set its right part autoReframe to true"]);
+});
+
+test("P3: countChanges counts a change per record and a split as one, as the Fold dialog lists them", () => {
+  const d = base();
+  const ops = [...save(d, splitAt(4)), { op: "set", path: ["items", "c2", "opacity"], value: 0.5 } as Op];
+  assert.equal(core.countChanges(ops, d, schema), 2, "the split and the opacity");
+  assert.equal(core.countChanges(save(d, splitAt(4)), d, schema), 1);
+  // among a partial fold's left-out paths: the split's three records are one change; a field path names its record
+  assert.equal(core.countChanges(ops, d, schema, ["items/c1", "items/p1", "items/p2"]), 1);
+  assert.equal(core.countChanges(ops, d, schema, ["items/c1", "items/p1", "items/p2", "items/c2/opacity"]), 2);
+  assert.equal(core.countChanges(ops, d, schema, ["items/p1"]), 1, "a part alone is a record");
+  // a root field is one; what isn't a split counts each record
+  const gap = save(d, (items) => items.flatMap((it) => (it.id === "c1" ? [clip("p1", 0, 3), clip("p2", 5, 10, { trimStart: 6, trimEnd: 11 })] : [it])));
+  assert.equal(core.countChanges(gap, d, schema), 3);
+  assert.equal(core.countChanges([{ op: "set", path: ["name"], value: "x" }], d, schema), 1);
+});

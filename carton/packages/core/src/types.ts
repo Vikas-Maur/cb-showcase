@@ -392,6 +392,11 @@ export interface Version {
    * version (UI audit P1-3), of kind `merge`; `change` is the partial revert's id, which "fold in the rest" reverts.
    */
   rejected?: PathKey[];
+  /**
+   * How many changes a partial fold left out, counted as History, the Fold dialog and Compare count them: a record each,
+   * a split one (`countChanges`). With `rejected`.
+   */
+  leftOutChanges?: number;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";

@@ -33,7 +33,7 @@ function Side({ side, now }: { side: CompareSide; now: number }) {
       h("dt", null, words.factWho),
       h("dd", { className: "carton-compare-who" }, h(Avatar, { actor: side.author, size: 14, named: true }), h(ActorName, { actor: side.author })),
       h("dt", null, words.factClips),
-      h("dd", null, words.clips(side.clipCount)),
+      h("dd", null, words.clipsAnd(side.clipCount, side.kinds ?? [])),
       h("dt", null, words.factLength),
       h("dd", null, duration(side.length)),
     ),
@@ -73,7 +73,8 @@ export function CompareCard(p: CompareCardProps) {
       h(
         "p",
         { key: "diff", className: "carton-compare-diff", "data-same": same ? "" : undefined },
-        words.compareSummary(changes ? changes.length : null, c.diff.seconds, c.diff.total),
+        // counted as History and Watch the changes count them (a split one change), not by its lines
+        words.compareSummary(c.changeCount ?? (changes ? changes.length : null), c.diff.seconds, c.diff.total),
       ),
       shown.length
         ? h(

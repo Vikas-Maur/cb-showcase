@@ -501,7 +501,15 @@ What changes with it on:
   sharing footage reads "Linked 'clip.mp4' for sharing" (it read `Set 'clip.mp4' content to "8291f1d9…"`), and a clip
   dragged onto a new track names that track. **Fold in some of it** is one version, "Folded 'Client review' into 'Main
   cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
-  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. **You can fold in the rest later** is true now: the next Fold in lists what
+  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. Changes are
+  counted one way everywhere (laptop re-check, 2026-11-02): a change per clip or field, a split one change, so the
+  Fold dialog's "2 changes", History's "1 of 2 changes" and `cb history`'s "merge (1 left out)" agree (they read 2, "1
+  of 4" and "3 left out"), as do Compare's and Watch the changes' counts (Watch's counter now steps through
+  "Section 1 of 2", the stretches of the edit that differ), and a watch link's "N newer versions" counts a fold-some
+  once. A split of a clip with auto reframe reads "Split 'clip.mp4' at 1.5 s" (it went on "…, cleared auto reframe on
+  its left part, … on its right part": the editor's save drops it from the new parts). Titles are titles: "Added 2
+  tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'" (it read "7 clips and 6 media files", counting each
+  title's own media entry), and Compare's clips read "1 clip, 6 titles". **You can fold in the rest later** is true now: the next Fold in lists what
   was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
   in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
   recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the
@@ -695,7 +703,7 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
    `for /d %A in ("%CARDBOARD_HOME%\accounts\*") do set LIB=%A` (`%%A` in a .cmd file). With the app closed:
    `node scripts/carton/writers.js setup "%CB%" "%LIB%" bench-media\<a clip>.mp4`, then
    `node scripts/carton/writers.js run "%CB%" "%LIB%" --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
-   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Off, some writers can lose their last edit. On, none may, once
+   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Each failed apply prints why after the table (`failed: W2 edit 41 apply, exit 1: <its message>`); `--out` keeps them in `failures`. Off, some writers can lose their last edit. On, none may, once
    history is in.
 3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
    "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,

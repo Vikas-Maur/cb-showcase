@@ -99,6 +99,13 @@ export interface CollectionDef {
   /** What one record is called in descriptions ("clip"); default "item" ("track" for the timeline's lanes). */
   noun?: string;
   /**
+   * What one record is, where the collection holds more than one kind (laptop re-check P3-8, P3-10: Cardboard's
+   * timeline items are clips and titles): its noun when not `noun` ("title"), or null for a record that is part of
+   * another (a title's own media entry), which a version's summary and Compare's clip count leave out. Counted by it:
+   * "Added 2 tracks, 6 titles and media 'clip.mp4'".
+   */
+  nounOf?: (record: Rec) => string | null | undefined;
+  /**
    * Editors' words for fields in descriptions, by their dotted path in the record with keyed-array element keys left
    * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
    */
@@ -123,6 +130,7 @@ export interface FieldPhrase {
 export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly fields?: Record<string, FieldSpec>;
   readonly noun?: string;
+  readonly nounOf?: (record: Rec) => string | null | undefined;
   readonly labels?: Readonly<Record<string, string>>;
   readonly phrases?: Readonly<Record<string, FieldPhrase>>;
   readonly parent?: { field: string; collection: string };
@@ -169,6 +177,12 @@ export interface TimelineConfig {
   sourceEnd: string;
   speed: string;
   shots?: ShotRules;
+  /**
+   * Item fields the host's split may leave off its parts (Cardboard: the transitions and the fades on the cut's side,
+   * and `autoReframe`, which the editor's save doesn't keep on a new clip). A part without one is what the split made
+   * of it, not a change of its own; any other value on a part is still told. Not part of the schema's fingerprint.
+   */
+  splitDrops?: readonly string[];
 }
 
 /** A soft-validator finding: a warning on a merge or after a confirmed change, never a card (§4.1). */

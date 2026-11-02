@@ -190,3 +190,28 @@ test("a Published cut's welcome leaves withdraw rows (H1) out of the source's ne
   assert.equal(seq.tables.versionsAfter(BRANCH, 1), 2);
   assert.equal(seq.tables.meter.rowsRead, read, "counted rows aren't read again");
 });
+
+test("a Published cut's welcome counts a fold-some (its fold and partial revert) as one newer version, as core's log() does", async () => {
+  // laptop re-check P3 (fold counts): the fold `X` and its partial revert `X.inverse` right after it are one version
+  const d0 = doc([clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15)]);
+  const { seq } = await world(d0);
+  const editor = fakeConn("e/k");
+  await push(seq, editor, d0, [set("c0", "name", "one")]);
+  await seq.createBranch({ id: PUB, name: "Main cut (published)", forkOf: `${BRANCH}@1`, owner: "alice", kind: "published", source: BRANCH, sequencer: { kind: "server", since: 0 } }, { doc0: d0 as never, stateHash: "h0" });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  // a fold-some: its fold (two records), then the partial revert of one of them, sent as `<id>.inverse`
+  await push(seq, editor, d0, [set("c1", "name", "fold-1"), set("c2", "name", "fold-2")], { base: { seq: 1, pending: [] }, id: "rid.7" });
+  await seq.handle(viewer, hello(PUB));
+  assert.equal(viewer.last("hello")?.source?.versions, 1, "the fold alone so far: one version ");
+  await push(seq, editor, d0, [set("c2", "name", "c2")], { base: { seq: 2, pending: [] }, id: "rid.7.inverse" });
+  await seq.handle(viewer, hello(PUB));
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: BRANCH, at: 1, head: 3, versions: 1 }, "fold and partial revert: one newer version");
+  // an edit after it, and an `.inverse` that doesn't follow its fold (another row between): each a version
+  await push(seq, editor, d0, [set("c0", "name", "two")], { base: { seq: 3, pending: [] }, id: "rid.8" });
+  await push(seq, editor, d0, [set("c1", "name", "three")], { base: { seq: 4, pending: [] }, id: "rid.9" });
+  await push(seq, editor, d0, [set("c1", "name", "four")], { base: { seq: 5, pending: [] }, id: "rid.8.inverse" });
+  assert.equal(seq.tables.head(BRANCH), 6);
+  assert.equal(seq.tables.versionsAfter(BRANCH, 1), 4, "the fold-some, rid.8, rid.9 and rid.8.inverse");
+  // published at the fold half itself: its partial revert is a newer version (as publications() counts it)
+  assert.equal(seq.tables.versionsAfter(BRANCH, 2), 4);
+});

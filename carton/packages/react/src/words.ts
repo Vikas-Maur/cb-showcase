@@ -123,6 +123,9 @@ export const words = {
   compare: "Compare",
   watchTheChanges: "Watch the changes",
   clips: (n: number) => plural(n, "clip", "clips"),
+  // Compare's clip count with the other kinds of item apart (laptop re-check P3-10): "1 clip, 6 titles"
+  clipsAnd: (clips: number, kinds: readonly { noun: string; n: number }[]) =>
+    [...(clips || !kinds.length ? [plural(clips, "clip", "clips")] : []), ...kinds.map((k) => plural(k.n, k.noun, `${k.noun}s`))].join(", "),
   length: (s: number) => duration(s),
   // The Compare card's summary (UI audit P2-5): changes and seconds, as Watch the changes counts them; never shots.
   compareSummary: (changes: number | null, s: number, total: number) =>
@@ -183,11 +186,13 @@ export const words = {
   removed: "Removed",
   added: "Added",
   changed: "Changed",
-  changeOf: (i: number, n: number) => `Change ${i} of ${n}`,
-  nextChange: "Next change",
-  previousChange: "Previous change",
+  // The counter steps through the sections of the edit that differ, not the changes (laptop re-check P3-11: "2 changes ·
+  // Change 1 of 2" beside Compare's "3 changes"): one section can hold several changes, and a change can show nowhere.
+  changeOf: (i: number, n: number) => `Section ${i} of ${n}`,
+  nextChange: "Next section",
+  previousChange: "Previous section",
   noChanges: "No changes to watch. The two versions look the same.",
-  // What differs, in the same unit as the "Change 1 of N" counter beside it: changes and seconds, never shots.
+  // What differs: changes, counted as Compare and History count them, and seconds; never shots.
   watchSummary: (changes: number, s: number, total: number) =>
     changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
   // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.

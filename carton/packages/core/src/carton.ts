@@ -1495,6 +1495,7 @@ class CartonImpl implements Carton {
     await this.#whole();
     await this.#refresh(cut);
     const versions = this.#h.log(cut, opts).map((v) => {
+      if (v.rejected) v.leftOutChanges = this.#leftOutChanges(cut, v);
       const who = this.#who(v.author, v.change);
       // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
@@ -1513,7 +1514,8 @@ class CartonImpl implements Carton {
       const from = m.mergeOf && name(m.mergeOf.branchId);
       return `Folded ${rest ? "the rest of " : ""}${from ? `'${from}'` : "another copy"} into '${name(cut) ?? "this cut"}'`;
     };
-    const records = (ops: readonly Op[]) => new Set(ops.filter((op) => op.op !== "remap").map((op) => (this.schema.collections[op.path[0] as string] ? `${op.path[0]}/${op.path[1]}` : String(op.path[0])))).size;
+    // a change per record, a split one: as the Fold dialog lists them, and everything else counts them (E.countChanges)
+    const records = (ops: readonly Op[], base: Doc) => E.countChanges(ops, base, this.schema);
     const changes = (n: number, of?: number) => (of !== undefined ? `${n} of ${of} change${of === 1 ? "" : "s"}` : `${n} change${n === 1 ? "" : "s"}`);
     let byId: Map<string, ConfirmedChange> | null = null;
     const find = (id: unknown) => (typeof id === "string" ? (byId ??= new Map(log.map((c) => [c.id, c]))).get(id) : undefined);
@@ -1527,26 +1529,29 @@ class CartonImpl implements Carton {
       }
       // the version's own ops, described against the state before it: a fold-some's are its fold's and partial
       // revert's together (described before the walk applies them: apply writes into the walk's state)
-      let after: Doc, ops: readonly Op[], v: { summary: string; lines: string[] };
+      // `n`: its changes, counted against that state too (a fold's and "fold in the rest"'s titles say it)
+      let after: Doc, ops: readonly Op[], v: { summary: string; lines: string[] }, n = 0;
       if (pairBase) {
         after = E.apply(E.fork(doc, this.schema), c.ops, this.schema);
         ops = E.diff(pairBase, after, this.schema);
         v = E.describeVersion(ops, pairBase, this.schema);
+        n = records(ops, pairBase);
       } else {
         ops = c.ops;
         v = E.describeVersion(ops, doc, this.schema, c.intent);
+        if (c.mergeOf || c.kind === "revert") n = records(ops, doc);
         after = E.apply(doc, c.ops, this.schema);
       }
       let summary = v.summary;
       const merged = pairBase ? find(c.reverts) : c.mergeOf ? c : undefined;
       if (c.kind === "import") summary = "Imported the project"; // the whole project arriving: one line, not its first field
-      else if (merged && pairBase) summary = `${fold(merged)}: ${changes(records(ops), records(merged.ops))}`;
-      else if (merged) summary = records(ops) ? `${fold(merged)}: ${changes(records(ops))}` : fold(merged);
+      else if (merged && pairBase) summary = `${fold(merged)}: ${changes(n, records(merged.ops, pairBase))}`;
+      else if (merged) summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
       else if (c.kind === "restore") summary = "Restored an earlier version";
       else if (c.kind === "revert") {
         // "Fold in the rest" reverts a partial fold's inverse
         const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;
-        if (m?.mergeOf) summary = `${fold(m, true)}: ${changes(records(ops))}`;
+        if (m?.mergeOf) summary = `${fold(m, true)}: ${changes(n)}`;
       }
       if (c.name) summary = c.name;
       const details = c.kind !== "import" && v.lines.length && (v.lines.length > 1 || v.lines[0] !== summary) ? v.lines : undefined;
@@ -1558,6 +1563,19 @@ class CartonImpl implements Carton {
       const w = words.get(v.ref.seq);
       return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}) } : v;
     });
+  }
+  /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
+  #leftOutN = new Map<string, number>();
+  #leftOutChanges(cut: string, v: Version): number {
+    const key = `${cut}\u0000${v.change ?? v.ref.seq}`;
+    let n = this.#leftOutN.get(key);
+    if (n === undefined) {
+      const fold = this.#h.changes(cut)[v.ref.seq - 2];
+      const base = fold ? this.#h.viewOf(nodeId(cut, v.ref.seq - 2)) : null;
+      n = E.countChanges(fold?.ops ?? [], base ?? {}, this.schema, v.rejected ?? []);
+      this.#leftOutN.set(key, n);
+    }
+    return n;
   }
   async leftOut(from: string, opts: { into?: string } = {}) {
     const into = opts.into ?? this.#h.current;

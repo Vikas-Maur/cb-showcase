@@ -27,7 +27,7 @@ test(name("P1-7, P2-6, P3-13: Watch puts Before/After above the picture, counts 
   assert.ok(abRow.compareDocumentPosition($(root, ".carton-watch-stage")!) & 4, "the toggle comes before the picture");
   // The summary and the counter speak of the same thing: changes.
   assert.match($(root, ".carton-watch-summary")!.textContent ?? "", /^4 changes · \d+\.\d s of \d+\.\d s$/);
-  assert.match(root.textContent ?? "", /Change 1 of 4/);
+  assert.match(root.textContent ?? "", /Section 1 of 4/);
   assert.doesNotMatch(root.textContent ?? "", /shots? \//);
   // No stand-in card: where the picture is, in words.
   assert.equal($(root, ".carton-stage-shot"), null);
@@ -61,7 +61,7 @@ test(name("P2-1: the Before/After toggle is one tab stop and moves with the arro
   await key(after!, "ArrowLeft");
   assert.equal(before!.getAttribute("aria-checked"), "true");
   assert.equal(document.activeElement, before);
-  assert.match(root.textContent ?? "", /Change 1 of 4/, "the arrow moved the toggle, not the change");
+  assert.match(root.textContent ?? "", /Section 1 of 4/, "the arrow moved the toggle, not the change");
   assert.equal(ui.preview()?.ref, "main@3");
   await m.unmount();
 });

@@ -291,7 +291,8 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
         "div",
         { className: "carton-watch-titles" },
         h("h3", { className: "carton-card-title" }, words.watchTheChanges),
-        h("span", { className: "carton-watch-summary" }, words.watchSummary(n, summary.seconds, summary.total)),
+        // how many changes, as Compare and History count them; the counter below steps through the sections that differ
+        h("span", { className: "carton-watch-summary" }, words.watchSummary(diff.changes ?? n, summary.seconds, summary.total)),
       ),
       props.onClose ? h(Button, { variant: "ghost", icon: "x", label: words.close, title: `${words.close} (Esc)`, onClick: props.onClose }) : null,
     ),
