@@ -132,13 +132,19 @@ const isSeconds = (n: unknown): n is number => typeof n === "number" && Number.i
 
 async function append(req: Request, stream: string, c: StreamRouteContext): Promise<Response> {
   if (!canPush(c.ctx)) return err(403, "read-only role");
+  const max = Math.min(c.maxBodyBytes, MAX_APPEND_BYTES);
+  const declared = Number(req.headers.get("content-length") ?? NaN);
+  if (declared > max) return err(413, "append body too large");
   let raw: Uint8Array;
   try {
-    raw = await readBody(req, Math.min(c.maxBodyBytes, MAX_APPEND_BYTES));
+    // With a declared length (the client always sends one) the runtime buffers the body itself: read chunk by chunk in
+    // JavaScript, a 3 MB batch cost a Worker ~80 ms of CPU (the Free plan allows 10).
+    raw = Number.isSafeInteger(declared) && declared >= 0 ? new Uint8Array(await req.arrayBuffer()) : await readBody(req, max);
   } catch (e) {
     if (e instanceof BodyTooLarge) return err(413, "append body too large");
     throw e;
   }
+  if (raw.length > max) return err(413, "append body too large");
   const { header, rest } = splitFrame(raw);
   const h = header as { v?: unknown; parts?: unknown; end?: unknown };
   if (!h || typeof h !== "object" || h.v !== STREAM_WIRE_VERSION) return err(400, `stream wire version ${STREAM_WIRE_VERSION} expected`);
@@ -342,8 +348,12 @@ function withManifest(v: unknown): { manifest?: string } {
 }
 
 /** The response body: the header, then each part's bytes (length first), a few objects fetched ahead of the one sent. */
+// workerd's byte stream that a native body is piped into without passing each chunk through JavaScript (through a
+// JavaScript TransformStream, a 3 MB answer cost a Worker ~80 ms of CPU); elsewhere a plain TransformStream.
+const Identity = (globalThis as { IdentityTransformStream?: new () => TransformStream<Uint8Array, Uint8Array> }).IdentityTransformStream;
+
 function body(store: BlobStore, h: ReadHeader, parts: Listed[]): ReadableStream<Uint8Array> {
-  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const { readable, writable } = Identity ? new Identity() : new TransformStream<Uint8Array, Uint8Array>();
   const fetched: Promise<BlobWithInfo | Uint8Array | null>[] = [];
   const fetchAt = (k: number): void => {
     if (k >= parts.length || k < fetched.length) return; // asked for in order, so the fetched ones are a prefix
