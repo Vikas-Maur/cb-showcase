@@ -381,3 +381,83 @@ test("an entry read that keeps failing ends the play after its retries, with the
   }, /fetch failed/);
   assert.equal(tries, 3, "the first read and 2 retries");
 });
+
+/** A store whose stream entries fail on the network; `onFail` runs at each failure (the test cancels there). */
+function failingEntries(store: CountingMemoryStore, opts: { times?: number; onFail?: (key: string, n: number) => void } = {}) {
+  const tries: string[] = [];
+  const get = store.get.bind(store);
+  store.get = async (key, range) => {
+    if (key.startsWith("ps/")) {
+      tries.push(key);
+      if (tries.filter((k) => k === key).length <= (opts.times ?? Infinity)) {
+        opts.onFail?.(key, tries.length);
+        throw new TypeError("fetch failed");
+      }
+    }
+    return get(key, range);
+  };
+  return tries;
+}
+
+test("cancelling playback after a failed entry request asks the store nothing more and ends with the cancellation (cf review finding 6)", async () => {
+  const { store, writer } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.end();
+  const ac = new AbortController();
+  // the first entry request fails; the player is cancelled 20 ms into the wait before its retry
+  const tries = failingEntries(store, { onFail: () => void setTimeout(() => ac.abort(), 20) });
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: writer.id, pollMs: 5, retries: 3, retryDelayMs: 2000 });
+  const t0 = Date.now();
+  const outcome = await (async () => {
+    for await (const _ of reader.play({ signal: ac.signal }));
+    return "ended";
+  })().catch((e: Error) => e.name);
+  const took = Date.now() - t0;
+  await new Promise((r) => setTimeout(r, 100)); // anything still scheduled would ask by now
+  assert.equal(outcome, "AbortError", "the cancellation, not the network's error");
+  assert.ok(took < 1000, `cancelling took ${took} ms: the wait before the retry didn't end`);
+  assert.equal(tries.length, 1, `${tries.length} entry requests: asked again after the cancel`);
+});
+
+test("a cancel right after a failed entry request is seen before the retry wait (cf review finding 6)", async () => {
+  const { store, writer } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.end();
+  const ac = new AbortController();
+  const tries = failingEntries(store, { onFail: () => ac.abort() }); // cancelled while the failed request returns
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: writer.id, pollMs: 5, retries: 3, retryDelayMs: 1 });
+  await assert.rejects(reader.initPart(ac.signal), { name: "AbortError" });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(tries.length, 1);
+});
+
+test("callers sharing a reader keep their cancels apart: one's cancel never ends another's read (cf review finding 6)", async () => {
+  const { store, writer } = setup();
+  await writer.init(INIT);
+  for (let i = 0; i < 2; i++) await writer.segment(seg(i), 2);
+  await writer.end();
+  const a = new AbortController(), b = new AbortController();
+  // segment 0's first request fails: A, whose fill it is, cancels during its wait; B, queued behind A, goes on
+  failingEntries(store, { times: 1, onFail: (key) => void (key === streamSegmentKey(writer.id, 0) && setTimeout(() => a.abort(), 10)) });
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: writer.id, pollMs: 5, retries: 3, retryDelayMs: 200 });
+  const pa = reader.segment(0, a.signal), pb = reader.segment(1, b.signal);
+  await assert.rejects(pa, { name: "AbortError" });
+  assert.equal((await pb)?.index, 1, "B read its segment though A cancelled");
+  // and a caller queued behind a slow fill cancels without waiting for it
+  const { store: s2, writer: w2 } = setup();
+  await w2.init(INIT);
+  await w2.segment(seg(0), 2);
+  await w2.end();
+  failingEntries(s2, { times: 1 });
+  const r2 = new ProxyStreamReader({ store: s2, media: new MediaReader({ store: s2, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: w2.id, pollMs: 5, retries: 3, retryDelayMs: 300 });
+  const c = new AbortController();
+  const first = r2.segment(0); // in its 300 ms wait before the retry
+  const queued = r2.segment(0, c.signal);
+  const t0 = Date.now();
+  setTimeout(() => c.abort(), 20);
+  await assert.rejects(queued, { name: "AbortError" });
+  assert.ok(Date.now() - t0 < 200, "the queued caller waited for the fill ahead of it");
+  assert.equal((await first)?.index, 0, "the fill ahead went on");
+});

@@ -222,7 +222,8 @@ export interface ProxyStreamReaderOptions {
    * Retries of an entry read that failed on the network, with exponential backoff, as MediaReader retries the bytes
    * (default 3, from 200 ms). Without them one dropped request for a small JSON entry ended a teammate's playback
    * while every segment's bytes would have been fetched again (cf-lab, 2026-11-02). An entry that isn't up yet is not
-   * a failure: it reads as absent and the reader polls for it.
+   * a failure: it reads as absent and the reader polls for it. A cancelled read (the caller's signal) asks the store
+   * nothing more, ends its wait between attempts at once, and ends with the cancellation, not the network's error.
    */
   retries?: number;
   retryDelayMs?: number;
@@ -243,6 +244,21 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** `p`, or the signal's reason as soon as it aborts (p's own outcome is then ignored). */
+function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) {
+    p.catch(() => {}); // dropped: its failure is no one's
+    return Promise.reject(signal.reason);
+  }
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([p, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
 /** Reads a stream, from its first segment on, waiting for the segments that aren't up yet. */
@@ -269,23 +285,28 @@ export class ProxyStreamReader {
    * An entry, as `as` reads it: from the cache, else from the store (and then kept). Only entries that read as valid
    * are kept, and a kept one that doesn't is read from the store again; absent ones aren't kept: they may yet appear.
    */
-  async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
+  async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null, signal?: AbortSignal): Promise<T | null> {
     const kept = await this.#kept(key, as);
     if (kept) return kept;
-    const b = await this.#retry(() => this.#o.store.get(key));
+    const b = await this.#retry(() => this.#o.store.get(key), signal);
     const v = b && as(parseJson(b));
     if (v) await this.#cache?.putEntry?.(key, b).catch(() => {});
     return v || null;
   }
 
-  async #retry<T>(fn: () => Promise<T>): Promise<T> {
+  // The caller's signal is checked before each attempt and after a failure, and ends the wait between attempts and an
+  // attempt in flight (whose answer is then dropped): a cancelled play asks the store nothing more, and ends with the
+  // cancellation rather than the network error that came before it.
+  async #retry<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const retries = this.#o.retries ?? 3;
     for (let a = 0; ; a++) {
+      signal?.throwIfAborted();
       try {
-        return await fn();
+        return await abortable(fn(), signal);
       } catch (e) {
+        signal?.throwIfAborted();
         if ((e as Error)?.name === "AbortError" || a >= retries) throw e;
-        await sleep((this.#o.retryDelayMs ?? 200) * 2 ** a);
+        await sleep((this.#o.retryDelayMs ?? 200) * 2 ** a, signal);
       }
     }
   }
@@ -295,32 +316,37 @@ export class ProxyStreamReader {
     return b ? as(parseJson(b)) : null;
   }
 
-  async initPart(): Promise<StreamPart | null> {
-    this.#init ??= await this.#entry(streamInitKey(this.id), asPart);
+  // `signal` cancels this caller's read only: entry reads are never shared between callers.
+  async initPart(signal?: AbortSignal): Promise<StreamPart | null> {
+    this.#init ??= await this.#entry(streamInitKey(this.id), asPart, signal);
     return this.#init;
   }
 
-  async end(): Promise<StreamEnd | null> {
-    this.#end ??= await this.#entry(streamEndKey(this.id), asEnd);
+  async end(signal?: AbortSignal): Promise<StreamEnd | null> {
+    this.#end ??= await this.#entry(streamEndKey(this.id), asEnd, signal);
     return this.#end;
   }
 
-  /** Entry `index` if it is up, else null. */
-  async segment(index: number): Promise<StreamSegment | null> {
+  /**
+   * Entry `index` if it is up, else null. Fills run one at a time, each under its own caller's signal: a caller that
+   * cancels ends its own fill and its wait for the one before it, never another caller's.
+   */
+  async segment(index: number, signal?: AbortSignal): Promise<StreamSegment | null> {
     if (index < this.#segments.length) return this.#segments[index];
-    const fill = this.#filling.then(() => this.#fill(index));
+    const fill = this.#filling.then(() => this.#fill(index, signal));
     this.#filling = fill.catch(() => {});
-    return fill;
+    return abortable(fill, signal);
   }
 
-  async #fill(index: number): Promise<StreamSegment | null> {
+  async #fill(index: number, signal?: AbortSignal): Promise<StreamSegment | null> {
+    signal?.throwIfAborted();
     // A kept end says where the stream stops, without asking the store (which may be unreachable) for one more entry.
     this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
     // Entries land in order, so fetch the ones before it first: the cache stays a prefix.
     while (this.#segments.length <= index) {
       const i = this.#segments.length;
       if (this.#end && i >= this.#end.segments) return null;
-      const seg = await this.#entry(streamSegmentKey(this.id, i), (v) => asSegment(v, i));
+      const seg = await this.#entry(streamSegmentKey(this.id, i), (v) => asSegment(v, i), signal);
       if (!seg) return null;
       this.#segments.push(seg);
     }
@@ -328,8 +354,8 @@ export class ProxyStreamReader {
   }
 
   /** Every segment that is up now, in order. */
-  async known(): Promise<StreamSegment[]> {
-    while (await this.segment(this.#segments.length));
+  async known(signal?: AbortSignal): Promise<StreamSegment[]> {
+    while (await this.segment(this.#segments.length, signal));
     return this.#segments.slice();
   }
 
@@ -338,12 +364,12 @@ export class ProxyStreamReader {
     let wait = this.#o.pollMs ?? 500;
     for (;;) {
       signal?.throwIfAborted();
-      const seg = await this.segment(index);
+      const seg = await this.segment(index, signal);
       if (seg) return seg;
-      const end = await this.end();
+      const end = await this.end(signal);
       if (end && end.segments <= index) return null;
       // The writer puts the end after every entry, so an entry missed just before the end was read may be up now.
-      if (end && (await this.segment(index))) return this.#segments[index];
+      if (end && (await this.segment(index, signal))) return this.#segments[index];
       if (end) {
         // The stream ended with this segment in it, yet an entry up to it can't be read: it will never appear.
         await this.#reportDamage({ entry: this.#segments.length });
@@ -399,13 +425,13 @@ export class ProxyStreamReader {
    */
   async *play(opts: { from?: number; signal?: AbortSignal } = {}): AsyncGenerator<PlayedPart> {
     const { signal } = opts;
-    let init = await this.initPart();
+    let init = await this.initPart(signal);
     let wait = this.#o.pollMs ?? 500;
     while (!init) {
       // The writer puts the init segment first; until then the stream is only claimed.
       await sleep(wait, signal);
       wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
-      init = await this.initPart();
+      init = await this.initPart(signal);
     }
     yield { part: "init", bytes: await this.#bytes(init, signal) };
     for (let i = opts.from ?? 0; ; i++) {
@@ -455,11 +481,11 @@ export class ProxyStreamReader {
  * has no size, so it reads as unknown here (use `play` or `playlist` meanwhile).
  */
 export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamReader | null; media: RangeSource }): RangeSource {
-  const layout = async (r: ProxyStreamReader): Promise<{ parts: StreamPart[]; size: number } | null> => {
-    const end = await r.end();
-    const init = await r.initPart();
+  const layout = async (r: ProxyStreamReader, signal?: AbortSignal): Promise<{ parts: StreamPart[]; size: number } | null> => {
+    const end = await r.end(signal);
+    const init = await r.initPart(signal);
     if (!end || !init) return null;
-    const segs = await r.known();
+    const segs = await r.known(signal);
     if (segs.length < end.segments) return null; // the end entry is up but an earlier entry isn't readable
     return { parts: [init, ...segs.slice(0, end.segments)], size: end.size };
   };
@@ -467,7 +493,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
     async stat(id, signal): Promise<MediaStat | null> {
       const r = opts.streams(id);
       if (!r) return opts.media.stat(id, signal);
-      const l = await layout(r);
+      const l = await layout(r, signal);
       return l ? { size: l.size, contentType: "video/mp4" } : null;
     },
     async *read(id, offset, length, signal) {
@@ -476,7 +502,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
         yield* opts.media.read(id, offset, length, signal);
         return;
       }
-      const l = await layout(r);
+      const l = await layout(r, signal);
       if (!l) throw new Error(`stream ${id.slice(0, 12)} is not complete`);
       const end = Math.min(l.size, offset + length);
       let at = 0;
