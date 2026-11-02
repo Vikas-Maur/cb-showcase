@@ -237,3 +237,66 @@ in (its timing is still being checked), so **skip timing B** this round.
    `failed: …` line.
 9. **Report** in step 5's format: pass/fail per item, new bugs by priority, disk. Then wait. If all is green, the next
    order is the merge to `main` and the reinstall.
+
+### Update 6 (2026-11-02 ~21:35 UTC): the last fixes, head `3b2407c3`
+`merge/prod-2` = **`3b2407c3`** = `eea781bb` (your Update 5 pass) + `fix/one-action-one-undo` `a7b449d4` (N-1, N-3, writers
+samples) + `fix/stage-redraw` `a0b83825` (a test only) + `fix/asar-temp-leak` `5dcaa7c0` + `fix/p3-prod3` `68c4a9e7`
+(P3-A–E, reconciled with one-undo). Each passed its own full Linux suite and one Codex review. The combined Linux suite is
+running on EC2 now; I'll stop you if it finds anything. `perf/apply-latency` isn't in, so **skip timing B**.
+
+1. **Build** `3b2407c3` into `out/carton-prod4`, Carton on. Delete `out/carton-prod3` once it passes its checks.
+2. **N-1, one action = one version = one undo step.** Use a fresh project: a clip plus W1–W6.
+   - Select W6 and press Delete. History and `cb history` show **one** new version, "Deleted title 'W6'", and `cb compare`
+     of it shows only that line. One Ctrl+Z brings W6 back in the editor and on disk, and `project.json` has "Text: W6".
+     Ctrl+Shift+Z removes both; Ctrl+Z brings both back.
+   - Repeat about 7 times. Note the save order (console or save times): both orders must behave the same.
+   - Delete W6, Ctrl+Z at once, Delete W6 again, Ctrl+Z. W6 and its entry end up back, with no extra versions.
+   - Add a title from the Text panel: one version, "Added title …". One Ctrl+Z removes the title and its entry; redo brings
+     both back.
+   - Delete W5 in the editor, then `cb undo "<project>"`: W5 and "Text: W5" both come back.
+   - Shared project: share it and repeat the delete and the add. The teammate sees one version each time.
+   - **Earlier undo cases:**
+     - split then drag a piece: Ctrl+Z ×2 gives the one clip, Ctrl+Shift+Z the split, Ctrl+Y the drag;
+     - split then mute a piece: the mute stays until it is undone;
+     - Ctrl+Z never undoes a terminal `cb` edit;
+     - a Director turn holds your edits back from `timeline.tsx`;
+     - GUI saves feel as quick as before.
+   - **N-3:** trigger the save-failed toast (`window.__carton.saveFailed(new Error("x"))`). It shows the warning icon, not ✓.
+   - Note whether the `MaxListenersExceededWarning` still shows in the console.
+3. **The `%TEMP%` leak** (Windows-only patch, main.js 15):
+   - Count `%TEMP%\<uuid>.tmp.*` files, then launch and quit the new build 3 times, waiting about 20 s each. Expect **+0** new
+     files. Do it once with Carton off and once on.
+   - Check `userData\temp-sweep.json` and the `temp-sweep` line in the activity log after the first launch. Copies made since
+     Windows last started are kept on purpose, as `"recent"`; that's expected without a reboot. **Don't reboot the laptop**
+     for this.
+   - Assets, video playback and seeking (ranges) all still work. Startup feels the same.
+4. **The P3s from `fix/p3-prod3`:**
+   - **P3-A:** chat open, the editor page at 960 CSS px (`s-b7b.js`), open History. The panel is x 576–960, with its bottom at
+     the toolbar's top (about 586). Fullscreen and Hide timeline act as they do with Carton off and History closed. Chat
+     collapsed: 300 px wide, bottom about 586.
+   - **P3-B:** new cut "Alt", split the clip, set W1's font size 100 → 150 in the stage toolbar. Then on Main cut, Fold "Alt"
+     in here. The row reads "Moved 'W1' to track 'Text 1', font size 100 → 150".
+   - **P3-C:** a project with 6 titles: its setup row shows no "Added media 'Text: W…'" lines, and the count drops by 6 (from
+     15). A Restore row shows no "Deleted media 'Text: …'" lines.
+   - **P3-D:** `s-restore3.js "Added 2 tracks"`, `s-b2.js`, then Ctrl+Z and Ctrl+Y once more. The rows read Undid / Redid /
+     Undid / Redid the restore. The undo of a "Folded the rest…" reads "Undid the fold of the rest of 'Alt' into 'Main
+     cut'".
+   - **P3-E:** fresh profile → Projects → Join a shared project → Join. The sidebar stays on Projects with no jump, and after
+     Done the new tile is visible. Repeat from Dashboard → Your projects.
+   - **Extras:** `cb history` lists "Folded the rest" as `merge (the rest)`. In a preview with a title selected, there's no
+     text toolbar on the stage; the left panel's presets still show, which is known.
+5. **N-2, careful A/B:** alternate Carton on and off, 3 runs each, then again with Delete.
+   - Park the real mouse outside the Cardboard window for the whole run.
+   - In the editor's console, run `document.querySelector('[data-timeline-scroll]').addEventListener('mouseleave', e =>
+     console.log('timeline mouseleave', e.isTrusted, performance.now()))`.
+   - Pause at 0:01 and read the luma.
+   - CDP `mouseMoved` onto W5, then press and release: read the luma and the top-left timecode (expect 00:00:04.500).
+   - Esc: read the luma and the timecode. With Carton on, `window.__carton.playhead()` should give 4.5.
+   - `mouseMoved` to the stage's middle: the picture is back and the timecode reads 00:00:01.000.
+   - Expected in both builds: black after Esc with the timecode at 4.5, and the picture after the last step. A run that is
+     black with the timecode at 1.000 and no mouseleave logged is a real bug: send the log and the shots.
+6. **Spot checks:**
+   - the share crash 3/3 (one side), bug 6, page shortcuts 25/25, and `--os` 9/9 when the user is away;
+   - `writers.js --writers 4 --rate 1 --seconds 120`: the table looks as before, and `--out` has `samples` (each writer's
+     edits) and `failures`.
+7. **Report** in step 5's format, then wait. If it's green, the next order is the merge to `main` and the reinstall.
