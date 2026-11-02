@@ -1,9 +1,9 @@
 // The UI audit of 2026-11-02 (docs/ui-audit/REPORT.md on audit/ui-2026-11-02), in a DOM: keyboard, Esc and focus in
 // every layer, the words, and the states it found wrong. `npm test` runs this file on React 19 and on preact/compat.
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, type } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges } from "../src/index.ts";
+import { CartonProvider, CommentsPanel, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges, createMockComments } from "../src/index.ts";
 import { timecode } from "../src/components/WatchTheChanges.ts";
 import { createMockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -180,6 +180,21 @@ test(name("P3-5: the Fold in dialog takes focus itself, not its ✕"), async () 
   const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose() {} })));
   await flush();
   assert.equal((document.activeElement as HTMLElement).getAttribute("role"), "dialog");
+  await m.unmount();
+});
+
+test(name("P2-1, P2-20: Esc on a typed reply asks once before discarding it; the box has no resize grip"), async () => {
+  const ui = createMockComments();
+  const m = await render(h(CommentsPanel, { comments: ui }));
+  const thread = $$(m.container, "[role=listitem]")[0]!;
+  await click(byText(thread, "button", "Reply"));
+  const box = $(thread, "textarea")!;
+  await type(box, "Can we trim this?");
+  await key(box, "Escape");
+  assert.ok($(thread, "textarea"), "the reply is still there");
+  assert.match($(thread, ".carton-comment-esc")?.textContent ?? "", /Press Esc again to discard it/);
+  await key($(thread, "textarea")!, "Escape");
+  assert.equal($(thread, "textarea"), null, "a second Esc discards it");
   await m.unmount();
 });
 
