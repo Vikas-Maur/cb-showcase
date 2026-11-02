@@ -744,6 +744,8 @@ with Carton off none of it runs at all.
   save clashes with an edit you made meanwhile, your value is kept, the rest of its edit goes in, and you both get a
   conflict card. The agent's is in `cb conflicts` (and its view's `.status`). Yours is in History, open now or opened
   later, naming the agent: "Keep yours" changes nothing; "Keep Director's" makes the agent's value a version of yours.
+  An agent Carton knows only by its environment (Claude Code run from a terminal with no Carton hook, Codex, Gemini)
+  is still named in History and on the card ("Claude Code"), never "You".
   Choosing on either side closes the card on both: your choice removes the agent's, and the agent's `cb resolve`
   removes yours (a pick you make before it goes still holds). Whatever the agent leaves unresolved when its turn ends
   stays in History for you.

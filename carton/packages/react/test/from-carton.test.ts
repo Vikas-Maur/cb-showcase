@@ -393,6 +393,25 @@ test("ui-words: authors in words an editor knows: You (a cb you typed too), prod
   assert.equal(toUiActor({ kind: "human", id: "person" }, alice, g).name, "Teammate");
 });
 
+test("regress #1: an agent CLI's view saves (Claude Code with CLAUDECODE=1, no hook) are that agent's, never You; a terminal user's view stays yours", () => {
+  const g = "alice@laptop";
+  const ui = (a: Actor) => toUiActor(a, alice, g);
+  // @carton/local credits them to the view, with the agent's product
+  const cc = ui({ kind: "external", id: "external:.scratch/views/cc.tsx", name: "Claude Code (view cc)", provider: "claude-code", group: g });
+  assert.deepEqual([cc.kind, cc.name, cc.isYou, cc.parent, cc.key], ["agent", "Claude Code", true, "human/alice", "external/external:.scratch/views/cc.tsx"]);
+  // recorded before the product was kept: the name says it
+  assert.deepEqual([ui({ kind: "external", id: "external:.scratch/views/agent-1f2e.tsx", name: "Codex (view agent-1f2e)", group: g }).kind, ui({ kind: "external", id: "external:.scratch/views/agent-1f2e.tsx", name: "Codex (view agent-1f2e)", group: g }).name], ["agent", "Codex"]);
+  // a teammate's: their agent
+  const leo = toUiActor({ kind: "external", id: "external:.scratch/views/cc.tsx", name: "Claude Code (view cc)", provider: "claude-code", group: "leo@studio", owner: { id: "leo", name: "Leo" } }, alice, g);
+  assert.deepEqual([leo.kind, leo.name, leo.parent, !!leo.isYou], ["agent", "Claude Code", "human/leo", false]);
+  // the person's own writers stay the person's: a terminal user's view, an outside program's save of a view file
+  for (const a of [
+    { kind: "external", id: "external:.scratch/views/notes.tsx", name: "Terminal (view notes)", group: g },
+    { kind: "external", id: "external:.scratch/views/x.tsx", name: ".scratch/views/x.tsx", group: g },
+    { kind: "external", id: "external:project.json", name: "project.json", group: g },
+  ] as Actor[]) assert.deepEqual([ui(a).key, ui(a).kind, ui(a).isYou], ["human/alice", "human", true], a.name);
+});
+
 test("ui-words: the import row is the person's ('Started the project's history', You, never 'Imported' for a created project: UI audit P2-18); the cut's start names no one", async () => {
   const me: Actor = { kind: "human", id: "person", group: "alice@laptop" };
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: me });
