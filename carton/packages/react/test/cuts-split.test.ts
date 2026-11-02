@@ -2,6 +2,7 @@
 // #1 A cut made by another process (`cb cut new`, no edit yet) or renamed there shows in the cut menu once the
 //    panel's handle reads the store again (the app's panel reads the head every second), without switching to it.
 // #2 A split clip is one change in the Fold dialog, worded as the split, and left out whole.
+// N-1 (laptop, merge/prod-2) A title deleted with its own media entry is one row too, the title's, left out with it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, POS, defineSchema, timeAlgebra, type Actor, type Doc, type Rec } from "@carton/core";
@@ -113,6 +114,42 @@ test("review P2: a split row left out stays out whole when its part was split ag
     assert.deepEqual(r, { ok: true });
     const ids = ((await carton.head(main)).doc.items as Rec[]).map((x) => x.id).sort();
     assert.deepEqual(ids, ["a", "b"], "none of the split's parts came in");
+  } finally {
+    ui.dispose();
+    await carton.close();
+  }
+});
+
+// a media collection whose text entries are part of the title that uses them (Cardboard's nounOf: null)
+const withMedia = defineSchema({
+  collections: {
+    tracks: { seq: true },
+    items: { parent: { field: "trackId", collection: "tracks" }, groups: [{ name: "time", fields: ["startTime", "endTime", "trimStart", "trimEnd", "playbackSpeed"], algebra: timeAlgebra(TL) }] },
+    media: { nounOf: (r) => ((r.data as Rec | undefined)?.type === "text" ? null : undefined) },
+  },
+  timeline: TL,
+  label: (coll, r) => String((r as Rec | undefined)?.name ?? (r as { data?: Rec } | undefined)?.data?.fileName ?? coll),
+});
+const mediaAdapter: HostAdapter<Doc> = { name: "test-media", schema: withMedia, schemaVersion: 1, fromHost: (h) => h, toHost: (d) => d };
+
+test("N-1: a title deleted with its own media entry is one row in the Fold dialog, the title's, left out with it", async () => {
+  const title = (k: number): Rec => ({ id: `w${k}`, type: "text", trackId: "t1", mediaItemId: `tm${k}`, startTime: k, endTime: k + 1, trimStart: 0, trimEnd: 1, name: `W${k}` });
+  const entry = (k: number): Rec => ({ id: `tm${k}`, data: { type: "text", fileName: `Text: W${k}` } });
+  const doc: Doc = { name: "Film", tracks: [{ id: "t1", [POS]: "V" }], items: [title(1), title(2)], media: [entry(1), entry(2)] };
+  const carton = await Carton.open({ adapter: mediaAdapter, store: createMemoryStore(), init: { doc, cutName: "Main cut" }, actor: alice });
+  const ui = fromCarton(carton, { me: alice });
+  try {
+    await ui.ready;
+    const main = carton.cut;
+    const alt = await carton.fork("Alt cut");
+    await carton.switchTo(alt.id);
+    await carton.commit({ ops: [{ op: "remove", path: ["items", "w2"] }, { op: "remove", path: ["media", "tm2"] }] });
+    await ui.settled();
+    const plan = await ui.planFold(alt.id, main);
+    assert.deepEqual(plan.changes.map((c) => c.summary), ["Deleted text 'W2'"], "one row, the title's");
+    assert.deepEqual(await ui.fold(alt.id, main, { choices: {}, leaveOut: [plan.changes[0]!.id] }), { ok: true });
+    const head = (await carton.head(main)).doc;
+    assert.deepEqual([(head.items as Rec[]).map((r) => r.id).sort(), (head.media as Rec[]).map((r) => r.id).sort()], [["w1", "w2"], ["tm1", "tm2"]], "left out together");
   } finally {
     ui.dispose();
     await carton.close();
