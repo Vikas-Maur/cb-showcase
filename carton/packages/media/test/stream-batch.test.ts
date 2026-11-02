@@ -246,3 +246,33 @@ test("a host without the read route: the play goes on entry by entry", async () 
   const r = reader(store, id);
   assert.equal((await r.known()).length, 2);
 });
+
+test("a batch the host drops is sent again in smaller pieces, down to one part, and the stream comes out whole", async () => {
+  const store = new AppendingStore();
+  const sizes: number[] = [];
+  store.gate = async () => {
+    const n = store.batches[store.batches.length - 1]!.parts.length;
+    sizes.push(n);
+    if (n > 2) throw Object.assign(new Error("Worker exceeded CPU"), { status: 503 });
+  };
+  const g = gated();
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { retryDelayMs: 1 } });
+  const first = g.gate;
+  store.gate = async () => {
+    await first(); // hold the first batch (the init) so the segments queue behind it
+    store.gate = async () => {
+      const n = store.batches[store.batches.length - 1]!.parts.length;
+      sizes.push(n);
+      if (n > 2) throw Object.assign(new Error("Worker exceeded CPU"), { status: 503 });
+    };
+  };
+  await w.init(INIT);
+  for (let i = 0; i < 8; i++) await w.segment(seg(i), 2);
+  g.release();
+  await w.end();
+  assert.equal(sizes[0], 8, "the queued segments went together first");
+  // never again as many as failed: 8 failed, 4 failed, then at most 3
+  assert.ok(sizes.slice(2).every((n) => n <= 3), `then smaller: ${sizes}`);
+  assert.ok(sizes.filter((n) => n > 2).length <= 3, `few failures: ${sizes}`);
+  assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4, 5, 6, 7]);
+});

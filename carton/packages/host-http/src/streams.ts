@@ -6,7 +6,7 @@
 // - POST /api/projects/:p/streams/:id/append (editor): the parts' bytes, manifests and entries, and maybe the end, in
 //   one request, where the part-by-part path took ten per segment (a head of the bytes, a damage check, a head of the
 //   manifest, then a signed URL and a PUT each for the manifest, the bytes and the entry), one after another. The host
-//   writes each part's manifest, then its bytes, then its entry, a few parts at once; the end once every entry is in.
+//   writes every part's manifest and bytes, then every entry, then the end (see `media` below for the order).
 //   No head first: the parts of a new stream are new, and dedup is the client's (it sends a part it found stored
 //   without its bytes, and the host checks the object is there, its size, and that no damage report is open). An entry
 //   or end that is already there is kept if it says the same (a retried request), else 409. The daily write cap (a
@@ -47,6 +47,7 @@ import {
   type StreamEnd,
 } from "@carton/media";
 import { eachLimit } from "./pool.ts";
+import { isTeamMediaStore } from "./team.ts";
 import { headerFrame, splitFrame, StreamWireError, STREAM_WIRE_VERSION, u32, type AppendHeaderPart, type ReadHeader, type ReadHeaderSegment } from "./stream-wire.ts";
 
 const hasher = webCryptoHasher();
@@ -64,8 +65,10 @@ export const MAX_READ_BYTES = 32 << 20;
 /** The longest a read may be held at the live edge. */
 export const MAX_READ_WAIT_MS = 25_000;
 const READ_CHECK_MS = 1000;
-/** Parts written, or objects read, at once (a Worker opens at most six connections at a time, R2 calls included). */
-const AT_ONCE = 4;
+/** Storage calls at once (a Worker opens at most six connections at a time, R2 calls included). */
+const AT_ONCE = 6;
+/** Objects fetched ahead of the one being sent in a read. */
+const READ_AHEAD = 3;
 
 export interface StreamRouteContext {
   ctx: AuthContext;
@@ -204,21 +207,33 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
   }
   const store = await c.storeForWrites(bytes, ops);
 
-  await eachLimit(parts, AT_ONCE, async (p) => {
+  // Bytes and manifests first, every part's at once (up to the Worker's six connections), each manifest no later than
+  // its bytes: before them on a team store, which needs it to take the bytes, beside them elsewhere, where nothing reads
+  // a segment's bytes before its entry names them. Then the entries, at once. R2 is a round trip away from the edge
+  // (APAC from BOM: hundreds of ms), so a batch costs three round trips, however many parts it carries.
+  const together = !isTeamMediaStore(store);
+  const media = async (p: Part) => {
     const hash = p.manifest.hash, mk = mediaKey(hash);
     if (!p.bytes) {
       // sent without its bytes: they must be there, the right size, and not reported damaged (else the client sends them)
       const there = await store.head(mk);
       if (!there || there.size !== p.manifest.size || (await openReport(store, hash))) throw new Refused(409, `part ${hash.slice(0, 12)} isn't stored: send its bytes`, { code: "Missing", index: p.index });
     }
-    // the manifest before the bytes (whoever sees m/<hash> can verify it; a team store needs it), the entry last
-    await store.put(manifestKey(hash), p.manifest.bytes, { contentType: "application/octet-stream" });
-    if (p.bytes) await c.lock(mk, () => store.put(mk, p.bytes!, { contentType: "video/mp4" }));
-    await putEntry(store, p.key, p.entry, (old) => {
+    const manifest = () => store.put(manifestKey(hash), p.manifest.bytes, { contentType: "application/octet-stream" });
+    const bytes = () => (p.bytes ? c.lock(mk, () => store.put(mk, p.bytes!, { contentType: "video/mp4" })) : Promise.resolve());
+    if (together) await Promise.all([manifest(), bytes()]);
+    else {
+      await manifest();
+      await bytes();
+    }
+  };
+  await eachLimit(parts, together ? AT_ONCE / 2 : AT_ONCE, media);
+  await eachLimit(parts, AT_ONCE, (p) =>
+    putEntry(store, p.key, p.entry, (old) => {
       const v = p.kind === "init" ? streamPartOf(old) : streamSegmentOf(old, p.index);
-      return !!v && v.hash === hash && v.size === p.manifest.size;
-    });
-  });
+      return !!v && v.hash === p.manifest.hash && v.size === p.manifest.size;
+    }),
+  );
   if (end) {
     await putEntry(store, streamEndKey(stream), endBytes!, (old) => {
       const v = streamEndOf(old);
@@ -290,7 +305,7 @@ async function read(url: URL, stream: string, c: StreamRouteContext): Promise<Re
   const sent: Listed[] = [...(h.init ? [h.init] : []), ...h.segments].filter((p) => p.bytes);
   await eachLimit(
     sent.filter((p) => !p.manifest),
-    AT_ONCE,
+    4,
     async (p) => {
       const mb = await store.get(manifestKey(p.hash));
       if (mb) p.manifest = toBase64(mb);
@@ -336,7 +351,7 @@ async function collect(store: BlobStore, stream: string, from: number, wantInit:
     i += n;
     // grow the window towards what the budget leaves room for
     const last = h.segments[h.segments.length - 1]?.size ?? 512 * 1024;
-    window = maxBytes > 0 ? Math.max(1, Math.min(AT_ONCE, Math.ceil((maxBytes - used) / Math.max(1, last)))) : Math.min(6, window * 2);
+    window = maxBytes > 0 ? Math.max(1, Math.min(4, Math.ceil((maxBytes - used) / Math.max(1, last)))) : Math.min(AT_ONCE, window * 2);
   }
   if (reachedEdge) h.end = streamEndOf(await getJson(store, streamEndKey(stream)));
   return h;
@@ -367,7 +382,7 @@ function body(store: BlobStore, h: ReadHeader, parts: Listed[]): ReadableStream<
     try {
       await w.write(headerFrame(h));
       for (let k = 0; k < parts.length; k++) {
-        for (let a = k; a < k + 3; a++) fetchAt(a);
+        for (let a = k; a < k + READ_AHEAD; a++) fetchAt(a);
         const part = parts[k]!;
         let o: BlobWithInfo | Uint8Array | null = null;
         try {

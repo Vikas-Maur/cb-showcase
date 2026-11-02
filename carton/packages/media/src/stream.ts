@@ -234,7 +234,8 @@ type Queued = { part: StreamAppendPart } | { end: StreamEnd };
 /** Stores whose host answered that it has no stream routes: part by part from then on. */
 const noAppend = new WeakSet<BlobStore>();
 
-const BATCH_PARTS = 16;
+// A batch's parts and bytes: about 2 ms of a Worker's CPU per part, and the Free plan allows 10 ms a request (cf-proxy-path).
+const BATCH_PARTS = 8;
 const BATCH_BYTES = 4 << 20;
 const QUEUED_BYTES = 12 << 20;
 
@@ -413,7 +414,13 @@ export class ProxyStreamWriter {
 
   async #flush(): Promise<void> {
     const limits = this.#o.batch || {};
-    const maxParts = limits.maxParts ?? BATCH_PARTS, maxBytes = limits.maxBytes ?? BATCH_BYTES;
+    const maxBytes = limits.maxBytes ?? BATCH_BYTES;
+    // Parts per request: halved after a failure, and from then on never as many as failed (a request the host gives up
+    // on, as a Worker over its CPU does, fails again at that size); one more after each success, up to that ceiling.
+    let ceiling = limits.maxParts ?? BATCH_PARTS;
+    let maxParts = ceiling;
+    const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
+    let attempt = 0;
     while (this.#queue.length && !this.#failure) {
       // what is queued now, up to the limits (always at least one part), and the end if it is next
       const parts: StreamAppendPart[] = [];
@@ -431,7 +438,21 @@ export class ProxyStreamWriter {
       }
       try {
         await this.#send(parts, end);
+        attempt = 0;
+        maxParts = Math.min(ceiling, maxParts + 1);
       } catch (e) {
+        if (!final(e) && !signal?.aborted && attempt < retries) {
+          // a dropped request (or one the host gave up on: too much work for one request): again, smaller
+          const base = (this.#o.upload?.retryDelayMs ?? 250) * 2 ** attempt++;
+          if (parts.length > 1) ceiling = Math.min(ceiling, parts.length - 1);
+          maxParts = Math.max(1, Math.floor(parts.length / 2));
+          try {
+            await sleep(base / 2 + Math.random() * base, signal);
+            continue;
+          } catch (abort) {
+            e = abort;
+          }
+        }
         this.#failure = { error: e };
         this.#notify();
         return;
@@ -443,19 +464,20 @@ export class ProxyStreamWriter {
     }
   }
 
+  /** One batch, one attempt (the caller retries); a host without the route: part by part from here on. */
   async #send(parts: StreamAppendPart[], end?: StreamEnd): Promise<void> {
     const signal = this.#o.upload?.signal;
     if (this.#appender) {
       const batch = parts.map((p) => ({ ...p }));
       if (this.#probe && batch.some((p) => p.kind === "segment")) await this.#skipStored(batch);
       try {
-        await this.#retry(() => this.#appender!.appendStream(this.id, { parts: batch, ...(end ? { end } : {}) }, signal));
+        await this.#appender.appendStream(this.id, { parts: batch, ...(end ? { end } : {}) }, signal);
         return;
       } catch (e) {
         if (e instanceof StreamPartMissingError) {
           // a part it found stored went away since (or a reader reported it): send every byte
           this.#probe = false;
-          await this.#retry(() => this.#appender!.appendStream(this.id, { parts, ...(end ? { end } : {}) }, signal));
+          await this.#appender.appendStream(this.id, { parts, ...(end ? { end } : {}) }, signal);
           return;
         }
         if (!(e instanceof StreamRouteMissingError)) throw e;
@@ -499,20 +521,6 @@ export class ProxyStreamWriter {
       if (p.kind === "segment") found = true;
     });
     if (!found) this.#probe = false;
-  }
-
-  async #retry<T>(fn: () => Promise<T>): Promise<T> {
-    const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
-    for (let attempt = 0; ; attempt++) {
-      signal?.throwIfAborted();
-      try {
-        return await fn();
-      } catch (e) {
-        if (final(e) || signal?.aborted || attempt >= retries) throw e;
-        const base = (this.#o.upload?.retryDelayMs ?? 250) * 2 ** attempt;
-        await sleep(base / 2 + Math.random() * base, signal);
-      }
-    }
   }
 }
 
