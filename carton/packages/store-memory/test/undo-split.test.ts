@@ -6,12 +6,13 @@
 // drag. On a local cut (History.commit) and on a shared one (the replica queue's commit).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Carton, POS, type Actor, type Doc, type Rec } from "@carton/core";
+import { Carton, POS, type Actor, type ConfirmedChange, type Doc, type Rec } from "@carton/core";
 import type { AuthContext, AuthProvider } from "@carton/core/plugins";
 import { createInProcessHost } from "@carton/server";
 import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
 import { createMemoryStore } from "../src/index.ts";
 import { adapter, clip, schema } from "./fixture.ts";
+import { copyStore, world } from "./world.ts";
 
 const GROUP = "local:me@laptop";
 const person: Actor = { kind: "human", id: "person", group: GROUP, app: true };
@@ -136,5 +137,119 @@ test("shared cut: a split, a drag of a piece, Ctrl+Z ×2 gives the clip back; re
   } finally {
     await a.close();
     host.close();
+  }
+});
+
+// --- two replicas (review of the fix, P1): the undo of the drag made offline is rebased when it reconnects. merge3
+// infers a remap for a side that brings none, so the undo, which records none, was read as the ripple delete of the
+// gap it closes ([1.5, 4.5) on t1) all over again during the rebase: a clip another replica placed later on that track
+// in the meantime was silently pulled 3 s left, on both replicas, with no card. The same after a restart in between
+// (the undo restored from the store, then rebased).
+const alice2: Actor = { kind: "human", id: "alice", group: GROUP, app: true };
+const bob2: Actor = { kind: "human", id: "bob", group: "bob@desk", app: true };
+const insertY = [{ op: "insert" as const, path: ["items", "y"], value: clip("y", 7, 8) }];
+/** alice's shared cut with the split and the drag confirmed, and bob on a copy of her store, both up to date. */
+async function splitAndDragOnTwo() {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc() }, actor: alice2, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  assert.equal((await a.commit({ ops: splitOps, intent: { kind: "split", lineage: { x: ["a", "b"] } }, wait: 5000 })).status, "confirmed");
+  assert.equal((await a.commit({ ops: moved("b", 4.5, 6), wait: 5000 })).status, "confirmed");
+  const sb = await copyStore(sa);
+  const b = await Carton.open({ adapter, store: sb, actor: bob2, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "bob connected");
+  return { w, sa, a, b };
+}
+const UNDONE_WITH_Y = [["a", 0, 1.5, "t1"], ["b", 1.5, 3, "t1"], ["y", 7, 8, "t1"]];
+
+for (const restart of [false, true])
+  test(`shared cut: the drag's undo made offline${restart ? ", kept across a restart," : ""} is rebased over a clip another replica placed later: that clip stays put`, async () => {
+    const { w, sa, a: a0, b } = await splitAndDragOnTwo();
+    let a = a0;
+    try {
+      await a.sync!.disconnect();
+      const u = await a.undo(undefined, { since: 0, app: true, id: a.newChangeId() });
+      assert.equal(u.status, "pending", `the drag's undo waits offline (${u.status})`);
+      const uid = (u as { id: string }).id;
+      assert.deepEqual(shape((await a.head()).doc), SPLIT, "the drag undone locally");
+      assert.equal((await b.commit({ ops: insertY, wait: 5000 })).status, "confirmed", "bob's clip at 7–8 s");
+      if (restart) {
+        await a.close();
+        a = await Carton.open({ adapter, store: sa, actor: alice2, sync: w.sync("alice") });
+      } else await a.sync!.connect({ nonce: "lease-2" });
+      assert.equal((await a.sync!.waitFor(uid, 5000)).status, "confirmed", "the undo confirmed after the reconnect");
+      for (const [who, c] of [["alice", a], ["bob", b]] as const) await until(async () => (await c.log()).some((x) => x.change === uid), 5000, `the undo at ${who}`);
+      for (const [who, c] of [["alice", a], ["bob", b]] as const) assert.deepEqual(shape((await c.head()).doc), UNDONE_WITH_Y, `${who}: the drag undone, bob's clip still at 7–8 s`);
+      const ur = (await sa.range<ConfirmedChange>("changes", { prefix: [a.cut] })).map((r) => r.value).find((c) => c.id === uid)!;
+      assert.ok((ur.rebase ?? 0) >= 1, "it was rebased onto bob's clip");
+      assert.equal(ur.intent, null, "the rebased undo still records no remap");
+      assert.deepEqual((await a.notices(alice2)).filter((n) => n.change === uid), [], "no card for the undo");
+      // and Ctrl+Z #2 still undoes the split
+      const z2 = await a.undo(undefined, { since: 0, app: true, id: a.newChangeId() });
+      assert.ok(z2.status === "pending" || z2.status === "confirmed", `Ctrl+Z #2: ${z2.status} ${z2.status === "conflicts" ? JSON.stringify(z2.cards.map((k) => k.reason)) : ""}`);
+      await until(async () => (await a.pendingCount()) === 0, 5000, "Ctrl+Z #2 confirmed");
+      for (const [who, c] of [["alice", a], ["bob", b]] as const) await until(async () => JSON.stringify(shape((await c.head()).doc)) === JSON.stringify([["x", 0, 3, "t1"], ["y", 7, 8, "t1"]]), 5000, `${who}: the one clip back, bob's clip kept`);
+    } finally {
+      await a.close();
+      await b.close();
+      w.host.close();
+    }
+  });
+
+test("shared cut: a clip placed later offline is rebased over the drag's undo, confirmed meanwhile: it stays put", async () => {
+  const { w, a, b } = await splitAndDragOnTwo();
+  try {
+    await b.sync!.disconnect();
+    const y = await b.commit({ ops: insertY });
+    assert.equal(y.status, "pending");
+    const u = await a.undo(undefined, { since: 0, app: true, id: a.newChangeId() });
+    assert.ok(u.status === "pending" || u.status === "confirmed", u.status);
+    await until(async () => (await a.pendingCount()) === 0, 5000, "the undo confirmed");
+    await b.sync!.connect({ nonce: "lease-2" });
+    assert.equal((await b.sync!.waitFor((y as { id: string }).id, 5000)).status, "confirmed");
+    for (const [who, c] of [["alice", a], ["bob", b]] as const) await until(async () => (await c.log()).some((x) => x.change === (y as { id: string }).id), 5000, `bob's clip at ${who}`);
+    for (const [who, c] of [["alice", a], ["bob", b]] as const) assert.deepEqual(shape((await c.head()).doc), UNDONE_WITH_Y, `${who}: bob's clip still at 7–8 s`);
+  } finally {
+    await a.close();
+    await b.close();
+    w.host.close();
+  }
+});
+
+// an edit made on a state from before the drag's undo (an agent's apply on an older base) is merged onto the head with
+// the undo on the head side: the undo records no remap, so none is inferred there either
+test("local cut: a clip placed later on a base from before the drag's undo stays put", async () => {
+  let now = 1000;
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc() }, clock: () => (now += 10) });
+  await c.commit({ ops: splitOps, author: person, intent: { kind: "split", lineage: { x: ["a", "b"] } } });
+  await c.commit({ ops: moved("b", 4.5, 6), author: person });
+  const before = (await c.head()).ref;
+  assert.equal((await c.undo(GROUP, { since: now, app: true, author: person })).status, "confirmed");
+  const r = await c.commit({ ops: insertY, base: before, author: { kind: "agent", id: "director", name: "Director", group: "local:me@laptop/director", turn: "t1" } });
+  assert.equal(r.status, "confirmed", r.status === "conflicts" ? JSON.stringify(r.cards.map((k) => k.reason)) : r.status);
+  assert.deepEqual(shape((await c.head()).doc), UNDONE_WITH_Y);
+  await c.close();
+});
+
+test("shared cut: a clip placed later on a base from before the drag's undo, still pending, stays put", async () => {
+  const { w, a, b } = await splitAndDragOnTwo();
+  try {
+    const before = (await a.head()).ref;
+    await a.sync!.disconnect();
+    const u = await a.undo(undefined, { since: 0, app: true, id: a.newChangeId() });
+    assert.equal(u.status, "pending");
+    const r = await a.commit({ ops: insertY, base: before, author: { kind: "agent", id: "director", name: "Director", group: "alice@laptop/director", turn: "t1" } });
+    assert.equal(r.status, "pending", r.status === "conflicts" ? JSON.stringify(r.cards.map((k) => k.reason)) : r.status);
+    assert.deepEqual(shape((await a.head()).doc), UNDONE_WITH_Y, "alice's head");
+    await a.sync!.connect({ nonce: "lease-2" });
+    await until(async () => (await a.pendingCount()) === 0, 5000, "both confirmed");
+    await until(async () => (await b.log()).some((x) => x.change === (r as { id: string }).id), 5000, "both at bob");
+    for (const [who, c] of [["alice", a], ["bob", b]] as const) assert.deepEqual(shape((await c.head()).doc), UNDONE_WITH_Y, who);
+  } finally {
+    await a.close();
+    await b.close();
+    w.host.close();
   }
 });
