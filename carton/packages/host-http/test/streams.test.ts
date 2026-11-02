@@ -402,3 +402,36 @@ test("a team host's append reserves its manifests, bytes and entries in one rese
   await media.appendStream("f1".repeat(32), { parts: [await segPart(0), await segPart(1)] });
   assert.deepEqual(asked.map(([, o]) => o), [6], "manifest, bytes and entry per part");
 });
+
+test("end() right after a batch read that saw no end asks again: the stream ended since, and whoever knows it (a record with its size) is told so (release-line live sync)", async () => {
+  const store = createMemoryBlobStore();
+  const { client } = host(store);
+  const w = new ProxyStreamWriter({ store: await client(), hasher });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  await w.flush();
+  const r = reader(await client("viewer"), w.id);
+  assert.equal((await r.known()).length, 1, "a batch read: one segment, no end yet");
+  await w.end();
+  assert.ok(await r.end(), "the end, not the batch read's earlier look");
+});
+
+test("a reader waiting for the next segment asks once per poll: the batch read's look at the end, no second request", async () => {
+  const store = createMemoryBlobStore();
+  const { client, seen } = host(store);
+  const w = new ProxyStreamWriter({ store: await client(), hasher });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  await w.flush();
+  const r = reader(await client("viewer"), w.id);
+  seen.length = 0;
+  const waiting = r.waitFor(1);
+  await new Promise((res) => setTimeout(res, 60));
+  await w.segment(seg(1), 2);
+  await w.flush();
+  assert.equal((await waiting)?.index, 1);
+  const reads = seen.filter((s) => s === "GET /streams/:id/read").length;
+  assert.ok(reads >= 2, `${seen}`);
+  // (the writer's own requests aside: its appends and its dedup probe)
+  assert.deepEqual(seen.filter((s) => !s.startsWith("POST /") && s !== "GET /streams/:id/read"), [], `only batch reads while waiting: ${seen}`);
+});

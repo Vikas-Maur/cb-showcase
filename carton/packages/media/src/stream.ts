@@ -617,8 +617,6 @@ const noBatchRead = new WeakSet<BlobStore>();
 const READ_BATCH_BYTES = 2 << 20;
 /** How long a live reader's request may wait at the edge for the next segment. */
 const READ_WAIT_MS = 20_000;
-/** A batch read's look at the end answers `end()` for this long (a wait loop asks for the entry, then the end). */
-const END_FRESH_MS = 1000;
 
 export interface ProxyStreamReaderOptions {
   store: BlobStore;
@@ -685,8 +683,12 @@ export class ProxyStreamReader {
   #init: StreamPart | null = null;
   readonly #segments: StreamSegment[] = []; // entries are immutable: 0..n-1 known so far
   #end: StreamEnd | null = null;
-  /** When a batch read last looked for the end (and found `#end`): `end()` takes that answer for a moment instead of asking. */
-  #endSeenAt = -Infinity;
+  /**
+   * How many times a batch read has looked for the end (and found `#end`, or none). A caller that just filled entries
+   * (waitFor, playlist) takes its own fill's look instead of asking again; `end()` itself always asks while the end
+   * isn't known, so whoever knows the stream ended (a record with its size) is never told otherwise.
+   */
+  #endLooks = 0;
   // Entries are fetched one caller at a time: two overlapping fetches would both append the same entry.
   #filling: Promise<unknown> = Promise.resolve();
 
@@ -742,10 +744,14 @@ export class ProxyStreamReader {
   }
 
   async end(signal?: AbortSignal): Promise<StreamEnd | null> {
-    if (Date.now() - this.#endSeenAt < END_FRESH_MS) return this.#end;
     this.#end ??= await this.#entry(streamEndKey(this.id), asEnd, signal);
     this.#fromEnd();
     return this.#end;
+  }
+
+  /** The end as a fill that ran since `looks` saw it (no second request), else as `end()` finds it now. */
+  #endSince(looks: number, signal?: AbortSignal): Promise<StreamEnd | null> {
+    return this.#endLooks > looks ? Promise.resolve(this.#end) : this.end(signal);
   }
 
   /** The batch reader to use, if the store is one whose host has the route. */
@@ -774,7 +780,7 @@ export class ProxyStreamReader {
 
   async #learnEnd(end: StreamEnd | null | undefined): Promise<void> {
     if (end === undefined) return;
-    this.#endSeenAt = Date.now();
+    this.#endLooks++;
     if (!end || this.#end) return;
     this.#end = end;
     // kept only whole: a host may send a long stream's end without its lists (to fit its answer), and a kept end is
@@ -841,9 +847,11 @@ export class ProxyStreamReader {
     let wait = this.#o.pollMs ?? 500;
     for (;;) {
       signal?.throwIfAborted();
+      const looks = this.#endLooks;
       const seg = await this.segment(index, signal);
       if (seg) return seg;
-      const end = await this.end(signal);
+      // a batch fill that found no entry looked for the end too: its answer is this moment's, no second request
+      const end = await this.#endSince(looks, signal);
       if (end && end.segments <= index) return null;
       // The writer puts the end after every entry, so an entry missed just before the end was read may be up now.
       if (end && (await this.segment(index, signal))) return this.#segments[index];
@@ -1046,8 +1054,9 @@ export class ProxyStreamReader {
   async playlist(urlFor: (hash: string) => string): Promise<string | null> {
     const init = await this.initPart();
     if (!init) return null;
+    const looks = this.#endLooks;
     const segs = await this.known();
-    const end = await this.end();
+    const end = await this.#endSince(looks);
     if (end && segs.length < end.segments) {
       // Finished, yet an entry can't be read: a live-looking playlist would keep the tool waiting for good.
       if (!(await this.segment(segs.length))) {
