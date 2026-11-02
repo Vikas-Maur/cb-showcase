@@ -71,8 +71,9 @@ test("while one batch uploads, the next segments queue, and go in the next reque
   const g = gated();
   store.gate = g.gate;
   const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
-  await w.init(INIT); // queued: the first request starts at once
-  for (let i = 0; i < 5; i++) await w.segment(seg(i), 2); // queued behind it: segment() doesn't wait for the upload
+  await w.init(INIT); // held for the first segment: a viewer needs both
+  assert.equal(store.batches.length, 0, "the init alone waits");
+  for (let i = 0; i < 5; i++) await w.segment(seg(i), 2); // the first request starts with segment 0; the rest queue behind it
   assert.equal(store.batches.length, 1, "one request in flight");
   assert.equal(w.segments, 0, "nothing published yet");
   const ending = w.end();
@@ -81,7 +82,7 @@ test("while one batch uploads, the next segments queue, and go in the next reque
     await new Promise((r) => setTimeout(r, 1));
   }
   await ending;
-  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i"], [0, 1, 2, 3, 4]]);
+  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i", 0], [1, 2, 3, 4]]);
   assert.ok(store.batches[1]!.end, "the end rides with the last parts");
   assert.equal(w.segments, 5);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4]);
@@ -159,19 +160,26 @@ test("dedup: a stored part goes without its bytes, and with them if the host say
     }
   }
   const store = new WithHeads();
-  // seg(0) stored already (an earlier stream of the same encode), seg(1) not
+  // segments 0-2 stored already (an earlier stream of the same encode, taken over), segment 3 not
   const w0 = new ProxyStreamWriter({ store, hasher: nodeHasher, batch: false });
   await w0.init(INIT);
-  await w0.segment(seg(0), 2);
+  for (let i = 0; i < 3; i++) await w0.segment(seg(i), 2);
+  const g = gated();
+  store.gate = g.gate;
   const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
   await w.init(INIT);
-  await w.segment(seg(0), 2);
-  await w.segment(seg(1), 2);
-  await w.end();
-  const sent = store.batches.flatMap((b) => b.parts.map((p) => [p.kind === "init" ? "i" : p.index, p.bytes !== null]));
-  assert.ok(sent.some(([i, b]) => i === 0 && b === false), `segment 0 went without its bytes: ${JSON.stringify(sent)}`);
-  assert.ok(sent.some(([i, b]) => i === 1 && b === true), "segment 1 with them");
-  assert.deepEqual(await indexes(reader(store, w.id)), [0, 1]);
+  for (let i = 0; i < 4; i++) await w.segment(seg(i), 2); // the first frame's batch goes; the rest queue behind it
+  const ending = w.end();
+  while (g.pending() || store.batches.length < 2) {
+    g.release();
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  g.release();
+  await ending;
+  const sent = store.batches.map((b) => b.parts.map((p) => [p.kind === "init" ? "i" : p.index, p.bytes !== null]));
+  assert.deepEqual(sent[0], [["i", true], [0, true]], "the first frame's batch isn't probed: it waits for nothing");
+  assert.deepEqual(sent[1], [[1, false], [2, false], [3, true]], `then stored parts go without their bytes: ${JSON.stringify(sent)}`);
+  assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3]);
 });
 
 /** A fake read route over a store: entries, manifests and bytes; `mangle` changes the bytes it sends. */
@@ -270,9 +278,9 @@ test("a batch the host drops is sent again in smaller pieces, down to one part, 
   for (let i = 0; i < 8; i++) await w.segment(seg(i), 2);
   g.release();
   await w.end();
-  assert.equal(sizes[0], 8, "the queued segments went together first");
-  // never again as many as failed: 8 failed, 4 failed, then at most 3
-  assert.ok(sizes.slice(2).every((n) => n <= 3), `then smaller: ${sizes}`);
+  assert.equal(sizes[0], 7, "the queued segments went together first");
+  // never again as many as failed: 7 failed, 3 failed, then at most 2
+  assert.ok(sizes.slice(2).every((n) => n <= 2), `then smaller: ${sizes}`);
   assert.ok(sizes.filter((n) => n > 2).length <= 3, `few failures: ${sizes}`);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4, 5, 6, 7]);
 });

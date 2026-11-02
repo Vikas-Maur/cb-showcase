@@ -16,7 +16,7 @@
 //   includes; else `mf/<hash>`), and the bytes of as many as fit in `bytes` (at least one segment's; 0: entries only),
 //   in one response. Where the part-by-part path took six requests per segment (a signed URL and a read each for the
 //   entry, the manifest and the bytes), every read a head and a get. When it reaches a part that isn't up, it looks for
-//   the end, and with `wait` holds the answer (checking once a second) until the first part asked for is up.
+//   the end, and with `wait` holds the answer (checking once a second, then every two) until the first part asked for is up.
 //
 // Entries of one append may land in any order (they are written a few at once); the request answers once all are in,
 // and a writer retries a request that failed, so a gap lasts no longer than that, unless the writer dies mid-request:
@@ -294,11 +294,13 @@ async function read(url: URL, stream: string, c: StreamRouteContext): Promise<Re
   const deadline = Date.now() + waitMs;
 
   let h: ReadHeader;
-  for (;;) {
+  for (let checks = 0; ; checks++) {
     h = await collect(store, stream, from, wantInit, maxBytes, maxParts);
     const something = wantInit ? h.init !== null : h.segments.length > 0;
-    if (something || (h.end !== undefined && h.end !== null) || Date.now() + READ_CHECK_MS > deadline) break;
-    await sleep(READ_CHECK_MS);
+    // once a second at first, then every two (each check is a storage read or two)
+    const pause = checks < 4 ? READ_CHECK_MS : 2 * READ_CHECK_MS;
+    if (something || (h.end !== undefined && h.end !== null) || Date.now() + pause > deadline) break;
+    await sleep(pause);
   }
 
   // the manifests the entries don't carry (entries from before a batch writer wrote them)

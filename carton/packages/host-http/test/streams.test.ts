@@ -220,12 +220,14 @@ test("a part sent without its bytes must be stored, the right size and not repor
   await w.init(INIT);
   await w.segment(seg(0), 2);
   await w.flush();
-  const body = seen.filter((s) => s === "POST /blobs/heads").length;
-  assert.equal(body, 1, "one dedup probe for the first batch");
-  for (let i = 1; i < 3; i++) await w.segment(seg(i), 2);
+  assert.equal(seen.filter((s) => s === "POST /blobs/heads").length, 0, "the first frame's batch waits for no probe");
+  await w.segment(seg(1), 2);
+  await w.flush();
+  assert.equal(seen.filter((s) => s === "POST /blobs/heads").length, 1, "the next one is probed");
+  await w.segment(seg(2), 2);
   await w.end();
   assertStream(await playAll(reader(store, w.id)), 3);
-  assert.ok(seen.filter((s) => s === "POST /blobs/heads").length <= 2, "the probe stops once it finds nothing");
+  assert.equal(seen.filter((s) => s === "POST /blobs/heads").length, 1, "the probe stops once it finds nothing");
 });
 
 test("a host from before the stream routes: the writer and the reader go part by part, and the stream is the same", async () => {

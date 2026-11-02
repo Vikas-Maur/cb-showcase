@@ -274,8 +274,12 @@ export class ProxyStreamWriter {
   #flushing: Promise<void> | null = null;
   #failure: { error: unknown } | null = null;
   #published = 0;
-  /** Look for parts already in the store before sending a batch: the first one with a segment, and on while it finds some. */
+  /**
+   * Look for parts already in the store before sending a batch: from the first one after the first frame's (that one
+   * waits for nothing), and on while it finds some.
+   */
   #probe = true;
+  #holdInit = true;
   #waiters: (() => void)[] = [];
 
   constructor(o: ProxyStreamWriterOptions) {
@@ -375,6 +379,8 @@ export class ProxyStreamWriter {
 
   /** Waits until everything queued is in the store (or throws the failure that stopped it). */
   async flush(): Promise<void> {
+    this.#holdInit = false;
+    this.#kick();
     while ((this.#queue.length || this.#flushing) && !this.#failure) await this.#changed();
     this.#throwIfFailed();
   }
@@ -405,6 +411,9 @@ export class ProxyStreamWriter {
 
   #kick(): void {
     if (this.#flushing || this.#failure || !this.#queue.length) return;
+    // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the first
+    // segment, so both go in one request, unless the writer flushes or ends first.
+    if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
     this.#flushing = this.#flush().finally(() => {
       this.#flushing = null;
       this.#notify();
@@ -469,7 +478,7 @@ export class ProxyStreamWriter {
     const signal = this.#o.upload?.signal;
     if (this.#appender) {
       const batch = parts.map((p) => ({ ...p }));
-      if (this.#probe && batch.some((p) => p.kind === "segment")) await this.#skipStored(batch);
+      if (this.#probe && batch.some((p) => p.kind === "segment") && !batch.some((p) => p.kind === "init")) await this.#skipStored(batch);
       try {
         await this.#appender.appendStream(this.id, { parts: batch, ...(end ? { end } : {}) }, signal);
         return;
