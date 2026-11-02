@@ -83,8 +83,9 @@ test("while one batch uploads, the next segments queue, and go in the next reque
     await new Promise((r) => setTimeout(r, 1));
   }
   await ending;
-  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i", 0], [1], [2, 3, 4]]);
-  assert.ok(!store.batches[0]!.end && !store.batches[1]!.end && store.batches[2]!.end, "the end rides with the last parts, once nothing else is under way");
+  // [2, 3, 4] go while [1] is under way; the end waits until nothing is, then goes alone
+  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i", 0], [1], [2, 3, 4], []]);
+  assert.ok(store.batches.slice(0, 3).every((b) => !b.end) && store.batches[3]!.end, "the end last, on its own");
   assert.equal(w.segments, 5);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4]);
 });
@@ -416,4 +417,34 @@ test("a host asking for 1 part an append gets 4 appends under way (each waits on
     assert.equal(store.most, want, `${parts} part(s) an append`);
     assert.deepEqual(await indexes(reader(store, w.id)), Array.from({ length: 13 }, (_, i) => i));
   }
+});
+
+test("once the end is queued, the parts before it still use every slot; the end goes when nothing else is under way (cf-verify3)", async () => {
+  class Slow extends AppendingStore {
+    open = 0;
+    mostInTail = 0;
+    endStartedWith = -1;
+    endQueued = false;
+    override async appendStream(stream: string, batch: StreamAppendBatch) {
+      if (batch.end) this.endStartedWith = this.open;
+      this.open++;
+      if (this.endQueued && !batch.end) this.mostInTail = Math.max(this.mostInTail, this.open);
+      await new Promise((r) => setTimeout(r, 10));
+      await super.appendStream(stream, batch);
+      this.open--;
+      return { limits: { parts: 1, bytes: 1 << 20 } }; // a Worker's Free defaults: 4 under way
+    }
+  }
+  const store = new Slow();
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, batch: { maxQueuedBytes: 64 << 20 } });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  await w.flush(); // the first answer says the limits
+  for (let i = 1; i < 16; i++) await w.segment(seg(i), 2); // a fast encode: all queued at once
+  store.endQueued = true;
+  await w.end();
+  assert.equal(store.mostInTail, 4, "the queued tail went 4 at a time");
+  assert.equal(store.endStartedWith, 0, "the end started with nothing else under way: every entry was in");
+  assert.ok(store.batches.at(-1)!.end && store.batches.filter((b) => b.end).length === 1);
+  assert.deepEqual(await indexes(reader(store, w.id)), Array.from({ length: 16 }, (_, i) => i));
 });
