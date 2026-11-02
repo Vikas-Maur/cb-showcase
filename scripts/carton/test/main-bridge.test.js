@@ -280,7 +280,11 @@ test("H8: every agent's appended prompt gains the view flow with Carton on", () 
   const m = load({ CARDBOARD_CARTON: "1" });
   const [line] = m.viewPrompt({ id: "p1" });
   assert.match(line, /`cb source print p1 --view <name>`/);
-  assert.match(line, /`timeline\.tsx` keeps showing the state your turn started from until your turn ends/);
+  // apply-ryw: the file holds back others' changes, never the agent's own (an agent read the old wording as "the file
+  // shows my turn's start" and told the user its own apply would show only after its turn)
+  assert.match(line, /`timeline\.tsx` holds back the person's and teammates' changes/);
+  assert.match(line, /shows your own: a `cb` write's \(`cb source apply` and the others\) by the time it returns/);
+  assert.doesNotMatch(line, /started from|until your turn ends/);
   assert.match(line, /`cb conflicts p1`/);
 });
 

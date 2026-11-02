@@ -477,7 +477,22 @@ onto the packages' APIs, so a package API change touches only the facade.
     Views are polled (a stat every 250 ms, only the views Carton printed): no watch handle inside the bundle, which on
     Windows can block Cardboard's rename or trash of it. An agent's own `cb` commit during a freeze shows in the frozen
     file at once (the Materializer's `foldAgentChanges`, cardboard-adapter `151a38e`); the person's and remote changes
-    stay out until the freeze ends. (The app's earlier stopgap reprinted the shared file from head when the newest
+    stay out until the freeze ends. **Read-your-writes (apply-ryw):** a `cb` write answers only once `timeline.tsx` shows
+    it. `cb source apply` and MCP's `apply_timeline` (the apply's `status`, now awaited: `...await __carton.status(t)`)
+    and the Carton writes (commit, fold, restore, revert, undo, redo, undo --turn) ask the worker's lease holder
+    (`carton.shown`, local's `showOnHolder`): it looks at carton.db at once (its follower, as a nudge), the Materializer
+    makes the rewrite its 20 ms timer was holding (`showChange`), and the answer comes with the print that holds the
+    change (its confirmed seq is at or below the print's, or the print holds it past that seq), at most 2 s. The result
+    says how: `carton.timeline` in the apply's JSON (`timeline` in a Carton write's), `shown`, `held` (the freeze holds
+    it back: not a local agent's, a terminal caller's or a save's), `elsewhere` (another cut) or `later`, and anything
+    but `shown` with a sentence the text prints too (Cardboard's apply text, the cli's `resultText`). On the laptop
+    (`12826273`) an agent read the file right after its apply, before the Materializer had even heard of the commit
+    (another process's commit was found by the follower's 250 ms poll), and told the user the file showed its turn's
+    start. A terminal's `cb` (local's fallback actor) holds the file as a windowless agent does and now reads its own
+    writes in it (`onCb(caller)`); the person's GUI saves and outside programs' imports stay held. With the app closed
+    `cb` prints the file itself before it answers, as Cardboard does; a worker that is gone (it quit or crashed without
+    letting go of the lease, whose row stays live up to 6 s) no longer takes the file from `cb`: its socket refuses the
+    ping, and `cb` prints it (`timelineWorker`). (The app's earlier stopgap reprinted the shared file from head when the newest
     change was an agent's, which on Windows CI showed the person's edit during a turn: an in-process view save was the
     newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
     A view save on a shared cut is committed with the View's lease as a store condition (`fence(nonce)` in core's

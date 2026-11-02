@@ -1,7 +1,7 @@
 // The engine factory for R5-04: Carton (test adapter) + the cardboard materializer (JSON timeline codec, a plain host
 // for the test schema) on the lease holder, watching the bundle; CartonHolderEngine serves `cb` calls, including
-// `cb source print --view`. config: { projectDir, followMs?, freezeIdleMs? }.
-import { Carton, merge3 } from "@carton/core";
+// `cb source print --view`. config: { projectDir, followMs?, freezeIdleMs?, hostChanges? }.
+import { Carton, canonical, diff, merge3 } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
 import { jsonTimelineCodec } from "@carton/cardboard";
@@ -26,7 +26,10 @@ const host: MaterializerHost = {
 export async function createHolderEngine({ dbPath, config }: HelperFactoryOptions) {
   const store = await openSqliteStore(dbPath);
   const carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" } });
-  const mz = new Materializer({ bundle: String(config.projectDir), engine: cartonMaterializerEngine(carton), host, codec: jsonTimelineCodec, ...(config.freezeIdleMs !== undefined ? { freezeIdleMs: Number(config.freezeIdleMs) } : {}) });
+  // config.hostChanges: the host tells a change's edits (as cardboard's host does in the app), so an agent's change in a
+  // freeze joins the view by its own edits instead of restarting the freeze at its state (apply-ryw's tests)
+  const h: MaterializerHost = config.hostChanges ? { ...host, changes: (from, to) => diff(from, to, schema).map(canonical) } : host;
+  const mz = new Materializer({ bundle: String(config.projectDir), engine: cartonMaterializerEngine(carton), host: h, codec: jsonTimelineCodec, ...(config.freezeIdleMs !== undefined ? { freezeIdleMs: Number(config.freezeIdleMs) } : {}) });
   await mz.start();
   mz.watch();
   // config.followMs: how often the app looks for other processes' writes (B11); 0: only when nudged

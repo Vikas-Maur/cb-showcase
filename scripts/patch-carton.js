@@ -54,7 +54,7 @@ const STORE = {
     merge: ["Z=rn(B,j,J.doc,{prefer:n.prefer})", "Z=__carton.on?await __carton.merge3(B,j,J.doc,{prefer:n.prefer},rn):rn(B,j,J.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})",
-      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
+      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let o={...Aa(t,r)", "writeTimeline(t,r,n,__cm){let o={...Aa(t,r)"],
@@ -105,7 +105,7 @@ const STORE = {
     merge: ["ee=$f(be,de,qe.doc,{prefer:n.prefer})", "ee=__carton.on?await __carton.merge3(be,de,qe.doc,{prefer:n.prefer},$f):$f(be,de,qe.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
-      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
+      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let i={...Ay(t,r)", "writeTimeline(t,r,n,__cm){let i={...Ay(t,r)"],
@@ -240,6 +240,13 @@ if (mode === "--cli") {
     replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
     replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
     replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
+    // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
+    // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
+    // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
+    replace(
+      "for(let u of t.matched)a.push(`matched: ${u.name} (${u.id}) ${u.distanceBefore} -> ${u.distanceAfter}`);return a.join(`\n`)},Nr=",
+      "for(let u of t.matched)a.push(`matched: ${u.name} (${u.id}) ${u.distanceBefore} -> ${u.distanceAfter}`);typeof t.carton?.note==\"string\"&&a.push(t.carton.note);return a.join(`\n`)},Nr=",
+    );
   });
 } else if (mode === "--app") {
   const [mainFile, workerFile, indexFile, editorFile, storeFile, tabsFile] = files;

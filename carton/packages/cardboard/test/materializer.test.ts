@@ -1297,3 +1297,105 @@ test("review 9 #2: a cut switched while a failed rewrite waits for its retry is 
   s.engine.headRef = async () => JSON.stringify(["cut-b", "b7e1c2d3-0000-4000-8000-00000000000b", 0, []]);
   assert.equal(await s.mz.onExternalHeadChange(), "cut", "the cut it was on is remembered");
 });
+
+// apply-ryw: read-your-writes. A `cb` write asks (through the lease holder) for the shared file to show it, and is
+// answered by the print that does, at once: the coalescing timer's rewrite is made then and there, with no wait on the
+// clock. On the laptop the file was read before the rewrite and the agent took the old value for its turn's start.
+test("apply-ryw: showChange makes the coalesced rewrite at once and answers 'shown' with the print that holds the change", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.1");
+  s.mz.onHeadChange("local"); // the holder's write (or its follower) told it: a rewrite is due in 20 ms
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.clock.now(), t0, "no wait on the clock: the rewrite was made at once");
+  assert.equal(s.find(s.read().items, "a").name, "the agent's write", "the next read shows the write");
+  // already shown: answered at once
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a change nobody told the materializer of (another process's commit) is found and shown", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "committed elsewhere"), "cb.7");
+  assert.equal(await s.mz.showChange({ id: "cb.7", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "committed elsewhere");
+});
+
+test("apply-ryw: during a freeze, a change the frozen file holds back (the person's, not an agent's) is 'held', at once", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.hookRead({ kind: "agent", id: "director/c/t1", turn: "t1" });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the person's"), "person.1");
+  s.mz.onHeadChange("local");
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "person.1", seq: s.engine.headSeq, author: { kind: "human", id: "person" } }, 2000), "held");
+  assert.equal(s.clock.now(), t0, "said at once, not after the wait");
+  assert.equal(s.find(s.read().items, "a").name, "a", "the file still holds it back");
+});
+
+test("apply-ryw: a write that can't show within the wait (a host write still landing) is 'later', then shows", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) }); // the app's save is writing project.json
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "under a landing save"), "agent.2");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  land();
+  await s.tick(100);
+  assert.equal(s.find(s.read().items, "a").name, "under a landing save", "the rewrite follows once the save has landed");
+  assert.equal(await s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a windowless cb caller named to onCb (a terminal's) is held to the freeze it starts; close settles waiting writes", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.onCb({ kind: "external", id: "terminal:me@box", name: "Terminal" });
+  assert.equal(s.mz.freeze.active, true, "its call holds the file a while");
+  assert.ok(s.mz.freeze.callers.has("terminal:me@box"));
+  await s.tick(61_000);
+  assert.equal(s.mz.freeze.active, false);
+  assert.equal(s.mz.freeze.callers.size, 0, "forgotten once the freeze ends");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "x"), "late.1");
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) });
+  const asked = s.mz.showChange({ id: "late.1", seq: s.engine.headSeq }, 60_000);
+  await s.mz.close();
+  assert.equal(await asked, "later");
+  land();
+});
+
+// Review #1: "shown" only while the file on disk is the print's bytes. A foreign writer that replaced the print (before
+// any watch event was read) leaves the write unshown, never certified by a stamp taken after the install.
+test("apply-ryw review #1: a print a foreign writer replaced doesn't count as showing the write", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const old = fs.readFileSync(s.abs(TIMELINE_FILE), "utf8");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.9");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000), "shown");
+  s.writeAtomic(TIMELINE_FILE, old); // someone else's bytes over the print, not read yet
+  const asked = s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later", "the file doesn't hold the write: not 'shown'");
+});
+
+// Review #2: a shared cut offline, the file frozen by a terminal's cb, and its own edit still pending: the pending change
+// moves the file (pendingMoved and withPending take the same changes), so it shows at once.
+test("apply-ryw review #2: an offline terminal's pending edit shows in the file its call holds", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const terminal = { kind: "external" as const, id: "terminal:me@box", name: "Terminal" };
+  const engine = s.engine as FakeEngine & { pendingChanges?: unknown };
+  engine.isShared = true;
+  const pending: { id: string; author: typeof terminal; before: Record<string, unknown>; after: Record<string, unknown> }[] = [];
+  engine.pendingChanges = async () => ({ seq: engine.headSeq, changes: pending });
+  // the host tells a change's edits (cardboard's does), so a pending change shows by its own edits
+  (s.mz as unknown as { host: typeof plainHost }).host = { ...plainHost, changes: (from, to) => {
+    const was = new Map(((from.timelineItems ?? []) as Item[]).map((i) => [i.id, JSON.stringify(i)]));
+    return ((to.timelineItems ?? []) as Item[]).filter((i) => was.get(i.id) !== JSON.stringify(i)).map((i) => JSON.stringify(i));
+  } };
+  await s.mz.onCb(terminal);
+  const before = await engine.head();
+  const after = { ...before, timelineItems: (before.timelineItems as Item[]).map((i) => (i.id === "a" ? { ...i, name: "typed offline" } : i)) };
+  pending.push({ id: "term.1", author: terminal, before, after });
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "term.1", author: terminal }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "typed offline");
+});

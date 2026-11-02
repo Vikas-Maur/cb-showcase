@@ -52,7 +52,7 @@ export interface CartonEngineOptions {
 }
 
 /** This engine: every optional method of `MaterializerEngine` is there (the materializer uses one only when it is). */
-export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef" | "pendingChanges" | "putMetas">>;
+export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef" | "pendingChanges" | "putMetas" | "changeAt">>;
 
 export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptions = {}): CartonEngine {
   const store = carton.store;
@@ -210,11 +210,26 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       pinsByOwner.set(owner, n);
       if (keep) keepByOwner.set(owner, keep); // an owner's rule holds for its pins that don't repeat it
       if (n % 64 === 0) await prune(owner, ttlMs, keepByOwner.get(owner));
+      // `pending`: the changes past `seq` this state holds, which tell a write waiting to show in the file that it does
+      // (read-your-writes, the materializer's showChange): `causal` when given, else head's pending changes on a shared
+      // cut, read around the pin. Core hands back the list of an earlier pin of the same state (cut, seq and hash), which
+      // edits that cancel out (a name changed and back, offline) leave without them (review #3); taken from core only
+      // when head moved during the pin.
+      const headPending = async () => {
+        const r = (await carton.head(on)).ref;
+        return JSON.stringify([r.seq, r.pending ?? []]);
+      };
+      const around = !doc && !causal?.length && (opts.shared?.() ?? isShared) ? await headPending() : null;
       const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
+      let pending = causal?.length ? [...causal] : [...(p.ref.pending ?? [])];
+      if (around !== null && around === (await headPending())) {
+        const [at, ids] = JSON.parse(around) as [number, string[]];
+        if (at === p.ref.seq) pending = ids;
+      }
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       const record = { key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord };
       if (!deferRecord) await store.write([{ table: VIEWS, ...record }]);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on, ...(deferRecord ? { record } : {}) };
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on, ...(deferRecord ? { record } : {}), ...(pending.length ? { pending } : {}) };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
@@ -276,6 +291,11 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
+    // where a confirmed change is: core's `ids` table ([cut, seq]), one row read; null while it isn't confirmed
+    async changeAt(id: string) {
+      const at = await store.get<[string, number]>("ids", [id]);
+      return Array.isArray(at) && typeof at[0] === "string" && typeof at[1] === "number" ? { cut: at[0], seq: at[1] } : null;
+    },
     async *changesSince(seq: number, o: { cut?: string; until?: number; skip?: ReadonlySet<string> } = {}) {
       // the whole log back to `seq`, a page at a time (round 15 #1: no window), newest first; only the changes asked for
       // are checked out, and a change right below the last one reuses its state

@@ -15,6 +15,7 @@ import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
 import type { HookOp } from "./hooks.ts";
 
@@ -300,8 +301,18 @@ export interface ViewPrinter {
   hookRead?(actor: Actor): Promise<void>;
   hookWrite?(actor: Actor, rel: string): Promise<void>;
   hookStop?(actor: Actor): Promise<void>;
-  /** A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it. */
-  onCb?(): Promise<void>;
+  /**
+   * A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it.
+   * `caller`: a terminal's cb (`isFallbackActor`, nothing tells it apart from a windowless agent): its own changes show
+   * in the frozen file, so it reads what it just wrote (apply-ryw).
+   */
+  onCb?(caller?: Actor): Promise<void>;
+  /**
+   * Read-your-writes (apply-ryw): resolves once the shared timeline.tsx shows change `c` (`shown`), or why it doesn't
+   * (`held` by a freeze for someone else's work, `elsewhere`: another cut), or `later` after `ms` (cardboard's
+   * `Materializer.showChange`). The holder answers `carton.shown` with it, so a `cb` write returns once the file shows it.
+   */
+  showChange?(c: ShowTarget, ms: number): Promise<Showing>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
    * The current cut changed (`cb cut switch`): the files must show the new cut now, and a freeze started on the old
@@ -333,14 +344,22 @@ export async function tellBusy(mz: ViewPrinter | null | undefined, authors: read
   const hooks = !!(mz.hookRead && mz.hookStop);
   let windowless = authors.length === 0;
   const told = new Set<string>();
+  // a terminal's cb (the environment's fallback actor) holds the file as a windowless agent does, and reads its own
+  // writes in it (apply-ryw): named to onCb. Anyone else (the person's GUI save another holder served, an outside
+  // program's import) isn't, so the freeze keeps holding their changes back.
+  const callers: Actor[] = [];
   for (const a of authors) {
-    if (!(a && hooks && hookDelivered(a))) windowless = true;
-    else if (!told.has(a.id)) {
+    if (!(a && hooks && hookDelivered(a))) {
+      windowless = true;
+      if (a && isFallbackActor(a) && !told.has(a.id)) told.add(a.id), callers.push(a);
+    } else if (!told.has(a.id)) {
       told.add(a.id);
       await mz.hookRead!(a);
     }
   }
-  if (windowless) await mz.onCb?.();
+  if (!windowless) return;
+  if (!callers.length) await mz.onCb?.();
+  for (const a of callers) await mz.onCb?.(a);
 }
 
 const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
