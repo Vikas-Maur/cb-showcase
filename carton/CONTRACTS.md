@@ -145,7 +145,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one, and
   so do the edits made on it. A retry of an edit already queued (here, waiting, or another process's row) answers
   `pending`. An
-  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). A settle that fails keeps its outcome for the next one; a wait answers
+  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). One withdrawn after it
+  was sent is spent by the server's withdraw row (`ConfirmedChange.withdrawn`, authored `{kind: "system", id:
+  "withdraw"}`): every replica stores and syncs it (its seq and the spent id stay), and none shows it as a version:
+  `log()` leaves it out (so History, `cb history`, the Compare and restore pickers and version counts do), its `change`
+  event only moves the head, and its seq is a gap in the numbering. A settle that fails keeps its outcome for the next one; a wait answers
   `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
   `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
@@ -173,9 +177,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
-  Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
-  version published and that cut's head now, so a watch page can say "newer edits exist" (head > at) without reading
-  them. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
+  Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
+  the version published, that cut's head now and how many versions it has since (its rows after `at` less withdraw
+  rows), so a watch page can say "newer edits exist" (versions > 0; `head - at` from a host that sends no count) without
+  reading them. `publications()` gives the same count as `versions` (and `newer`), as `log()` lists versions. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
   reader's hello for any other cut is refused before a row is sent.
 - **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
   library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the

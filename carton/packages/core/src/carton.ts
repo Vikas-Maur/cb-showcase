@@ -184,6 +184,8 @@ export interface Publication {
   source: string;
   /** The source cut has edits newer than what was published. */
   newer: boolean;
+  /** How many versions the source cut has after the one published (squashed changes and withdraw rows are none). */
+  versions: number;
 }
 
 /** A pinned state for an out-of-process reader (agent, MCP, file view), with the header to print. */
