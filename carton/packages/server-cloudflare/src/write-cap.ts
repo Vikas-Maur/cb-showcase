@@ -12,7 +12,8 @@
 //   then a resumable stop), never as stored.
 // - Reads and deletes are never capped: deleting is how a full bucket is emptied.
 // - It sits under the scope and team wrappers, on the physical store, so team records and the sequencer's own blobs
-//   (keyframes, segments, envelopes) count too. A store's own extra records (R2's per-part upload records) ride on the
+//   (keyframes, segments, envelopes) count too. Not a team's grants (room.ts mediaBlobs): an editor's media HEAD writes
+//   one, and reads must go on once the cap is reached. A store's own extra records (R2's per-part upload records) ride on the
 //   call that makes them: an operation here is one public call, which is one to four R2 Class A operations.
 // - Each reserve is one Durable Object request and one row written. For a part of 8 to 64 MiB that is noise; for a
 //   stream of tiny writes it doubles the DO requests, which is why the cap is opt-in.

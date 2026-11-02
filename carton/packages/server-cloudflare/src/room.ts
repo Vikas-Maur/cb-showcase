@@ -94,8 +94,15 @@ function teamOf(env: Env, projectId: string): string | undefined {
   const team = Object.hasOwn(teams.map, projectId) ? teams.map[projectId] : undefined;
   return typeof team === "string" ? team : undefined;
 }
-export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
-  env.BLOBS ? projectMediaStore(cappedBlobStore(r2BlobStore(env.BLOBS), writeCapOf(env)), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
+// A team's grants (host-http team.ts: which team media a project may read) are outside the write cap: an editor's HEAD
+// claims, so a grant is written by a read, and a cap reached must not stop editors reading media their project can
+// read. They can't fill a bucket: each is an empty object, at most one per project and hash the team already holds,
+// and a claim of a granted hash writes nothing.
+export function mediaBlobs(env: Env, projectId: string): BlobStore | undefined {
+  if (!env.BLOBS) return projectBlobs(env, projectId, "media");
+  const r2 = r2BlobStore(env.BLOBS);
+  return projectMediaStore(cappedBlobStore(r2, writeCapOf(env)), projectId, teamOf(env, projectId), { grants: r2 });
+}
 
 // The newest document schemaVersion the room accepts in hello: SCHEMA_VERSION when set (to pin a deployment), else the
 // Cardboard adapter's CARDBOARD_SCHEMA_VERSION, so a Worker built with an adapter takes that adapter's clients (H-SV).
