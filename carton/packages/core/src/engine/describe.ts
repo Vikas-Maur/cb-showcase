@@ -63,8 +63,12 @@ const HASH_IN = /[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
 const opaque = (key: unknown, v: unknown): boolean =>
   isIdKey(String(key)) || /(?:^h|H)ash(?:es)?$/.test(String(key)) || (typeof v === "string" ? HASHY.test(v) : !!v && typeof v === "object" && HASH_IN.test(JSON.stringify(v) ?? ""));
 
-export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): string[] {
-  return lines(ops, base, schema, intent).map((l) => l.text);
+/**
+ * `names`: the whole set these ops are part of, when they are only some of it (one row of the Fold dialog): a record it
+ * adds is named by it ("to track 'Text 1'", a track the same fold adds; regress prod3 P3-B read "another track").
+ */
+export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null, names?: readonly Op[]): string[] {
+  return lines(ops, base, schema, intent, names).map((l) => l.text);
 }
 
 /**
@@ -127,6 +131,39 @@ function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group>
   }
   return groups;
 }
+/**
+ * Records that are part of another record the same ops touch: a record the schema's `nounOf` calls nothing (null:
+ * Cardboard's title's own "Text: W1" media entry) that a touched record names by its key (the title's media id). Its
+ * change is its owner's: never a line or a change of its own (regress prod3 P3-C: "15 changes" for a clip, 6 titles
+ * and 2 tracks, with "Added media 'Text: W1'"…). Part key → owner key ("media/tm1" → "timelineItems/t1").
+ */
+function ownedParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+  const out = new Map<string, string>();
+  const rec = (g: Group) => (getIn(base, [g.coll!, g.id as string], schema) ?? (g.ops.find((op) => op.op === "insert" && op.path.length === 2) as { value?: unknown } | undefined)?.value) as Rec | undefined;
+  const parts = new Map<unknown, string>();
+  for (const [k, g] of groups) {
+    const r = g.coll ? rec(g) : undefined;
+    if (r && schema.collections[g.coll!]!.nounOf?.(r) === null) parts.set(g.id, k);
+  }
+  const partKeys = new Set(parts.values());
+  if (parts.size) for (const [k, g] of groups) {
+    const r = g.coll && !partKeys.has(k) ? rec(g) : undefined;
+    if (r) for (const f in r) {
+      const p = parts.get(r[f]);
+      if (p !== undefined && typeof r[f] === "string" && !out.has(p)) out.set(p, k);
+    }
+  }
+  return out;
+}
+/** Records part of another the ops touch (`ownedParts`), as [collection, key] pairs: the Fold dialog lists them with it. */
+export function ownParts(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; owner: [string, string] }[] {
+  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
+  return [...ownedParts(groups, base, schema)].map(([p, o]) => {
+    const a = groups.get(p)!, b = groups.get(o)!;
+    return { part: [a.coll!, a.id as string], owner: [b.coll!, b.id as string] };
+  });
+}
+
 /**
  * A record's label (a clip is named after its media's file name), looked up in base plus the records this change
  * inserts, so a clip added with its media is named after it. That doc is built once, only when a label asks.
@@ -290,22 +327,30 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
     keys = ks;
   }
   let n = keys.size;
-  if (n < 3) return n; // a split is three records at least
+  if (n < 2) return n;
+  // a record part of another (a title's own media entry) is its owner's change
+  for (const [p, o] of ownedParts(groups, base, schema)) if (keys.has(p) && keys.has(o)) n--;
+  if (keys.size < 3) return n; // a split is three records at least
   for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
   return n;
 }
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
 
-function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null): Line[] {
+function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: readonly Op[]): Line[] {
   const tl = schema.timeline,
     out: Line[] = [];
   const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
-  const { nameDoc, label } = labeller(plain, base, schema);
+  const { nameDoc, label } = labeller(names ? names.filter((op): op is PlainOp => op.op !== "remap") : plain, base, schema);
   // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
     const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
     return t ? `'${label(tl!.lanes, t)}'` : "another track";
+  };
+  // "to track 'Text 1'"; a track it can't name is "to another track", never "to track another track" (P3-B)
+  const toTrack = (id: unknown) => {
+    const n = laneName(id);
+    return n[0] === "'" ? `track ${n}` : n;
   };
   const remapOps = ops.filter((op): op is RemapOp => op.op === "remap");
   let maps: RemapMaps = intent?.maps ?? (tl && !remapOps.length ? inferRemaps(schema, base, plain.map((op) => ({ path: op.path, op }))) : {});
@@ -370,7 +415,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     else if (e) parts.push(`Trimmed ${name} end ${fmtS(oe)} → ${fmtS(val(e))}`);
     else if (s) parts.push(`Trimmed ${name} start ${fmtS(os)} → ${fmtS(val(s))}`);
     else if (f.get(tl.source)) parts.push(`Slipped ${name} source in ${fmtS(before[tl.source] as number)} → ${fmtS(val(f.get(tl.source)))}`);
-    if (ln) parts.push(parts.length ? `to track ${laneName(val(ln))}` : `Moved ${name} to track ${laneName(val(ln))}`);
+    if (ln) parts.push(parts.length ? `to ${toTrack(val(ln))}` : `Moved ${name} to ${toTrack(val(ln))}`);
     if (!n0 && parts.length) verb = `${parts[0]!.split(" ")[0]} %s`;
     rest = rest.filter((op) => !used.has(op));
   }
@@ -417,9 +462,10 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     split.set(sp.key, sp);
     for (const p of sp.parts) split.set(p.key, null);
   }
+  const owned = ownedParts(groups, base, schema);
   for (const [key, g] of groups) {
     const sp = split.get(key);
-    if (sp === null) continue; // a split's part: told with it
+    if (sp === null || owned.has(key)) continue; // a split's part, a record's own part: told with it
     if (sp) {
       // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
       // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,
@@ -551,7 +597,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
   const isTimeline = !!tl && coll === tl.collection;
   const laneName = (id: unknown) => {
     const t = tl && doc ? (getIn(doc, [tl.lanes, id as string], schema) as Rec | undefined) : undefined;
-    return t ? `'${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
+    return t ? `track '${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
   };
   // A field's words: its label (or its nearest labelled parent's), else its path when the collection labels nothing.
   const labelOf = (key: string): string | null => {
@@ -613,7 +659,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
       const t = timeWords(v, isObj(b) ? b : undefined);
       if (t) parts.push(t);
     }
-    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to track ${laneName(v[tl.lane])}` : `on track ${laneName(v[tl.lane])}`);
+    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to ${laneName(v[tl.lane])}` : `on ${laneName(v[tl.lane])}`);
     for (const k of keys) {
       if (isTimeline && (TIME.has(k) || k === tl!.lane)) continue;
       const p = fieldPart(k, lv.get(k));
@@ -628,7 +674,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
     if (rest.at(-1) === POS) return "Its own order";
     if (whole || group) return isObj(v) ? fieldsWords(v, other, card.base) : "Changed it";
     const key = rest.join(".");
-    if (isTimeline && tl && key === tl.lane) return `On track ${laneName(v)}`;
+    if (isTimeline && tl && key === tl.lane) return `On ${laneName(v)}`;
     const w = valueWords(key, v);
     return w === null ? "Changed it" : cap(w);
   };

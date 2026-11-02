@@ -22,8 +22,11 @@ test("P3-8: a setup version counts titles as titles, and a title's own media ent
   const v = describeVersion(diff(empty, full, S), empty, S);
   assert.equal(v.summary, "Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'");
   assert.doesNotMatch(v.summary, /clips|media files/);
-  // every record is still listed
-  assert.equal(v.lines.length, 2 + 1 + 6 + 7);
+  // every record is listed but a title's own media entry, which is the title's (regress prod3 P3-C: "15 changes",
+  // "Added media 'Text: W1'"…): 2 tracks, the clip, 6 titles and the clip's media
+  assert.equal(v.lines.length, 2 + 1 + 6 + 1);
+  assert.doesNotMatch(v.lines.join("\n"), /Text: /);
+  assert.equal(countChanges(diff(empty, full, S), empty, S), 10);
   // two clips and a title: clips counted as clips
   const two = fromHost(project([clip(), clip({ id: "c2", startTime: 3, endTime: 6 }), titleItem(1)], [video, textMedia("tm1", "W1")]));
   assert.equal(describeVersion(diff(empty, two, S), empty, S).summary, "Added 2 tracks, 2 clips, title 'W1' and media 'clip.mp4'");
@@ -39,4 +42,54 @@ test("P3: Cardboard's split, saved by the editor without autoReframe on its part
   // auto reframe turned off on a part in the same version: still told
   const off = fromHost(project([{ ...parts[0]!, autoReframe: false }, { ...parts[1]!, autoReframe: true }], [video]));
   assert.deepEqual(describe(diff(before, off, S), before, S), ["Split 'clip.mp4' at 1.5 s, changed its left part auto reframe true → false"]);
+});
+
+// Regress prod3 P3-C: the row's count and its list still counted each title's own media entry ("15 changes", with
+// "Added media 'Text: W1'" … 'Text: W6'; a Restore's "16 changes", "Deleted media 'Text: …'"). The headline already
+// left them out; the count and the list do too, for adds, deletes and edits. An entry whose title isn't touched (its
+// text alone changed) is still told: it is all the change there is.
+test("prod3 P3-C: a title's own media entry is the title's change, in the count and the list alike", () => {
+  const empty = fromHost({ ...project([], []), tracks: [] });
+  const titles = [1, 2, 3, 4, 5, 6].map(titleItem);
+  const media = [video, ...titles.map((t, i) => textMedia(`tm${i + 1}`, String(t.textContent)))];
+  const full = fromHost(project([clip(), ...titles], media));
+  // a restore back to nothing deletes them all: the titles, not their media entries
+  const del = describeVersion(diff(full, empty, S), full, S);
+  assert.equal(del.lines.length, 10);
+  assert.doesNotMatch(del.lines.join("\n"), /media 'Text: /);
+  assert.equal(countChanges(diff(full, empty, S), full, S), 10);
+  // one title deleted with its entry: one change
+  const less = fromHost(project([clip(), ...titles.slice(1)], media.filter((m) => m.id !== "tm1")));
+  assert.deepEqual(describe(diff(full, less, S), full, S), ["Deleted title 'W1'"]);
+  assert.equal(countChanges(diff(full, less, S), full, S), 1);
+  // a title's text changed with its entry's: one line, one change
+  const t1 = { ...titles[0]!, textContent: "Hello", name: "Hello" };
+  const edited = fromHost(project([clip(), t1, ...titles.slice(1)], media.map((m) => (m.id === "tm1" ? textMedia("tm1", "Hello") : m))));
+  assert.equal(countChanges(diff(full, edited, S), full, S), 1);
+  assert.equal(describe(diff(full, edited, S), full, S).length, 1);
+  // the entry alone changed: still told, and counted
+  const only = fromHost(project([clip(), ...titles], media.map((m) => (m.id === "tm2" ? textMedia("tm2", "Hey") : m))));
+  assert.equal(describe(diff(full, only, S), full, S).length, 1);
+  assert.equal(countChanges(diff(full, only, S), full, S), 1);
+  // a real media file is still its own change
+  const more = fromHost(project([clip(), ...titles], [...media, { ...video, id: "m2", contentHash: "h2", data: { type: "video", fileName: "b-roll.mp4", duration: 9 } }]));
+  assert.deepEqual(describe(diff(full, more, S), full, S), ["Added media 'b-roll.mp4'"]);
+});
+
+// Regress prod3 P3-B: the Fold dialog read "Moved 'W1' to track another track, font size 100 → 150": the version
+// also adds track 'Text 1' and moves W1 onto it, and each row is described alone against Main, which hasn't that track.
+// A row is named from all of the fold (describe's names), as History's own row names it; a track nothing names is
+// "another track", never "track another track".
+test("prod3 P3-B: a clip moved onto a track the same fold adds names it; an unnamed one isn't 'track another track'", () => {
+  const w1 = { ...titleItem(1), fontSize: 100 };
+  const before = fromHost(project([clip(), w1], [video, textMedia("tm1", "W1")]));
+  const after = fromHost({ ...project([clip(), { ...w1, trackId: "T2", fontSize: 150 }], [video, textMedia("tm1", "W1")]), tracks: [...project([], []).tracks, { id: "T2", name: "Text 1", order: 2 }] });
+  const ops = diff(before, after, S);
+  // History's row: the whole version
+  assert.deepEqual(describe(ops, before, S), ["Added track 'Text 1'", "Moved 'W1' to track 'Text 1', font size 100 → 150"]);
+  // the dialog's row: W1's ops alone, named from all of the fold
+  const row = ops.filter((op) => op.op !== "remap" && op.path[0] === "timelineItems");
+  assert.deepEqual(describe(row, before, S, null, ops), ["Moved 'W1' to track 'Text 1', font size 100 → 150"]);
+  // with nothing to name the track: not "to track another track"
+  assert.deepEqual(describe(row, before, S), ["Moved 'W1' to another track, font size 100 → 150"]);
 });

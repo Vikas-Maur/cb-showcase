@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, ownParts, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -1218,12 +1218,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let planHeads = "";
   const joinSplits = (groups: Map<string, Op[]>, ops: readonly Op[], doc: Doc, joined?: Map<string, string[]>) => {
     const creditOf = new Map<string, string>();
+    const rowOf = new Map<string, string>();
     for (const sp of splits(ops, doc, schema)) {
       const key = pathKey([sp.collection, sp.removed]), parts = sp.parts.map((id) => pathKey([sp.collection, id]));
       if (!groups.has(key) || parts.some((k) => !groups.has(k))) continue;
-      for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
+      for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k), rowOf.set(k, key);
       joined?.set(key, parts);
       creditOf.set(key, parts[0]!);
+    }
+    // A record part of another (a title's own media entry, core's ownParts) is in its owner's row, as History and the
+    // counts tell it (regress prod3 P3-C), and is left out with it.
+    for (const { part, owner } of ownParts(ops, doc, schema)) {
+      const k = pathKey(part), o = pathKey(owner), row = rowOf.get(o) ?? o;
+      if (!groups.has(k) || !groups.has(row)) continue;
+      groups.get(row)!.push(...groups.get(k)!);
+      groups.delete(k);
+      joined?.set(row, [...(joined.get(row) ?? []), k]);
     }
     return creditOf;
   };
@@ -1261,7 +1271,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
-        out.push({ id, summary: engine.describe(ops, doc, schema).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
+        out.push({ id, summary: engine.describe(ops, doc, schema, null, d.ops).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
       }
       if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
@@ -1353,7 +1363,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
       const changes: FoldChange[] = [];
       for (const [key, ops] of groups) {
-        const words = engine.describe(ops, intoDoc!, schema);
+        // named from all of the fold: a track it adds names the clip moved onto it (regress prod3 P3-B)
+        const words = engine.describe(ops, intoDoc!, schema, null, preview.ops);
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }) : null;
         changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });

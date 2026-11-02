@@ -239,8 +239,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     steps through the sections of the edit that differ ("Section 1 of 2"), which aren't changes.
   - **A record by what it is** (laptop re-check P3-8, P3-10). `CollectionDef.nounOf(record)` names a record when its
     collection holds several kinds (Cardboard: a text item is a title, a code item a code graphic, a caption a
-    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). A version's
-    summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
+    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). Such a
+    record, when a record the same ops touch names it by its key (the title's `mediaItemId`), is that record's change:
+    no line of its own in `describe`, not counted by `countChanges`, and in the Fold dialog in its owner's row, left out
+    with it (`ownParts(ops, base, schema)`; regress prod3 P3-C: "15 changes" with "Added media 'Text: W1'"…). Alone (its
+    owner untouched) it is still told and counted. A version's summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
     media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
     ("1 clip, 6 titles").
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
