@@ -244,9 +244,10 @@ type Queued = { part: StreamAppendPart } | { end: StreamEnd };
 /** Stores whose host answered that it has no stream routes: part by part from then on. */
 const noAppend = new WeakSet<BlobStore>();
 
-// A batch's parts and bytes: about 2 ms of a Worker's CPU per part, and the Free plan allows 10 ms a request (cf-proxy-path).
-const BATCH_PARTS = 8;
-const BATCH_BYTES = 4 << 20;
+// A batch's parts and bytes. A Worker spends about 2.5 ms of CPU per part on an append, and the Free plan allows 10 ms a
+// request: on carton-lab-proxy, appends of up to 8 parts (4 MiB) averaged 10-13 ms, at most 35 (cf-proxy-path, 6 runs).
+const BATCH_PARTS = 4;
+const BATCH_BYTES = 2 << 20;
 const QUEUED_BYTES = 12 << 20;
 /** Batches under way at once (see ProxyStreamWriter.#kick). */
 const IN_FLIGHT = 2;
@@ -609,8 +610,11 @@ export const isStreamBatchReader = (s: BlobStore): s is BlobStore & StreamBatchR
 /** Stores whose host has no stream routes: entry by entry from then on. */
 const noBatchRead = new WeakSet<BlobStore>();
 
-/** The first batch is one segment (the first frame waits for nothing more); later ones up to this many bytes. */
-const READ_BATCH_BYTES = 4 << 20;
+/**
+ * The first batch is one segment (the first frame waits for nothing more); later ones up to this many bytes. Reads of up
+ * to 4 MiB took a Worker 6-12 ms of CPU, at most 18 (the Free plan allows 10): 2 MiB halves the work a request does.
+ */
+const READ_BATCH_BYTES = 2 << 20;
 /** How long a live reader's request may wait at the edge for the next segment. */
 const READ_WAIT_MS = 20_000;
 /** A batch read's look at the end answers `end()` for this long (a wait loop asks for the entry, then the end). */
