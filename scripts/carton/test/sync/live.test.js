@@ -159,6 +159,12 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   const src = await bob.call("carton.liveMediaSource", { mediaId });
   assert.equal(src.stream, r.proxy.stream);
   assert.equal(src.size, r.proxy.size);
+  // UI audit P1-9: opening his copy, Cardboard's loader asks which clips it found no file for are a teammate's. This one
+  // plays from its shared preview; one never sent is waiting (never "Missing Media Files"). On Alice's computer the
+  // clip's original was here: a missing one there is hers ("local"), and Cardboard's own dialog stays right for it.
+  const here = await bob.call("carton.liveMediaHere", { projectId: id, mediaIds: [mediaId, "never-shared"] });
+  assert.deepEqual(here.clips, { [mediaId]: "playable", "never-shared": "waiting" });
+  assert.deepEqual((await alice.call("carton.liveMediaHere", { projectId: id, mediaIds: [mediaId] })).clips, { [mediaId]: "local" });
   const body = await S.asComputer(bob, async () => {
     const res = await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`, { headers: { range: "bytes=0-1023" } }), src);
     assert.equal(res.status, 206);

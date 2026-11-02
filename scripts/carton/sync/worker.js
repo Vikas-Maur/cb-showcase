@@ -549,6 +549,32 @@ extend({
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
       },
       /**
+       * Opening a shared project (UI audit P1-9): of the clips Cardboard's loader found no file for, which are a
+       * teammate's and which are this computer's. A teammate's clip never had an original here (the bundle's
+       * project.json lists no path for it): "playable" when its shared preview (or original) is on the host, so it
+       * plays from there, else "waiting" (not sent yet). "local": its original was here and is gone (moved, a drive
+       * unplugged), where Cardboard's own "Missing Media Files" stays right. Null for a project that isn't shared.
+       * Never waits long on the network: a record not known within 2 s counts as waiting.
+       */
+      async liveMediaHere({ projectId, mediaIds }) {
+        const bundlePath = api.bundleOf(projectId);
+        const cfg = bundlePath && store.readConfig(bundlePath, projectId);
+        if (!cfg) return null;
+        let envelope = null;
+        try { envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")); } catch {}
+        const here = new Set((envelope?.media ?? []).filter((m) => m?.nativePath).map((m) => m.mediaId));
+        const lc = await api.open(bundlePath).catch(() => null);
+        const clips = {};
+        const theirs = (mediaIds ?? []).filter((id) => { if (here.has(id)) clips[id] = "local"; return !here.has(id); });
+        for (const id of theirs) clips[id] = "waiting";
+        const deadline = sleep(2000);
+        await Promise.race([deadline, Promise.all(theirs.map(async (id) => {
+          const rec = await recordIn(lc, bundlePath, projectId, id).catch(() => null);
+          if (media.playable(rec)) clips[id] = "playable";
+        }))]);
+        return { role: cfg.role ?? null, clips: { ...clips } };
+      },
+      /**
        * A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null: a file by range,
        * or for a proxy still uploading a live HLS playlist the tool follows until it ends.
        */

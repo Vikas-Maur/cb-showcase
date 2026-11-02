@@ -283,7 +283,13 @@ export const cardboardSkin = `
    column): the preview banner at its top, the card stack in its bottom-right corner. The layer passes clicks through;
    only its own controls take them. The History/Share sidebar beside the chat uses Cardboard's own classes. */
 :where(.carton-stage${S}){position:absolute;inset:0;z-index:30;pointer-events:none;background:none}
-:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:center;pointer-events:none}
+:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:12px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+/* a shared project's footage that isn't on this computer (scripts/carton/ui.js MediaNotice): Cardboard's toast look */
+:where(${S}) :where(.carton-media-notice){display:flex;align-items:center;gap:8px;max-width:560px;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #ffffff1a;border-radius:10px;
+  background:#1b1b1be6;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-1);font-size:12px;line-height:16px}
+:where(${S}) :where(.carton-media-notice > .carton-icon){color:var(--cb-ok)}
+:where(${S}) :where(.carton-media-notice[data-waiting] > .carton-icon){color:var(--cb-warn)}
+:where(${S}) :where(.carton-media-notice-text){flex:1;min-width:0;text-wrap:pretty}
 :where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}
 :where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;left:12px;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;pointer-events:none}
 :where(${S}) :where(.carton-stage-stack > *){pointer-events:auto}

@@ -684,6 +684,12 @@ with Carton off none of it runs at all.
   through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
   into the project itself, as a version by whoever shared it.
+- **Opening a project you joined**: its clips were never on your computer, so 1.4.0's loader would stop at "Missing
+  Media Files", whose only way on is a red "Remove and Open" (which, live, would remove the clips for everyone). With
+  Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
+  is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
+  removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
+  appears for footage that was on this computer and is gone (moved, a drive unplugged).
 - **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper

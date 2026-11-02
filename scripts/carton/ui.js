@@ -190,7 +190,46 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   return h(CartonProvider, { ui: conn.ui }, h(Sidebar, { panel, setPanel, projectId, bridge }));
 });
 
-/** The layer over the stage: the conflict cards' floating stack and the preview banner. */
+/**
+ * Opening a shared project whose footage is a teammate's (UI audit P1-9; the editor patch in sync/patches/media.js
+ * keeps Cardboard's "Missing Media Files" and its "Remove and Open" away from those clips): what happened, in words.
+ * Clips not sent yet show as Offline; it checks every 15 s and says when they have arrived. Closed with its ✕ or Esc.
+ */
+function MediaNotice({ projectId, bridge }) {
+  const [here, setHere] = useState(() => (window.__cartonMediaHere?.projectId === projectId ? window.__cartonMediaHere : null));
+  const [closed, setClosed] = useState(false);
+  const [arrived, setArrived] = useState(false);
+  useEffect(() => {
+    const f = (e) => { if (e.detail?.projectId === projectId) { setHere(e.detail); setClosed(false); setArrived(false); } };
+    window.addEventListener("carton:media-here", f);
+    return () => window.removeEventListener("carton:media-here", f);
+  }, [projectId]);
+  const waiting = here?.waiting ?? [];
+  useEffect(() => {
+    if (closed || arrived || !waiting.length) return undefined;
+    const t = setInterval(() => {
+      bridge.call("liveMediaHere", [{ projectId, mediaIds: waiting.map((w) => w.mediaId) }]).then((r) => {
+        if (r?.clips && waiting.every((w) => r.clips[w.mediaId] === "playable")) setArrived(true);
+      }, () => {});
+    }, 15000);
+    return () => clearInterval(t);
+  }, [bridge, projectId, waiting, closed, arrived]);
+  if (closed || !here || (!waiting.length && !here.playable)) return null;
+  const names = waiting.slice(0, 2).map((w) => w.fileName).join(", ") + (waiting.length > 2 ? ` and ${waiting.length - 2} more` : "");
+  const text = arrived
+    ? "Your teammate's footage has arrived. Close and reopen the project to play it."
+    : waiting.length === 1
+      ? `${names} hasn't arrived yet. It shows as Offline until your teammate's computer sends it. Nothing was removed.`
+      : waiting.length
+        ? `${waiting.length} clips haven't arrived yet (${names}). They show as Offline until your teammate's computer sends them. Nothing was removed.`
+        : "This footage plays from preview copies. The originals stay on your teammate's computer.";
+  return h("div", { className: "carton-media-notice", role: "status", "data-waiting": waiting.length && !arrived ? "" : undefined, onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); setClosed(true); } } },
+    h(Icon, { name: waiting.length && !arrived ? "cloudSlash" : "cloudCheck", size: 14 }),
+    h("span", { className: "carton-media-notice-text" }, text),
+    h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => setClosed(true) }));
+}
+
+/** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   const onPreview = useCallback(async (conflict, side, label) => {
@@ -210,6 +249,6 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   if (!ready) return null;
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" },
-      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null)),
+      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
       h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen }))));
 });
