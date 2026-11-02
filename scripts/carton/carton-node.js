@@ -13,11 +13,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
 import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
 import { Comments } from "@carton/comments";
@@ -97,7 +99,8 @@ function open(bundlePath, { projectId, doc } = {}) {
   if (!p) {
     p = (async () => {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
-      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
+      // (in the bundle, or in app data where a synced, network or FAT folder keeps it: L15)
+      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db")) || (!!id && existingCartonDbs({ projectDir: bundlePath, projectId: id }).length > 0);
       // A project without history yet starts from its document on disk (§16, main@1), never from one Cardboard can't
       // read (laptop, build 915eb36: its first version would be a project with no name).
       let first = exists ? null : doc ?? readProject(bundlePath);
@@ -132,6 +135,20 @@ function open(bundlePath, { projectId, doc } = {}) {
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
 // recover(): bundlePath → {text, out} for the damaged file last read through its history
 const recovered = new Map();
+// Whose a carton.db is, read without opening it as a history (nothing is moved, set aside or written): its project id
+// and whether this computer made it. null: it can't be read.
+async function historyOwner(dbPath) {
+  let machine;
+  try {
+    const raw = new DatabaseSync(dbPath, { readOnly: true, timeout: 2000 });
+    try { machine = JSON.parse(raw.prepare(`SELECT v FROM "_carton" WHERE k = ?`).get("machine")?.v ?? "null") ?? undefined; } catch { machine = undefined; } finally { raw.close(); }
+  } catch { return null; }
+  let store;
+  try { store = await openSqliteStore(dbPath, { readOnly: true }); } catch { return null; }
+  try { return { projectId: (await store.get("meta", ["project"]))?.projectId ?? null, mine: isThisMachine(machine) }; }
+  catch { return null; }
+  finally { await store.close().catch(() => {}); }
+}
 // The name a project last had in its history: the newest version that has one, on the current cut, then the others
 // (at most 256 versions looked at). null: none.
 async function lastName(lc) {
@@ -1008,15 +1025,26 @@ export const cardboard14 = {
   // history never starts from such a file (an existing carton.db only). Only a JSON file with the project's id; any other
   // damage stays as it was. The answer is kept per bundle while the file is the same.
   async recover({ bundlePath, text }) {
-    if (!bundlePath || typeof text !== "string" || !fs.existsSync(path.join(bundlePath, ".carton", "carton.db"))) return null;
+    if (!bundlePath || typeof text !== "string") return null;
     const hit = recovered.get(bundlePath);
     if (hit?.text === text) return hit.out;
     let env;
     try { env = JSON.parse(text); } catch { return null; }
     const p = env?.project;
     if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id) return null;
+    // The history, wherever it is kept (the bundle, or app data for a synced, network or FAT folder), read before
+    // anything opens it: every carton.db there must be this project's and made on this computer. Another project's
+    // (a stale or copied .carton) would put its versions into this one; another computer's would be set aside on open,
+    // and a new history started.
+    const dbs = existingCartonDbs({ projectDir: bundlePath, projectId: p.id });
+    if (!dbs.length) return null;
+    for (const db of dbs) {
+      const owner = await historyOwner(db);
+      if (owner?.projectId === p.id && owner.mine) continue;
+      return warnOnce("recover-owner:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard, and its history there is ${owner ? (owner.mine ? "another project's" : "another computer's") : "unreadable"}: not used`), null;
+    }
     const lc = await open(bundlePath, { projectId: p.id });
-    if (!lc) return null;
+    if (!lc || lc.carton.projectId !== p.id) return null;
     const name = (typeof p.name === "string" && p.name.trim()) ? p.name : (await lastName(lc)) ?? (path.basename(bundlePath, ".cardboard").trim() || "Untitled Project");
     const out = { ...env, format: "cardboard-project", project: { ...p, name, ...(typeof p.updatedAt === "string" ? {} : { updatedAt: new Date(typeof p.stateUpdatedAt === "number" ? p.stateUpdatedAt : Date.now()).toISOString() }) }, media: Array.isArray(env.media) ? env.media : [] };
     const left = projectProblems(out);

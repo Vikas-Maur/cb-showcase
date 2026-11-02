@@ -203,8 +203,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
    until a good version is restored.
 8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through
-   Carton when the bundle has `.carton/carton.db`: the file with the name the project last had in its history (else its
-   folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
+   Carton when the project has a history (in the bundle, or in app data for a synced, network or FAT folder) that is
+   this project's and was made on this computer, both read from the database before anything opens it (another
+   project's history would put its versions into this one; another computer's would be set aside on open): the file
+   with the name the project last had in its history (else its folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
    History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
    reads costs nothing more (the hook runs only after its parse failed).
 

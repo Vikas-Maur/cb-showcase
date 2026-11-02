@@ -275,3 +275,61 @@ test("3b. through cb alone: a broken project is found, and cb restore brings it 
     S.killHelpers();
   }
 });
+
+test("3c. a history kept in app data (the library in a synced folder) is found too", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-away", b);
+  fs.mkdirSync(path.join(pc.home, ".dropbox"), { recursive: true }); // Dropbox's marker: history goes to app data (L15)
+  S.seed(pc, b);
+  try {
+    assert.equal(fs.existsSync(path.join(bundleOf(pc), ".carton", "carton.db")), false, "no history in the bundle");
+    const good = shape(envOf(pc).project);
+    await breakLikeTheBug(pc, b);
+    const h = must(pc.cb(["history", "Demo"]), "cb history").json();
+    assert.equal(h.versions[0].version, "main@5");
+    must(pc.cb(["restore", "Demo", "main@4"]), "cb restore");
+    assert.deepEqual(shape(envOf(pc).project), good);
+  } finally {
+    S.killHelpers();
+  }
+});
+
+/**
+ * The history files, as bytes: what a check that must change nothing compares. (SQLite's own -wal and -shm, which a
+ * read-only open of a WAL database makes, aren't the history.)
+ */
+const historyFiles = (bundle) => {
+  const dir = path.join(bundle, ".carton");
+  return Object.fromEntries(fs.readdirSync(dir).filter((n) => n.startsWith("carton.") && !/-(wal|shm)$/.test(n)).map((n) => [n, require("crypto").createHash("sha256").update(fs.readFileSync(path.join(dir, n))).digest("hex")]));
+};
+
+test("3d. another project's history, or another computer's, is never used to find a damaged project, and nothing of it changes", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-foreign", b);
+  S.seed(pc, b);
+  const pc2 = await S.computer("root-recover-foreign-2", b);
+  try {
+    const env = envOf(pc);
+    const nameless = (id) => JSON.stringify({ ...env, project: { ...env.project, id, name: undefined, tracks: [], timelineItems: [], media: [] }, media: [] });
+    // a damaged project B whose .carton is project A's (a folder copied, or a stale .carton left behind)
+    const other = path.join(pc.root, "Other.cardboard");
+    fs.cpSync(bundleOf(pc), other, { recursive: true });
+    fs.writeFileSync(path.join(other, "project.json"), nameless("project-B"));
+    const before = historyFiles(other);
+    const list = must(pc.cb(["project", "list"]), "cb project list").out;
+    assert.ok(list.includes("Demo") && !list.includes("Other"), "B isn't listed under A's history: " + list);
+    assert.notEqual(pc.cb(["history", "Other"]).code, 0);
+    assert.deepEqual(historyFiles(other), before, "A's history in B's folder is as it was");
+    // A's folder, damaged, on another computer (its history was made here, not there)
+    const away = path.join(pc2.root, "Demo.cardboard");
+    fs.cpSync(bundleOf(pc), away, { recursive: true });
+    fs.writeFileSync(path.join(away, "project.json"), nameless(env.project.id));
+    const there = historyFiles(away);
+    const list2 = must(pc2.cb(["project", "list"]), "cb project list there").out;
+    assert.ok(!list2.includes("Demo"), "not listed through another computer's history: " + list2);
+    assert.deepEqual(historyFiles(away), there, "nothing set aside or written");
+    assert.ok(!fs.readdirSync(path.join(away, ".carton")).some((n) => n.startsWith("carton.from-")));
+  } finally {
+    S.killHelpers();
+  }
+});

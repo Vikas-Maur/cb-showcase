@@ -564,9 +564,10 @@ run below.
    control socket. When another process holds the lease for a moment (a helper that took over while the app was
    busy) and saves your edit or your undo, the app still knows the change as yours and freezes nothing.
 
-9. The bundle loader, both copies: a `project.json` Cardboard's reader refuses, in a bundle whose history is in
-   `.carton\carton.db`, is read through that history (the file with the project's last name), so the library lists it
-   again and `cb` finds it. Cardboard's reader still decides, and a project it reads costs nothing more.
+9. The bundle loader, both copies: a `project.json` Cardboard's reader refuses, for a project whose history this
+   computer keeps (in `.carton\carton.db`, or in app data for a synced folder), is read through that history (the
+   file with the project's last name), so the library lists it again and `cb` finds it. Another project's or another
+   computer's history is never used. Cardboard's reader still decides, and a project it reads costs nothing more.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
