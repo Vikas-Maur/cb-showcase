@@ -74,6 +74,38 @@ test("real Carton: cuts, fold --check, fold in some of it, publish", async () =>
   }
 });
 
+test("real Carton (P2-1): fold in some of it, the rest, cb undo ×2, redo ×2: each undone once, and cb history lists a redo as `redo`", async () => {
+  const { local } = await realProject("cli-real-fold-undo", human);
+  try {
+    assert.equal((await cb(local, ["cut", "new", "Short"])).code, 0);
+    await local.write({ kind: "commit", cut: (await local.carton.cuts()).find((c) => c.name === "Short")!.id, ops: [set("c1", "name", "short-1"), set("c3", "name", "short-3")] });
+    const names = async () => ((await local.carton.head()).doc.timelineItems as Rec[]).filter((i) => i.id === "c1" || i.id === "c3").map((i) => i.name);
+    assert.equal((await cb(local, ["fold", "Short", "--reject", "timelineItems/c3", "--json"])).json().status, "confirmed");
+    assert.equal((await cb(local, ["fold", "Short", "--json"])).json().status, "confirmed", "the rest");
+    assert.deepEqual(await names(), ["short-1", "short-3"]);
+    const u1 = await cb(local, ["undo"]);
+    assert.deepEqual(await names(), ["short-1", "c3"], "cb undo ①: the rest");
+    const u2 = await cb(local, ["undo"]);
+    assert.deepEqual(await names(), ["c1", "c3"], "cb undo ②: the whole partial fold, never the rest brought back in");
+    assert.deepEqual([u1.out, u2.out].map((o) => o.split(":")[0]), ["Undo revert", "Undo merge"], "the second reads as a fold's undo");
+    assert.equal((await local.write({ kind: "redo" }, { actor: human })).status, "confirmed");
+    assert.deepEqual(await names(), ["short-1", "c3"], "redo ①: the partial fold");
+    assert.equal((await local.write({ kind: "redo" }, { actor: human })).status, "confirmed");
+    assert.deepEqual(await names(), ["short-1", "short-3"], "redo ②: the rest");
+    // laptop: a redo read `revert`; it reads `redo`, as an undo reads `undo`
+    const h = (await cb(local, ["history", "--json", "--limit", "6"])).json().versions;
+    assert.deepEqual(h.map((v: any) => v.kind), ["redo", "redo", "undo", "undo", "merge", "merge"], JSON.stringify(h.map((v: any) => v.kind)));
+    assert.deepEqual((await cb(local, ["history", "--limit", "6"])).out.split("\n").slice(1).map((l) => l.split(/\s{2,}/).at(-1)), ["redo", "redo", "undo", "undo", "merge (the rest)", "merge (1 left out)"]);
+    // a plain revert stays a revert
+    await local.write({ kind: "commit", ops: [set("c0", "name", "main-0")] });
+    const plain = (await local.carton.log({ limit: 1 }))[0]!.change!;
+    assert.equal((await local.write({ kind: "revert", changeId: plain }, { actor: human })).status, "confirmed");
+    assert.equal((await cb(local, ["history", "--json", "--limit", "1"])).json().versions[0].kind, "revert");
+  } finally {
+    await local.close();
+  }
+});
+
 test("real Carton: cb history counts a split left out of a fold as one change, as the Fold dialog and History do", async () => {
   // laptop re-check P3 (fold counts): "merge (3 left out)" for a split (three records) the dialog showed as one row
   const { local } = await realProject("cli-real-split", human);

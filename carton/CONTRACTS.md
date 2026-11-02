@@ -262,15 +262,29 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
     changes" (a split one change), its `details` exactly the changes taken. `cb history` shows it as `merge (1 left out)`,
     `leftOut` (the paths) and `leftOutChanges` (how many changes) in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
-    history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids, the DAG and
-    undo are unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+    history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids and the DAG are
+    unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+    **It is one undo** (laptop P2-1: after it and "fold in the rest", Ctrl+Z ② reverted the partial revert alone, which
+    brought the rest back in, and Ctrl+Z ③ undid the fold). The undo stack lists only the partial revert: a fold whose
+    partial revert (the `partial-revert` that `reverts` it, not withdrawn) is in effect is never an entry of its own,
+    also with a teammate's change between the two. Undoing that entry is one undo change with `reverts: [fold,
+    inverse]` (so History reads "Undid the fold of 'X' into 'Y'"), and its redo re-applies both. The two right after
+    each other (one version) are inverted as one step, from before the fold to after the partial revert, so what the
+    fold left out never meets a teammate's later edit of it as a card (review #1); with a change between them, each in
+    turn. An agent turn's changes are inverted newest first by seq (review #2). A partial revert that an earlier build
+    undid alone leaves its fold an ordinary entry. `undoStack()` labels the entry by what the fold kept; `undo()`'s
+    and `redo()`'s entries and the redo stack's read as a whole fold's (`Undo merge`, `Redo merge`), a shared cut's
+    pending ones too (review #3, #4); `@carton/local`'s `undo --turn` undoes a fold-some version from before its fold,
+    naming both changes.
     The partial revert's id is always `<fold's id>.inverse` (local and shared), which is how a server, holding only
     ids and flags, pairs them; its count reads archived rows from the segment index, so it holds across an archive.
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
     part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
     is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).
     `log()` marks that revert's version with `restOf` (the partial fold's `change`), so a list shows it as a fold, not
-    an undo (final re-check P3-12b); its undo and the redo of that have none.
+    an undo (final re-check P3-12b); its undo and the redo of that have none. A redo (a `revert` of an undo change) is
+    marked `redoOf` (the undo it takes back) by `Carton.log()`, so a list shows it as a redo: `cb history` says `redo`
+    (laptop: it said `revert`), as it says `undo` for an undo.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
