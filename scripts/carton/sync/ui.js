@@ -78,9 +78,24 @@ function NameField({ id, name, setName, error, known }) {
   return h(Field, { id, label: "Your name", hint: "Teammates see this next to your edits.", error, value: name, autoComplete: "name", onChange: (e) => setName(e.target.value) });
 }
 
-function Peers({ peers }) {
+// A teammate as Live.view() sends one (sync/live.js peerActor): an actor with a text `key`, `id` and `name`, and text or
+// no activity. Any other entry is skipped, said once in the activity log with none of its text: one bad entry never
+// takes the editor down (UI audit P1-1).
+let skippedPeer = false;
+function shownPeers(sent) {
+  const text = (s) => typeof s === "string";
+  const ok = Array.isArray(sent) ? sent.filter((p) => text(p?.actor?.key) && text(p.actor.id) && text(p.actor.name) && (p.activity == null || text(p.activity))) : [];
+  if (ok.length < (sent?.length ?? 0) && !skippedPeer) {
+    skippedPeer = true;
+    window.__cbLog?.("error", { msg: "[carton] the Share panel skipped a teammate entry it can't show", src: "carton-ui.js" });
+  }
+  return ok;
+}
+
+function Peers({ peers: sent }) {
+  const peers = shownPeers(sent);
   if (!peers?.length) return h("p", { className: "text-xs text-muted-foreground" }, "Nobody else is here right now.");
-  return h("ul", { className: "flex flex-col gap-1.5" }, peers.map((p) => h("li", { key: p.actor.id, className: "flex items-center gap-2 text-sm", style: { opacity: p.idle ? 0.55 : 1 } },
+  return h("ul", { className: "flex flex-col gap-1.5" }, peers.map((p) => h("li", { key: p.actor.key, className: "flex items-center gap-2 text-sm", style: { opacity: p.idle ? 0.55 : 1 } },
     h("span", { className: "carton-avatar", style: { ["--carton-actor"]: actorColor(p.actor, () => undefined), width: 22, height: 22, fontSize: 9 } }, h("span", { className: "carton-avatar-initials" }, initials(p.actor.name ?? p.actor.id))),
     h("span", null, p.actor.name ?? p.actor.id),
     p.activity ? h("span", { className: "text-xs text-muted-foreground" }, p.activity) : null,

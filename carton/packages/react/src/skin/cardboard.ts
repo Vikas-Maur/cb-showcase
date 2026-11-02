@@ -293,6 +293,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}
 :where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;left:12px;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;pointer-events:none}
 :where(${S}) :where(.carton-stage-stack > *){pointer-events:auto}
+/* the layer's own failure (scripts/carton/ui.js CartonBoundary): a small note in its corner, over nothing else */
+:where(.carton-stage${S}) > :where(.carton-stage-snag){position:absolute;right:12px;bottom:12px;display:flex;align-items:center;gap:8px;padding:6px 6px 6px 12px;
+  border:1px solid #ffffff1a;border-radius:10px;background:#1b1b1be6;color:var(--cb-fg-2);font-size:12px;pointer-events:auto}
 :where(.carton-sidebar${S}){font-size:inherit}
 :where(${S}) :where(.carton-sidebar .carton-panel-title){display:none}
 :where(${S}) :where(.carton-sidebar .carton-panel-head){padding-top:6px}

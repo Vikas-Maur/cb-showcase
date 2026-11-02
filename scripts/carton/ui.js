@@ -11,7 +11,7 @@
 // worker's carton namespace, scripts/carton/carton-node.js); here remoteUi mirrors it, one connection per project shared
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
-import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, CartonProvider, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
@@ -141,6 +141,26 @@ function useWidth() {
   return [width, onPointerDown];
 }
 
+// A throw in Carton's part of the editor stays in it (UI audit P1-1): where nothing caught it before, Cardboard replaced
+// the editor's whole tab ("This tab hit a snag"). The side panel says so, with Try again; the layer over the stage
+// (preview banner, conflict cards, the footage notice) shows a small Try again in its corner, over nothing else.
+// Logged as an `error` with the surface; another panel, or Try again, renders it anew. Cardboard's own preview has
+// the same kind of boundary.
+export class CartonBoundary extends Component {
+  constructor(p) { super(p); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error) { window.__cbLog?.("error", { msg: String(error?.message ?? error).slice(0, 300), src: "carton-ui.js", panel: this.props.panel }); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    const again = h(Button, { onClick: () => this.setState({ error: null }) }, "Try again");
+    if (this.props.panel === "stage")
+      return h("div", { className: "carton-stage-snag", role: "alert" }, h("span", null, "Conflict cards and the preview banner hit a snag."), again);
+    return h("div", { className: "flex flex-col items-start gap-2 p-4 text-sm text-muted-foreground", role: "alert" },
+      h("p", null, "This panel hit a snag. Nothing you’ve made is lost."),
+      again);
+  }
+}
+
 function Sidebar({ panel, setPanel, projectId, bridge }) {
   const ref = useRef(null);
   const [width, onResize] = useWidth();
@@ -170,7 +190,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
           className: "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30" },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge }))));
+        h(CartonBoundary, { key: panel, panel }, panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge })))));
 }
 
 /** The side panel, beside the chat: opened and closed from the title bar's icons, which show the one open. */
@@ -248,7 +268,7 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   }, []);
   if (!ready) return null;
   return h(CartonProvider, { ui: conn.ui },
-    h("div", { className: "carton-stage", "data-carton-skin": "cardboard" },
+    h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
       h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
-      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen }))));
+      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })))));
 });

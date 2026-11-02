@@ -43,7 +43,7 @@ export function groupPeers(peers: readonly Peer[]): Group[] {
     if (r !== p) g.agents.push(p);
   }
   const rank = (g: Group) => (g.root.actor.isYou ? 0 : g.root.actor.kind === "human" ? 1 : 2);
-  return [...groups.values()].sort((a, b) => rank(a) - rank(b) || a.root.actor.name.localeCompare(b.root.actor.name));
+  return [...groups.values()].sort((a, b) => rank(a) - rank(b) || (a.root.actor.name ?? "").localeCompare(b.root.actor.name ?? ""));
 }
 
 const PeerAvatar = memo(function PeerAvatar({ peer, size }: { peer: Peer; size: number }) {
