@@ -108,7 +108,8 @@ test("presence after a quiet spell goes out at once; a leave right after a move 
 
 // hosts-plugins' request: a host that restarts, or a room evicted outright on a deploy, drops every socket and keeps no
 // one to send leaves for, so peers shown before would stay as ghosts. The client tells them gone when its own
-// connection closes (and when it stops); a peer still there shows again with its next update after the reconnect.
+// connection closes (and when it stops); a peer still there shows again with its next update after the reconnect (or
+// as the host tells the new connection from what it keeps, `kept`: the server's own tests).
 test("when its connection closes, the client tells every peer it showed gone; after the reconnect a peer's next update shows it again", async () => {
   const vt = virtualTime();
   const q = new ReplicaQueue(schema);
@@ -162,4 +163,44 @@ test("when its connection closes, the client tells every peer it showed gone; af
   assert.deepEqual(events.slice(3), [{ actor: ann, state: null }]);
   conns[1]!.lose("late close");
   assert.equal(events.length, 4, "nothing after stop");
+});
+
+// Presence P2 (the real app, merge/prod-2): after a host restart the first client back re-announced to a room the other
+// hadn't rejoined yet; a host that restarted keeps nothing to tell the latecomer. A peer seen for the first time on a
+// connection gets this replica's own presence again, once per arrival; one the host told from what it keeps (`kept`)
+// was there when we came, and had ours.
+test("a peer arriving on this connection gets our presence again, once; a kept one, a known one, a leave or no presence of our own send nothing", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  const conn = new Conn();
+  const client = new SyncClient({ queue: q, branchId: "b", schemaVersion: 1, connect: async () => conn, timers: vt.timers, clock: vt.clock, defer: (fn) => queueMicrotask(fn) }).start();
+  await new Promise((r) => setTimeout(r, 0));
+  conn.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const presence = () => (conn.sent.filter((m) => m.type === "presence") as Extract<ClientMessage, { type: "presence" }>[]).map((m) => m.state);
+  const ann = { kind: "human" as const, id: "ann" },
+    bob = { kind: "human" as const, id: "bob" },
+    cat = { kind: "human" as const, id: "cat" };
+  conn.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 1 } });
+  assert.deepEqual(presence(), [], "no presence of our own yet: nothing to say");
+  const me = { kind: "human" as const, id: "me" };
+  client.sendPresence(me, { idle: true });
+  assert.deepEqual(presence(), [{ idle: true }]);
+  vt.advance(1000);
+  conn.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 2 } }); // known: no answer
+  conn.feed({ type: "presence", branchId: "b", actor: bob, state: { at: 1 }, kept: true }); // told by the host: no answer
+  conn.feed({ type: "presence", branchId: "b", actor: cat, state: null }); // a leave: no answer
+  assert.deepEqual(presence(), [{ idle: true }]);
+  conn.feed({ type: "presence", branchId: "b", actor: cat, state: { at: 1 } }); // arrives: ours again, at once
+  assert.deepEqual(presence(), [{ idle: true }, { idle: true }]);
+  conn.feed({ type: "presence", branchId: "b", actor: cat, state: null });
+  conn.feed({ type: "presence", branchId: "b", actor: cat, state: { at: 2 } }); // back: once more, within the throttle
+  conn.feed({ type: "presence", branchId: "b", actor: { kind: "human", id: "dan" }, state: { at: 1 } }); // coalesced with it
+  vt.advance(500);
+  assert.deepEqual(presence(), [{ idle: true }, { idle: true }, { idle: true }]);
+  client.sendPresence(me, null); // our leave: a later arrival hears nothing from us
+  conn.feed({ type: "presence", branchId: "b", actor: { kind: "human", id: "eve" }, state: { at: 1 } });
+  vt.advance(500);
+  assert.deepEqual(presence(), [{ idle: true }, { idle: true }, { idle: true }, null]);
+  client.stop();
 });

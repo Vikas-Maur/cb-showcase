@@ -215,6 +215,11 @@ every host runs the same function. The host:
      existed takes the alarm as its due time. Presence still queued when its connection goes is dropped, never
      relayed. The conformance host suite drops a client and silences one (also across wakes), and checks that its
      peers see the leaves.
+   - **Who is here, for a newcomer.** A connection that subscribes (a teammate joining, or every client after a
+     restart) gets, right after its welcome, the latest presence each other connection there shows, marked `kept`.
+     The sequencer keeps it in memory only (the actors in `state.shown`, up to 16 KiB each), never in `state`, so a
+     socket attachment stays small; after a wake it has none, and the sync clients cover that: each sends its own
+     presence again when a peer first shows on its connection.
    - **People** (windows-sync R3). A GUI save's author is the generic person; the sequencer keeps each device
      credential's person (`hello.identity`, `identity`), so teammates resolve it by the change's replica id, which the
      sequencer already binds to that credential (§6.3). A host needs nothing more: the record is two of the

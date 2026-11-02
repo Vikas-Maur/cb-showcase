@@ -292,3 +292,63 @@ test("a replaced connection's queued message gets no reply on the old socket", a
   await seq.handle(a2, { type: "branchStatus", branchId: BRANCH } as sync.ClientMessage);
   assert.ok(a2.inbox.length > 0);
 });
+
+// Presence P2 (the real app, merge/prod-2): after a host restart the first client back re-announced to a room the other
+// hadn't rejoined yet, and the relay kept nothing to tell the latecomer, so an idle teammate stayed missing at one side.
+// A connection that subscribes is told, right after its welcome, the presence every other connection there shows.
+const presenceIn = (c: { inbox: sync.ServerMessage[] }) => c.inbox.filter((m): m is sync.PresenceFanoutMsg => m.type === "presence");
+
+test("a connection that subscribes later is told who is already here (marked `kept`), right after its welcome; a leave, a disconnect or another branch tells it nothing", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  await seq.createBranch({ id: "other", name: "other", forkOf: null, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } } as never, { doc0: doc([clip("c0", 0, 5)]) as never });
+  const a = fakeConn("alice/1"), c = fakeConn("carol/1"), d = fakeConn("dan/1");
+  await seq.handle(a, hello());
+  await seq.handle(c, hello());
+  await seq.handle(d, { ...hello(), branchId: "other" });
+  const ana = { kind: "human" as const, id: "ana", name: "Ana" };
+  const bot = { kind: "agent" as const, id: "ana", agentId: "a-1" };
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 1 } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 2, idle: true } }); // the latest is kept
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: bot, state: { at: 3 } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: bot, state: null }); // the agent left
+  await seq.handle(c, { type: "presence", branchId: BRANCH, actor: { kind: "human", id: "carol" }, state: { at: 4 } });
+  await seq.handle(d, { type: "presence", branchId: "other", actor: { kind: "human", id: "dan" }, state: { at: 5 } });
+  // Ben joins (a new connection: as after a host restart)
+  const b = fakeConn("bob/1");
+  await seq.handle(b, hello());
+  assert.equal(b.inbox[0]?.type, "hello", "the welcome comes first");
+  assert.deepEqual(presenceIn(b).map((m) => [m.actor.id, m.actor.kind, m.state, m.kept]), [["ana", "human", { at: 2, idle: true }, true], ["carol", "human", { at: 4 }, true]]);
+  assert.equal(presenceIn(b)[0]!.actor.name, "Ana", "as the peer sent it");
+  // a second hello on the same subscription (a resync) is told nothing again
+  const n = b.inbox.length;
+  await seq.handle(b, hello());
+  assert.equal(presenceIn(b).length, 2, "told once per subscription");
+  assert.equal(b.inbox.length, n + 1);
+  // a peer that left, or went, is no longer told
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: null });
+  seq.disconnect(c);
+  const e = fakeConn("eve/1");
+  await seq.handle(e, hello());
+  assert.deepEqual(presenceIn(e), [], "nobody: Ana left, Carol's connection went");
+  // a relayed update never says `kept`
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 6 } });
+  assert.equal(presenceIn(e).at(-1)?.kept, undefined);
+  for (const x of [a, b, d, e]) seq.disconnect(x);
+});
+
+test("what is kept for later subscribers stays small: an update over 16 KiB is relayed, not kept, and drops the smaller one before it", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  const a = fakeConn("alice/1");
+  await seq.handle(a, hello());
+  const ana = { kind: "human" as const, id: "ana" };
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 1 } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 2, ghosts: "x".repeat(20_000) } as never });
+  const b = fakeConn("bob/1");
+  await seq.handle(b, hello());
+  assert.deepEqual(presenceIn(b), [], "never the stale smaller state");
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 3 } });
+  const c = fakeConn("carol/1");
+  await seq.handle(c, hello());
+  assert.deepEqual(presenceIn(c).map((m) => m.state), [{ at: 3 }]);
+  for (const x of [a, b, c]) seq.disconnect(x);
+});

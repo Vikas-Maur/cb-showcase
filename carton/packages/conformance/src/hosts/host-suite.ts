@@ -236,6 +236,24 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       if (before) assert.equal((await fx.rows!()).rowsWritten - before.rowsWritten, 0, "presence wrote rows");
     });
 
+    // Presence P2: a connection that subscribes later (a teammate joining, or rejoining after a restart) is told who is
+    // already there, right after its welcome; an idle editor never sends again by itself.
+    test("a connection that subscribes later is told the presence already shown there, marked `kept`", async () => {
+      const b = newBranch();
+      const a = await connect(await fx.token("editor"));
+      await share(a, b);
+      await hello(a, b);
+      a.conn.send({ type: "presence", branchId: b, actor: { kind: "human", id: "a" }, state: { idle: true } } as sync.ClientMessage);
+      // the host has taken it once it relays to a subscriber
+      const w = await connect(await fx.token("editor"));
+      await hello(w, b);
+      await w.wait((m) => m.type === "presence", "the presence, kept or relayed");
+      const late = await connect(await fx.token("editor"));
+      await hello(late, b);
+      const got = (await late.wait((m) => m.type === "presence", "the kept presence")) as sync.PresenceFanoutMsg;
+      assert.deepEqual([got.actor.id, got.state, got.kept], ["a", { idle: true }, true]);
+    });
+
     // A client that crashed or lost its network never sends presence(null): the host owes its peers the leave.
     const showing = async () => {
       const b = newBranch();

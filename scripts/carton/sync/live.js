@@ -133,7 +133,13 @@ export class Live {
             this.skippedPeer = true;
             this.log({ type: "presence-skipped", project: this.projectId, why: "no id" });
           }
-        } else this.peers.delete(key);
+        } else {
+          // a stale leave keeps them: one from a cut they have since left for another (they show there now), as a
+          // connection on the old cut closing says of everyone it showed
+          const was = this.peers.get(key);
+          if (!was || was.cut !== e.branchId) break;
+          this.peers.delete(key);
+        }
         this.#publish();
         break;
       }

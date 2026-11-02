@@ -394,7 +394,8 @@ export class SyncClient {
   }
   /**
    * The connection is gone: every peer it showed is told gone, as a leave (`state: null`). A host that restarts, or a
-   * room evicted on a deploy, keeps no one to send leaves for; a peer still there shows again with its next update.
+   * room evicted on a deploy, keeps no one to send leaves for; a peer still there shows again on the next connection
+   * (the host tells it from what it keeps, or the peer answers our re-announce: presence P2).
    */
   private dropShown(): void {
     const gone = [...this.shown.values()];
@@ -654,9 +655,19 @@ export class SyncClient {
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
       case "presence": {
         const k = presenceKey(m.actor);
+        const arrived = m.state !== null && !this.shown.has(k);
         if (m.state === null) this.shown.delete(k);
         else this.shown.set(k, m.actor);
-        return this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
+        this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
+        // A peer this connection didn't show yet (a teammate joining, or back after the host restarted) may have
+        // subscribed after our own presence went out, and a host that restarted keeps none to tell it: ours goes again,
+        // once per arrival (the throttle coalesces several). Not for one the host told us from what it keeps (`kept`):
+        // that peer was there when we came, so it had ours (presence P2).
+        if (arrived && !m.kept && m.branchId === b) {
+          const p = this.presenceLast;
+          if (p?.state) this.sendPresence(p.actor, p.state);
+        }
+        return;
       }
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });

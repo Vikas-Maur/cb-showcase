@@ -356,6 +356,11 @@ export interface PresenceFanoutMsg {
   branchId: string;
   actor: Actor;
   state: PresenceState | null;
+  /**
+   * Sent from what the server keeps, to a connection that just subscribed: a peer already there when it came (that
+   * peer was subscribed, so it got the newcomer's own presence). Absent on a relayed update.
+   */
+  kept?: true;
 }
 export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit";
 export interface ErrorMsg {
