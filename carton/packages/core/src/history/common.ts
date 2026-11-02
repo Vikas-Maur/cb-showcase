@@ -51,6 +51,19 @@ export class StateUnknown extends Error {
   }
 }
 
+/**
+ * A restore of an empty version (`isBlank`), or a cut made from one: the root an imported project's history starts from
+ * holds nothing of the project, not even its name, so either would leave a project with nothing in it.
+ */
+export class EmptyVersion extends Error {
+  readonly code = "EMPTY_VERSION";
+  readonly ref: unknown;
+  constructor(ref: unknown, what: string) {
+    super(`Nothing to ${what}: that version is empty (the history starts there, before the project was in it)`);
+    this.ref = ref;
+  }
+}
+
 export interface HistoryOptions {
   name?: string;
   /** Replica id: 96 random bits as hex. Change ids are `${rid}.${n}`. */

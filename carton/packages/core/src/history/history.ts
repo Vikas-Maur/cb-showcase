@@ -43,7 +43,7 @@ import { isEmptyMap } from "../engine/remap.ts";
 import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
+import { EmptyVersion, StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
@@ -115,6 +115,16 @@ interface View {
 }
 
 /** One replica's history, in memory and synchronous. */
+/**
+ * Is the change at `seq` (1-based) the full fold of a fold-some, completed by the partial revert right after it? The two
+ * are one version (UI audit P1-3): the partial revert's, the state that was chosen. The fold's own state, with what was
+ * left out, is no one's version.
+ */
+export function completedAt(log: readonly ConfirmedChange[], seq: number): boolean {
+  const c = log[seq - 1], n = log[seq];
+  return !!c?.mergeOf && !!n && n.kind === "partial-revert" && !n.withdrawn && !n.squashedInto && n.reverts === c.id;
+}
+
 export class History {
   readonly schema: Schema;
   readonly name: string;
@@ -716,7 +726,7 @@ export class History {
     const out: Version[] = [];
     for (let s = Math.min(before === undefined ? br.log.length : before - 1, br.log.length); s >= 0 && out.length < limit; s--) {
       const c = s > 0 ? br.log[s - 1]! : null;
-      if (c?.squashedInto || c?.withdrawn) continue;
+      if (c?.squashedInto || c?.withdrawn || (c && completedAt(br.log, s))) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
       const v: Version = {
@@ -730,7 +740,41 @@ export class History {
       const h = this.#hash.get(id);
       if (h) v.hash = h;
       if (named) v.name = named.name;
+      // a cut's start holds nothing when it is an imported project's empty root, or a cut made from one (its state is
+      // a keyframe: no replay)
+      if (s === 0 && E.isBlank(this.viewOf(id) ?? { _: 1 }, this.schema)) v.blank = true;
       out.push(v);
+    }
+    return out;
+  }
+  /**
+   * Partial folds of cut `from` into cut `into` whose left-out part isn't folded in yet (UI audit P1-4), newest first:
+   * each one's inverse (a `partial-revert` of a merge of `from`) while no later change reverts it or its merge, and
+   * the head still holds what it set back for at least one record (a record changed on `into` since is no longer the
+   * fold's to bring in).
+   */
+  leftOut(into: string, from: string): ConfirmedChange[] {
+    const log = this.#mustCut(into).log;
+    // reverted: by a change still in effect (an undo of the "fold in the rest" puts its partial fold back; a redo of
+    // that undo takes it out again: review #2)
+    const by = new Map<ChangeId, ChangeId[]>();
+    for (const c of log) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) (by.get(x) ?? by.set(x, []).get(x)!).push(c.id);
+    const memo = new Map<ChangeId, boolean>();
+    const undone = (id: ChangeId): boolean => {
+      if (!memo.has(id)) memo.set(id, false), memo.set(id, (by.get(id) ?? []).some((r) => !undone(r)));
+      return memo.get(id)!;
+    };
+    const reverted = { has: undone };
+    const out: ConfirmedChange[] = [];
+    let head: Doc | undefined;
+    for (let i = log.length - 1; i >= 0; i--) {
+      const c = log[i]!;
+      if (c.kind !== "partial-revert" || c.withdrawn || reverted.has(c.id)) continue;
+      const m = log.find((x) => x.id === [c.reverts ?? []].flat()[0]);
+      if (!m?.mergeOf || reverted.has(m.id) || m.mergeOf.branchId !== from) continue;
+      head ??= this.stateOf(this.head(into))!;
+      const after = this.stateOf(nodeId(into, c.seq));
+      if (after && c.ops.some((op) => op.op !== "remap" && E.deepEqual(E.getIn(head!, op.path, this.schema), E.getIn(after, op.path, this.schema)))) out.push(c);
     }
     return out;
   }
@@ -1033,6 +1077,7 @@ export class History {
   restoreTarget(ref: NodeId | StateRef | string): Doc {
     const target = typeof ref === "string" && ref.includes("@") && !ref.includes("~") ? this.stateOf(ref) : this.resolve(ref as StateRef | string).doc;
     if (!target) throw new StateUnknown(ref, "restore target not held");
+    if (E.isBlank(target, this.schema)) throw new EmptyVersion(ref, "restore");
     return target;
   }
 

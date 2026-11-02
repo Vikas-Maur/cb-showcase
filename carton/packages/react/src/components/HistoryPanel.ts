@@ -16,6 +16,9 @@ import { CompareCard } from "./CompareCard.ts";
 export const VERSION_ROW_HEIGHT = 52;
 /** About the height of a row's actions menu: with less room than this below a row, it opens above it. */
 const MENU_ROOM = 260;
+/** One line of an expanded version's list of changes (UI audit P1-5), and the space below the list. */
+export const VERSION_DETAIL_HEIGHT = 18;
+const DETAILS_PAD = 8;
 
 export interface HistoryPanelProps {
   /** Open a version (Enter or double-click). Default: a read-only preview of it (§9). */
@@ -47,6 +50,8 @@ interface RowProps {
   onOpen: (id: string) => void;
   onMenu: (id: string, el: HTMLElement) => void;
   onName: (id: string, name: string | null) => void;
+  expanded: boolean;
+  onExpand: (id: string) => void;
 }
 
 // memo: a row re-renders only when its own version object, its active state or the minute changes. A new version
@@ -63,6 +68,27 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
     v.author.kind === "system" ? null : h(ActorName, { key: "n", actor: v.author }),
     v.turn ? h("span", { key: "e", className: "carton-version-edits" }, words.turnEdits(v.turn.edits)) : null,
     h(HoverMore, { key: "t", as: "time", dateTime: new Date(v.at).toISOString(), short: when(v.at, p.now, locale, words.justNow), more: exactTime(v.at, locale) }),
+    // A version of several changes (a fold, a restore, a save of many edits): its list on expand (UI audit P1-5)
+    v.details?.length
+      ? h(
+          "button",
+          {
+            key: "x",
+            type: "button",
+            className: "carton-version-expand",
+            "aria-expanded": p.expanded,
+            "aria-label": p.expanded ? words.hideChanges : words.showChanges(v.details.length),
+            tabIndex: -1,
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation();
+              p.onExpand(v.id);
+            },
+            onDoubleClick: (e: MouseEvent) => e.stopPropagation(),
+          },
+          h(Icon, { name: p.expanded ? "caretDown" : "caretRight", size: 10 }),
+          words.versionChanges(v.details.length),
+        )
+      : null,
   ];
   return h(
     "div",
@@ -77,6 +103,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-active": p.active ? "" : undefined,
       "data-menu": p.menuOpen ? "" : undefined,
       "data-compared": p.compared ? "" : undefined,
+      "data-expanded": p.expanded && v.details?.length ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(v.id, e),
       onDoubleClick: () => p.onOpen(v.id),
       onContextMenu: (e: MouseEvent) => {
@@ -111,6 +138,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
         v.published ? h("span", { className: "carton-badge", "data-tone": "info" }, words.published) : null,
         v.provisional ? h("span", { className: "carton-badge", "data-tone": "muted", "aria-description": words.provisionalHint }, words.provisional) : null,
       ),
+      !p.naming && p.expanded && v.details?.length ? h("ul", { className: "carton-version-details" }, ...v.details.map((d, i) => h("li", { key: i, title: d }, d))) : null,
     ),
     p.naming
       ? null
@@ -168,6 +196,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number; bottom?: number } | null>(null);
   const [comparing, setComparing] = useState<string | null>(null);
+  // Why the last restore or new cut didn't happen, in the words the app gave.
+  const [failed, setFailed] = useState<string | null>(null);
+  const act = useCallback((p: Promise<unknown>) => {
+    setFailed(null);
+    p.catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed));
+  }, [words]);
+  // The one version whose list of changes is open (UI audit P1-5)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const onExpand = useCallback((id: string) => setExpandedId((x) => (x === id ? null : id)), []);
   const panel = useRef<HTMLElement>(null);
   const hist = ui.history();
   // All versions, grouped by day (P2-17): headers with counts, a folded day keeping its named versions and turns. Days
@@ -214,8 +251,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const open = useCallback(
     (id: string) => {
       const v = find(id);
-      // A version still waiting to sync has no state to show yet (L5).
-      if (!v || v.provisional) return;
+      // A version still waiting to sync has no state to show yet (L5); an empty one has none at all.
+      if (!v || v.provisional || v.empty) return;
       if (props.onOpen) props.onOpen(v);
       else ui.openPreview(v.ref, previewLabel(v));
     },
@@ -228,6 +265,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const onMenu = useCallback((id: string, el: HTMLElement) => {
     const box = panel.current?.getBoundingClientRect();
     const r = el.getBoundingClientRect();
+    setFailed(null);
     const below = box ? r.bottom - box.top + 4 : 0;
     const up = !!box && box.height - below < MENU_ROOM && r.top - box.top > box.height - below;
     setMenu({ id, x: box ? r.right - box.left : 0, y: below, ...(up && box ? { bottom: box.bottom - r.top + 4 } : {}) });
@@ -245,10 +283,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
       if (!name) return;
       if (mode === "cut") {
         const v = find(id);
-        if (v) void ui.newCut(name, v.ref);
+        if (v) act(ui.newCut(name, v.ref));
       } else void ui.nameVersion(id, name);
     },
-    [ui, find],
+    [ui, find, act],
   );
 
   // Keyboard: the context-menu key on the active row opens its actions, anchored to the row.
@@ -263,6 +301,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [versionAtRow, listId, onMenu],
   );
 
+  const expandedV = expandedId ? find(expandedId) : undefined;
+  // its row in the list shown: in a History grouped by day, the day headers count as rows too (P2-17)
+  const expandedAt = expandedV?.details?.length ? (rowIndex ? (rowIndex.get(expandedV.id) ?? -1) : hist.indexOf(filter, expandedV.id)) : -1;
+  const expanded = expandedAt >= 0 ? { index: expandedAt, extra: expandedV!.details!.length * VERSION_DETAIL_HEIGHT + DETAILS_PAD } : null;
   const menuVersion = menu ? find(menu.id) : undefined;
   const waiting = !!menuVersion?.provisional;
   const compareVersion = comparing ? find(comparing) : undefined;
@@ -299,6 +341,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         ),
       ),
     ),
+    failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
     count === 0
       ? h("p", { className: "carton-empty" }, empty)
       : h(VirtualList, {
@@ -311,6 +354,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           onScrolledChange: setScrolled,
           initialHeight: props.initialHeight,
           newestFirst: true,
+          expanded,
           active,
           activeId: (i: number) => `${listId}-${rows ? (rows[i]?.key ?? i) : (hist.at(filter, i)?.id ?? i)}`,
           onActiveChange: (i: number) => setActiveId(rows ? (rows[i]?.key ?? null) : (hist.at(filter, i)?.id ?? null)),
@@ -341,6 +385,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
               onOpen: open,
               onMenu,
               onName,
+              expanded: v.id === expandedId,
+              onExpand,
             });
           },
         }),
@@ -356,16 +402,17 @@ export function HistoryPanel(props: HistoryPanelProps) {
             className: "carton-history-menu",
             style: menu.bottom != null ? { position: "absolute", bottom: menu.bottom, left: Math.max(8, menu.x - 220) } : { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
           },
-          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5).
-          h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
+          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5). An empty one
+          // (the start of an imported project's history) has nothing to preview, restore or make a cut from: it says so.
+          menuVersion.empty ? null : h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
           props.currentRef
             ? h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setComparing(menuVersion.id)) }, words.compareWithCurrent)
             : null,
           h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
-          h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
+          menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
           menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
           h(MenuSeparator, null),
-          h(MenuItem, { icon: "restore", disabled: waiting, title: waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), void ui.restore(menuVersion.ref)) }, words.restore),
+          h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
         )
       : null,
     compareVersion && props.currentRef
@@ -373,7 +420,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           a: compareVersion.ref,
           b: props.currentRef,
           onWatch: props.onWatch,
-          onRestore: () => void ui.restore(compareVersion.ref),
+          ...(compareVersion.empty ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
           onClose: () => {
             setComparing(null);
             toList();

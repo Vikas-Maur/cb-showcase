@@ -211,6 +211,14 @@ module.exports = ({ dir, slice, who, codec }) => {
         }
       }
     },
+    // Laptop, build 915eb36: a project.json Cardboard's reader refused, in a bundle whose history Carton holds: the file
+    // as Carton finds it through that history (the name it last had), for the reader to take; null: as before.
+    async recover(bundlePath, text) {
+      const c = carton();
+      if (typeof c?.recover !== "function") return null;
+      try { return await c.recover({ bundlePath, text }); }
+      catch (e) { console.warn("[carton] a damaged project.json couldn't be read through its history:", e?.message ?? e); return null; }
+    },
     attach(store, mirror, root) {
       // (weakly: Open Project's staging library goes when Cardboard is done with it)
       mirrors.push(new WeakRef(mirror));

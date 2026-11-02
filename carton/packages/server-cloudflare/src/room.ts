@@ -29,7 +29,7 @@ import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
 import { r2BlobStore } from "./blob-r2.ts";
 import { doBlobStore } from "./blob-do.ts";
-import { cappedBlobStore, reserveIn, writeCapOf, WRITE_CAP_PATH } from "./write-cap.ts";
+import { cappedBlobStore, prepaidCap, reserveIn, writeCapOf, WRITE_CAP_PATH, type WriteCap } from "./write-cap.ts";
 import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 
 export const AUTH_HEADER = "x-carton-auth";
@@ -76,9 +76,9 @@ const trusted: AuthProvider = { kind: "worker-verified", verify: async () => nul
 // under `projects/<p>/seq/`, and the media the HTTP API signs and uploads under `projects/<p>/media/`. An editor
 // can write media, never the sequencer's records (which may belong to a cut they may not write).
 // Both sit on the physical store wrapped by the deployment's daily write cap (write-cap.ts; off unless configured).
-function projectBlobs(env: Env, projectId: string, scope: "seq" | "media"): BlobStore | undefined {
-  if (env.BLOBS) return scopedBlobStore(cappedBlobStore(r2BlobStore(env.BLOBS), writeCapOf(env)), `projects/${projectId}/${scope}/`);
-  if (env.BLOB_VAULT) return scopedBlobStore(cappedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), writeCapOf(env)), `${scope}/`);
+function projectBlobs(env: Env, projectId: string, scope: "seq" | "media", cap: WriteCap | undefined = writeCapOf(env)): BlobStore | undefined {
+  if (env.BLOBS) return scopedBlobStore(cappedBlobStore(r2BlobStore(env.BLOBS), cap), `projects/${projectId}/${scope}/`);
+  if (env.BLOB_VAULT) return scopedBlobStore(cappedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), cap), `${scope}/`);
   return undefined;
 }
 export const sequencerBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "seq");
@@ -98,10 +98,21 @@ function teamOf(env: Env, projectId: string): string | undefined {
 // claims, so a grant is written by a read, and a cap reached must not stop editors reading media their project can
 // read. They can't fill a bucket: each is an empty object, at most one per project and hash the team already holds,
 // and a claim of a granted hash writes nothing.
-export function mediaBlobs(env: Env, projectId: string): BlobStore | undefined {
-  if (!env.BLOBS) return projectBlobs(env, projectId, "media");
+// `cap`: the write cap the store's writes reserve against (default the deployment's; a stream append passes one it
+// reserved for in a single call, `mediaBlobsForWrites`).
+export function mediaBlobs(env: Env, projectId: string, cap: WriteCap | undefined = writeCapOf(env)): BlobStore | undefined {
+  if (!env.BLOBS) return projectBlobs(env, projectId, "media", cap);
   const r2 = r2BlobStore(env.BLOBS);
-  return projectMediaStore(cappedBlobStore(r2, writeCapOf(env)), projectId, teamOf(env, projectId), { grants: r2 });
+  return projectMediaStore(cappedBlobStore(r2, cap), projectId, teamOf(env, projectId), { grants: r2 });
+}
+/**
+ * The media store for one request's writes of about `bytes` in `ops` calls (a stream append): the daily write cap
+ * reserved once for them. Refused, it throws the cap's WriteCapError (with `retryAt`) before anything is written: the
+ * Worker answers 429 with Retry-After, and the client's batch stays queued (a refused append is retried, never dropped).
+ */
+export async function mediaBlobsForWrites(env: Env, projectId: string, bytes: number, ops: number): Promise<BlobStore | undefined> {
+  const cap = writeCapOf(env);
+  return mediaBlobs(env, projectId, cap && (await prepaidCap(cap, bytes, ops)));
 }
 
 // The newest document schemaVersion the room accepts in hello: SCHEMA_VERSION when set (to pin a deployment), else the

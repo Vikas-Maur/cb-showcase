@@ -328,6 +328,52 @@ test(name("R1-15: the context-menu key opens the active version's actions; still
   await m.unmount();
 });
 
+test(name("an empty version (the start of an imported project) offers no Preview, New cut from here or Restore, and says why"), async () => {
+  const ui = createMockUi({ versions: 0 });
+  const system = { key: "system/carton", kind: "system" as const, name: "" };
+  ui.addVersion({ author: system, summary: "Started the cut", empty: true });
+  ui.addVersion({ author: people.alice, summary: "Imported the project", kind: "import" });
+  const restored: string[] = [];
+  const restore = ui.restore.bind(ui);
+  ui.restore = async (ref: string) => { restored.push(ref); return restore(ref); };
+  const m = await render(wrap(ui, h("div", { style: { height: 600 } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  const row = (text: string) => $$(m.container, "[role=option]").find((r) => r.textContent?.includes(text))!;
+  await click(row("Started the cut").querySelector(".carton-version-more"));
+  const menu = $(m.container, "[role=menu]")!;
+  const items = () => $$(menu, "[role=menuitem]").map((e) => e.textContent ?? "");
+  assert.ok(!items().some((t) => t.startsWith("Preview")), "no Preview");
+  assert.ok(!items().some((t) => t.startsWith("New cut from here")), "no New cut from here");
+  const r = $$(menu, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!;
+  assert.equal(r.getAttribute("aria-disabled"), "true", "Restore isn't offered");
+  assert.match(r.textContent ?? "", /before the project was added/, "and it says why");
+  await click(r);
+  assert.deepEqual(restored, [], "a click does nothing");
+  // opening the row (Enter, double-click) previews nothing
+  await click(row("Started the cut"));
+  await key($(m.container, "[role=listbox]")!, "Enter");
+  assert.equal(ui.preview(), null);
+  // the version after it is the project: every action is there
+  await click(row("Imported the project").querySelector(".carton-version-more"));
+  const menu2 = $(m.container, "[role=menu]")!;
+  assert.ok($$(menu2, "[role=menuitem]").some((e) => e.textContent?.startsWith("New cut from here")));
+  assert.equal($$(menu2, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!.getAttribute("aria-disabled"), null);
+  await m.unmount();
+});
+
+test(name("a restore the app refuses says why in the panel"), async () => {
+  const ui = createMockUi({ versions: 3 });
+  ui.restore = async () => { throw new Error("Nothing to restore: that version is empty"); };
+  const m = await render(wrap(ui, h("div", { style: { height: 600 } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined)!;
+  await click(row.querySelector(".carton-version-more"));
+  await click($$(m.container, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!);
+  await waitFor(() => !!$(m.container, ".carton-history-error[role=alert]"), "the error line");
+  assert.equal($(m.container, ".carton-history-error")!.textContent, "Nothing to restore: that version is empty");
+  await m.unmount();
+});
+
 test(name("R1-18: the Cuts menu offers Rename only when the engine can rename"), async () => {
   const ui = createMockUi({ versions: 10 });
   delete (ui as { renameCut?: unknown }).renameCut;

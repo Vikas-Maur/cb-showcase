@@ -124,12 +124,17 @@ function roomFileName(projectId: string): string {
   return name.length <= ROOM_NAME_MAX && !name.includes("~") ? name : "~" + createHash("sha256").update(projectId).digest("hex");
 }
 
-// node:http request → web Request (the body streams; GET and HEAD have none).
-function toRequest(req: IncomingMessage, origin: string): Request {
+// node:http request → web Request (the body streams; GET and HEAD have none). Its signal aborts when the client goes
+// away before the answer is complete, so work held for it stops (a stream read held at the live edge, host-http).
+function toRequest(req: IncomingMessage, origin: string, res: ServerResponse): Request {
   const headers = new Headers();
   for (let i = 0; i < req.rawHeaders.length; i += 2) headers.append(req.rawHeaders[i]!, req.rawHeaders[i + 1]!);
   const method = req.method ?? "GET";
-  const init: RequestInit & { duplex?: "half" } = { method, headers };
+  const gone = new AbortController();
+  res.on("close", () => {
+    if (!res.writableFinished) gone.abort(new DOMException("the client went away", "AbortError"));
+  });
+  const init: RequestInit & { duplex?: "half" } = { method, headers, signal: gone.signal };
   if (method !== "GET" && method !== "HEAD") {
     init.body = bodyOf(req);
     init.duplex = "half";
@@ -491,7 +496,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   server.on("request", (req, res) => {
     const work = (async () => {
       try {
-        const request = toRequest(req, originOf(req));
+        const request = toRequest(req, originOf(req), res);
         clients.set(request, clientIp(req));
         const r = await handleHttp(request, deps);
         if (r) return await send(res, r, req);

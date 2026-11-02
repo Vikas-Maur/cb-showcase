@@ -33,7 +33,9 @@ export type ShareEvent =
   | { type: "uploaded"; what: string; result: UploadResult }
   /** "streaming": the proxy's stream is claimed and its first segment is on the way; the rest say how it was made. */
   | { type: "proxy"; how: "teammate's" | "host's" | "encoded" | "streaming"; hash?: string; stream?: string; attempts?: ProxyAttempt[] }
-  | { type: "skipped"; what: string; why: string };
+  | { type: "skipped"; what: string; why: string }
+  /** The host refused writes for a while (its daily write limit): the proxy's upload waits until `until` (ms epoch), kept. */
+  | { type: "waiting"; what: string; until: number };
 
 /** What makes a stream's segments (segment-encoder.ts's encodeSegments; tests pass a fake). */
 export type Segmenter = (o: {
@@ -311,7 +313,13 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       await o.store.put(pointerKey, new TextEncoder().encode(JSON.stringify(pointer)), { contentType: "application/json" });
     }
     o.onEvent?.({ type: "proxy", how: "streaming", stream });
-    const writer = new ProxyStreamWriter({ store: o.store, hasher, id: stream, upload: { state: o.uploadState, bytesPerSecond: o.bytesPerSecond, signal: o.signal } });
+    const writer = new ProxyStreamWriter({
+      store: o.store,
+      hasher,
+      id: stream,
+      upload: { state: o.uploadState, bytesPerSecond: o.bytesPerSecond, signal: o.signal },
+      onWriteLimit: (until) => o.onEvent?.({ type: "waiting", what: "proxy", until }),
+    });
     const dir = join(o.workDir, `stream-${stream}`);
     try {
       await segmenter({

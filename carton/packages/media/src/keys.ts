@@ -9,6 +9,9 @@
 //   ps/<stream>/init          a segmented proxy (e2e S5-1): its init segment, then one entry per media segment, then the
 //   ps/<stream>/s/<000000>    end marker. Each is small JSON written once (ifAbsent) after the segment's bytes are up as
 //   ps/<stream>/end           m/<hash>, so the list only grows and readers never see an entry without its bytes.
+//                             An entry also carries its part's encoded manifest (`manifest`, base64), and the end the
+//                             parts' sizes and the segments' durations (cf-proxy-path): a host's batch read sends the
+//                             manifest without reading mf/<hash>, and a finished stream's layout is its end alone.
 //   bad/<hash or stream>      a reader found bytes that never verify there (e2e S5-5): the next upload of that media
 //                             replaces the object instead of deduping on it.
 //   repaired/<hash>           that upload's answer to the report (damage.ts): nothing is ever deleted.

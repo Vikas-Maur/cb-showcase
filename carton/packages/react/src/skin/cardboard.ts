@@ -198,6 +198,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version-meta){display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;line-height:16px;color:var(--cb-fg-3);white-space:nowrap}
 :where(${S}) :where(.carton-version-meta .carton-actor-name){overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-version-meta > time, .carton-version-edits){flex:none}
+:where(${S}) :where(.carton-version[data-expanded]){align-items:flex-start;padding-top:8px}
+:where(${S}) :where(.carton-version-expand){flex:none;display:inline-flex;align-items:center;gap:3px;height:16px;padding:0 4px;border:0;border-radius:4px;background:none;font:inherit;color:var(--cb-fg-3);cursor:pointer}
+:where(${S}) :where(.carton-version-expand:hover){background:#ffffff0a;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-version-details){margin:2px 0 0;padding:0;list-style:none;font-size:12px;line-height:18px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-version-details li){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-version-meta > time)::before, :where(${S}) :where(.carton-version-edits)::before{content:"·";margin-right:6px;color:#5c5c5c}
 :where(${S}) :where(.carton-version-meta > time:first-child)::before{content:none}
 :where(${S}) :where(.carton-version[data-provisional] .carton-version-title){color:var(--cb-fg-2)}
@@ -219,6 +224,7 @@ export const cardboardSkin = `
 /* the list scrolled under the filters: a hairline under them (UI audit P3-9) */
 :where(${S}) :where(.carton-panel-head){position:relative;z-index:1;transition:box-shadow var(--cb-fast)}
 :where(${S}) :where(.carton-history[data-scrolled] > .carton-panel-head){box-shadow:0 1px 0 #ffffff12}
+:where(${S}) :where(.carton-history-error){padding:0 12px 8px;text-wrap:pretty}
 
 /* ---------------------------------------------------------------- avatars and presence */
 :where(${S}) :where(.carton-avatar){--carton-actor:#999;display:inline-flex;align-items:center;justify-content:center;flex:none;border-radius:50%;
@@ -389,6 +395,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-fold-later){font-size:12px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-join-dialog){width:min(440px, calc(100vw - 32px))}
 :where(${S}) :where(.carton-join-lead){font-size:13px;line-height:19px;color:var(--cb-fg-3);text-wrap:pretty}
+:where(${S}) :where(.carton-fold-tag){flex:none;height:16px;padding:0 5px;border:1px solid #ffffff1f;border-radius:4px;font-size:11px;line-height:14px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-missing){padding:10px 12px;border-radius:8px;background:var(--cb-sunken);font-size:13px;line-height:19px;color:var(--cb-fg-1);text-wrap:pretty}
 
 /* ---------------------------------------------------------------- toolbar status: sync, published, undo, credits */

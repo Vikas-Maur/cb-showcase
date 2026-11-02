@@ -232,7 +232,21 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
   });
   if (slice.media) {
     const curMedia = new Map((cur.media ?? []).map((m) => [m.id, m]));
-    out[MEDIA] = slice.media.map((m) => overlay(S.collections[MEDIA]!.record, curMedia.get(m.id), m));
+    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, curMedia.get(m.id), m), out[ITEMS] as Rec[]));
   }
   return out;
+}
+
+const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+/**
+ * A code graphic's size, which Cardboard's reader requires and Carton doesn't version (only its source), for an entry the
+ * current file doesn't have (a restore after the file lost its media, a teammate's new graphic): the composition size of
+ * a clip that shows it, which is versioned. None: left as it is (a writer's check then refuses the file).
+ */
+function codeSize(m: Rec, items: readonly Rec[]): Rec {
+  const d = m.data as Rec | undefined;
+  const code = d?.code as Rec | undefined;
+  if (!code || typeof code !== "object" || (num(code.width) && num(code.height))) return m;
+  const c = items.find((it) => it.mediaItemId === m.id && num((it.codeComposition as Rec | undefined)?.width) && num((it.codeComposition as Rec | undefined)?.height))?.codeComposition as Rec | undefined;
+  return c ? { ...m, data: { ...d, code: { ...code, width: c.width, height: c.height } } } : m;
 }

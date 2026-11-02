@@ -136,6 +136,18 @@ export function getIn(doc: Doc, path: Path, schema: Schema): unknown {
   return i < 0 ? undefined : walk(arr[i], cs.record, path, 2);
 }
 
+/**
+ * A state with nothing in it: no root field and every collection empty. The root an imported project's history starts
+ * from (`init.asChange`, §16: the project itself is the next version) is one, and so is a cut made from it.
+ */
+export function isBlank(doc: Doc, schema: Schema): boolean {
+  for (const k in doc) {
+    const v = doc[k];
+    if (v !== undefined && !(schema.collections[k] && Array.isArray(v) && !v.length)) return false;
+  }
+  return true;
+}
+
 /** Strip ephemeral fields from a record value, recursively by spec. Returns the same object when nothing changes. */
 export function stripEphemeral<T>(v: T, spec: FieldSpec): T {
   if (!isObj(v) || spec.kind !== "object") return v;

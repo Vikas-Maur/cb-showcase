@@ -59,6 +59,13 @@ export function scopedBlobStore(inner: BlobStore, prefix: string): BlobStore {
     const gs = inner.getStream.bind(inner);
     store.getStream = async (key, range) => gs(full(key), range);
   }
+  if (inner.getWithInfo) {
+    const gi = inner.getWithInfo.bind(inner);
+    store.getWithInfo = async (key, range) => {
+      const o = await gi(full(key), range);
+      return o && { ...o, info: strip(o.info) };
+    };
+  }
   if (inner.signedUrl) {
     const su = inner.signedUrl.bind(inner);
     store.signedUrl = async (key, opts) => su(full(key), opts);

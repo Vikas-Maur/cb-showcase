@@ -2,8 +2,8 @@
 // the same rules as the real stores (key limits, multipart part rules, past-the-end ranges), so a client that passes
 // against it doesn't break on R2 or S3.
 
-import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError, markCreated } from "./rules.ts";
+import type { BlobInfo, BlobStore, BlobWithInfo, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError, markCreated, servedRange } from "./rules.ts";
 
 export { BlobError } from "./rules.ts";
 
@@ -69,6 +69,18 @@ export class MemoryBlobStore implements BlobStore {
         c.close();
       },
     });
+  }
+
+  async getWithInfo(key: string, range?: ByteRange): Promise<BlobWithInfo | null> {
+    checkKey(key);
+    if (range) checkRange(range);
+    const o = this.#objects.get(key);
+    if (!o) return null;
+    const info = { ...o.info }, size = o.data.byteLength;
+    const span = servedRange(size, range);
+    if (!span) return { info, range: null, body: null };
+    const bytes = o.data.slice(span.offset, span.offset + span.length);
+    return { info, range: span, body: new ReadableStream({ start: (c) => (bytes.byteLength && c.enqueue(bytes), c.close()) }) };
   }
 
   async head(key: string): Promise<BlobInfo | null> {

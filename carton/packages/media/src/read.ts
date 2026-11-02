@@ -96,6 +96,68 @@ export class MediaReader implements RangeSource {
     this.#o = opts;
   }
 
+  /** How it retries a request that failed on the network (a stream reader's batch requests do the same). */
+  get retryPolicy(): { retries: number; delayMs: number } {
+    return { retries: this.#o.retries ?? 3, delayMs: this.#o.retryDelayMs ?? 200 };
+  }
+
+  /**
+   * The whole object from the cache alone (its manifest and every leaf kept), or null: no request. How a stream reader
+   * replays what it has played, offline too.
+   */
+  async cached(hash: string): Promise<Uint8Array | null> {
+    const cache = this.#o.cache;
+    const mb = await cache?.getManifest(hash);
+    if (!cache || !mb) return null;
+    let m: Manifest;
+    try {
+      m = await decodeManifest(mb, this.#o.hasher, hash);
+    } catch {
+      return null;
+    }
+    const out = new Uint8Array(m.size);
+    for (let i = 0; i < m.leafCount; i++) {
+      const leaf = await cache.getLeaf(hash, i);
+      const span = leafSpan(m.size, i);
+      if (!leaf || leaf.length !== span.length) return null;
+      out.set(leaf, span.offset);
+    }
+    return out;
+  }
+
+  /**
+   * Bytes of a whole object that came with its encoded manifest some other way (a host's stream batch): kept, manifest
+   * and leaves, when the manifest is `hash`'s and every leaf verifies. False when anything doesn't match; the caller then
+   * reads it the usual way, which fetches it again, repairs and reports.
+   */
+  async adopt(hash: string, manifest: Uint8Array, bytes: Uint8Array): Promise<boolean> {
+    let m: Manifest;
+    try {
+      m = await decodeManifest(manifest, this.#o.hasher, hash);
+    } catch {
+      return false;
+    }
+    if (bytes.length !== m.size) return false;
+    for (let i = 0; i < m.leafCount; i++) {
+      const span = leafSpan(m.size, i);
+      if (!(await this.#verify(m, i, bytes.subarray(span.offset, span.offset + span.length)))) return false;
+    }
+    if (!this.#manifests.has(hash)) {
+      if (this.#manifests.size >= MAX_MANIFESTS) this.#manifests.delete(this.#manifests.keys().next().value!);
+      this.#manifests.set(hash, Promise.resolve(m));
+    }
+    this.#present.add(hash);
+    const cache = this.#o.cache;
+    if (cache) {
+      await cache.putManifest(hash, m.bytes);
+      for (let i = 0; i < m.leafCount; i++) {
+        const span = leafSpan(m.size, i);
+        await cache.putLeaf(hash, i, bytes.subarray(span.offset, span.offset + span.length));
+      }
+    }
+    return true;
+  }
+
   /**
    * The verified manifest: from the cache, else from the store. Concurrent callers share one fetch, so an abort stops
    * this caller's wait, not the fetch.

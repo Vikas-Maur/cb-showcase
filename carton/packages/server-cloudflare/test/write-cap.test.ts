@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createMemoryBlobStore } from "@carton/blob-memory";
-import { cappedBlobStore, reserveIn, writeCapOf, writeCapResponse, WriteCapError, WRITE_CAP_PATH } from "../src/write-cap.ts";
+import { cappedBlobStore, prepaidCap, reserveIn, writeCapOf, writeCapResponse, WriteCapError, WRITE_CAP_PATH } from "../src/write-cap.ts";
+import { mediaBlobs, mediaBlobsForWrites } from "../src/room.ts";
 import type { DurableObjectNamespace } from "../src/cf.ts";
 
 // DO SQL's shape over node:sqlite: exec runs at once, as ctx.storage.sql.exec does
@@ -97,10 +98,12 @@ test("whatever else the store offers passes through, bound to the store", async 
 });
 
 test("the Worker answers a refused write 429 with Retry-After and the code", async () => {
-  const r = writeCapResponse(new WriteCapError("full", 123));
+  const e = new WriteCapError("full", 123);
+  const r = writeCapResponse(e);
   assert.equal(r.status, 429);
   assert.equal(r.headers.get("retry-after"), "123");
-  assert.deepEqual(await r.json(), { error: "full", code: "DailyWriteCap" });
+  // the wait in the body too: when (retryAt) and how long (retryAfterMs, whatever the client's clock says)
+  assert.deepEqual(await r.json(), { error: "full", code: "DailyWriteCap", retryAt: e.retryAt, retryAfterMs: 123_000 });
 });
 
 test("a streamed part reserves its declared size before the store sees it", async () => {
@@ -121,4 +124,30 @@ test("a streamed part reserves its declared size before the store sees it", asyn
   assert.deepEqual(got, [5 << 20], "the refused part never reached the store");
   const [db] = [...rooms.values()];
   assert.equal((db!.prepare("SELECT bytes FROM carton_write_cap").get() as { bytes: number }).bytes, 5 << 20);
+});
+
+test("a prepaid reservation: one counter request for a request's writes; past it, each write reserves again; over the cap, nothing is reserved (cf-proxy-path)", async () => {
+  const { ns, calls } = counterRooms();
+  const cap = writeCapOf({ PROJECT_ROOM: ns, WRITE_CAP_BYTES_PER_DAY: "1000", WRITE_CAP_OPS_PER_DAY: "10" })!;
+  const pre = await prepaidCap(cap, 300, 3);
+  assert.equal(calls.length, 1, "reserved up front");
+  const store = cappedBlobStore(createMemoryBlobStore(), pre);
+  await store.put("a", new Uint8Array(100));
+  await store.put("b", new Uint8Array(100));
+  await store.put("c", new Uint8Array(100));
+  assert.equal(calls.length, 1, "the three writes drew on it");
+  await store.put("d", new Uint8Array(10));
+  assert.equal(calls.length, 2, "past it: reserved on its own");
+  await assert.rejects(prepaidCap(cap, 700, 1), WriteCapError, "over the bytes cap");
+  await assert.rejects(prepaidCap(cap, 1, 7), WriteCapError, "over the ops cap");
+  // what was refused reserved nothing: what's left still fits
+  await prepaidCap(cap, 590, 5);
+});
+
+test("mediaBlobsForWrites: no blob binding, no store (and no reservation)", async () => {
+  const { ns, calls } = counterRooms();
+  const env = { PROJECT_ROOM: ns, WRITE_CAP_BYTES_PER_DAY: "100000", AUTH_SECRET: "x".repeat(32) } as unknown as Parameters<typeof mediaBlobsForWrites>[0];
+  assert.equal(mediaBlobs(env, "p"), undefined);
+  assert.equal(await mediaBlobsForWrites(env, "p", 10, 2), undefined);
+  assert.equal(calls.length, 1, "the reservation is made before the store (a refused one stores nothing)");
 });

@@ -19,16 +19,22 @@ export const words = {
   you: "You",
 
   // History panel
-  historyFilters: { all: "All", named: "Named", turns: "Director turns" } as Record<"all" | "named" | "turns", string>,
+  // Every agent's turns (UI audit P1-10): the Director's and your Claude Code's are both named turns, and an agent's
+  // versions with no turn recorded are its turn too
+  historyFilters: { all: "All", named: "Named", turns: "Agent turns" } as Record<"all" | "named" | "turns", string>,
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
   historyEmptyNamed: "No named versions yet. Name one to find it again.",
-  historyEmptyTurns: "No Director turns yet.",
+  historyEmptyTurns: "No agent turns yet.",
   checkpoint: "Checkpoint",
   // Day headers in a long History (UI audit P2-17)
   today: "Today",
   yesterday: "Yesterday",
   dayCount: (n: number) => plural(n, "version", "versions"),
   dayFolded: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
+  // A version of several changes: its list, on expand (UI audit P1-5)
+  versionChanges: (n: number) => plural(n, "change", "changes"),
+  showChanges: (n: number) => `Show all ${n} changes`,
+  hideChanges: "Hide the changes",
   turnEdits: (n: number) => plural(n, "edit", "edits"),
   provisional: "Waiting to sync",
   provisionalHint: "This version gets its final place in History once it reaches the server.",
@@ -36,6 +42,7 @@ export const words = {
   preview: "Preview",
   create: "Create",
   restoreHint: "Restoring saves this version as a new version. Nothing is lost.",
+  emptyVersionHint: "The history starts here, before the project was added. There's nothing to restore.",
   compareWithCurrent: "Compare with current",
   nameVersion: "Name this version",
   nameVersionPlaceholder: "Sent to client, Monday",
@@ -70,6 +77,9 @@ export const words = {
   foldAllCards: "Bring it in with every difference shown as a card",
   foldRestLater: "You can fold in the rest later.",
   foldRest: "Fold in the rest",
+  // A change an earlier "fold in some of it" left out (UI audit P1-4): offered again; one fold's come in together
+  foldLeftOutEarlier: "Left out earlier",
+  foldLeftOutTogether: "Left out together earlier, so they fold in together.",
   foldChangedSince: "Something changed since you looked. Pick on the cards below, then fold in.",
   foldLocked: "Comes with the rest: it can't be left out on its own.",
   foldChanges: (n: number) => plural(n, "change", "changes"),

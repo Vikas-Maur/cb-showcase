@@ -189,6 +189,29 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    it (the panel shows those once) and no other.
 6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
+7. **Never a project Cardboard can't read** (laptop, build 915eb36: Restore of "Started the cut", the empty root an
+   imported project's history starts from, wrote a `project.json` with no name and empty tracks and media; 1.4.0's
+   loader (`ti`: `qW`, `zW`) refuses a file without a name, so the project left the library and `cb` found nothing).
+   Core refuses to restore an empty version or make a cut from one (`EmptyVersion`), and History and `cb` don't offer
+   it. Every `project.json` a Carton-on process writes is checked first (`@carton/cardboard`'s `projectProblems`: what
+   that reader needs in the fields Carton writes, and a name a project had is never removed): the commit of a store
+   mutation (no version is made of it), head going into the file (`headProject`), and the install itself, both copies.
+   The Materializer, which also serves other hosts' files, refuses a write that turns a file Cardboard reads into one it
+   can't (`breaks`). History never starts from a file Cardboard can't read (a bundle without `carton.db`, or one whose
+   `carton.db` came from another machine). A refused write keeps the old file, and the refusal goes to the console and
+   to the bundle's `.carton/refused.log` (when, which writer, what was wrong; never the project's text). When head itself
+   is refused after a History action or a `cb` write, the panel and `cb` say the file wasn't changed (the write is in
+   history). A code graphic's size, which the reader requires and Carton doesn't version (only its source), comes from
+   the clip that shows it when the file being replaced lacks the graphic (`materializeProject`). A head that has no name (a
+   teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
+   until a good version is restored.
+8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through
+   Carton when the project has a history (in the bundle, or in app data for a synced, network or FAT folder) that is
+   this project's and was made on this computer, both read from the database before anything opens it (another
+   project's history would put its versions into this one; another computer's would be set aside on open): the file
+   with the name the project last had in its history (else its folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
+   History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
+   reads costs nothing more (the hook runs only after its parse failed).
 
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`
@@ -472,7 +495,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (113)
+### A.1 The anchors patch-carton.js replaces (115)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
@@ -493,6 +516,7 @@ ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1265976   36B  "d=JSON.stringify(o);this.lastWritten"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
 ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
+ok  Worker 1 @1255296   66B  "let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
 ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
 ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
@@ -565,6 +589,7 @@ ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
 ok  CLI    1 @160751    36B  "u=JSON.stringify(a);this.lastWritten"
 ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
 ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
+ok  CLI    1 @150320    66B  "let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
 ok  CLI    1 @344422    38B  "n.onWritten((h,y)=>f.afterWrite(h,y));"
 ok  CLI    1 @305827    82B  "let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);"

@@ -52,7 +52,7 @@ Cardboard's own team, which has the source, would use React directly with no cha
 
 | Component | What it shows |
 |---|---|
-| `HistoryPanel` | Versions, newest first, virtualized. Named versions, Director turns as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). Preview, Compare with current, name, new cut from here, Restore |
+| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's) as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
 | `CutsMenu` | Switch cuts, new cut from here, rename, fold into Main. Someone else's cuts are read-only and named by owner ("Bob's Main cut") |
 | `FoldInDialog` | What folding in brings, in plain words. Leave changes out (fold in some of it), pick on conflict cards first, "You can fold in the rest later". §13's missing-base text when the copy builds on a version you don't have |
 | `ConflictCard`, `ConflictList` | Both edits, who made each and which one shows now. Keep mine / Keep theirs / Keep both |

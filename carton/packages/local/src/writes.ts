@@ -154,18 +154,27 @@ export function toCbResult(r: CommitResult | Record<string, any>, notices: Notic
   }
 }
 
-type Outcome = { kind: "confirmed"; seq: number } | { kind: "notice"; notice: Notice };
+/**
+ * `absorbed`: emptied by a rebase, its id spent (by the server's withdraw row at `seq`, H1, or here before it was sent):
+ * with no cards it is already in place; with cards, they took its place.
+ */
+export type Outcome = { kind: "confirmed"; seq: number } | { kind: "absorbed"; seq?: number; cards: ConflictCard[] } | { kind: "notice"; notice: Notice };
 
 /**
- * Collects pending changes' outcomes from the moment it is created (confirmed by the server, a late conflict, a
- * rejection), so an answer that arrives while the commit itself is still running isn't missed.
+ * Collects pending changes' outcomes from the moment it is created (confirmed by the server, absorbed, a late conflict,
+ * a rejection), so an answer that arrives while the commit itself is still running isn't missed. The first answer
+ * wins. A withdraw row (a `change` event with `withdrawn`) is no answer: it only notes the seq that spent the id, and
+ * the `absorbed` event that follows it decides (core emits it once the row is in History, so with any cards).
  */
 export function watchOutcomes(carton: Carton): { wait(id: ChangeId, ms: number): Promise<Outcome | null>; close(): void } {
   const seen = new Map<ChangeId, Outcome>();
   const waiting = new Map<ChangeId, (o: Outcome) => void>();
+  const spent = new Map<ChangeId, number>();
   const off = carton.on((e: CartonEvent) => {
     let id: ChangeId | undefined, o: Outcome | undefined;
+    if (e.type === "change" && e.change.id && e.change.withdrawn) { spent.set(e.change.id, e.seq); return; }
     if (e.type === "change" && e.change.id) { id = e.change.id; o = { kind: "confirmed", seq: e.seq }; }
+    else if (e.type === "absorbed") { id = e.id; const seq = spent.get(e.id); spent.delete(e.id); o = { kind: "absorbed", cards: e.cards, ...(seq !== undefined ? { seq } : {}) }; }
     else if (e.type === "notice" && e.notice.change && (e.notice.kind === "late-conflict" || e.notice.kind === "rejected")) { id = e.notice.change; o = { kind: "notice", notice: e.notice }; }
     if (!id || !o) return;
     const w = waiting.get(id);
@@ -565,6 +574,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const out = await outcomes.wait(r.id, ms);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
+  // emptied and its id spent, as the commit path answers it: already in place, or the cards that took its place (their
+  // late-conflict notice is this result, as there)
+  if (out.kind === "absorbed") {
+    if (!out.cards.length) return asConflicts({ status: "confirmed", id: r.id, seq: out.seq ?? (await carton.head(destCut(op))).ref.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
+    answered = r.id;
+    return { status: "conflicts", id: r.id, conflicts: [...kept, ...out.cards], ref: null, notices, absorbed: true };
+  }
   // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
   answered = r.id;

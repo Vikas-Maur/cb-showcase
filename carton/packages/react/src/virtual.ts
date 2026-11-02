@@ -78,16 +78,26 @@ export interface VirtualListProps {
   layoutKey?: unknown;
   /** The list scrolled away from its top, or back to it (a divider under the header: UI audit P3-9). */
   onScrolledChange?: (scrolled: boolean) => void;
+  /** One row opened to `extra` px more than the others (a version's list of changes, UI audit P1-5). */
+  expanded?: { index: number; extra: number } | null;
 }
 
 export function VirtualList(p: VirtualListProps) {
   const overscan = p.overscan ?? 6;
+  // The rows after an expanded one move down by its extra height; everything else is the fixed-height layout.
+  // One row opened taller (a version's changes, P1-5) is one more row of its own height: rows of their own heights
+  // (P2-17's day headers) and the opened row share one layout, the tops below.
+  const ex = p.expanded && p.expanded.index >= 0 && p.expanded.index < p.count && p.expanded.extra > 0 ? p.expanded : null;
   const ref = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState(p.initialHeight ?? 400);
-  const variable = !!p.heightOf;
+  const variable = !!p.heightOf || !!ex;
   const heightOfRef = useRef(p.heightOf);
   heightOfRef.current = p.heightOf;
-  const tops = useMemo(() => (variable ? rowTops(p.count, (i) => heightOfRef.current!(i)) : null), [variable, p.count, p.layoutKey]);
+  const tops = useMemo(
+    () => (variable ? rowTops(p.count, (i) => (heightOfRef.current ? heightOfRef.current(i) : p.rowHeight) + (ex && i === ex.index ? ex.extra : 0)) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [variable, p.count, p.layoutKey, p.rowHeight, ex?.index, ex?.extra],
+  );
   const topOf = (i: number) => (tops ? tops[i]! : i * p.rowHeight);
   const heightAt = (i: number) => (tops ? tops[i + 1]! - tops[i]! : p.rowHeight);
   const total = tops ? tops[p.count]! : p.count * p.rowHeight;
@@ -192,7 +202,7 @@ export function VirtualList(p: VirtualListProps) {
     if (!el || p.active == null || p.active < 0 || p.active >= p.count) return;
     const y = topOf(p.active), rh = heightAt(p.active);
     if (y < el.scrollTop) el.scrollTop = y;
-    else if (y + rh > el.scrollTop + el.clientHeight) el.scrollTop = y + rh - el.clientHeight;
+    else if (y + rh > el.scrollTop + el.clientHeight) el.scrollTop = Math.min(y, y + rh - el.clientHeight);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.active, p.rowHeight, tops]);
 

@@ -320,4 +320,28 @@ test(name("P2-5: the Compare card lists what changed, five at once, the rest on 
   await m.unmount();
 });
 
+test(name("P2-17 with P1-5: a version's changes open in place inside a History grouped by day"), async () => {
+  const ui = createMockUi({ versions: 10_000 });
+  await act(async () => { ui.addVersion({ summary: "Folded in 'Client review' (2 of 3 changes)", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s", "Changed 'W2' text", "Trimmed 'Intro'"] } as never); });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
+  await flush();
+  const top = (el: Element) => parseFloat(((el as HTMLElement).style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "NaN");
+  const vrows = () => $$(m.container, ".carton-vrow");
+  // the day header, then the new version, then the rest of today
+  assert.ok(vrows()[0]!.querySelector(".carton-day"), "today's header first");
+  const row = vrows()[1]!, next = vrows()[2]!;
+  assert.ok(row.querySelector(".carton-version-expand"));
+  const nextTop = top(next), rowHeight = parseFloat(row.style.height);
+  await click(row.querySelector(".carton-version-expand"));
+  await flush();
+  const opened = vrows()[1]!;
+  assert.equal(opened.querySelector(".carton-version-expand")!.getAttribute("aria-expanded"), "true");
+  assert.equal($$(opened, ".carton-version-details li").length, 3);
+  const extra = parseFloat(opened.style.height) - rowHeight;
+  assert.ok(extra > 0, "the opened row is taller");
+  assert.equal(top(vrows()[2]!), nextTop + extra, "the rows below it move down by exactly that, in the grouped layout");
+  assert.equal(top(vrows()[0]!), 0, "the day header stays put");
+  await m.unmount();
+});
+
 void act;

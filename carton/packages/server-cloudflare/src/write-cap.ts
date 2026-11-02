@@ -102,6 +102,26 @@ export function reserveIn(sql: { exec(q: string, ...b: unknown[]): { toArray(): 
   return { ok: true, bytes: bytes + addBytes, ops: ops + addOps };
 }
 
+/**
+ * `cap` with `bytes` and `ops` reserved in one call up front, for a request that knows what it will write (a stream
+ * append: a manifest, the bytes and an entry per part): its writes draw on the reservation, one counter request in all
+ * instead of one per write. A write past what is left reserves on its own, as without it.
+ */
+export async function prepaidCap(cap: WriteCap, bytes: number, ops: number): Promise<WriteCap> {
+  await cap.reserve(bytes, ops);
+  let leftBytes = bytes, leftOps = ops;
+  return {
+    async reserve(b, o = 1) {
+      if (b <= leftBytes && o <= leftOps) {
+        leftBytes -= b;
+        leftOps -= o;
+        return;
+      }
+      await cap.reserve(b, o);
+    },
+  };
+}
+
 /** A multipart handle that may also take a streamed part (fix/cf-stream-parts adds it to the contract). */
 type Streams = MultipartUpload & { uploadPartStream?(n: number, body: ReadableStream<Uint8Array>, size: number): Promise<{ partNumber: number; etag: string }> };
 
@@ -154,7 +174,8 @@ export function cappedBlobStore(inner: BlobStore, cap: WriteCap | undefined): Bl
 
 /** The Worker's answer to a refused write. */
 export function writeCapResponse(e: WriteCapError): Response {
-  return new Response(JSON.stringify({ error: e.message, code: e.code }), {
+  // retryAfterMs: what a client waits, whatever its clock says (Retry-After says the same in seconds)
+  return new Response(JSON.stringify({ error: e.message, code: e.code, retryAt: e.retryAt, retryAfterMs: e.retryAfterSec * 1000 }), {
     status: 429,
     headers: { "content-type": "application/json", "cache-control": "no-store", "retry-after": String(e.retryAfterSec) },
   });

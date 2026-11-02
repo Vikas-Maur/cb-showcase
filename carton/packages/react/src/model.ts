@@ -58,6 +58,11 @@ export interface Version {
    * CartonUi.foldRest().
    */
   readonly foldRest?: boolean;
+  /**
+   * Nothing in it (core's `blank`): the start of an imported project's history, from before the project was added. It
+   * can't be previewed, restored or made into a cut (laptop, build 915eb36: restoring it emptied the project).
+   */
+  readonly empty?: boolean;
 }
 
 /** Which rows History shows. */
@@ -254,6 +259,11 @@ export interface FoldChange {
   readonly at: number;
   /** Can't be left out on its own (a project-level field): it is folded in with the rest. */
   readonly locked?: boolean;
+  /**
+   * Left out of an earlier partial fold (UI audit P1-4, "you can fold in the rest later"): that fold's id. Changes with
+   * the same id fold in together, or stay left out together.
+   */
+  readonly leftOut?: string;
 }
 
 export interface FoldPlan {

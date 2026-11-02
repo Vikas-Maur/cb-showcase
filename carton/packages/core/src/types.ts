@@ -374,8 +374,19 @@ export interface Version {
   at: number;
   name?: string;
   kind: ChangeKind | "root" | "fork";
-  /** What the change did in plain words (describe()'s first line), when asked for (`log({summary: true})`). */
+  /**
+   * What the version did in one line, when asked for (`log({summary: true})`): its name; a fold, a partial fold ("Folded
+   * 'Client review' into 'Main cut': 2 of 3 changes"), the rest of one, a restore or the import by what it was; else
+   * its change, or its changes summed up ("Moved 'a', changed 'b' and 'c'", `describeVersion`).
+   */
   summary?: string;
+  /**
+   * A cut's start (seq 0) with nothing in it: the empty root an imported project's history starts from (§16), or a cut
+   * made from it. `restore` and `fork` refuse it (`EmptyVersion`), so a UI doesn't offer them.
+   */
+  blank?: true;
+  /** Every change the version made, one line each (describe()), when the summary doesn't already say it all. */
+  details?: string[];
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
