@@ -10,7 +10,11 @@
 // code and message in brief (also `failures` in --out), so a rare one can be diagnosed (a 4-writer run had 1 in 155).
 // --out also keeps every timed edit raw (`samples`, per writer: its edit number, start as epoch ms, duration in ms from
 // the print to the apply's answer, as the table's p50/p90/p99 take it, and outcome, "applied" or "failed"), so a timing
-// claim can be recomputed later from the run itself. The printed table is unchanged.
+// claim can be recomputed later from the run itself. The printed table is unchanged. perf/apply-tail: each sample also
+// has the print's and the apply's own times (`print`, `apply`: each cb process from spawn to exit; `ms` is their sum
+// plus writing the edited file) and the apply's `carton.timeline` answer (`timeline`: "shown", "held", "elsewhere",
+// "later" when the app's timeline.tsx didn't show the write within cb's 2 s wait; null with Carton off or the app
+// closed), so a slow round trip says which process held it, and whether it was that wait.
 const fs = require("fs"), os = require("os"), path = require("path"), { spawn, spawnSync } = require("child_process");
 
 const [cmd, cbPath, root, ...rest] = process.argv.slice(2);
@@ -69,18 +73,22 @@ if (cmd === "setup") {
       const started = Date.now();
       // A fresh print each time: the header names the version this edit is made on.
       const printed = await cb("source", "print", PROJECT);
+      const printMs = Date.now() - started;
       const size = 100 + k * 1000 + i;
       const re = new RegExp(`(<text[^>]*name="${name}"[^>]*fontSize=\\{)\\d+(\\})`);
       if (printed.code !== 0) { fail(k, i, "print", printed); continue; }
       if (!re.test(printed.out)) { fail(k, i, "print", { ...printed, err: `no title ${name} with a font size in the print` }); continue; }
       const tsx = path.join(os.tmpdir(), `carton-w${k}-${process.pid}.tsx`);
       fs.writeFileSync(tsx, printed.out.replace(re, `$1${size}$2`));
+      const a0 = Date.now();
       const r = await cb("source", "apply", PROJECT, tsx, "--json");
+      const applyMs = Date.now() - a0;
       s.ms.push(Date.now() - started);
       let applied = false, json = null;
       try { json = JSON.parse(r.out.slice(r.out.indexOf("{"))); applied = json.applied === true; } catch {}
       if (applied) s.applied++, (s.last = size); else fail(k, i, "apply", r, json);
-      s.samples.push({ edit: i, start: started, ms: s.ms[s.ms.length - 1], outcome: applied ? "applied" : "failed" });
+      const timeline = typeof json?.carton?.timeline === "string" ? json.carton.timeline : null;
+      s.samples.push({ edit: i, start: started, ms: s.ms[s.ms.length - 1], print: printMs, apply: applyMs, timeline, outcome: applied ? "applied" : "failed" });
       const wait = started + 1000 / rate - Date.now();
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }

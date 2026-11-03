@@ -311,8 +311,9 @@ export interface ViewPrinter {
    * Read-your-writes (apply-ryw): resolves once the shared timeline.tsx shows change `c` (`shown`), or why it doesn't
    * (`held` by a freeze for someone else's work, `elsewhere`: another cut), or `later` after `ms` (cardboard's
    * `Materializer.showChange`). The holder answers `carton.shown` with it, so a `cb` write returns once the file shows it.
+   * `o.beforeMs`: what the holder spent before it asked (its look at carton.db), for a slow answer's report.
    */
-  showChange?(c: ShowTarget, ms: number): Promise<Showing>;
+  showChange?(c: ShowTarget, ms: number, o?: { beforeMs?: number }): Promise<Showing>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
    * The current cut changed (`cb cut switch`): the files must show the new cut now, and a freeze started on the old

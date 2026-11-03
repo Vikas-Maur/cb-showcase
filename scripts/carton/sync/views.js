@@ -156,6 +156,11 @@ export class View {
       // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
       // would take an untagged file there as a timeline.tsx save
       displacedDir: path.join(CARTON_DIR, "displaced-views"),
+      // perf/apply-tail: a cb write that waited 500 ms or more for timeline.tsx to show it (the whole wait: the holder's
+      // look at carton.db, beforeMs, and the materializer's part, ms), and where that time went (the queue, its rewrite
+      // step by step, what answered it, the longest tasks meanwhile): into the worker's output, which the app's activity
+      // log keeps (main's __cbPipeWorker). Timings, change ids and task names only.
+      onSlowShow: (s) => console.warn("[carton] a cb write waited " + ((s.beforeMs ?? 0) + s.ms) + " ms for timeline.tsx (" + s.answer + "): " + JSON.stringify(s)),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
       // The cut: the one the save was committed on, as the Materializer reports it (its stored result's: also for a
@@ -190,7 +195,7 @@ export class View {
       onCb: (caller) => mz.onCb(caller),
       onHeadChange: (cause) => mz.onHeadChange(cause),
       // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
-      showChange: (c, ms) => mz.showChange(c, ms),
+      showChange: (c, ms, o) => mz.showChange(c, ms, o),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),
