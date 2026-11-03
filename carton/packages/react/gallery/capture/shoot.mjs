@@ -19,9 +19,9 @@ const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? proces
 const runtime = arg("--runtime", "react");
 const only = arg("--only") ? new RegExp(arg("--only")) : null;
 const WIDTHS = arg("--widths", "384,300").split(",").map(Number);
-// how long one step may wait for what it expects (Playwright's default is 30 s: a state whose page changed under it
-// then costs half a minute before it says so)
-const TIMEOUT = Number(arg("--timeout", 10_000));
+// how long one step (and the page's first render) may wait for what it expects: room for a busy machine, where Preact
+// shots took over 10 s, and under Playwright's 30 s, so a state whose page changed under it fails sooner
+const TIMEOUT = Number(arg("--timeout", 20_000));
 const out = process.env.CARTON_SHOTS ?? join(here, "..", "dist", "capture", "shots", runtime);
 mkdirSync(out, { recursive: true });
 const page0 = pathToFileURL(join(here, "..", "dist", "capture", `capture.${runtime}.html`)).href;

@@ -8,7 +8,7 @@ import * as React from "react";
 import { createElement as h, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as jsxRuntime from "react/jsx-runtime";
-import { serveUi, serveComments, createMockComments } from "@carton/react";
+import { serveUi, serveComments, createMockComments, cutColors } from "@carton/react";
 import { createMockUi, people } from "@carton/react/mock";
 import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi (the Share panel), as the app's bundle does
 import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
@@ -41,7 +41,10 @@ function mock(opts) {
 const newest = (ui) => ui.history().all().at(-1)?.ref ?? "main@0";
 /** Replace the cuts the mock shows (a gallery wrapper: the mock keeps its own for its actions). */
 function setCuts(ui, list) {
-  let cuts = list;
+  // every cut but Main its dot, as the view model gives them (cutColors: yours in order, a teammate's the first hue
+  // none of yours has); a colour the scenario set stays
+  const colors = cutColors(list, (id) => list.find((c) => c.id === id)?.owner);
+  let cuts = list.map((c) => (c.color || !colors.has(c.id) ? c : { ...c, color: colors.get(c.id) }));
   ui.cuts = () => cuts;
   ui.switchCut = async (id) => { cuts = cuts.map((c) => ({ ...c, current: c.id === id })); ui.hub.notify("cuts"); };
   ui.renameCut = async (id, name) => { cuts = cuts.map((c) => (c.id === id ? { ...c, name, label: name } : c)); ui.hub.notify("cuts"); };
@@ -365,7 +368,7 @@ const ui = scenario.ui;
 
 // ------------------------------------------------------------------ the fake bridge (window.__carton in the app)
 function makeBridge(sc) {
-  const events = new Set(), commands = new Set(), notices = new Set(), servers = new Map(), blockedSubs = new Set(), backSubs = new Set();
+  const events = new Set(), commands = new Set(), early = [], notices = new Set(), servers = new Map(), blockedSubs = new Set(), backSubs = new Set();
   const emit = (ev) => queueMicrotask(() => { for (const f of [...events]) f(ev); });
   const comments = sc.comments ?? createMockComments({ seed: false });
   const calls = [];
@@ -391,9 +394,11 @@ function makeBridge(sc) {
       return Promise.reject(new Error(`no ${name} in the capture bridge`));
     },
     onEvent(f) { events.add(f); return () => events.delete(f); },
-    onCommand(f) { commands.add(f); return () => commands.delete(f); },
+    // a command sent before the panel listens (the page mounts late on a busy machine) waits for it, as a menu click
+    // in the app can't come before the window: the panel used not to open now and then (a rig race, design QA §1)
+    onCommand(f) { commands.add(f); for (const action of early.splice(0)) setTimeout(() => f({ action }), 0); return () => commands.delete(f); },
     onNotice(f) { notices.add(f); return () => notices.delete(f); },
-    command(action) { for (const f of [...commands]) f({ action }); },
+    command(action) { if (!commands.size) early.push(action); for (const f of [...commands]) f({ action }); },
     notice(text) { for (const f of [...notices]) f(text); },
     // the title bar's report, as main hands it to the strip (main-bridge.js panel): the cut chip's part too
     reportPanel(panel, live, chip) { window.__cap.strip = { panel, live: live ?? null, ...(chip ?? {}) }; for (const f of stripSubs) f(window.__cap.strip); },

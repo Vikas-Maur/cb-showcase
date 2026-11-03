@@ -86,5 +86,5 @@ for `INDEX.md`. `steps(page)` drives the page with Playwright: clicks, hovers, t
 Steps have `helpers` for the common moves: `foldOlder`, `openCard`, `uxMenu`, `menuItem`, `cutsMenu`, `changes`,
 `playAll`, `playDirector`, `holdBefore(p, scope)`, `tab`, `row`, `vrow`, `rowMenu`, `scrollList`.
 
-Each step waits at most `--timeout` ms (10 s by default) for what it expects: a state whose page changed fails fast,
-and says which step.
+Each step waits at most `--timeout` ms (20 s by default: room for a busy machine, under Playwright's 30 s) for what it
+expects, then the shot fails and says which step.
