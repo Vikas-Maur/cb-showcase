@@ -159,6 +159,42 @@ test("P2-12, PLAN 8.1: offline says it once, in the amber line; the server's own
   assert.match(html({ ...base, status: "offline", pending: 1, problem: null }), /Keep editing: 1 change is saved here and is sent when you&#x27;re back\./);
 });
 
+test("review of fix/ux2-b: an invite link is made once while it's being made, kept only until a minute before it expires, and made again after a failure", async () => {
+  let now = 1_000_000_000_000, n = 0, answer = (i) => ({ link: "L" + i, expiresAt: now + 7 * 86_400_000 });
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const bridge = { call: async (m) => { assert.equal(m, "liveInvite"); n++; const a = answer(n); if (a instanceof Error) throw a; return a; } };
+    // the dialog's opening and a Copy link meanwhile: one invite
+    const [a, b] = await Promise.all([ui.linkFor(bridge, "p", "h", "editor"), ui.linkFor(bridge, "p", "h", "editor")]);
+    assert.deepEqual([a, b, n], ["L1", "L1", 1]);
+    // another role, server or project: its own
+    assert.equal(await ui.linkFor(bridge, "p", "h", "viewer"), "L2");
+    assert.equal(await ui.linkFor(bridge, "p", "h2", "editor"), "L3");
+    // reopened within the hour: the same link; after it, a new one
+    now += 59 * 60_000;
+    assert.equal(await ui.linkFor(bridge, "p", "h", "editor"), "L1");
+    now += 2 * 60_000;
+    assert.equal(await ui.linkFor(bridge, "p", "h", "editor"), "L4");
+    // a server whose invites last 90 s: kept 30 s (a minute before it expires), then made again
+    answer = (i) => ({ link: "S" + i, expiresAt: now + 90_000 });
+    assert.equal(await ui.linkFor(bridge, "q", "h", "editor"), "S5");
+    now += 20_000;
+    assert.equal(await ui.linkFor(bridge, "q", "h", "editor"), "S5");
+    now += 15_000;
+    assert.equal(await ui.linkFor(bridge, "q", "h", "editor"), "S6");
+    // no expiry said: never kept for the next opening
+    answer = (i) => ({ link: "U" + i });
+    assert.equal(await ui.linkFor(bridge, "r", "h", "editor"), "U7");
+    assert.equal(await ui.linkFor(bridge, "r", "h", "editor"), "U8");
+    // a failure isn't kept
+    answer = () => new Error("fetch failed");
+    await assert.rejects(ui.linkFor(bridge, "s", "h", "editor"));
+    answer = (i) => ({ link: "F" + i, expiresAt: now + 86_400_000 });
+    assert.equal(await ui.linkFor(bridge, "s", "h", "editor"), "F10");
+  } finally { Date.now = realNow; }
+});
+
 test("review finding 3: an Invite or Open failure shows under its button, whatever field its words name", () => {
   const p = ui.shareProblem("fetch failed", "invite");
   const shown = render(React.createElement(ui.Problem, { error: p }));

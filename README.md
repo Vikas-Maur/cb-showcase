@@ -910,15 +910,17 @@ with Carton off none of it runs at all.
 - **Shared**: the dialog shows the status by its title ("Up to date", "Sending 3 changes", "Offline"), then People:
   You (drawn as History draws you, "Y", with the name teammates see and your role), and everyone here now with what
   they're doing ("Here now · editing captions"; someone idle is faded) and what they may do ("Can edit", "Can comment":
-  each app tells its own role with its presence; an older app's teammate shows none). A teammate's agent is listed
-  under them as theirs, with its own mark: "Leo's Director · Working on “Add a title card”". Offline, an amber line
+  each app tells its own role with its presence; an older app's teammate shows none). A teammate's agent (or a
+  subagent it started) is listed under them as theirs, with its own mark: "Leo's Director · Working on “Add a title
+  card”". Offline, an amber line
   says your changes are kept here and sent when you're back; when sync can't go on for another reason, that one line
   says why instead ("Can't sync: the sharing server needs an update. Your changes are saved here."), the server's own
   message only in its tooltip.
 - **Invite** (the owner): who can do what ("Can edit", "Can comment", "Can watch", from a menu), the link, and Copy
-  link. The link for the role picked is made as the dialog opens and shown in its field (one per role while the app
-  runs, at most an hour old, not one each time the dialog opens); "Anyone with this link can join and edit." Links
-  expire; none can be made offline, and it says so.
+  link. The link for the role picked is made as the dialog opens and shown in its field, and kept for the next
+  openings while it surely works (an hour at most, and never past a minute before the invite expires; one whose expiry
+  the server's token doesn't say is made anew); "Anyone with this link can join and edit." Links expire; none can be
+  made offline, and it says so.
   **Join** from the Dashboard: a "Join a shared project" tile beside "New project" (Carton on only) opens a dialog with
   the invite link, "You'll join as Leo. Change" (or your name, the first time), and one button, Join and open: the
   project arrives in the library with its history, opens in a tab of its own, and the dialog closes; its clips play

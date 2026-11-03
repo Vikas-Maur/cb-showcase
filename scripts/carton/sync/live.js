@@ -237,7 +237,9 @@ export function peerActor(actor, who) {
   const agent = !text(who?.id) && actor && typeof actor === "object" && AGENTS.has(actor.kind) && text(actor.id) ? actor : null;
   const a = text(who?.id) ? person(who) : actor && typeof actor === "object" && text(actor.id) ? actor : null;
   if (!a) return null;
-  const kind = text(a.kind) ? a.kind : "human", agentId = text(a.agentId) ? a.agentId : undefined;
+  // a subagent shows as the agent that started it (its name is that agent's: "Director"), so it reads as its person's
+  // ("Leo's Director") as an agent does: @carton/react's actorLabel names a subagent by its agent, which isn't here
+  const kind = agent ? "agent" : text(a.kind) ? a.kind : "human", agentId = text(a.agentId) ? a.agentId : undefined;
   const out = { key: actorKey({ kind, id: a.id, agentId }), kind, id: a.id, name: text(a.name) ? a.name : a.id };
   // an agent's own presence: its person as core tells an agent's actor (`owner`)
   const owner = agent && text(agent.owner?.id) ? person(agent.owner) : null;

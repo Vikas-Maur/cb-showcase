@@ -477,7 +477,9 @@ extend({
         if (!cfg) throw new Error("Share this project first");
         const token = await store.sessionFor(bundlePath, projectId).token();
         const inv = await host.createInvite({ host: cfg.host, projectId, token, role, ttlMs });
-        return { link: host.inviteLink(cfg.host, projectId, inv), role };
+        // with when it stops working, when its token says (the Share dialog keeps a link only until then)
+        const expiresAt = host.inviteExpiry(inv);
+        return { link: host.inviteLink(cfg.host, projectId, inv), role, ...(expiresAt ? { expiresAt } : {}) };
       },
       /** Join a shared project from an invite link: a new project in this library, synced from the host. */
       async liveJoin({ link, name }) {

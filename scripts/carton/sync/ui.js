@@ -184,23 +184,27 @@ function RolePicker({ role, setRole }) {
   });
 }
 
-// The invite links made, by bridge, project, sharing server and role: one invite on the server per role while the app
-// runs (an hour at most; an invite lasts days), not one per opening of the dialog. A failed one is made again when next
-// asked.
+// The invite links made, by bridge, project, sharing server and role. One being made is shared (the dialog's opening and
+// a Copy link pressed meanwhile make one invite, not two). A link made is kept for the next openings only while it
+// surely works: an hour at most, and until a minute before it expires (liveInvite's `expiresAt`: a server may give its
+// invites a short life); one whose expiry isn't known is made again at the next opening (review of fix/ux2-b). A failed
+// one is made again when next asked.
 const madeLinks = new WeakMap();
-const LINK_MS = 3_600_000;
+const LINK_MS = 3_600_000, LINK_MARGIN_MS = 60_000;
 function linkFor(bridge, projectId, host, role) {
   let m = madeLinks.get(bridge);
   if (!m) madeLinks.set(bridge, (m = new Map()));
   const k = [projectId, host ?? "", role].join("\n"), had = m.get(k);
-  if (had && Date.now() - had.at < LINK_MS) return had.p;
-  const p = Promise.resolve().then(() => bridge.call("liveInvite", [{ projectId, role }])).then((r) => {
+  if (had && (had.pending || Date.now() < had.until)) return had.p;
+  const e = { pending: true, until: 0, p: null };
+  e.p = Promise.resolve().then(() => bridge.call("liveInvite", [{ projectId, role }])).then((r) => {
     if (typeof r?.link !== "string") throw new Error("no invite link");
+    e.until = typeof r.expiresAt === "number" ? Math.min(Date.now() + LINK_MS, r.expiresAt - LINK_MARGIN_MS) : 0;
     return r.link;
   });
-  m.set(k, { at: Date.now(), p });
-  p.catch(() => { if (m.get(k)?.p === p) m.delete(k); });
-  return p;
+  e.p.then(() => { e.pending = false; }, () => { e.pending = false; if (m.get(k) === e) m.delete(k); });
+  m.set(k, e);
+  return e.p;
 }
 
 /**
@@ -421,4 +425,4 @@ export function Join({ bridge, onOpened, onCancel: cancel }) {
       h(NameField, { id: "carton-join-name", name, setName, known, line: words.joinAs, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
 }
 
-window.__cartonSyncUi = { ShareDialog, LiveStatus, People, shareProblem, ShareForm, Join, Invite, Problem, hostAddress, shareTitle };
+window.__cartonSyncUi = { ShareDialog, LiveStatus, People, shareProblem, ShareForm, Join, Invite, Problem, hostAddress, shareTitle, linkFor };

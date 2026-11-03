@@ -289,6 +289,21 @@ test("QA G3, G11: each teammate with their role, their agent under them as their
   } finally { await m.done(); }
 });
 
+test("review of fix/ux2-b: a teammate's subagent reads as their agent (\"Alice's Director\"), with or without them here", opt, async () => {
+  const { live: l, presence } = await live();
+  const sub = (agentId, owner) => ({ kind: "subagent", id: "director/chat1/turn2/sub-Explore-" + agentId, agentId, name: "Director", subagentType: "Explore", owner });
+  presence(ALICE, editing);
+  presence(sub("a1", { id: "alice", name: "Alice" }), { activity: "Looking for the intro" });
+  presence(sub("a2", { id: "dee", name: "Dee" }), { activity: "Trimming" });
+  const st = status(l);
+  assert.deepEqual(st.peers.slice(1).map((p) => [p.actor.kind, p.actor.parent]), [["agent", "human/alice"], ["agent", "human/dee"]]);
+  const m = await openShare(st);
+  try {
+    const rows = [...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => [li.querySelector(".carton-share-name")?.textContent, li.hasAttribute("data-under")]);
+    assert.deepEqual(rows, [["Alice", false], ["Alice's Director", true], ["Dee's Director", false]]);
+  } finally { await m.done(); }
+});
+
 test("QA G3: the app's own presence is the person's, even from a worker whose handle is an agent's (started from an agent's terminal)", opt, async () => {
   const { live: l, presence } = await live();
   // CODEX_* or CLAUDECODE in the worker's environment: core tells its handle's actor as Codex, with its owner

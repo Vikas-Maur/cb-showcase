@@ -65,8 +65,11 @@ test("share with history: the cut goes to the host with its versions, and the pr
 
 test("invite and join: Bob joins from the link in his own library and gets the project with its history", t, async () => {
   need("the share");
-  ({ link } = await alice.call("carton.liveInvite", { projectId: id, role: "editor" }));
+  const made = await alice.call("carton.liveInvite", { projectId: id, role: "editor" });
+  ({ link } = made);
   assert.match(link, /^http:\/\/127\.0\.0\.1:\d+\/#join=/);
+  // when it stops working, as its token says (the Share dialog keeps a link only until then: review of fix/ux2-b)
+  assert.ok(typeof made.expiresAt === "number" && made.expiresAt > Date.now() + 60_000 && made.expiresAt < Date.now() + 31 * 86_400_000, JSON.stringify(made.expiresAt));
   const j = await bob.call("carton.liveJoin", { link, name: "Bob" });
   assert.equal(j.projectId, id);
   const want = S.textOf(await S.projectOf(alice, id)).fontSize;
