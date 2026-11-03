@@ -35,6 +35,33 @@ export interface BroughtBack {
   of: NodeId;
 }
 
+/**
+ * One row of "Choose a clip…" (DESIGN-V2 §3.2): a clip that differs between a version and now. `then` and `now`: where
+ * it is (seconds) and its text, on each side it is on.
+ */
+export interface BringBackChoice {
+  record: PathKey;
+  name: string;
+  /** Its noun when not a clip ("title", "caption"). */
+  noun?: string;
+  then?: { start?: number; end?: number; text?: string; track?: string };
+  now?: { start?: number; end?: number; text?: string; track?: string };
+  /** Deleted since: who deleted it and when; not there then: who added it and when (the newest such version). */
+  by?: Actor | null;
+  at?: number;
+}
+/** The clips that differ between a version and now, in DESIGN-V2 §3.2's three groups, and how many are the same. */
+export interface BringBackChoices {
+  /** Changed since: on both sides, different. Bring back. */
+  changed: BringBackChoice[];
+  /** Deleted since: there then, gone now. Bring back. */
+  deleted: BringBackChoice[];
+  /** Not there yet then: added since. Take out (`remove: true`). */
+  added: BringBackChoice[];
+  /** "14 other clips are the same as now." */
+  same: number;
+}
+
 /** The clip wasn't in that version, and `remove` wasn't asked. Its message says so in the editor's words. */
 export class NotInVersion extends Error {
   readonly code = "NOT_IN_VERSION";
@@ -48,7 +75,91 @@ export class NotInVersion extends Error {
 /** No such clip, then or now. */
 export class NoSuchClip extends Error {
   readonly code = "NO_SUCH_CLIP";
+  readonly what: string;
   constructor(what: string) {
-    super(`No clip “${what}” in that version or in the edit now`);
+    super("That clip isn't in that version or in the edit now");
+    this.what = what;
   }
+}
+
+// ------------------------------------------------------------------ the state it saves
+
+import type { Doc, Op, Rec } from "./types.ts";
+import type { Schema } from "./schema.ts";
+import * as E from "./engine/index.ts";
+
+/** A record's name for people, as History and cards name it; never an id. */
+export function recordName(schema: Schema, coll: string, rec: Rec | undefined, doc?: Doc): string {
+  const spec = schema.collections[coll];
+  if (!rec) return spec?.noun ?? "clip";
+  const l = schema.label?.(coll, rec, doc);
+  const id = String(rec[spec?.key ?? "id"] ?? "");
+  if (l && l !== "?" && !(id && l.includes(id.slice(0, 6)))) return l;
+  return typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : spec?.nounOf?.(rec) ?? spec?.noun ?? "clip";
+}
+
+/** How many records of `coll` name `id` by `field`. */
+function holders(doc: Doc, coll: string, field: string, id: unknown): number {
+  let n = 0;
+  for (const r of (doc[coll] as Rec[] | undefined) ?? []) if (r[field] === id) n++;
+  return n;
+}
+
+/**
+ * Head with one record as it was in `then`: the record itself (every field: keyframes, captions, effects), its own parts
+ * (`partOf`, held by it alone: a title's text entry) as they were then, and what it needs that is gone from head (its
+ * parent: the track; a part it shares: the media file), as it was then. A record that wasn't there then is removed
+ * with its own parts, only when `remove` says so. Nothing else changes.
+ */
+export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema: Schema, o: { remove: boolean }): { doc: Doc; brought: Omit<BroughtBack, "of"> } {
+  const spec = schema.collections[coll]!;
+  const get = (d: Doc, c: string, k: unknown) => E.getIn(d, [c, k as string], schema) as Rec | undefined;
+  const was = get(then, coll, id), now = get(head, coll, id);
+  const record = E.pathKey([coll, id]);
+  if (!was && !now) throw new NoSuchClip(id);
+  const name = recordName(schema, coll, was ?? now, was ? then : head);
+  if (!was && !o.remove) throw new NotInVersion(record, name);
+  const ops: Op[] = [];
+  const parts: PathKey[] = [];
+  const put = (c: string, rec: Rec) => ops.push({ op: "insert", path: [c, String(rec[schema.collections[c]!.key])], value: rec });
+  if (was) {
+    if (!now || !E.deepEqual(was, now)) put(coll, was);
+  } else ops.push({ op: "remove", path: [coll, id] });
+  // its parts: a record of another collection that this one names by `partOf.field`
+  for (const [pc, ps] of Object.entries(schema.collections)) {
+    if (ps.partOf?.collection !== coll) continue;
+    const f = ps.partOf.field;
+    const own = (d: Doc, rec: Rec | undefined, pid: unknown) => !!rec && ps.nounOf?.(rec) === null && holders(d, coll, f, pid) <= 1;
+    const pidThen = was?.[f], pidNow = now?.[f];
+    if (pidThen != null) {
+      const pThen = get(then, pc, pidThen), pNow = get(head, pc, pidThen);
+      // gone since (it needs it), or its own and changed: as it was then
+      if (pThen && (!pNow || (own(then, pThen, pidThen) && !E.deepEqual(pThen, pNow)))) {
+        put(pc, pThen);
+        parts.push(E.pathKey([pc, String(pidThen)]));
+      }
+    }
+    // the part it holds now that it didn't then, its own alone: it goes with the clip as it is now
+    if (pidNow != null && pidNow !== pidThen) {
+      const pNow = get(head, pc, pidNow);
+      if (own(head, pNow, pidNow)) {
+        ops.push({ op: "remove", path: [pc, String(pidNow)] });
+        parts.push(E.pathKey([pc, String(pidNow)]));
+      }
+    }
+  }
+  // what it sits on (its track), gone since: as it was then
+  if (was && spec.parent) {
+    const pid = was[spec.parent.field];
+    if (pid != null && !get(head, spec.parent.collection, pid)) {
+      const p = get(then, spec.parent.collection, pid);
+      if (p) {
+        put(spec.parent.collection, p);
+        parts.push(E.pathKey([spec.parent.collection, String(pid)]));
+      }
+    }
+  }
+  const how: BroughtBack["how"] = !was ? "removed" : !now ? "added" : ops.length ? "changed" : "same";
+  const doc = ops.length ? E.apply(E.fork(head, schema), ops, schema) : head;
+  return { doc, brought: { record, name, how, parts } };
 }

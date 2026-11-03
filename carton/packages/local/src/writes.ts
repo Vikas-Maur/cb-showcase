@@ -563,8 +563,16 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     }
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
-    case "restoreClip": throw new Error("not implemented: restoreClip");
-    case "open": throw new Error("not implemented: open");
+    case "restoreClip": {
+      r = await carton.restoreClip(op.ref, op.record, { author, cut: op.cut, id: req.id, ...(op.remove ? { remove: true } : {}) });
+      extra = { brought: r.brought };
+      break;
+    }
+    case "open": {
+      // shows something in the editor, saves nothing: only a holder that runs the app's pages can (a helper can't)
+      const told = opts.materializer?.openView ? await opts.materializer.openView({ view: op.view, from: op.from, to: op.to }, author) : { opened: 0 };
+      return { status: "confirmed", seq: 0, ref: null, notices, opened: told.opened };
+    }
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
     case "undo": case "redo": {
       const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}), ...(typeof op.expect === "string" ? { expect: op.expect } : {}) };

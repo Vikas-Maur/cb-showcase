@@ -676,6 +676,8 @@ export type CartonEvent =
   | { type: "sync-error"; branchId: string; error: SyncError | null }
   /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
   | { type: "people" }
+  /** This handle recorded a landmark on a cut (`mark`, Carton UX v2): a list of them reads `landmarks()` again. */
+  | { type: "landmarks"; branchId: string }
   /**
    * The cuts changed: one made (with no edit yet too), renamed, gone, or its kind, protection or sync changed. By this
    * handle, by a sync, or by another process on the same store (told once this handle reads the store again: any read
