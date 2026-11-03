@@ -1659,7 +1659,8 @@ export const cardboard14 = {
       // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
       // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
       // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "undoTurnOf", "publish"]) {
+      // (Carton UX v2 N0: and a bring-back of one clip)
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "restoreClip", "nameVersion", "undo", "undoTurnOf", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).

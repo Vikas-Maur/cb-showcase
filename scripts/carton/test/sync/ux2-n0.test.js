@@ -91,6 +91,14 @@ test("cb restore <version> --clip: the title as it was, through the worker's hol
   await S.until(async () => (await title()).textContent === "Hello", 20_000, "the title back in project.json");
   const top = cbJson(["history", "Demo", "--limit", "1"]).versions[0];
   assert.equal(top.kind, "restore");
+  // the History panel's Bring back (through the worker, which writes project.json after it, as for restore)
+  await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, textContent: "Retyped" } : undefined));
+  await S.until(async () => (await title()).textContent === "Retyped", 20_000, "the second save");
+  const t0 = await title();
+  const back = await panel.call("restoreClip", `${before.ref.branchId}@${before.ref.seq}`, t0.id);
+  assert.equal(back.how, "changed", JSON.stringify(back));
+  assert.ok(back.made?.changes?.length === 1, "its toast's Undo has the version: " + JSON.stringify(back));
+  await S.until(async () => (await title()).textContent === "Hello", 20_000, "the panel's bring-back in project.json");
   // the project's start has no title: bringing it back means taking it out, said, nothing changed
   const first = versions[versions.length - 1].version;
   const no = pc.cb(["restore", "Demo", first, "--clip", "Hello"]);
