@@ -1,0 +1,51 @@
+23:34:49 start timing B on carton-prod5 (39312830)
+23:34:50 compile cache warmed (one cb project list per mode)
+23:34:52 B b6-on-w4-r1
+Opening the project in Cardboard...
+b6-on-w4-r1: applied 159, failed 0, p50 per writer [1481,1492,1477,1487], p99 per writer [3654,3679,2084,1964]
+23:36:31 clean b6-on-w4-r1 (100s)
+23:36:33 B b6-off-w4-r1
+Opening the project in Cardboard...
+b6-off-w4-r1: applied 164, failed 0, p50 per writer [1473,1469,1466,1468], p99 per writer [1971,2209,2120,1956]
+23:38:10 clean b6-off-w4-r1 (97s)
+23:38:12 B b6-off-w1-r1
+Opening the project in Cardboard...
+b6-off-w1-r1: applied 40, failed 0, p50 per writer [1469], p99 per writer [2230]
+23:39:48 clean b6-off-w1-r1 (96s)
+23:39:50 B b6-on-w1-r1
+Opening the project in Cardboard...
+b6-on-w1-r1: applied 40, failed 0, p50 per writer [1468], p99 per writer [2192]
+23:41:27 clean b6-on-w1-r1 (97s)
+23:41:28 B b6-off-w4-r2
+Opening the project in Cardboard...
+b6-off-w4-r2: applied 173, failed 0, p50 per writer [1454,1423,1447,1468], p99 per writer [2039,2052,2288,2396]
+23:43:06 clean b6-off-w4-r2 (98s)
+23:43:08 B b6-on-w4-r2
+Opening the project in Cardboard...
+b6-on-w4-r2: applied 164, failed 0, p50 per writer [1478,1471,1476,1476], p99 per writer [2168,1923,1892,1861]
+23:44:45 clean b6-on-w4-r2 (97s)
+23:44:47 B b6-on-w1-r2
+Opening the project in Cardboard...
+b6-on-w1-r2: applied 33, failed 0, p50 per writer [1483], p99 per writer [5927]
+23:46:25 clean b6-on-w1-r2 (98s)
+23:46:26 B b6-off-w1-r2
+Opening the project in Cardboard...
+b6-off-w1-r2: applied 40, failed 0, p50 per writer [1478], p99 per writer [2202]
+23:48:05 clean b6-off-w1-r2 (98s)
+23:48:06 B b6-on-w4-r3
+Opening the project in Cardboard...
+b6-on-w4-r3: applied 140, failed 0, p50 per writer [1527,1504,1511,1497], p99 per writer [3440,3300,5654,3607]
+23:49:44 clean b6-on-w4-r3 (98s)
+23:49:46 B b6-off-w4-r3
+Opening the project in Cardboard...
+b6-off-w4-r3: applied 184, failed 0, p50 per writer [1210,1259,1333,1167], p99 per writer [2175,2180,2134,2728]
+23:51:21 clean b6-off-w4-r3 (95s)
+23:51:23 B b6-off-w1-r3
+Opening the project in Cardboard...
+b6-off-w1-r3: applied 40, failed 0, p50 per writer [1462], p99 per writer [2212]
+23:52:58 clean b6-off-w1-r3 (95s)
+23:53:00 B b6-on-w1-r3
+Opening the project in Cardboard...
+b6-on-w1-r3: applied 29, failed 0, p50 per writer [1492], p99 per writer [5427]
+23:54:36 clean b6-on-w1-r3 (96s)
+23:54:36 done

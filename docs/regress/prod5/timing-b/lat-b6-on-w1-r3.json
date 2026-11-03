@@ -1,0 +1,199 @@
+{
+  "project": "D:\\cbwork\\carton\\profiles\\lat-b6-on-w1-r3\\home\\accounts\\51118cce5d093bc950d4a7950909a41d854412ce72f318c936a64bc9da5d17ec\\Carton gates.cardboard",
+  "writers": 1,
+  "rate": 1,
+  "seconds": 60,
+  "lost": 0,
+  "rows": [
+    {
+      "writer": "W1",
+      "applied": 29,
+      "failed": 0,
+      "last": 129,
+      "onDisk": 129,
+      "kept": true,
+      "p50": 1492,
+      "p90": 4970,
+      "p99": 5427
+    }
+  ],
+  "failures": [],
+  "samples": {
+    "W1": [
+      {
+        "edit": 1,
+        "start": 1793663610704,
+        "ms": 1960,
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793663612664,
+        "ms": 1466,
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793663614130,
+        "ms": 1467,
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793663615597,
+        "ms": 1492,
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793663617089,
+        "ms": 1443,
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793663618532,
+        "ms": 1597,
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793663620129,
+        "ms": 5034,
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793663625163,
+        "ms": 2068,
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793663627231,
+        "ms": 1483,
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793663628714,
+        "ms": 1539,
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793663630253,
+        "ms": 1450,
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793663631703,
+        "ms": 1683,
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793663633386,
+        "ms": 1455,
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793663634841,
+        "ms": 1847,
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793663636688,
+        "ms": 1446,
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793663638134,
+        "ms": 1455,
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793663639589,
+        "ms": 1628,
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793663641217,
+        "ms": 2050,
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793663643267,
+        "ms": 1477,
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793663644744,
+        "ms": 1451,
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793663646195,
+        "ms": 1451,
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793663647647,
+        "ms": 4850,
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793663652497,
+        "ms": 5427,
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793663657924,
+        "ms": 2124,
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793663660048,
+        "ms": 1463,
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793663661511,
+        "ms": 4970,
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793663666481,
+        "ms": 2100,
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793663668581,
+        "ms": 1449,
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793663670030,
+        "ms": 1453,
+        "outcome": "applied"
+      }
+    ]
+  }
+}

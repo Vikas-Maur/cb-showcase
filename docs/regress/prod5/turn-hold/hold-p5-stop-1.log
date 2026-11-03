@@ -1,0 +1,38 @@
+== p5-stop-1 (stop): build carton-prod5 (39312830), profile copy of hold-base, project 4896fa7c-e7ae-4fe2-9dfe-d3772fd8e2a4
+picker shows: Opus 5.5
+0.3s timeline.tsx: Main cut@3~5fb68524 b:aabe7544 p:6b35cc9b by carton | W2 font 100 | muted false
+4.4s prompt sent
+20.7s person muted the Mine clip (M) during the turn
+23.9s pressed "Stop" (stopped the turn)
+24.1s timeline.tsx: Main cut@4~545be487 b:aabe7544 p:14cbae1b by carton | W2 font 100 | muted true
+29.5s turn over (agent idle 5 s)
+29.5s watching timeline.tsx for 100 s more
+chat tail:    | clip.mp4 0.0s–3.0s   | Opus 5.5
+history:
+VERSION  SAVED       BY        WHAT
+main@4   just now    person    edit
+main@3   1 hour ago  Terminal  edit
+main@2   1 hour ago  Terminal  edit
+main@1   1 hour ago  person    import
+main@0   1 hour ago  unknown   root (empty)
+
+credits W2: 18c1a3fd-4e3c-4c4f-bec3-42279f9a9b7e: last changed by Terminal
+activity:
+WHO       CHANGES  LAST        VERSIONS
+person    2        just now    @1…@4
+Terminal  2        1 hour ago  @2…@3
+views: 
+timeline.tsx now: W2 font 100 | muted true
+-- agent's answer:
+
+5:34 AM
+You stopped after 19s
+
+Stopped.
+
+  
+clip.mp4 0.0s–3.0s  
+Opus 5.5
+-- tools used (name: command head):
+  PowerShell: {"command":"cb source print 4896fa7c-e7ae-4fe2-9dfe-d3772fd8e2a4","description":"Print timeline"}
+  PowerShell: {"command":"ping -n 31 127.0.0.1","description":"Wait ~30 seconds via ping","timeout":120000}

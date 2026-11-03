@@ -1,0 +1,265 @@
+{
+  "project": "D:\\cbwork\\carton\\profiles\\lat-b6-off-w1-r2\\home\\accounts\\51118cce5d093bc950d4a7950909a41d854412ce72f318c936a64bc9da5d17ec\\Carton gates.cardboard",
+  "writers": 1,
+  "rate": 1,
+  "seconds": 60,
+  "lost": 0,
+  "rows": [
+    {
+      "writer": "W1",
+      "applied": 40,
+      "failed": 0,
+      "last": 140,
+      "onDisk": 140,
+      "kept": true,
+      "p50": 1478,
+      "p90": 1667,
+      "p99": 2202
+    }
+  ],
+  "failures": [],
+  "samples": {
+    "W1": [
+      {
+        "edit": 1,
+        "start": 1793663219124,
+        "ms": 1698,
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793663220822,
+        "ms": 1334,
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793663222156,
+        "ms": 1632,
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793663223788,
+        "ms": 2009,
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793663225797,
+        "ms": 1532,
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793663227329,
+        "ms": 1464,
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793663228793,
+        "ms": 1476,
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793663230269,
+        "ms": 1511,
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793663231780,
+        "ms": 1528,
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793663233308,
+        "ms": 1482,
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793663234790,
+        "ms": 1521,
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793663236311,
+        "ms": 1494,
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793663237805,
+        "ms": 1595,
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793663239400,
+        "ms": 1494,
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793663240894,
+        "ms": 1437,
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793663242331,
+        "ms": 2202,
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793663244533,
+        "ms": 1450,
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793663245983,
+        "ms": 1452,
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793663247435,
+        "ms": 1496,
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793663248931,
+        "ms": 1453,
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793663250384,
+        "ms": 1463,
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793663251847,
+        "ms": 1479,
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793663253326,
+        "ms": 1473,
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793663254799,
+        "ms": 1480,
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793663256279,
+        "ms": 1481,
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793663257760,
+        "ms": 1573,
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793663259333,
+        "ms": 1477,
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793663260810,
+        "ms": 1433,
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793663262243,
+        "ms": 1792,
+        "outcome": "applied"
+      },
+      {
+        "edit": 30,
+        "start": 1793663264035,
+        "ms": 1460,
+        "outcome": "applied"
+      },
+      {
+        "edit": 31,
+        "start": 1793663265495,
+        "ms": 1478,
+        "outcome": "applied"
+      },
+      {
+        "edit": 32,
+        "start": 1793663266973,
+        "ms": 1450,
+        "outcome": "applied"
+      },
+      {
+        "edit": 33,
+        "start": 1793663268423,
+        "ms": 1464,
+        "outcome": "applied"
+      },
+      {
+        "edit": 34,
+        "start": 1793663269887,
+        "ms": 1459,
+        "outcome": "applied"
+      },
+      {
+        "edit": 35,
+        "start": 1793663271346,
+        "ms": 1440,
+        "outcome": "applied"
+      },
+      {
+        "edit": 36,
+        "start": 1793663272786,
+        "ms": 1489,
+        "outcome": "applied"
+      },
+      {
+        "edit": 37,
+        "start": 1793663274275,
+        "ms": 1476,
+        "outcome": "applied"
+      },
+      {
+        "edit": 38,
+        "start": 1793663275751,
+        "ms": 1442,
+        "outcome": "applied"
+      },
+      {
+        "edit": 39,
+        "start": 1793663277193,
+        "ms": 1438,
+        "outcome": "applied"
+      },
+      {
+        "edit": 40,
+        "start": 1793663278631,
+        "ms": 1667,
+        "outcome": "applied"
+      }
+    ]
+  }
+}

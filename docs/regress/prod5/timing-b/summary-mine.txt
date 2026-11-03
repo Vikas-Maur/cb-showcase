@@ -1,0 +1,18 @@
+lat-b6-off-w1-r1   edits  40 applied  40 other 0 failures 0 | median 1471 p90 1608 p95 1630 max 2230 stalls≥5s 0 | lost 0
+lat-b6-off-w1-r2   edits  40 applied  40 other 0 failures 0 | median 1478.5 p90 1667 p95 1792 max 2202 stalls≥5s 0 | lost 0
+lat-b6-off-w1-r3   edits  40 applied  40 other 0 failures 0 | median 1463 p90 1577 p95 2108 max 2212 stalls≥5s 0 | lost 0
+lat-b6-off-w4-r1   edits 164 applied 164 other 0 failures 0 | median 1468 p90 1772 p95 1950 max 2209 stalls≥5s 0 | lost 0
+lat-b6-off-w4-r2   edits 173 applied 173 other 0 failures 0 | median 1450 p90 1774 p95 2025 max 2396 stalls≥5s 0 | lost 1
+lat-b6-off-w4-r3   edits 184 applied 184 other 0 failures 0 | median 1249 p90 1681 p95 2014 max 2728 stalls≥5s 0 | lost 1
+lat-b6-on-w1-r1    edits  40 applied  40 other 0 failures 0 | median 1468 p90 1835 p95 1967 max 2192 stalls≥5s 0 | lost 0
+lat-b6-on-w1-r2    edits  33 applied  33 other 0 failures 0 | median 1483 p90 3371 p95 3743 max 5927 stalls≥5s 1 | lost 0
+lat-b6-on-w1-r3    edits  29 applied  29 other 0 failures 0 | median 1492 p90 4970 p95 5034 max 5427 stalls≥5s 2 | lost 0
+lat-b6-on-w4-r1    edits 159 applied 159 other 0 failures 0 | median 1486 p90 1881 p95 1990 max 3679 stalls≥5s 0 | lost 0
+lat-b6-on-w4-r2    edits 164 applied 164 other 0 failures 0 | median 1474 p90 1624 p95 1792 max 2168 stalls≥5s 0 | lost 0
+lat-b6-on-w4-r3    edits 140 applied 140 other 0 failures 0 | median 1515.5 p90 2210 p95 3294 max 5654 stalls≥5s 1 | lost 0
+
+side      runs  run medians            median of run medians  pooled median  pooled p90  pooled p95  applies per run
+w1 off       3  1471, 1478.5, 1463                      1471           1469        1630        1966  40, 40, 40
+w1 on        3  1468, 1483, 1492                        1483           1474        2189        3743  40, 33, 29
+w4 off       3  1468, 1450, 1249                        1450           1447        1757        1986  164, 173, 184
+w4 on        3  1486, 1474, 1515.5                      1486           1485        1896        2140  159, 164, 140
