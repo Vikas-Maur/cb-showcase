@@ -465,7 +465,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-preview-banner .carton-badge, .carton-preview-banner > .carton-icon){flex:none}
 :where(${S}) :where(.carton-preview-blocked){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ---------------------------------------------------------------- Watch the changes */
+/* ---------------------------------------------------------------- WatchTheChanges */
 :where(${S}) :where(.carton-watch){display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--cb-panel);outline:none}
 :where(${S}) :where(.carton-watch-head){display:flex;align-items:flex-start;gap:10px}
 :where(${S}) :where(.carton-watch-titles){flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}

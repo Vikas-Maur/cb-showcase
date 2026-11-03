@@ -98,7 +98,7 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
   m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true, output: { hookSpecificOutput: { permissionDecision: "allow" } } }) });
   assert.deepEqual(await files.hooks[0](read), {}, "never an allow");
   asked.splice(0);
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
+  m.library({ call: async (method, arg) => (method === "carton.working" || asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
   // a Bash command that reads the shared file freezes it as a Read does, and so does one that runs cb (regress prod4:
   // the turn's first cb call, a `cb source print` too, held nothing); one that does neither sends nothing
   const holdRead = (actor) => ["carton.agentHook", { bundlePath: "/b", actor, event: "pre-tool-use", input: { hook_event_name: "PreToolUse", tool_input: { file_path: "timeline.tsx" }, tool_name: "Read", cwd: "/b" } }];
@@ -125,7 +125,7 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
 test("laptop #8: the person's own Claude Code, as Cardboard 1.4.0 runs it (the Agent SDK transport's in-process hooks, a \"claude\" launch, no directorEnv), is claude-code/<session>, and its turn's end tells and names exactly that", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [];
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
+  m.library({ call: async (method, arg) => (method === "carton.working" || asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
   // main's launch context, as oH gets it from v_e (dist/main.js: {project, chatId, binary, launch, sessionId, text})
   const chatId = "7a09b6cc-8553-4fe8-9942-0cf44eec39e2", session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", me = "claude-code/787d66ff";
   const ctx = { project: { id: "p1", name: "Demo", bundlePath: "/b" }, chatId, binary: { path: "claude", environment: {} }, launch: { provider: "claude", model: "default" }, sessionId: null, text: "x" };
@@ -259,7 +259,7 @@ test("review P2 (lap2): a Stop still asking the worker when its turn ends (an in
 test("review P2 (lap2): a Bash hook whose credit gate answers after its turn ended (an interrupt) starts no hold on timeline.tsx", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [];
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true }) });
+  m.library({ call: async (method, arg) => (method === "carton.working" || asked.push([method, arg]), { delivered: true }) });
   const chatId = "c1", session = "787d66ff-b5c3", ctx = { project: { id: "p1", bundlePath: "/b" }, chatId, launch: { provider: "claude" } };
   const chat = { chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "One." } };
   m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
@@ -577,7 +577,7 @@ test("G2's timing log records each save's round trip, on and off", async () => {
 test("an in-app turn's end asks the worker to name its last version (the Director's, and laptop #8 any other provider's by its actors since the turn began); the prompt is never logged", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [], logged = [];
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), { status: "named" }) });
+  m.library({ call: async (method, arg) => (method === "carton.working" || asked.push([method, arg]), { status: "named" }) });
   const original = { log: console.log, warn: console.warn, error: console.error };
   for (const k of Object.keys(original)) console[k] = (...a) => logged.push(a.join(" "));
   try {
@@ -608,5 +608,37 @@ test("an in-app turn's end asks the worker to name its last version (the Directo
   const c = { chatId: "c3", turn: { state: "running" } };
   off.turnStarted(c, "p1", "/b", { id: "t2", text: "x" }, "director");
   off.turnEnded(c);
+  assert.deepEqual(offAsked, []);
+});
+
+test("UX redesign 0.7: an in-app turn shows its agent working on the project while it runs, and stops when it ends; the prompt is never logged", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [], logged = [];
+  m.library({ call: async (method, arg) => (method === "carton.working" && asked.push(arg), { status: "ok" }) });
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  for (const k of Object.keys(original)) console[k] = (...a) => logged.push(a.join(" "));
+  try {
+    const chat = { chatId: "c1", turn: { state: "running" } };
+    m.turnStarted(chat, "p1", "/b", { id: "t9", text: "Add music under the interview" }, "director");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(asked.length, 1);
+    const { since, ...start } = asked[0];
+    assert.ok(typeof since === "number" && since <= Date.now());
+    assert.deepEqual(start, { projectId: "p1", chat: "c1", provider: "director", actor: "director/c1/t9", actors: ["director/c1/t9"], prompt: "Add music under the interview" });
+    m.turnEnded(chat, "result");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(asked[1], { projectId: "p1", chat: "c1", done: true });
+    // the person's own Claude Code: by the ids its edits are recorded by
+    const host = { chatId: "c2", sessionIds: { claude: "abcd1234-5678" }, turn: { state: "running" } };
+    m.turnStarted(host, "p1", "/b", { id: "t1", text: "Trim the outro" }, "claude");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual([asked[2].provider, asked[2].actors], ["claude", ["claude/c2", "claude-code/abcd1234"]]);
+  } finally { Object.assign(console, original); }
+  assert.ok(!logged.some((l) => /music|outro/.test(l)), logged.join("\n"));
+  // off: nothing
+  const off = load({});
+  const offAsked = [];
+  off.library({ call: async (...a) => offAsked.push(a) });
+  off.turnStarted({ chatId: "c3", turn: { state: "running" } }, "p1", "/b", { id: "t2", text: "x" }, "director");
   assert.deepEqual(offAsked, []);
 });

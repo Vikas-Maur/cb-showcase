@@ -393,7 +393,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       id: "items/intro/#time",
       title: "'Intro' timing",
       mine: { author: people.alice, summary: "Trimmed the end to 0:05.0", at: now0 - 40_000, what: "trim", text: "Trimmed it to end at 0:05", did: "trimmed it" },
-      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "timing", text: "Set it to play 0:02–0:08", did: "changed when it plays" },
+      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "move", text: "Moved it to start at 0:02", did: "moved it" },
       canKeepBoth: false,
       reason: "Both changed when this clip plays. Doing both would end it before it starts.",
       provisional: "theirs",

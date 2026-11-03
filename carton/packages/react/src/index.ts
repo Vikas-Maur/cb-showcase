@@ -51,7 +51,7 @@ export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, Previ
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box } from "./components/WatchTheChanges.ts";
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
-export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
+export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, defaultClipKind, sideNoun, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
 export { itemFilter, type ItemFilter } from "./item-filter.ts";
 // Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.

@@ -65,7 +65,7 @@ test(name("prod3 P3-B, P3-C: the dialog names a track the fold adds; a title and
   const m = await render(h(CartonProvider, { ui }, h(FoldInDialog, { fromCutId: v.id, intoCutId: main, onClose: () => {}, onDone: () => void done++ })));
   await waitFor(() => $$(m.container, ".carton-fold-change").length > 0, "the rows");
   const rows = $$(m.container, ".carton-fold-change").map((r) => r.querySelector(".carton-fold-text")?.textContent ?? "");
-  assert.ok(rows.includes("Moved 'W1' to track 'Text 1', fontSize 100 → 150"), rows.join(" | "));
+  assert.ok(rows.includes("Moved “W1” to track “Text 1”, made it bigger (font size 100 → 150)"), rows.join(" | "));
   assert.ok(!rows.some((r) => /another track|Text: W3/.test(r)), rows.join(" | "));
   assert.equal(rows.length, 3, `the track, W1, and W3 with its entry: ${rows.join(" | ")}`);
   assert.match(m.container.textContent ?? "", /3 changes/);
@@ -103,7 +103,7 @@ test(name("prod3 P3-C (review): an entry two titles share is its own row; leavin
   await waitFor(() => $$(m.container, ".carton-fold-change").length > 0, "the rows");
   const rows = $$(m.container, ".carton-fold-change");
   assert.equal(rows.length, 3, rows.map((r) => r.textContent).join(" | "));
-  const w3 = rows.find((r) => /'W3'/.test(r.querySelector(".carton-fold-text")?.textContent ?? ""))!;
+  const w3 = rows.find((r) => /“W3”/.test(r.querySelector(".carton-fold-text")?.textContent ?? ""))!;
   await click(w3.querySelector("input[type=checkbox]")!);
   await flush();
   await click(byText(m.container, "button", /^Fold in 2 of 3$/));

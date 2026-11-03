@@ -59,13 +59,13 @@ test("describe(): a record's label gets the doc, so a clip is named after its me
 test("describeCard(): the user's card (a clip added, then moved, both saves inserting it) says where each side put it, with no ids", () => {
   const card: ConflictCard = { kind: "record", path: "items/c9", base: undefined, ours: clip("c9", 10, 12), theirs: clip("c9", 11, 13) };
   const w = core.describeCard(card, schema, base());
-  assert.deepEqual(w, { title: "'Dragon-take2.mp4'", ours: "Added at 10.0 s–12.0 s", theirs: "Added at 11.0 s–13.0 s" });
+  assert.deepEqual(w, { title: "“Dragon-take2.mp4”", ours: "Added it at 0:10 to 0:12", theirs: "Added it at 0:11 to 0:13", name: "Dragon-take2.mp4" });
   for (const s of [w.title, w.ours, w.theirs]) assert.doesNotMatch(s, /c9|m1|t1|id|undefined/);
 });
 
 test("describeCard(): a time card words each side's move or trim as History does; the engine's reason is not shown", () => {
   const card: ConflictCard = { kind: "group", path: "items/c1/#time", reason: "same kind or incompatible", base: { startTime: 1.5, endTime: 4.5, trimStart: 0, trimEnd: 3 }, ours: { startTime: 3, endTime: 6, trimStart: 0, trimEnd: 3 }, theirs: { startTime: 1.5, endTime: 6, trimStart: 0, trimEnd: 4.5 } };
-  assert.deepEqual(core.describeCard(card, schema, base()), { title: "'Dragon-take2.mp4' timing", ours: "Moved 1.5 s → 3.0 s", theirs: "Trimmed end 4.5 s → 6.0 s" });
+  assert.deepEqual(core.describeCard(card, schema, base()), { title: "“Dragon-take2.mp4” timing", ours: "Moved it to start at 0:03", theirs: "Trimmed it to end at 0:06", name: "Dragon-take2.mp4" });
   // without the doc there is no record to name: the collection's noun
   assert.equal(core.describeCard(card, schema).title, "Clip timing");
   // a reason in words for people stays
@@ -77,15 +77,15 @@ test("describeCard(): only the fields that differ, with labels; a removed side; 
   const ours = { ...b, opacity: 0.5, volume: 0.8 };
   const theirs = { ...b, opacity: 0.5, volume: 0.2, trackId: "t2" };
   const w = core.describeCard({ kind: "record", path: "items/c1", base: b, ours, theirs }, schema, base());
-  assert.deepEqual([w.ours, w.theirs], ["On track 'Mine', volume 0.8", "Moved to track 'B-roll', volume 0.2"]);
+  assert.deepEqual([w.ours, w.theirs], ["On track “Mine”, volume 0.8", "Moved to track “B-roll”, volume 0.2"]);
   const del = core.describeCard({ kind: "record", path: "items/c1", base: b, ours: { ...b, opacity: 0.4 }, theirs: undefined }, schema, base());
   assert.deepEqual([del.ours, del.theirs], ["Opacity 0.4", "Removed"]);
-  assert.deepEqual(core.describeCard({ kind: "field", path: "items/c1/opacity", base: 1, ours: 0.9, theirs: 0.5 }, schema, base()), { title: "'Dragon-take2.mp4' opacity", ours: "0.9", theirs: "0.5" });
+  assert.deepEqual(core.describeCard({ kind: "field", path: "items/c1/opacity", base: 1, ours: 0.9, theirs: 0.5 }, schema, base()), { title: "“Dragon-take2.mp4” opacity", ours: "0.9", theirs: "0.5", name: "Dragon-take2.mp4" });
   // a host words its own values (and may word an id field, which is otherwise never shown)
   const pct = core.describeCard({ kind: "field", path: "items/c1/opacity", base: 1, ours: 0.9, theirs: 0.5 }, schema, base(), { value: (k, v) => (k === "opacity" ? `${Math.round((v as number) * 100)}%` : undefined) });
   assert.deepEqual([pct.ours, pct.theirs], ["90%", "50%"]);
   const root = core.describeCard({ kind: "field", path: "name", base: "A", ours: "B", theirs: "C" }, schema);
-  assert.deepEqual(root, { title: "Project name", ours: '"B"', theirs: '"C"' });
+  assert.deepEqual(root, { title: "Project name", ours: "“B”", theirs: "“C”" });
 });
 
 test("undoLabel(): agents by their name, a subagent by its agent's; the person's edits, a terminal's included, by no one", () => {

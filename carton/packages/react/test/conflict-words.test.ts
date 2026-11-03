@@ -143,7 +143,7 @@ test("fromCarton: a reported card's sides carry their sentences, the clip's name
   const adapter: HostAdapter<Doc> = { name: "test", schema, schemaVersion: 1, fromHost: (x) => x, toHost: (d) => d };
   const alice: CoreActor = { kind: "human", id: "alice", name: "Alice", group: "alice@laptop" };
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), cutName: "Main cut" }, actor: alice });
-  const ui = fromCarton(carton, { me: alice, cardValue: pct });
+  const ui = fromCarton(carton, { me: alice, valueWords: pct });
   await ui.ready;
   // a stale save's clash, core's convention: ours = head (kept), theirs = the person's own edit
   ui.reportConflicts([{ kind: "field", path: "items/w6/fontSize", base: 100, ours: 80, theirs: 120 }]);
