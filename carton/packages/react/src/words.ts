@@ -2,6 +2,8 @@
 // never git's. A host can pass its own copy (for another language) to <CartonProvider words>.
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** A length in seconds as Bring back says it: "3 s", "1.5 s" (whole seconds from 10 s up). */
+const secondsWord = (s: number) => `${s < 10 && !Number.isInteger(s) ? s.toFixed(1) : Math.round(s)} s`;
 /** A label that ends a sentence: its full stop, unless it ends in an ellipsis ("…”", never "…”."; design QA G21). */
 const stop = (label: string) => (/…[”"’']?$/.test(label) ? label : `${label}.`);
 
@@ -543,12 +545,24 @@ export const words = {
   noClipDiffers: "Every clip is the same as now.",
   bringBackQ: (clip: string) => `Bring back “${clip}”?`,
   takeOutQ: (clip: string) => `Take out “${clip}”?`,
-  bringBackChangedBody: (when: string) => `It goes back to how it was at ${when}: its timing, text, look and settings. Nothing else changes, and Ctrl+Z takes it back.`,
-  bringBackDeletedBody: (at: string | null) => `It comes back as it was, at its own time${at ? ` (${at})` : ""} and on its own track. Nothing else moves, and Ctrl+Z takes it back.`,
-  clipChangedAgain: (clip: string, when: string) => `“${clip}” just changed again. Bring back the ${when} one anyway?`,
+  // Bring back's confirmation (DESIGN-V2 §3.2, from N0b's place and ripple) and its toast
+  bringBackChangedLead: (when: string) => `It goes back to how it was at ${when}: its timing, text, look and settings.`,
+  asItWasAt: (when: string) => `It goes back to how it was at ${when}.`,
+  goesBackWhere: (at: string | null) => `It goes back where it was${at ? `, at ${at}` : ""}.`,
+  placeTaken: (names: string, at: string | null) => `Its place is taken by ${names}, so it goes on a new track above${at ? `, at ${at}` : ""}.`,
+  anotherClip: "another clip",
+  takeOutLead: "It wasn't in this version, so it comes out of your edit.",
+  restMovesLater: (s: number) => `Everything after it moves ${secondsWord(s)} later.`,
+  restMovesEarlier: (s: number) => `Everything after it moves ${secondsWord(s)} earlier.`,
+  nothingElseMoves: "Nothing else moves.",
+  ctrlZTakesBack: "Ctrl+Z takes it back.",
+  ctrlZPutsBack: "Ctrl+Z puts it back.",
+  clipChangedNothing: (clip: string) => `“${clip}” just changed again. Nothing was brought back.`,
+  onNewTrack: (names: string | null) => `Its place was taken${names ? ` by ${names}` : ""}, so it's on a new track above.`,
+  restMovedLater: (s: number) => `Everything after it moved ${secondsWord(s)} later.`,
+  restMovedEarlier: (s: number) => `Everything after it moved ${secondsWord(s)} earlier.`,
   findShowing: (n: number, total: number) => `The newest ${n} of ${plural(total, "version", "versions")}`,
   findShowAll: "Show them all",
-  takeOutBody: "It wasn't in this version, so it comes out of your edit. Nothing else moves, and Ctrl+Z puts it back.",
   bringBackNamed: (clip: string) => `Bring back “${clip}”`,
   takeOutNamed: (clip: string) => `Take out “${clip}”`,
   seeItFirst: "See it first",

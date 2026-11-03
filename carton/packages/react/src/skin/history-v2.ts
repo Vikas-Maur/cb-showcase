@@ -64,6 +64,9 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-goback-line){font-size:12px;line-height:16px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-goback-hint){font-size:11.5px;color:var(--cb-fg-4);white-space:nowrap}
 :where(${S}) :where(.carton-goback-note){margin:8px 0 0;font-size:12px;color:var(--cb-fg-2)}
+/* N0b's refusal: the clip changed again since the confirmation showed it (its words, above the question asked again) */
+:where(${S}) :where(.carton-goback-warn){display:flex;gap:6px;margin:0 0 8px!important;padding:6px 8px;border-radius:6px;font-size:12px;line-height:16px;
+  background:color-mix(in srgb, var(--cb-warn) 12%, transparent);color:#fcd77f}
 :where(${S}) :where(.carton-bringback-head){display:flex;align-items:center;gap:6px}
 :where(${S}) :where(.carton-bringback-back){display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:-4px;border:0;border-radius:5px;background:none;color:var(--cb-fg-2);cursor:pointer}
 :where(${S}) :where(.carton-bringback-back:hover){background:#ffffff12;color:var(--cb-fg-1)}

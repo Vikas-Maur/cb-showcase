@@ -42,6 +42,11 @@ export function mockFind(st: MockFindState) {
   const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
   const who = (a: Actor) => actorLabel(a, st.actor, "You");
   const pictures = new Map<string, string>();
+  /** N0b's token for a clip, from its changes since a version: what it is now ("absent" once deleted). */
+  const tokenOf = (list: readonly Change[]) => {
+    const last = list[list.length - 1];
+    return !last ? "same" : list.some((c) => c.kind === "remove") ? "absent" : `mock:${last.itemId}:${last.text}|${last.at ?? ""}|${last.end ?? ""}`;
+  };
   let marking = st.landmarks;
   // the landmarks a session recorded (Exported, Sent): by version id
   const recorded = new Map<string, { kind: Landmark["kind"]; label?: string; by?: Actor }[]>();
@@ -141,9 +146,11 @@ export function mockFind(st: MockFindState) {
     return { clips: [...clips.values()].slice(0, 1), hits, total, versions: all.length };
   };
 
-  const restoreClip = async (ref: string, itemId: string, o: { remove?: boolean } = {}): Promise<BringBack> => {
+  const restoreClip = async (ref: string, itemId: string, o: { remove?: boolean; expect?: string } = {}): Promise<BringBack> => {
     const list = st.between(ref, st.head()).filter((c) => c.itemId === itemId);
     const name = list.map((c) => /“([^”]+)”/.exec(c.text)?.[1]).find(Boolean) ?? "the clip";
+    // N0b: a clip that changed since the confirmation showed it is refused, with the new token (nothing written)
+    if (o.expect !== undefined && o.expect !== tokenOf(list)) throw Object.assign(new Error(`“${name}” just changed again. Nothing was brought back.`), { code: "CHANGED_SINCE", token: tokenOf(list) });
     if (!list.length) return { how: "same", clipName: name };
     const added = list.some((c) => c.kind === "add");
     if (added && !o.remove) throw Object.assign(new Error(`“${name}” wasn't in this version. Bringing it back means taking it out.`), { code: "NOT_IN_VERSION" });
@@ -193,11 +200,16 @@ export function mockFind(st: MockFindState) {
       const noun = last.clip === "video" ? "clip" : last.clip;
       const span = last.at !== undefined ? { start: last.at, end: last.end ?? last.at } : undefined;
       // N0b's token: the clip as shown (the mock's newest change to it stands in for the engine's hash; "absent" once deleted)
-      const token = list.some((c) => c.kind === "remove") ? "absent" : `mock:${itemId}:${list.length}`;
+      const token = tokenOf(list);
       const row = { itemId, name, noun, token, ...(last.author ? { by: last.author } : {}), ...(last.when !== undefined ? { at: last.when } : {}) };
-      if (list.some((c) => c.kind === "remove")) out.deleted.push({ ...row, ...(span ? { then: span } : {}) });
-      else if (list.some((c) => c.kind === "add")) out.added.push({ ...row, ...(span ? { now: span } : {}) });
-      else out.changed.push({ ...row, ...(span ? { now: span } : {}) });
+      // N0b's place and ripple, for the gallery (made up, not computed): a deleted clip's place is taken by the newest
+      // added one (a new track above), a clip added since was added with a ripple, a changed one moves nothing else
+      const taker = [...by.values()].map((xs) => xs[xs.length - 1]!).find((c) => c.kind === "add");
+      const takerName = taker ? (/“([^”]+)”/.exec(taker.text)?.[1] ?? "") : "";
+      if (list.some((c) => c.kind === "remove"))
+        out.deleted.push({ ...row, ...(span ? { then: span } : {}), place: taker ? { placed: "new-track", trackId: "track-2", takenBy: [{ itemId: taker.itemId!, name: takerName }] } : { placed: "same" }, ripple: null });
+      else if (list.some((c) => c.kind === "add")) out.added.push({ ...row, ...(span ? { now: span } : {}), place: { placed: "same" }, ripple: span ? { direction: "earlier", by: span.end - span.start, at: span.start, moved: 3 } : null });
+      else out.changed.push({ ...row, ...(span ? { now: span } : {}), place: { placed: "same" }, ripple: null });
     }
     return { ...out, same: 14 };
   };

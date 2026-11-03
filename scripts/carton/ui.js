@@ -83,7 +83,7 @@ function stepper(bridge) {
 }
 
 // (imported here, beside the toasts that use it, rather than in the long import line other workstreams edit)
-import { clockOfDay } from "@carton/react";
+import { clockOfDay, firstName } from "@carton/react";
 
 /**
  * A landmark's picture (Carton UX v2, DESIGN-V2 §2.2): what the stage shows now, as one 88 × 50 JPEG, drawn from the
@@ -173,7 +173,10 @@ function confirmations(ui, bridge) {
     const r = await restoreClip(ref, itemId, ...(o !== undefined ? [o] : []));
     if (r && r.how !== "same") {
       const name = r.clipName || "the clip";
-      const text = r.how === "removed" ? words.tookOutClipToast(name) : words.broughtBackToast(name, v ? clockOfDay(v.at) : "then");
+      // where it went and what else moved, as its confirmation said (N0b's place and ripple, DESIGN-V2 §3.2)
+      const taken = r.place?.placed === "new-track" ? words.onNewTrack(r.place.takenBy?.length ? r.place.takenBy.map((t) => `“${t.name}”`).join(" and ") : null) : null;
+      const moved = r.ripple ? (r.ripple.direction === "later" ? words.restMovedLater(r.ripple.by) : words.restMovedEarlier(r.ripple.by)) : null;
+      const text = [r.how === "removed" ? words.tookOutClipToast(name) : words.broughtBackToast(name, v ? clockOfDay(v.at) : "then"), taken, moved].filter(Boolean).join(" ");
       toasts.show(text, undo("clip", { undone: words.bringBackUndone(name), redone: words.bringBackRedone(name) }, r.made));
     }
     return r;
@@ -1007,7 +1010,10 @@ function useLiveStatus(projectId, bridge) {
   return st;
 }
 const livePeers = (st) => (Array.isArray(st?.peers) ? st.peers : []).filter((p) => typeof p?.actor?.key === "string" && typeof p.actor.name === "string");
-const hereWords = (peers) => (peers.length ? `${peers.map((p) => p.actor.name).slice(0, 3).join(", ")}${peers.length > 3 ? ` and ${peers.length - 3} more` : ""} ${peers.length === 1 ? "is" : "are"} here` : "");
+// "Leo, Mia and Director are here": people by their first names (C's firstName, as History, Share and the cards name
+// them), an agent by its product name
+const hereName = (a) => (a.kind === "human" ? firstName(a.name) : a.name);
+const hereWords = (peers) => (peers.length ? `${peers.map((p) => hereName(p.actor)).slice(0, 3).join(", ")}${peers.length > 3 ? ` and ${peers.length - 3} more` : ""} ${peers.length === 1 ? "is" : "are"} here` : "");
 /**
  * The title bar's summary of a shared project (UI audit P2-11): its sync state and words, and up to three of the
  * people here, as the strip draws them (scripts/carton/strip-buttons.js). Null for a project that isn't shared.

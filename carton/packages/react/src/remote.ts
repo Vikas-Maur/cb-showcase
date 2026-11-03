@@ -48,7 +48,8 @@ export type ServerMessage =
   | { t: "topic"; topic: SmallTopic; value: unknown; actors?: Actor[] }
   | { t: "history"; length: number; rows: [number, Version][]; actors?: Actor[] }
   | { t: "ret"; id: number; ok: true; value: unknown }
-  | { t: "ret"; id: number; ok: false; error: string };
+  // (`code` and `token`: an engine refusal's own, e.g. N0b's ChangedSince, so the page can tell it apart and ask again)
+  | { t: "ret"; id: number; ok: false; error: string; code?: string; token?: string };
 
 export type ClientMessage =
   | { t: "hello" }
@@ -166,7 +167,10 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
           .then(() => fn.apply(ui, m.args))
           .then(
             (value) => send({ t: "ret", id: m.id, ok: true, value: value ?? null }),
-            (e: unknown) => send({ t: "ret", id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) }),
+            (e: unknown) => {
+              const x = e as { code?: unknown; token?: unknown } | null;
+              send({ t: "ret", id: m.id, ok: false, error: e instanceof Error ? e.message : String(e), ...(typeof x?.code === "string" ? { code: x.code } : {}), ...(typeof x?.token === "string" ? { token: x.token } : {}) });
+            },
           );
       }
     },
@@ -385,7 +389,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         if (!c) break;
         calls.delete(m.id);
         if (m.ok) c.ok(m.value);
-        else c.fail(new Error(m.error));
+        else c.fail(Object.assign(new Error(m.error), m.code !== undefined ? { code: m.code } : {}, m.token !== undefined ? { token: m.token } : {}));
         break;
       }
     }

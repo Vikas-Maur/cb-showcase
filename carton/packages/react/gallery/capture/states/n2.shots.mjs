@@ -34,6 +34,18 @@ export function shots({ P, menuItem, foldOlder, uxMenu }) {
     P("n2-goback-turn", "n2-history", "⋯ on the Director's turn → Undo this turn: Go back… with Undo Director's turn picked.", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "Undo this turn").click(); await p.locator(".carton-goback").waitFor(); await p.waitForTimeout(250); }),
     P("n2-bringback", "n2-noclip", "Go back… → Bring back one clip → Choose a clip…: the clips that differ since the Director's turn, in three groups; the first hovered.", async (p) => { await clips(p); await p.locator(".carton-bringback-row").first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
     P("n2-bringback-confirm", "n2-noclip", "n2-bringback, then Bring back on “B-roll 3” (deleted since): the confirmation in place, with See it first.", async (p) => { await clips(p); const r = p.locator(".carton-bringback-row", { hasText: "B-roll 3" }).first(); await r.hover(); await r.locator(".carton-bringback-btn").click(); await p.locator(".carton-bringback-confirm").waitFor(); await p.waitForTimeout(200); }),
+    P("n2-bringback-again", "n2-noclip", "N0b: Bring back on “Intro”, then the Director trims “Intro” again before the click: the engine refuses (\"“Intro” just changed again. Nothing was brought back.\") and the confirmation asks again over the clip as it is now.", async (p) => {
+      await clips(p);
+      const r = p.locator(".carton-bringback-row", { hasText: "“Intro”" }).first();
+      await r.hover();
+      await r.locator(".carton-bringback-btn").click();
+      await p.locator(".carton-bringback-confirm").waitFor();
+      await p.evaluate(() => window.__cap.ui.addVersion({ kind: "edit" }, [{ key: "timelineItems/item-intro", itemId: "item-intro", clip: "video", kind: "change", text: "Trimmed “Intro”, now ends at 0:04", at: 0, end: 4 }]));
+      await p.waitForTimeout(300);
+      await p.locator(".carton-bringback-confirm .carton-btn[data-variant=primary]").click();
+      await p.locator(".carton-goback-warn").waitFor();
+      await p.waitForTimeout(200);
+    }),
     P("n2-bringback-takeout", "n2-noclip", "n2-bringback, then Take out on “Jane Smith, Founder” (not there yet then): \"Take out …?\".", async (p) => { await clips(p); const r = p.locator(".carton-bringback-row", { hasText: "Jane Smith" }).first(); await r.hover(); await r.locator(".carton-bringback-btn").click(); await p.locator(".carton-bringback-confirm").waitFor(); await p.waitForTimeout(200); }),
     P("n2-search", "n2-history", "\"intro\" typed in the search field: the clip first (“Intro”, the clip, Only this clip), then the versions that mention it, each saying why.", async (p) => { await foldOlder(p); await search(p, "intro"); }),
     P("n2-search-person", "n2-history", "\"director\" typed: the Director's versions (a person), newest first.", async (p) => { await foldOlder(p); await search(p, "director"); }),
