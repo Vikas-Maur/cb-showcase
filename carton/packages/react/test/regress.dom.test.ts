@@ -16,13 +16,20 @@ afterEach(cleanup);
 after(closeDom);
 const wrap = (ui: CartonUi, ...children: unknown[]) => h(CartonProvider, { ui }, ...(children as never[]));
 const name = (t: string) => `${t} [${runtime}]`;
+// "Today" and "Yesterday" are worked out from the real clock, so the mock History is anchored to today: a fixed date
+// made these tests fail from the day after it.
+const todayAt = (hour: number) => {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  return d.getTime();
+};
 const ty = (el: Element) => parseFloat(((el as HTMLElement).style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "NaN");
 
 // Regress #2: a reader who picked a version, then scrolled away from it (into an older day), was pulled back to it when a
 // new version arrived: the active row's index and the rows' layout moved, and the list kept the active row in view.
 for (const [label, hour, grouped] of [["grouped by day, scrolled into an older day", 1, true], ["one day", 14, false]] as const)
   test(name(`regress #2: a new version keeps the reader's place after they picked a row and scrolled away (${label})`), async () => {
-    const ui = createMockUi({ versions: 120, now: new Date(2026, 10, 2, hour, 0).getTime() });
+    const ui = createMockUi({ versions: 120, now: todayAt(hour) });
     const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
     await flush();
     const list = $(m.container, ".carton-history-list")!;
@@ -173,7 +180,7 @@ test(name("regress P3-12: a version of one change offers \"Show the change\""), 
 // The laptop's run of #2 (docs/regress/ui, bug-days-jump-*): "Yesterday" opened from the keyboard, so its header is the
 // picked row; scrolled down into it; a version arrives. The list jumped back with that header at the top, every time.
 test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolled into, a version arrives: the place holds"), async () => {
-  const now = new Date(2026, 10, 2, 5, 0).getTime();
+  const now = todayAt(5);
   const ui = createMockUi({ versions: 400, now });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
