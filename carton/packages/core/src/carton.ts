@@ -518,6 +518,8 @@ const CODED: Record<string, SyncError["code"]> = {
   closed: "unreachable",
   protocol: "server",
   "write-limit": "write-limit",
+  // the host's words say what is wrong ("this project's history can't be loaded…"): a server problem, no retry fixes it
+  "history-missing": "server",
 };
 /**
  * A state handed to a caller (`head`, `checkout`, `resolve`): its own collection arrays (add, remove or reorder freely),

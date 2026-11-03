@@ -97,7 +97,13 @@ export type SequencerEvent =
   | { type: "withdraw"; branchId: string; id: string; seq: number }
   | { type: "adopt"; branchId: string; n: number; repeat: boolean }
   | { type: "keyframe"; branchId: string; seq: number; mismatch: boolean }
-  | { type: "ridClaimConflict"; rid: string };
+  | { type: "ridClaimConflict"; rid: string }
+  /**
+   * A blob the tables refer to (a keyframe, an archived segment, a change body) is gone from the blob store: deleted
+   * under the sequencer (an operator's cleanup, a bucket lifecycle rule). A keyframe is passed over; history that only
+   * the blob held can't be served, and the client is told so (`history-missing`).
+   */
+  | { type: "missingBlob"; branchId: string; key: string };
 
 export interface SequencerStats {
   pushes: number;
@@ -120,6 +126,8 @@ export interface SequencerStats {
   envelopesOut: number;
   /** Pushes and hand-offs the blob store refused for a while (a host's daily write cap), told as `write-limit`. */
   writeLimited: number;
+  /** Reads of a blob the tables refer to that the blob store no longer has (`missingBlob` events). */
+  missingBlobs: number;
 }
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
@@ -260,6 +268,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     envelopesIn: 0,
     envelopesOut: 0,
     writeLimited: 0,
+    missingBlobs: 0,
   };
   const emit = (e: SequencerEvent) => opts.onEvent?.(e);
 
@@ -440,7 +449,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   async function fillBody(r: { row: Row; blob: string | null }): Promise<{ row: Row; bytes: number }> {
     if (!r.blob) return { row: r.row, bytes: 0 };
     const bytes = await opts.blobs?.get(r.blob);
-    if (!bytes) throw new Error(`change body ${r.blob} is missing from the blob store`);
+    if (!bytes) throw new MissingBlob(r.blob, `change body ${r.blob} is missing from the blob store`);
     return { row: { ...r.row, ...(JSON.parse(dec.decode(bytes)) as Partial<Row>) } as Row, bytes: bytes.byteLength };
   }
   /**
@@ -492,13 +501,20 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     for (let i = 0; i < rows.length; i++) if (!(await take(rows[i]!, sizes[i]!))) break;
     return out;
   }
+  /** `e` is a blob the tables refer to that the store no longer has: counted and told (`missingBlob`), else rethrown. */
+  function missingBlob(branchId: string, e: unknown): MissingBlob {
+    if (!(e instanceof MissingBlob)) throw e;
+    stats.missingBlobs++;
+    emit({ type: "missingBlob", branchId, key: e.key });
+    return e;
+  }
   /** A stored keyframe, with its document's size in reply bytes (at most). */
   async function loadKeyframe(branchId: string, k: { seq: number; hash: string; blob: string | null; doc: string | null }): Promise<{ keyframe: sync.KeyframeData; bytes: number }> {
     let docText = k.doc;
     let bytes = 3 * (docText?.length ?? 0);
     if (docText === null && k.blob) {
       const stored = await opts.blobs?.get(k.blob);
-      if (!stored) throw new Error(`keyframe ${k.blob} is missing from the blob store`);
+      if (!stored) throw new MissingBlob(k.blob, `keyframe ${k.blob} is missing from the blob store`);
       docText = dec.decode(stored);
       bytes = stored.byteLength;
     }
@@ -753,6 +769,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (source !== forkCut && tables.branch(source)?.rec.forkOf === rec.forkOf) return { branchId: source, at: 0 };
     return { branchId: source, at };
   }
+  /**
+   * The catch-up needs history whose blob is gone (a keyframe it can't do without, an archived segment, a change
+   * body): refused with a code, in words for people, so the client says so instead of waiting in "syncing" forever.
+   */
+  function historyMissing(c: HostConnection, branchId: string): void {
+    send(c, { type: "error", code: "history-missing", branchId, reason: HISTORY_MISSING_WORDS });
+  }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
     // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
@@ -798,20 +821,38 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // a client that refused a keyframe and holds nothing at or after the root can't be served: say so, never loop
     if (m.noKeyframe && from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId} that the client can check` });
     if (from < b.root || (head - from > K && !m.noKeyframe)) {
-      const k = tables.latestKeyframe(m.branchId, head);
-      if (k && k.seq > from) {
-        const loaded = await loadKeyframe(m.branchId, k);
+      // the newest keyframe whose state can still be read: one whose blob is gone from the store (deleted under the
+      // sequencer) is passed over for an older one, or for the rows alone when the client holds a state they extend.
+      // A keyframe only shortens a catch-up; the rows are the history (stuck-sync: a replica stayed "syncing" forever)
+      let lost = false;
+      for (let k = tables.latestKeyframe(m.branchId, head); k && k.seq > from; k = k.seq > 0 ? tables.latestKeyframe(m.branchId, k.seq - 1) : null) {
+        let loaded: Awaited<ReturnType<typeof loadKeyframe>>;
+        try {
+          loaded = await loadKeyframe(m.branchId, k);
+        } catch (e) {
+          missingBlob(m.branchId, e);
+          lost = true;
+          continue;
+        }
         keyframe = loaded.keyframe;
         budget -= loaded.bytes; // the keyframe is part of the page
         from = k.seq;
-      } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
+        break;
+      }
+      if (!keyframe && from < b.root) return lost ? historyMissing(c, m.branchId) : send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // every page that subscribes or may (rows, a keyframe) holds the people, [] too: it says this server keeps them
     budget -= sync.jsonBytesBound(seesPeople(c) ? tables.people() : [], Infinity);
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
-    const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
+    let rows: Row[];
+    try {
+      rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
+    } catch (e) {
+      missingBlob(m.branchId, e);
+      return historyMissing(c, m.branchId);
+    }
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     // taken after the rows' read, so no change to them can fall between this list and the subscription below
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed, people: seesPeople(c) ? tables.people() : [] };
@@ -1010,7 +1051,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
     const after = Math.max(b.root, Number.isInteger(m.after) ? m.after : 0);
     const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
-    const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    // history whose blob is gone answers this request (an error with no request would leave it waiting)
+    const lost = (e: unknown) => (missingBlob(m.branchId, e), reply({ rows: [], error: HISTORY_MISSING_WORDS }));
+    let rows: Row[];
+    try {
+      rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    } catch (e) {
+      return lost(e);
+    }
     const last = rows.length ? rows[rows.length - 1]!.seq : after;
     // The lineage: whole, or with `lineageFrom` paged like catch-up (SF1-8): entries in closure order within the
     // catch-up byte budget, at least one state (or one entry with none) per page, `lineageNext` where the next starts.
@@ -1046,7 +1094,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         for (let i = s; i < nodes.length; i++) {
           const k = tables.keyframeAt(id, nodes[i]!.seq);
           if (!k) continue;
-          const { keyframe, bytes } = await loadKeyframe(id, k);
+          let loaded: Awaited<ReturnType<typeof loadKeyframe>>;
+          try {
+            loaded = await loadKeyframe(id, k);
+          } catch (e) {
+            // a carried state whose blob is gone is left out, as one never carried is: the lineage still loads
+            missingBlob(id, e);
+            continue;
+          }
+          const { keyframe, bytes } = loaded;
           if (taken > 0 && bytes > budget) {
             lineageNext = { entry: e, state: i };
             if (s === 0 || entry.states!.length) lineage.push(entry);
@@ -1409,6 +1465,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+
+/** A blob the tables refer to is gone from the blob store (`get` answered null). */
+class MissingBlob extends Error {
+  readonly key: string;
+  constructor(key: string, message: string) {
+    super(message);
+    this.key = key;
+  }
+}
+/** What a client is told when its catch-up needs history that is gone (no blob key: these are for people). */
+const HISTORY_MISSING_WORDS = "this project's history can't be loaded: part of it is missing from the server's storage";
 /** A state digest (`hashDoc`: SHA-256, hex). */
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
@@ -1428,7 +1495,7 @@ function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStr
   return new ReadableStream<Uint8Array>({
     async pull(ctl) {
       const part = await blobs.get(key, { offset, length: chunk });
-      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (!part) return ctl.error(new MissingBlob(key, `segment ${key} is missing from the blob store`));
       if (part.byteLength) ctl.enqueue(part);
       offset += part.byteLength;
       if (part.byteLength < chunk) ctl.close();
