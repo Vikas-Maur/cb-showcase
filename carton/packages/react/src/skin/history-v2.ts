@@ -100,6 +100,11 @@ export const historyV2Css = `
 /* an icon alone at the panel's narrowest (§4.2) */
 @container (max-width: 316px){ :where(${S}) :where(.carton-compare-word){display:none} :where(${S}) :where(.carton-compare-btn){width:28px;padding:0;justify-content:center} }
 :where(${S}) :where(.carton-compare-menu){width:310px;max-width:calc(100vw - 24px)}
+/* a narrow panel: the menu spans the cut bar, as the cuts menu does; held to the button's right edge, its 310 px ran
+   out of a 300 px panel on the left, cutting off "Compare your edit with…" and every entry's first letters (design QA v2) */
+@container (max-width: 360px){ :where(${S}) :where(.carton-cutbar .carton-compare-anchor){position:static}
+  :where(${S}) :where(.carton-cutbar .carton-compare-anchor .carton-menu-pop){left:10px;right:10px}
+  :where(${S}) :where(.carton-cutbar .carton-compare-menu){width:auto;max-width:none} }
 :where(${S}) :where(.carton-compare-entry){gap:10px}
 :where(${S}) :where(.carton-compare-entry .carton-landmark-tile){width:40px;height:23px}
 :where(${S}) :where(.carton-pick-line){display:flex;align-items:flex-start;gap:8px;margin:0 12px 8px;padding:8px 8px 8px 10px;border-radius:8px;

@@ -539,11 +539,17 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
       const toolbar = root.querySelector(".justify-between>.flex-1.justify-end");
       const pps = bridge.timelineScale?.()?.pps;
       if (!surface || !(pps > 0)) { setGeo(null); return; }
+      // the legend only where the toolbar has room for it: a timeline 900 px or wider (DESIGN-V2 §1.6). A window-width
+      // rule kept it in a 1100 px window's 430 px timeline, where it squeezed the timecode onto three lines (design QA
+      // v2). The toolbar's row is as wide as the timeline (the region itself is display: contents, no box). A width of
+      // 0 is no layout to read (a test's DOM): shown
+      const width = toolbar?.parentElement?.getBoundingClientRect().width ?? 0;
+      const wide = !(width > 0 && width < 900);
       const rows = new Map();
       for (const el of surface.querySelectorAll(":scope > [data-track-id]")) rows.set(el.getAttribute("data-track-id"), { top: el.offsetTop, height: el.offsetHeight });
       setGeo((was) => {
-        const same = was && was.surface === surface && was.content === content && was.names === names && was.toolbar === toolbar && was.pps === pps && was.rows.size === rows.size && [...rows].every(([k, r]) => was.rows.get(k)?.top === r.top && was.rows.get(k)?.height === r.height);
-        return same ? was : { surface, content, names, toolbar, pps, rows };
+        const same = was && was.surface === surface && was.content === content && was.names === names && was.toolbar === toolbar && was.wide === wide && was.pps === pps && was.rows.size === rows.size && [...rows].every(([k, r]) => was.rows.get(k)?.top === r.top && was.rows.get(k)?.height === r.height);
+        return same ? was : { surface, content, names, toolbar, wide, pps, rows };
       });
     };
     const soon = () => { if (!frame) frame = requestAnimationFrame(read); };
@@ -552,6 +558,9 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(soon) : null;
     const surface = document.querySelector("[data-timeline-canvas-surface]");
     if (surface) ro?.observe(surface);
+    // (the timeline's own width, for the legend: the surface is as wide as the edit, not the timeline)
+    const row = document.querySelector('[data-analytics-region="editor-timeline"] .justify-between>.flex-1.justify-end')?.parentElement;
+    if (row) ro?.observe(row);
     const mo = typeof MutationObserver === "function" && surface ? new MutationObserver(soon) : null;
     mo?.observe(surface, { childList: true });
     return () => { if (typeof off === "function") off(); ro?.disconnect(); mo?.disconnect(); if (frame) cancelAnimationFrame(frame); };
@@ -571,7 +580,7 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
   const parts = [portal(h(CompareMarks, { marks, pps: geo.pps, rows: geo.rows, selected, counts, onPick }), geo.surface)];
   if (geo.content) parts.push(portal(h(CompareStrip, { bars: strip, pps: geo.pps, label: c.left.title, playhead: leftAt }), geo.content));
   if (geo.names) parts.push(portal(h(CompareStripLabel, { label: c.left.title }), geo.names));
-  if (geo.toolbar) parts.push(portal(h(CompareLegend, null), geo.toolbar));
+  if (geo.toolbar && geo.wide) parts.push(portal(h(CompareLegend, null), geo.toolbar));
   return h("div", { hidden: true, "data-carton-compare-timeline": "" }, ...parts);
 }
 

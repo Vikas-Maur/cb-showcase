@@ -192,17 +192,25 @@ export function CompareStageView(p: CompareStageViewProps) {
   const words = useWords();
   // One picture and what goes under it (its label, Wipe's hint, Flip's pill), as wide as the area allows for the
   // project's shape: the picture's box is exact, so the editor's own picture laid into it (the hole) fits it exactly.
-  const below = p.mode === "flip" ? 32 : 26;
+  // (Side by side: Play both sits right under the two pictures, as one block in the middle of the stage, not at the
+  // stage's foot 170 px below them at the mockups' size: design QA v2. Its 40 px row is in the pictures' height there)
+  const below = p.mode === "flip" ? 32 : p.mode === "side" ? 26 + 40 : 26;
   const unit = (box: ReactNode, under: ReactNode) =>
     h("div", { className: "carton-compare-unit", style: { width: `min(100%, calc((100cqh - ${below}px) * ${p.ratio.toFixed(5)}))` } }, box, under);
   const boxStyle = { aspectRatio: String(p.ratio) };
+  const transport = h("div", { className: "carton-compare-transport" },
+    h(Button, { icon: p.playing ? "pause" : "play", keys: "Space", onClick: p.onPlayBoth }, p.playing ? words.pause : words.playBoth),
+    h("div", { className: "carton-compare-progress", "aria-hidden": true }, h("i", { style: { width: `${Math.round(Math.max(0, Math.min(1, p.progress ?? 0)) * 1000) / 10}%` } })),
+    h("span", { className: "carton-compare-step", "data-carton-tip": words.inStepByShotHint, tabIndex: 0, "aria-description": words.inStepByShotHint }, words.inStepByShot, h(Icon, { name: "info", size: 12 })));
   let area: ReactNode;
   if (p.mode === "side") {
     area = h("div", { className: "carton-compare-area", "data-mode": "side" },
+      h("div", { className: "carton-compare-sides" },
       h("figure", { className: "carton-compare-col", "data-side": "left", "aria-label": `${p.left.title}${p.left.detail ? ` · ${p.left.detail}` : ""}` },
         unit(h("div", { className: "carton-compare-box carton-compare-pic", style: boxStyle }, p.left.slate ? h(Slate, { slate: p.left.slate }) : p.player ?? null), h(SideLabel, { side: p.left }))),
       h("figure", { className: "carton-compare-col", "data-side": "right", "aria-label": `${p.right.title}${p.right.detail ? ` · ${p.right.detail}` : ""}` },
-        unit(h("div", { className: "carton-compare-box", "data-hole": "", ref: p.holeRef ?? undefined, style: boxStyle }, p.right.slate ? h(Slate, { slate: p.right.slate }) : null), h(SideLabel, { side: p.right }))));
+        unit(h("div", { className: "carton-compare-box", "data-hole": "", ref: p.holeRef ?? undefined, style: boxStyle }, p.right.slate ? h(Slate, { slate: p.right.slate }) : null), h(SideLabel, { side: p.right })))),
+      transport);
   } else if (p.mode === "wipe") {
     area = h("div", { className: "carton-compare-area", "data-mode": "wipe" },
       h("div", { className: "carton-compare-col" },
@@ -222,10 +230,7 @@ export function CompareStageView(p: CompareStageViewProps) {
     { className: cx("carton-compare", p.className), "aria-label": p.label, "data-mode": p.mode, "data-label": p.frameLabel ? "" : undefined, "data-pulse": p.pulse ? (p.pulse % 2 ? "a" : "b") : undefined },
     h(CompareBar, { mode: p.mode, modes: p.modes, sideOff: !!p.sideOff, compact: !!p.compact, onMode: p.onMode, count: p.count ?? null, onDone: p.onDone }),
     area,
-    h("div", { className: "carton-compare-transport" },
-      h(Button, { icon: p.playing ? "pause" : "play", keys: "Space", onClick: p.onPlayBoth }, p.playing ? words.pause : words.playBoth),
-      h("div", { className: "carton-compare-progress", "aria-hidden": true }, h("i", { style: { width: `${Math.round(Math.max(0, Math.min(1, p.progress ?? 0)) * 1000) / 10}%` } })),
-      h("span", { className: "carton-compare-step", "data-carton-tip": words.inStepByShotHint, tabIndex: 0, "aria-description": words.inStepByShotHint }, words.inStepByShot, h(Icon, { name: "info", size: 12 }))),
+    p.mode === "side" ? null : transport,
     p.frameLabel ? h("div", { className: "carton-compare-frame-label" }, h(Glyph, { name: "compare", size: 13 }), h("span", null, p.frameLabel), h("button", { type: "button", className: "carton-frame-back", "aria-label": words.doneComparingKey, title: words.doneComparingKey, onClick: p.onDone }, h(Icon, { name: "x", size: 12 }))) : null,
   );
 }
@@ -330,7 +335,9 @@ export interface CompareListProps {
 /** The History panel during Compare (DESIGN-V2 §1.2): ← History, the range, the count, every change in timeline order. */
 export function CompareList(p: CompareListProps) {
   const words = useWords();
-  const changes = p.changes ?? [];
+  // in timeline order, as the marks read left to right (a change with no place, the frame rate, last); the engine's
+  // order is by clip, so a removal at 0:12 came before a caption at 0:07 (design QA v2). Stable: same spot, same order
+  const changes = useMemo(() => [...(p.changes ?? [])].sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity)), [p.changes]);
   const authors = new Set(changes.map((c) => c.author?.key ?? "")).size > 1;
   const body = useRef<HTMLDivElement>(null);
   // focus comes in when the list is ready (as Cardboard's panels do), on the selected row or the first: that focus
@@ -464,6 +471,9 @@ ${SK} .carton-compare-mode:focus-visible{outline:2px solid color-mix(in srgb,var
 ${SK} .carton-compare-count{color:var(--cb-fg-3);white-space:nowrap}
 ${SK} .carton-compare-area{flex:1;min-height:0;display:flex;gap:12px;padding:4px 12px 0;pointer-events:none;container-type:size}
 ${SK} .carton-compare-col{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0}
+${SK} .carton-compare-area[data-mode=side]{flex-direction:column;justify-content:center;gap:4px;padding-bottom:4px}
+${SK} .carton-compare-sides{display:flex;gap:12px;min-height:0}
+${SK} .carton-compare-area[data-mode=side]>.carton-compare-transport{padding:0;pointer-events:auto}
 ${SK} .carton-compare-unit{display:flex;flex-direction:column;max-width:100%}
 ${SK} .carton-compare-box{position:relative;width:100%;border-radius:6px;overflow:hidden}
 ${SK} .carton-compare-pic{background:#111}

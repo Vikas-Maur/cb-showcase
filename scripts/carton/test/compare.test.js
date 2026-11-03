@@ -315,6 +315,17 @@ test("N1 §1.6: marks from the diff on the timeline's own rows, the strip and th
     assert.ok(m.tl.querySelector("[data-tracks-content] .carton-tl-strip"), "the left side's strip");
     assert.ok(m.tl.querySelector(".carton-tl-legend"), "the legend in the toolbar");
     assert.equal(m.tl.querySelector(".carton-tl-marks").getAttribute("aria-hidden"), "true");
+    // a timeline under 900 px (a 1100 px window with History and the chat): no legend, the marks stay (design QA v2)
+    const bar = m.tl.querySelector(".justify-between"), rect = bar.getBoundingClientRect.bind(bar);
+    bar.getBoundingClientRect = () => ({ ...rect(), width: 430 });
+    await act(async () => { m.bridge.seek(0); await sleep(40); });
+    await m.settle(40);
+    assert.equal(m.tl.querySelector(".carton-tl-legend"), null, "no legend in a 430 px timeline");
+    assert.ok(m.tl.querySelector(".carton-tl-mark"), "the marks still drawn");
+    bar.getBoundingClientRect = () => ({ ...rect(), width: 1000 });
+    await act(async () => { m.bridge.seek(0); await sleep(40); });
+    await m.settle(40);
+    assert.ok(m.tl.querySelector(".carton-tl-legend"), "back once it's wide");
     // a click on a mark picks its row; a row picks the spot (a removal: the right side's moment in step with where it was)
     await m.click(marks.find((e) => e.getAttribute("data-kind") === "moved"));
     assert.equal(m.list().querySelector(".carton-change-selected")?.getAttribute("data-change-key"), "timelineItems/ib");
