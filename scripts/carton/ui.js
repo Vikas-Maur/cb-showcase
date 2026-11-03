@@ -183,7 +183,7 @@ function useFit(ref, preferred) {
  * History in the side panel: the cut it shows, with the cuts menu (switch, a switch that waits for an agent's turn, New
  * cut, Rename, "Fold in changes from a cut…", which opens Fold in: from a cut into a cut, all, some or none of it); on a
  * teammate's cut, what you can do with it (fold it into yours, or copy it as a new cut: UX redesign PLAN 6.2); then
- * the versions, Compare with current, and "Watch the changes" in their place.
+ * the versions, Compare with current, and WatchTheChanges in their place.
  */
 function HistorySide({ bridge }) {
   const cuts = useCuts();
