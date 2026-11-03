@@ -192,7 +192,9 @@ export function mockFind(st: MockFindState) {
       const name = list.map((c) => /“([^”]+)”/.exec(c.text)?.[1]).find(Boolean) ?? "";
       const noun = last.clip === "video" ? "clip" : last.clip;
       const span = last.at !== undefined ? { start: last.at, end: last.end ?? last.at } : undefined;
-      const row = { itemId, name, noun, ...(last.author ? { by: last.author } : {}), ...(last.when !== undefined ? { at: last.when } : {}) };
+      // N0b's token: the clip as shown (the mock's newest change to it stands in for the engine's hash; "absent" once deleted)
+      const token = list.some((c) => c.kind === "remove") ? "absent" : `mock:${itemId}:${list.length}`;
+      const row = { itemId, name, noun, token, ...(last.author ? { by: last.author } : {}), ...(last.when !== undefined ? { at: last.when } : {}) };
       if (list.some((c) => c.kind === "remove")) out.deleted.push({ ...row, ...(span ? { then: span } : {}) });
       else if (list.some((c) => c.kind === "add")) out.added.push({ ...row, ...(span ? { now: span } : {}) });
       else out.changed.push({ ...row, ...(span ? { now: span } : {}) });
