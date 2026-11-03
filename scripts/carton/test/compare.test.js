@@ -73,13 +73,15 @@ function Broken() { throw new Error("no WebGL"); }
  */
 async function mount(o = {}) {
   const ui = o.ui ?? createMockUi({ versions: 8 });
-  if (o.rows !== false) { ui.changes = async () => ROWS; ui.shotDiff = async () => ({ a: [{ start: 0, end: 6, sig: 1 }, { start: 6, end: 9, sig: 2 }, { start: 9, end: 13, sig: 9 }, { start: 13, end: 20, sig: 3 }], b: [{ start: 0, end: 5, sig: 7 }, { start: 5, end: 9, sig: 8 }, { start: 9, end: 16, sig: 3 }], matches: [[3, 2]], aLabel: "a", bLabel: "b" }); }
+  if (o.rows !== false) { ui.changes = async () => ROWS; ui.shotDiff = async () => (o.diff ?? { a: [{ start: 0, end: 6, sig: 1 }, { start: 6, end: 9, sig: 2 }, { start: 9, end: 13, sig: 9 }, { start: 13, end: 20, sig: 3 }], b: [{ start: 0, end: 5, sig: 7 }, { start: 5, end: 9, sig: 8 }, { start: 9, end: 16, sig: 3 }], matches: [[3, 2]], aLabel: "a", bLabel: "b" }); }
   const PROJECT = "p-cmp-" + ++seq;
   const cmds = new Set(), evs = new Set(), servers = new Map(), blocked = new Set(), backs = new Set(), notices = new Set(), timeline = new Set();
   const did = { previews: [], holds: 0, seeks: [], plays: 0, reports: [], aside: [], docs: [], answers: [] };
   window.__cartonTimelineMark = () => {};
   window.__cartonStageMode = (v) => { did.stage = v; };
-  let playing = false, t = 2;
+  // the editor's clock: it advances while playing, as Cardboard's does
+  let playing = false, t = 2, since = Date.now();
+  const now = () => (playing ? t + (Date.now() - since) / 1000 : t);
   const bridge = {
     projectId: PROJECT,
     projectName: "Weekend reel",
@@ -105,11 +107,11 @@ async function mount(o = {}) {
     compareDoc: async (_p, ref) => { did.docs.push(ref); return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? DOCS.right : DOCS.left; },
     prefetch: () => {},
     libraryAside: (on) => did.aside.push(on),
-    togglePlay: () => { playing = !playing; did.plays++; for (const f of [...timeline]) f(); },
-    pause: () => { playing = false; },
+    togglePlay: () => { if (playing) { t = now(); playing = false; } else { since = Date.now(); playing = true; } did.plays++; for (const f of [...timeline]) f(); },
+    pause: () => { if (playing) { t = now(); playing = false; for (const f of [...timeline]) f(); } },
     get playing() { return playing; },
-    clock: () => t,
-    seek: (x) => { did.seeks.push(x); t = x; for (const f of [...timeline]) f(); },
+    clock: () => now(),
+    seek: (x) => { did.seeks.push(x); t = x; since = Date.now(); for (const f of [...timeline]) f(); },
     timelineScale: () => ({ pps: 10, tracks: TRACKS }),
     onTimeline: (f) => (timeline.add(f), () => timeline.delete(f)),
     editLength: () => 16,
@@ -400,8 +402,9 @@ test("N1 review: Restore asks first and Compare stays open; across cuts the foot
     // a row's ▶: its spot (a second before), both sides playing
     const plays = m.did.plays;
     await m.click([...m.list().querySelectorAll(".carton-change")].find((r) => /Interview B/.test(r.textContent)).querySelector(".carton-change-play, button"));
-    assert.equal(m.did.seeks.at(-1), 8, "a second before 0:09");
+    assert.ok(Math.abs(m.did.seeks.at(-1) - 8) < 0.1, "a second before 0:09: " + m.did.seeks.at(-1));
     assert.equal(m.did.plays, plays + 1, "playing");
+    assert.ok(m.page().compareBoth(), "both sides, in step (Play both, until a second after the change)");
     // across cuts with your cut on the right: Fold in changes from the other cut…
     await m.open("cut-ig");
     const fold = [...foot().querySelectorAll("button")].find((b) => /^Fold in changes from /.test(b.textContent));
@@ -505,5 +508,185 @@ test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare w
     assert.ok(m.page().comparing()?.acrossCuts, "Compare opened from the cuts menu");
     // N2's landmark pictures never come from a comparing stage
     assert.equal(await U.__forTests.stagePicture(), null);
+  } finally { await m.done(); }
+});
+
+test("N1b §1.4: Play both lets a side wait: the right side's editor pauses on its shot's last frame while the left plays on; a shot only one side has shows the slate on the other", opt, async () => {
+  // left: Intro 0–4, B-roll pier 4–7, Outro 7–12; right: Intro 0–4, Outro 4–9 (the pier only on the left)
+  const diff = { a: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 7, sig: 2, label: "B-roll pier" }, { start: 7, end: 12, sig: 3, label: "Outro" }], b: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 9, sig: 3, label: "Outro" }], matches: [[0, 0], [2, 1]], aLabel: "a", bLabel: "b" };
+  const m = await mount({ diff });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await act(async () => { m.bridge.seek(3.6); await sleep(10); });
+    // Space plays both (Compare's clock drives the editor's player and the second player)
+    await m.key(" ");
+    assert.ok(m.page().compareBoth(), "Play both runs");
+    await act(async () => { await sleep(900); });
+    await m.settle();
+    // story 4.5: the pier plays on the left; the right has no shot there: paused at the join, under its slate
+    let at = m.page().compareBoth().at;
+    assert.equal(at.b.slate, true, JSON.stringify(at));
+    assert.equal(m.bridge.playing, false, "the editor waits, paused");
+    assert.ok(at.a.t > 4 && at.a.t < 7, "the pier plays on the left: " + at.a.t);
+    const right = m.compare().querySelector('[data-side="right"] .carton-compare-slate');
+    assert.ok(right, "the right side's slate");
+    assert.match(right.textContent, /^“B-roll pier” isn't in your edit/);
+    assert.equal(m.page().compareLeftClock.playing(), true, "the left player plays on the story's clock");
+    // Space again: paused (its place kept), the editor where the right side is
+    await m.key(" ");
+    assert.equal(m.page().compareBoth()?.paused, true);
+    assert.equal(m.did.seeks.at(-1), 4, "at the join");
+  } finally { await m.done(); }
+});
+
+test("N1b §1.4: the shorter side holds its last frame (waiting) until the longer one ends", opt, async () => {
+  // the default alignment: one changed stretch, left 0–13 against right 0–9, then Interview B together
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await act(async () => { m.bridge.seek(8.6); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(900); });
+    await m.settle();
+    const at = m.page().compareBoth().at;
+    assert.equal(at.b.hold, true, "the right side's shot is over: it waits");
+    assert.ok(Math.abs(at.b.t - (9 - 1 / 30)) < 1e-6, "on its last frame");
+    assert.equal(m.bridge.playing, false);
+    assert.equal(at.a.hold, false, "the left plays on");
+    assert.match(m.compare().querySelector('[data-side="right"] .carton-compare-tc').textContent, /waiting/);
+    await act(async () => { m.page().comparePlayBoth(); await sleep(10); });
+  } finally { await m.done(); }
+});
+
+test("N1b §1.5: a picked row's detail: Then / Now, and Bring back with N0b's token, place and ripple words; Take out for a clip that wasn't there", opt, async () => {
+  const m = await mount();
+  try {
+    const ref = m.older().ref;
+    const asked = [], brought = [];
+    m.ui.bringBackChoices = async (r) => {
+      asked.push(r);
+      return {
+        changed: [{ itemId: "intro", name: "Intro", noun: "video", then: { start: 0, end: 6 }, now: { start: 0, end: 5 }, token: "t-intro", place: { placed: "same" }, ripple: null }],
+        deleted: [{ itemId: "pier", name: "B-roll pier", noun: "video", then: { start: 6, end: 9 }, token: "t-pier", place: { placed: "new-track", takenBy: [{ itemId: "drone", name: "Drone shot" }] }, ripple: { direction: "later", by: 3, at: 6, moved: 2 } }],
+        added: [{ itemId: "drone", name: "Drone shot", noun: "video", now: { start: 5, end: 9 }, token: "t-drone", ripple: { direction: "earlier", by: 4, at: 5, moved: 1 } }],
+        same: 3,
+      };
+    };
+    m.ui.restoreClip = async (r, item, o) => { brought.push([r, item, o]); return { ok: true, how: o?.remove ? "removed" : "changed", clipName: item, made: { cut: "cut-main", changes: ["x"] } }; };
+    await m.cmd("carton-history");
+    await m.open(ref);
+    const row = (re) => [...m.list().querySelectorAll(".carton-change")].find((r) => re.test(r.textContent));
+    await m.click(row(/Trimmed “Intro”/));
+    await m.settle(60);
+    let d = m.list().querySelector(".carton-compare-detail");
+    assert.ok(d, "the picked row opens its detail");
+    assert.deepEqual([...d.querySelectorAll(".carton-compare-thennow span")].map((x) => x.textContent), ["Then", "0:00–0:06", "Now", "0:00–0:05"]);
+    assert.equal(asked[0], ref, "Choose a clip… for the left side");
+    await m.click([...d.querySelectorAll("button")].find((b) => b.textContent === "Bring back “Intro”"));
+    await m.settle(60);
+    assert.deepEqual(brought.at(-1), [ref, "intro", { expect: "t-intro" }], "restoreClip with N0b's token");
+    // a deleted clip whose place is taken: its place and ripple, in N2's words
+    await m.click(row(/Removed “B-roll pier”/));
+    await m.settle(40);
+    d = m.list().querySelector(".carton-compare-detail");
+    assert.match(d.textContent, /taken by “Drone shot”/);
+    assert.match(d.textContent, /3 s later/);
+    // a clip that wasn't there then: Take out
+    await m.click(row(/Added “Drone shot”/));
+    await m.settle(40);
+    d = m.list().querySelector(".carton-compare-detail");
+    assert.deepEqual([...d.querySelectorAll(".carton-compare-thennow span")].map((x) => x.textContent), ["Then", "—", "Now", "0:05–0:09"]);
+    await m.click([...d.querySelectorAll("button")].find((b) => b.textContent === "Take out “Drone shot”"));
+    await m.settle(60);
+    assert.deepEqual(brought.at(-1), [ref, "drone", { remove: true, expect: "t-drone" }]);
+  } finally { await m.done(); }
+});
+
+test("N1b §1.2, §1.11: a playing card's ⇆ Side by side (still playing), Fold in's See them side by side (Back to Fold in…), a teammate's cut's Compare with Main cut", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    // a card's Play on an older version, then ⇆ Side by side: the version before it with it, Play both running
+    const rows = [...m.side.querySelectorAll(".carton-version")];
+    await m.click(rows[3]);
+    const card = m.side.querySelector(".carton-card-version");
+    assert.ok(card, "its card");
+    const playAll = [...card.querySelectorAll("button")].find((b) => b.textContent === "Play all");
+    await m.click(playAll);
+    await m.settle(120);
+    const side = [...card.querySelectorAll("button")].find((b) => b.textContent === "Side by side");
+    assert.ok(side, "⇆ Side by side beside Before while its Play runs");
+    await m.click(side);
+    await m.settle(150);
+    const c = m.page().comparing();
+    assert.ok(c, "Compare opened");
+    assert.ok(m.page().compareBoth(), "still playing: Play both runs");
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null);
+    // Fold in → See them side by side: the dialog closes, Compare opens with Back to Fold in…
+    await m.click(m.side.querySelector(".carton-cuts-trigger"));
+    await m.click([...document.querySelectorAll(".carton-menu-item")].find((b) => /Fold in changes from a cut/.test(b.textContent)));
+    await m.settle(120);
+    const see = [...document.querySelectorAll(".carton-dialog button")].find((b) => b.textContent === "See them side by side");
+    assert.ok(see, "the dialog's See them side by side");
+    await m.click(see);
+    await m.settle(120);
+    assert.ok(m.page().comparing()?.acrossCuts, "the from-cut with the into-cut");
+    assert.ok(!document.querySelector(".carton-dialog"), "the dialog closed");
+    const back = [...m.list().querySelectorAll(".carton-compare-foot button")].find((b) => b.textContent === "Back to Fold in…");
+    assert.ok(back, "Back to Fold in…");
+    await m.click(back);
+    await m.settle(120);
+    assert.equal(m.page().comparing(), null);
+    assert.ok(document.querySelector(".carton-dialog"), "the dialog again");
+    await m.key("Escape", "keydown", document.querySelector(".carton-dialog"));
+    // a teammate's cut viewed: Compare with Main cut, theirs on the left, your Main cut on the right
+    await act(async () => { await m.ui.switchCut("cut-bob-main"); await sleep(30); });
+    await m.settle(80);
+    const cmp = [...m.side.querySelectorAll(".carton-teammate-cut button")].find((b) => /^Compare with /.test(b.textContent));
+    assert.ok(cmp, "the teammate cut's actions offer Compare");
+    assert.equal(cmp.textContent, "Compare with Main cut");
+    await m.click(cmp);
+    await m.settle(120);
+    const t = m.page().comparing();
+    assert.equal(t?.left.cutId, "cut-bob-main");
+    assert.equal(t?.right.cutId, "cut-main", "your own cut on the right");
+  } finally { await m.done(); }
+});
+
+test("N1b review: Play both paused in a slate resumes where it was; a new comparison resets it; the person's own pause is theirs", opt, async () => {
+  const diff = { a: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 7, sig: 2, label: "B-roll pier" }, { start: 7, end: 12, sig: 3, label: "Outro" }], b: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 9, sig: 3, label: "Outro" }], matches: [[0, 0], [2, 1]], aLabel: "a", bLabel: "b" };
+  const m = await mount({ diff });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    // from the join (the removed pier picked): the pier's stretch plays, not the Outro after it
+    await act(async () => { m.bridge.seek(4); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(600); });
+    let b = m.page().compareBoth();
+    assert.ok(b.at.b.slate && b.T > 4 && b.T < 7, "in the pier's stretch: " + b.T);
+    // paused there: the place is kept; the left player stays on the pier
+    await act(async () => { m.page().comparePlayBoth(); await sleep(20); });
+    b = m.page().compareBoth();
+    assert.equal(b.paused, true);
+    const kept = b.T;
+    assert.equal(m.page().compareLeftClock.active(), true, "the left player held at the story's place");
+    assert.ok(m.page().compareLeftClock.get() > 4, "on the pier, not the playhead's 0:04");
+    await act(async () => { m.page().comparePlayBoth(); await sleep(50); });
+    b = m.page().compareBoth();
+    assert.ok(b.T >= kept && b.T < kept + 0.5, `resumed where it paused (${kept} → ${b.T})`);
+    // the person's own pause (Cardboard's toolbar) while the right side's shot plays: Play both pauses, the editor left be
+    await act(async () => { m.page().comparePlayBoth({ from: 0 }); await sleep(500); });
+    assert.equal(m.bridge.playing, true, "the editor plays its shot");
+    const seeks = m.did.seeks.length;
+    await act(async () => { m.bridge.pause(); await sleep(150); });
+    assert.equal(m.page().compareBoth()?.paused, true, "paused, not restarted");
+    assert.equal(m.bridge.playing, false);
+    assert.equal(m.did.seeks.length, seeks, "the editor left where the person paused it");
+    // a new comparison: Play both of the old one is gone
+    await act(async () => { m.page().comparePlayBoth(); await sleep(100); });
+    await m.open("cut-ig");
+    assert.equal(m.page().compareBoth(), null, "a new comparison starts with Play both off");
   } finally { await m.done(); }
 });

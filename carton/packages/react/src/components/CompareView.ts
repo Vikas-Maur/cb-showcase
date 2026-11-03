@@ -221,6 +221,8 @@ export function CompareStageView(p: CompareStageViewProps) {
     area = h("div", { className: "carton-compare-area", "data-mode": "flip" },
       h("div", { className: "carton-compare-col" },
         unit(h("div", { className: "carton-compare-box", "data-hole": "", ref: p.holeRef ?? undefined, style: boxStyle },
+            // the side shown has no shot here (Play both): its slate over the picture
+            showing.slate ? h(Slate, { slate: showing.slate }) : null,
             h("div", { className: "carton-compare-tag", "data-left": p.flipped ? "" : undefined, role: "status" },
               h("span", null, words.showing), h("b", null, showing.title), showing.detail ? h("span", { className: "carton-compare-when" }, showing.detail) : null)),
           h(FlipPill, { left: p.left, right: p.right, flipped: !!p.flipped, onFlip: p.onFlip, at: (p.flipped ? p.left : p.right).at }))));
@@ -267,6 +269,8 @@ function WipePic(p: { holeRef?: ((el: HTMLElement | null) => void) | undefined; 
   const pct = Math.max(0, Math.min(100, p.pct));
   const ref = (el: HTMLDivElement | null) => { box.current = el; p.holeRef?.(el); };
   return h("div", { ref, className: "carton-compare-box", "data-hole": "", style: { aspectRatio: String(p.ratio) } },
+    // the right side has no shot here (Play both): its slate under the line's left part
+    p.right.slate ? h(Slate, { slate: p.right.slate }) : null,
     h("div", { className: "carton-compare-wipe-left", style: { clipPath: `inset(0 ${(100 - pct).toFixed(2)}% 0 0)` } }, p.player),
     h("div", { className: "carton-compare-corner", "data-side": "left" }, h(SideLabel, { side: p.left })),
     h("div", { className: "carton-compare-corner", "data-side": "right" }, h(SideLabel, { side: p.right })),
@@ -385,6 +389,21 @@ export function CompareList(p: CompareListProps) {
       p.count ? h("p", { className: "carton-compare-n" }, p.count) : null),
     h("div", { ref: body, className: "carton-compare-body", tabIndex: -1, onFocus }, list),
     p.footer ? h("footer", { className: "carton-compare-foot" }, p.footer) : null);
+}
+
+/**
+ * A picked row's detail in Compare's list (DESIGN-V2 §1.5): Then / Now in words, and the one-clip action (Bring back, or
+ * Take out a clip that wasn't there then) with what it will do (where it goes, what else moves, that Ctrl+Z takes it
+ * back). `note`: what happened when it couldn't (the clip changed again since, a failure).
+ */
+export function CompareRowDetail(p: { then: string; now: string; action?: string | null; line?: string | null; busy?: boolean; note?: string | null; onAction?: () => void }) {
+  const words = useWords();
+  return h("div", { className: "carton-compare-detail", role: "group" },
+    h("div", { className: "carton-compare-thennow" },
+      h("span", null, words.compareThen), h("span", null, p.then),
+      h("span", null, words.compareNow), h("span", null, p.now)),
+    p.action ? h(Button, { icon: "restore", busy: !!p.busy, onClick: p.onAction }, p.action) : null,
+    p.note ? h("p", { className: "carton-error", role: "alert" }, p.note) : p.line ? h("p", { className: "carton-compare-detail-line" }, p.line) : null);
 }
 
 /** Where a track's row is on the tracks surface (px from its top), as the host reads it from the timeline. */
@@ -517,6 +536,10 @@ ${SK} .carton-compare-body{flex:1;min-height:0;overflow:auto;padding:6px 8px;out
 ${SK} .carton-compare-empty{margin:12px 4px;color:var(--cb-fg-3)}
 ${SK} .carton-change-selected{background:#8ab4ff14;box-shadow:inset 2px 0 0 #8ab4ff}
 ${SK} .carton-compare-detail{margin:2px 0 8px 40px;padding:8px 10px;border-radius:8px;background:var(--cb-card);box-shadow:var(--cb-shadow-near);font-size:12px;line-height:17px;color:var(--cb-fg-2);display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+${SK} .carton-compare-thennow{display:grid;grid-template-columns:42px 1fr;row-gap:2px}
+${SK} .carton-compare-thennow>span:nth-child(odd){color:var(--cb-fg-4)}
+${SK} .carton-compare-thennow>span:nth-child(even){color:var(--cb-fg-1)}
+${SK} .carton-compare-detail-line{margin:0;color:var(--cb-fg-3)}
 ${SK} .carton-compare-foot{border-top:1px solid var(--cb-line);padding:10px 12px;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
 .carton-tl-marks{position:absolute;inset:0;pointer-events:none;z-index:4}
 .carton-tl-mark{position:absolute;box-sizing:border-box;border-radius:5px;pointer-events:auto;cursor:pointer}

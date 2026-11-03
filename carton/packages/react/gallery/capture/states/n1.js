@@ -85,6 +85,16 @@ export function addStates(S, { ux }) {
     const changes = ui.changes.bind(ui);
     ui.changes = async (a, b) => (a === sent?.ref ? CHANGES : (o.cuts ? CHANGES.map((c) => ({ ...c, text: c.text.replace(/^Added “(.*)”$/, "Only in Main cut: “$1”").replace(/^Removed “(.*)”$/, "Only in the 30s cut: “$1”") })) : changes(a, b)));
     ui.shotDiff = async () => SHOTDIFF;
+    // Choose a clip… (N0) for the row detail's Then / Now and Bring back (N0b's token, place and ripple)
+    ui.bringBackChoices = async () => ({
+      changed: [
+        { itemId: "item-summer", name: "Summer sale", noun: "title", then: { start: 1, end: 6, text: "Summer sale" }, now: { start: 1, end: 6, text: "Summer launch" }, token: "t-summer", place: { placed: "same" }, ripple: null },
+        { itemId: "item-intro", name: "Intro", noun: "video", then: { start: 0, end: 6 }, now: { start: 0, end: 5 }, token: "t-intro", place: { placed: "same" }, ripple: { direction: "later", by: 1, at: 5, moved: 6 } },
+      ],
+      deleted: [{ itemId: "item-pier", name: "B-roll pier", noun: "video", then: { start: 12, end: 15 }, token: "t-pier", place: { placed: "new-track", takenBy: [{ itemId: "item-drone", name: "Drone shot" }] }, ripple: null }],
+      added: [{ itemId: "item-drone", name: "Drone shot", noun: "video", now: { start: 12, end: 16 }, token: "t-drone", ripple: { direction: "earlier", by: 4, at: 12, moved: 4 } }],
+      same: 6,
+    });
     return { ...r, n1: { from: o.cuts ? "cut-ig" : sent?.ref, mode: o.mode ?? "side", player: o.player !== false, agent: o.agent ?? null, open: o.open !== false }, panel: o.panel === undefined ? "history" : o.panel };
   };
   S["n1-side"] = compare();

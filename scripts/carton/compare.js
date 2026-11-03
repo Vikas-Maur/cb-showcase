@@ -14,6 +14,7 @@ import { createElement as h, Component, useCallback, useEffect, useLayoutEffect,
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
   actorLabel, clock, compareMarks, compareModeShown, compareModesFor, cutColor, cutRef, followTime, isMainCut, leadTime, rowRange, stepAt, stripOf, timecode,
+  playLength, playSchedule, sidesAt, storyAt, CompareRowDetail, fromBringBack, bringBackLine, homeCut,
   useCartonUi, versionLabel, words,
 } from "@carton/react";
 import { injectStyles } from "@carton/react/skin/cardboard";
@@ -83,7 +84,9 @@ export function endOf(ui, ref, now = Date.now(), found = null) {
 export function sidesOf(ui, from, to, now = Date.now(), found = null) {
   let a = endOf(ui, from, now, found), b = endOf(ui, to ?? null, now, found);
   if (!a || !b) return null;
-  const current = (ui.cuts?.() ?? []).find((c) => c.current);
+  // your own cut is the right side: the one you're on, or, while a teammate's cut is viewed, your own Main cut
+  const cuts = ui.cuts?.() ?? [];
+  const current = homeCut(ui, cuts);
   const onCurrent = (e) => !!current && e.cutId === current.id;
   if (a.you || (onCurrent(a) && !onCurrent(b))) [a, b] = [b, a];
   else if (!b.you && a.cutId && a.cutId === b.cutId) {
@@ -169,6 +172,8 @@ export function attachCompare(ui, o) {
     });
   };
   const set = (v) => {
+    // a new comparison, or a new right side (your edit moved on): Play both's schedule is another's (review #2)
+    if (!v || !value || v.left.ref !== value.left.ref || v.right.ref !== value.right.ref) resetBoth();
     value = v;
     if (v) load(v);
     else { data = null; selected = null; flipped = false; }
@@ -196,7 +201,7 @@ export function attachCompare(ui, o) {
     const mode = opts.mode === "side" || opts.mode === "wipe" || opts.mode === "flip" ? opts.mode : pickedMode();
     selected = null;
     flipped = false;
-    set({ ...sides, mode, ...(opts.by ? { by: opts.by } : {}) });
+    set({ ...sides, mode, ...(opts.by ? { by: opts.by } : {}), ...(opts.back === "fold" ? { back: "fold", fold: opts.fold && typeof opts.fold.from === "string" ? { from: opts.fold.from, into: opts.fold.into } : { from, into: to } } : {}) });
     bridge.libraryAside?.(true);
     try {
       await showRight(sides.right);
@@ -204,6 +209,8 @@ export function attachCompare(ui, o) {
       if (mine !== seq) return;
       bridge.prefetch?.(projectId, sides.left.ref);
       if (Number.isFinite(opts.at)) bridge.seek?.(opts.at);
+      // "still playing" (a card's ⇆ Side by side): Play both once the alignment is here
+      if (opts.play) playWhenReady(mine);
     } catch (e) {
       if (mine === seq) {
         set(null);
@@ -218,6 +225,7 @@ export function attachCompare(ui, o) {
     const was = value, mine = ++seq, at = back?.at;
     back = null;
     clearTimeout(spot);
+    resetBoth();
     bridge.pause?.();
     set(null);
     // your edit again, on the cut you were on: the playhead stays at the change when the right side was your edit,
@@ -246,6 +254,15 @@ export function attachCompare(ui, o) {
     flipped = left;
     notify();
     const c = value, d = data;
+    // during Play both the loop drives the side the editor shows (the left's times while flipped): it seeks and plays
+    // that side once the swap has landed (review #3)
+    if (both.on) {
+      if (bridge.playing) bridge.pause?.();
+      both.expect = false;
+      both.saw = false;
+      both.at = null;
+      return Promise.resolve(left ? o.swap(c.left.ref) : showRight(c.right)).catch(() => {});
+    }
     if (left) {
       flipAt = bridge.clock?.() ?? null;
       const to = Number.isFinite(flipAt) && d?.diff && d.rows ? followTime(d.diff, d.rows, flipAt) : flipAt;
@@ -259,6 +276,7 @@ export function attachCompare(ui, o) {
   // is where it was, mapped from the left. The left player follows the right's time (in step by shot).
   ui.compareSelect = (change) => {
     if (!value) return;
+    if (both.on || both.paused) resetBoth();
     selected = change?.key ?? null;
     notify();
     if (!change || !Number.isFinite(change.at)) return;
@@ -266,6 +284,138 @@ export function attachCompare(ui, o) {
     const d = data;
     const t = change.kind === "remove" && d?.diff && d.rows ? leadTime(d.diff, d.rows, change.at) : change.at;
     bridge.seek?.(Math.max(0, t));
+  };
+  // Play both (§1.4), in step by shot, on a clock of Compare's own (the story: the aligned stretches end to end, each as
+  // long as its longer side). The right side is the editor's own player: it plays while its shot runs, and waits paused
+  // on its shot's last frame (or at the join, under a slate, where it has no shot) while the other side's runs on. The
+  // left player takes its time from the story (compareLeftClock). One rAF loop, only while Play both runs; stopped,
+  // nothing runs. `until`: a story time to stop at (a row's ▶).
+  // States: on (running), paused (stopped mid-story: its place kept, the left player held there), off. The editor's
+  // own player is the master while its side's shot plays (the story follows its clock); the story's own clock runs only
+  // while that side waits or shows a slate. `drive`: the side the editor shows ("b"; "a" while Flip shows the left).
+  // Review of feat/ux2-n1b: a pause keeps the story's place (#1); a new comparison, a new head, a flip, a closed
+  // connection reset it (#2, #3, #6); a pause or a seek of the person's own (Cardboard's toolbar, the ruler) is theirs
+  // (#4); the story follows the editor's clock instead of seeking it back (#7).
+  const both = { on: false, paused: false, ended: false, T: 0, until: null, raf: 0, last: 0, at: null, sched: null, subs: new Set(), expect: false, saw: false, seekedAt: 0, pausedAt: null, key: null };
+  const tellBoth = () => { for (const f of [...both.subs]) try { f(); } catch {} };
+  const driven = () => (flipped ? "a" : "b");
+  const seekTo = (t) => { both.seekedAt = performance.now(); bridge.seek?.(t); };
+  // stop: `keep` the place (a pause); `editor` false when the person took the editor over (leave it be)
+  const stopBoth = (o = {}) => {
+    if (!both.on && !both.paused) return;
+    const wasOn = both.on;
+    both.on = false;
+    cancelAnimationFrame(both.raf);
+    both.paused = !!o.keep && !!both.at;
+    if (wasOn && o.editor !== false) {
+      if (bridge.playing) bridge.pause?.();
+      // the editor stays where its side is: its own moment, or where it waits
+      const s = both.at?.[driven()];
+      if (s && Number.isFinite(s.t)) seekTo(s.t);
+    }
+    both.pausedAt = both.paused ? (bridge.clock?.() ?? null) : null;
+    tellBoth();
+    notify();
+  };
+  const resetBoth = () => { stopBoth({ editor: both.on }); both.paused = false; both.ended = false; both.pausedAt = null; both.at = null; tellBoth(); };
+  const stepBoth = (now) => {
+    if (!both.on) return;
+    const dt = Math.min(0.25, Math.max(0, (now - both.last) / 1000));
+    both.last = now;
+    const side = driven(), cur = both.at?.[side], stretch = both.at?.stretch;
+    const playing = !!bridge.playing;
+    if (both.expect && playing) both.saw = true;
+    // the person paused the editor (its toolbar, its own Space) while its side played: theirs; Play both pauses here
+    if (both.expect && both.saw && !playing) return stopBoth({ keep: true, editor: false });
+    // while its side's shot plays, the editor's clock leads the story (never seeked back to it)
+    let T = both.T + dt;
+    if (stretch && cur && !cur.hold && !cur.slate && playing && both.saw && now - both.seekedAt > 300) {
+      const s0 = side === "a" ? stretch.a0 : stretch.b0, len = side === "a" ? stretch.aLen : stretch.bLen;
+      const clock = bridge.clock?.() ?? cur.t;
+      const local = clock - s0;
+      if (local >= -0.05 && local <= len + 0.5) T = stretch.start + Math.max(0, Math.min(len, local)) + (local > len ? dt : 0);
+      // a seek of the person's own (the ruler, a clip): the story goes on from there
+      else T = storyAt(both.sched, side, clock);
+    }
+    both.T = T;
+    const end = Math.min(playLength(both.sched), both.until ?? Infinity);
+    if (both.T >= end) {
+      both.T = end;
+      both.at = sidesAt(both.sched, Math.max(0, end - 1e-3));
+      both.ended = both.until == null;
+      return stopBoth({ keep: both.until != null });
+    }
+    const at = sidesAt(both.sched, both.T), was = both.at;
+    both.at = at;
+    const s = at[side], ws = was?.[side];
+    // the driven side: playing while its shot runs; else waiting, paused, at its last frame (or at the join)
+    if (s.hold || s.slate) {
+      both.expect = false;
+      if (playing) bridge.pause?.();
+      if (!was || was.stretch !== at.stretch || !(ws.hold || ws.slate)) seekTo(s.t);
+    } else if (!playing && !both.expect) {
+      seekTo(s.t);
+      both.expect = true;
+      both.saw = false;
+      bridge.togglePlay?.();
+    } else if (!playing && both.expect && !both.saw && now - both.seekedAt > 1500) {
+      // (still not playing 1.5 s after it was asked: its audio still loading; ask again)
+      seekTo(s.t);
+      bridge.togglePlay?.();
+    }
+    if (!was || was.stretch !== at.stretch || was.a.hold !== at.a.hold || was.b.hold !== at.b.hold || was.a.slate !== at.a.slate || was.b.slate !== at.b.slate) notify();
+    tellBoth();
+    both.raf = requestAnimationFrame(stepBoth);
+  };
+  ui.comparePlayBoth = (o = {}) => {
+    if (!value) return;
+    if (both.on && o.from === undefined) return stopBoth({ keep: true });
+    // the editor playing on its own (Cardboard's toolbar): Space and Play both pause it (review #11)
+    if (!both.on && o.from === undefined && bridge.playing) { bridge.pause?.(); return; }
+    const d = data;
+    // (the alignment not loaded yet: the editor's own play, the left player following it)
+    if (!d?.diff || !d.rows) { bridge.togglePlay?.(); return; }
+    clearTimeout(spot);
+    cancelAnimationFrame(both.raf);
+    const key = `${data.key}`;
+    if (both.key !== key) { both.key = key; both.paused = false; both.ended = false; }
+    both.sched = playSchedule(d.diff, d.rows);
+    const side = driven(), clock = bridge.clock?.() ?? 0;
+    if (Number.isFinite(o.from)) both.T = storyAt(both.sched, side, o.from);
+    // resumed where it paused, while the editor hasn't moved since (a hold, a slate: the editor can't say the story's place)
+    else if (both.paused && both.pausedAt != null && Math.abs(clock - both.pausedAt) < 0.05) both.T = both.T;
+    else if (both.ended && both.pausedAt == null) both.T = 0;
+    else both.T = storyAt(both.sched, side, clock);
+    if (both.T >= playLength(both.sched) - 1e-3) both.T = 0;
+    both.until = Number.isFinite(o.until) ? o.until : null;
+    both.at = null;
+    both.on = true;
+    both.paused = false;
+    both.ended = false;
+    both.expect = false;
+    both.saw = false;
+    both.last = performance.now();
+    notify();
+    both.raf = requestAnimationFrame(stepBoth);
+  };
+  ui.compareBoth = () => (both.on || both.paused ? { T: both.T, length: playLength(both.sched), at: both.at, paused: !both.on } : null);
+  const playWhenReady = (mine) => {
+    const go = () => { if (mine === seq && value && !both.on) ui.comparePlayBoth(); };
+    if (data?.status === "ready") return go();
+    const off = ui.onCompare(() => { if (mine !== seq) return off(); if (data?.status === "ready" || data?.status === "error") { off(); if (data.status === "ready") go(); } });
+  };
+  // a move of the playhead that isn't Play both's own (the ruler, a row picked) drops a paused place: the left player
+  // follows the playhead again
+  const offTl = bridge.onTimeline?.(() => {
+    if (!both.paused || both.on || both.pausedAt == null) return;
+    if (Math.abs((bridge.clock?.() ?? 0) - both.pausedAt) > 0.05) { both.paused = false; both.pausedAt = null; tellBoth(); notify(); }
+  });
+  // The left player's time (editor-panel.js's second player): the story's while Play both runs
+  ui.compareLeftClock = {
+    active: () => both.on || (both.paused && !!both.at),
+    get: () => both.at?.a.t ?? 0,
+    playing: () => both.on && !!both.at && !both.at.a.hold && !both.at.a.slate,
+    subscribe: (f) => { both.subs.add(f); return () => { both.subs.delete(f); }; },
   };
   // ▶ on a row, Enter (§1.5): that spot on both sides, a second either side, in step; then paused
   let spot = null;
@@ -275,6 +425,11 @@ export function attachCompare(ui, o) {
     const d = data;
     const t = change.kind === "remove" && d?.diff && d.rows ? leadTime(d.diff, d.rows, change.at) : change.at;
     const end = Number.isFinite(change.end) ? Math.max(t, change.kind === "remove" ? t : change.end) : t;
+    if (d?.diff && d.rows) {
+      const sched = playSchedule(d.diff, d.rows), from = Math.max(0, t - 1);
+      const T0 = storyAt(sched, "b", from), T1 = storyAt(sched, "b", end) + 1;
+      return ui.comparePlayBoth({ from, until: Math.min(T0 + 10, Math.max(T1, T0 + 2)) });
+    }
     bridge.seek?.(Math.max(0, t - 1));
     clearTimeout(spot);
     if (!bridge.playing) bridge.togglePlay?.();
@@ -290,7 +445,13 @@ export function attachCompare(ui, o) {
     set({ ...value, right: { ...value.right, ref: head } });
     if (!flipped) void Promise.resolve(showRight(value.right)).catch(() => {});
   });
-  return () => { offCuts?.(); };
+  return () => {
+    offCuts?.();
+    if (typeof offTl === "function") offTl();
+    both.on = false;
+    both.paused = false;
+    cancelAnimationFrame(both.raf);
+  };
 }
 
 // ---------------------------------------------------------------- hooks
@@ -430,14 +591,33 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
     window.__cartonStageMode?.(hole ? { mode, hole: { top: hole.top, right: hole.right, bottom: hole.bottom, left: hole.left } } : { mode });
   }, [mode, hole?.top, hole?.right, hole?.bottom, hole?.left]);
 
-  const [t, playing] = usePlayhead(bridge, true);
+  const [t0, editorPlaying] = usePlayhead(bridge, true);
+  // Play both (its own clock: either side may wait, or show a slate): its sides, read four times a second while it runs
+  const bothNow = ui.compareBoth?.() ?? null;
+  const [, tickBoth] = useState(0);
+  const running = !!bothNow && !bothNow.paused;
+  useEffect(() => {
+    if (!running) return undefined;
+    const id = setInterval(() => tickBoth((n) => (n + 1) | 0), 250);
+    return () => clearInterval(id);
+  }, [running]);
+  const at = bothNow?.at ?? null;
+  const playing = editorPlaying || running;
+  const t = at ? at.b.t : t0;
   const diff = data?.diff ?? null, rows = data?.rows ?? null;
   const follow = useCallback((x) => (diff && rows ? followTime(diff, rows, x) : x), [diff, rows]);
-  const leftAt = follow(t);
-  // in step (§1.4): "same shot" in a matched run; in a changed one, the left side holds ("waiting") once its stretch is
-  // over, and shows a slate where it has no shot
-  let leftStep = null, rightStep = null, slate = null;
-  if (diff && rows) {
+  const leftAt = at ? at.a.t : follow(t);
+  // in step (§1.4): "same shot" in a matched run; "waiting" on the side whose shot is shorter; a slate on a side with no
+  // shot there ("“Drone shot” isn't in “Sent to client”"), the right side's too while Play both runs
+  let leftStep = null, rightStep = null, slate = null, rightSlate = null;
+  const slateOf = (shot, side) => ({ title: words.notInSide(shot ? `“${shot}”` : words.thisShot, side), body: words.itsShotPlays });
+  if (at) {
+    const same = at.stretch?.kind === "same";
+    leftStep = at.a.hold ? "waiting" : same ? "same" : null;
+    rightStep = at.b.hold ? "waiting" : same ? "same" : null;
+    if (at.a.slate) slate = slateOf(at.a.missing, c.left.label);
+    if (at.b.slate) rightSlate = slateOf(at.b.missing, c.right.label);
+  } else if (diff && rows) {
     const kind = stepAt(diff, rows, t);
     if (kind === "same") rightStep = leftStep = "same";
     else {
@@ -499,6 +679,13 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
         }, 0);
         return;
       }
+      // Space: Play both / pause (§1.14), in place of the editor's own play, while comparing
+      if ((e.key === " " || e.code === "Space") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && !typing(e.target) && !(e.target?.closest?.("button, [role=slider], [role=radio]"))) {
+        e.preventDefault();
+        e.stopPropagation();
+        ui.comparePlayBoth?.();
+        return;
+      }
       if ((e.key === "b" || e.key === "B") && !e.ctrlKey && !e.metaKey && !e.altKey && live.current.mode === "flip" && !typing(e.target)) {
         e.preventDefault();
         e.stopPropagation();
@@ -524,13 +711,13 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
 
   const [wipe, setWipe] = useState(50);
   const leftSide = { title: c.left.title, detail: c.left.detail, cut: c.acrossCuts ? c.left.cutMark : undefined, at: leftAt, step: leftStep, slate };
-  const rightSide = { title: c.right.title, detail: c.right.detail, cut: c.acrossCuts ? c.right.cutMark : undefined, at: t, step: rightStep };
+  const rightSide = { title: c.right.title, detail: c.right.detail, cut: c.acrossCuts ? c.right.cutMark : undefined, at: t, step: rightStep, slate: rightSlate };
   const ratio = aspectOf(data?.rightDoc?.aspectRatio ?? data?.leftDoc?.aspectRatio);
   // the same element while nothing it shows changed: Play both's 4 Hz label ticks re-render this stage, not the player
   const leftDoc = data?.leftDoc ?? null;
   const onFail = useCallback(() => setFailed(true), []);
   const playerEl = useMemo(() => (needsPlayer && Player && !failed && leftDoc
-    ? h(PlayerBoundary, { onFail }, h(Player, { doc: leftDoc, follow, onReady }))
+    ? h(PlayerBoundary, { onFail }, h(Player, { doc: leftDoc, follow, onReady, clock: ui.compareLeftClock }))
     : null), [needsPlayer, Player, failed, leftDoc, follow, onReady, onFail]);
   return h("div", { ref: rootRef, className: "carton-compare-root" },
     h("span", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
@@ -538,7 +725,7 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
       left: leftSide, right: rightSide, label, mode, modes: avail.modes, sideOff: avail.sideOff, compact: avail.compact,
       onMode: (m) => ui.compareMode?.(m), count, onDone: () => void ui.closeCompare?.(),
       player: playerEl, ratio, holeRef, flipped, onFlip: (show) => ui.compareFlip?.(show),
-      wipe, onWipe: setWipe, playing, onPlayBoth: () => bridge.togglePlay?.(), progress: length > 0 ? t / length : 0,
+      wipe, onWipe: setWipe, playing, onPlayBoth: () => ui.comparePlayBoth?.(), progress: bothNow ? (bothNow.length > 0 ? bothNow.T / bothNow.length : 0) : length > 0 ? t / length : 0,
       frameLabel, pulse,
     }),
     // (while Flip shows the left side the timeline shows it too: the marks, which are the right side's, wait)
@@ -621,10 +808,41 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
 // ---------------------------------------------------------------- the side panel (§1.2)
 
 /** The History panel while comparing: the range, the count, every change; ← History ends Compare. */
-export function CompareSide({ bridge, onFoldIn }) {
+/**
+ * The picked row's detail (§1.5): Then / Now and Bring back, from the engine's "Choose a clip…" (N0's bringBackChoices
+ * for the left side, N0b's token, place and ripple). Read once per comparison, on the first pick, and again after a
+ * Bring back or a refusal. Only where Bring back means something: the left side a version of your cut, your edit on
+ * the right.
+ */
+function useClipChoices(ui, c, selected) {
+  const [st, setSt] = useState({ key: null, map: null, raw: null });
+  const can = !!c && c.right.you && !c.acrossCuts && typeof ui.bringBackChoices === "function";
+  const key = can ? `${c.left.ref}|${c.right.ref}` : null;
+  const keyNow = useRef(key);
+  keyNow.current = key;
+  const load = useCallback(() => {
+    if (!key) return;
+    const k = key;
+    ui.bringBackChoices(c.left.ref).then((r) => {
+      // an answer for a comparison since replaced changes nothing (review #8)
+      if (keyNow.current !== k) return;
+      const raw = new Map([...r.changed, ...r.deleted, ...r.added].map((x) => [x.itemId, x]));
+      setSt({ key: k, map: new Map(fromBringBack(r).map((x) => [x.itemId, x])), raw });
+    }, () => { if (keyNow.current === k) setSt({ key: k, map: new Map(), raw: new Map() }); });
+  }, [ui, key]);
+  useEffect(() => { if (key && selected && st.key !== key) load(); }, [key, selected, st.key, load]);
+  return { choices: st.key === key ? st.map : null, raw: st.key === key ? st.raw : null, reload: load, can };
+}
+
+export function CompareSide({ bridge, onFoldIn, onBackToFold }) {
   const ui = useCartonUi();
   const c = useComparing(ui);
   const data = ui.compareData?.() ?? null;
+  const selectedKey = ui.compareSelected?.() ?? null;
+  const clips = useClipChoices(ui, c, selectedKey);
+  // per clip: running, and what its last try said (review #8)
+  const [acts, setActs] = useState({});
+  const setAct = (item, v) => setActs((m) => ({ ...m, [item]: v }));
   // Restore asks first, with its consequence (as the Changes view did), and Compare stays open with your edit updated
   // (§1.8): the right side follows your edit
   const [confirm, setConfirm] = useState(null);
@@ -648,6 +866,38 @@ export function CompareSide({ bridge, onFoldIn }) {
   // cut on the right: Fold in changes from the left cut…; between two others: nothing, only Done comparing
   const canRestore = c.right.you && !c.acrossCuts && !!c.left.versionId;
   const canFold = c.acrossCuts && c.right.you && !!c.left.cutId && typeof onFoldIn === "function";
+  // the picked row's Then / Now and its one-clip action (Bring back, Take out), as Choose a clip… words them
+  const span = (x) => (x ? (x[1] > x[0] ? `${timecode(x[0])}–${timecode(x[1])}` : timecode(x[0])) : "—");
+  const rowDetail = (ch) => {
+    if (!clips.can || !ch.itemId) return null;
+    if (!clips.choices) return h(CompareRowDetail, { then: "…", now: "…" });
+    const x = clips.choices.get(ch.itemId), raw = clips.raw?.get(ch.itemId);
+    if (!x) return null;
+    const then = x.how === "added" ? "—" : x.thenText !== undefined ? `“${x.thenText}”` : span(x.then);
+    const now = x.how === "deleted" ? "—" : raw?.now?.text !== undefined && x.thenText !== undefined ? `“${raw.now.text}”` : span(x.now);
+    const when = c.left.detail || words.anEarlierVersion;
+    const run = () => {
+      setAct(x.itemId, { busy: true, note: null });
+      ui.restoreClip(c.left.ref, x.itemId, { ...(x.how === "added" ? { remove: true } : {}), ...(x.token !== undefined ? { expect: x.token } : {}) }).then(
+        (r) => { setAct(x.itemId, { busy: false, note: r?.how === "same" ? words.alreadyAsItWas(r.clipName || x.name) : null }); clips.reload(); },
+        (e) => {
+          // changed again since (N0b refuses it, nothing written): its words, and the clip read again
+          const changed = e?.code === "CHANGED_SINCE";
+          setAct(x.itemId, { busy: false, note: changed ? (e?.message || words.clipChangedNothing(x.name)) : words.bringBackFailed });
+          clips.reload();
+        },
+      );
+    };
+    const a = acts[x.itemId];
+    return h(CompareRowDetail, {
+      then, now,
+      action: x.how === "added" ? words.takeOutNamed(x.name) : words.bringBackNamed(x.name),
+      line: bringBackLine(x, when, words),
+      busy: !!a?.busy,
+      note: a && !a.busy && a.note ? a.note : null,
+      onAction: run,
+    });
+  };
   const restore = async () => {
     setConfirm({ busy: true, failed: false });
     try {
@@ -657,7 +907,11 @@ export function CompareSide({ bridge, onFoldIn }) {
       setConfirm({ busy: false, failed: true });
     }
   };
-  const footer = confirm
+  // opened from Fold in's See them side by side: Back to Fold in… (the dialog again)
+  const backToFold = c.back === "fold" && typeof onBackToFold === "function"
+    ? h(Button, { variant: "ghost", icon: "arrowLeft", onClick: () => onBackToFold(c.fold?.from ?? c.left.cutId, c.fold?.into ?? c.right.cutId) }, words.backToFoldIn)
+    : null;
+  const footer = backToFold ?? (confirm
     ? h("div", { className: "carton-changes-confirm", role: "group", "aria-label": words.restoreQuestion(c.left.label) },
         h("p", { className: "carton-changes-confirm-title" }, words.restoreQuestion(c.left.label)),
         h("p", { className: "carton-changes-confirm-body" }, words.restoreBody(n ?? 0)),
@@ -669,7 +923,7 @@ export function CompareSide({ bridge, onFoldIn }) {
       ? h(Button, { variant: "ghost", icon: "restore", onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreEditTo(c.left.label))
       : canFold
         ? h(Button, { variant: "ghost", icon: "foldIn", onClick: () => onFoldIn(c.left.cutId, c.right.cutId) }, words.foldInFrom(c.left.name ?? c.left.label))
-        : null;
+        : null);
   return h(CompareList, {
     className: "carton-sidebar-compare",
     range,
@@ -680,6 +934,7 @@ export function CompareSide({ bridge, onFoldIn }) {
     onSelect: (ch) => ui.compareSelect?.(ch),
     onPlay: (ch) => ui.comparePlay?.(ch),
     onBack: () => void ui.closeCompare?.(),
+    detail: (ch) => rowDetail(ch),
     footer,
     empty: c.right.you ? words.sameAs(c.left.label) : words.sameVersions,
   });

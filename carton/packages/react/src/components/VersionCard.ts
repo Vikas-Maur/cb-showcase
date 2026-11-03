@@ -74,6 +74,11 @@ export interface VersionCardProps {
   onSeek?: (at: number) => void;
   /** Before (Workstream 4's BeforeButton), after Play all / Pause: it shows itself while a play is on. */
   before?: ReactNode;
+  /**
+   * ⇆ Side by side beside Before while an older version's Play runs (DESIGN-V2 §1.2, §1.11): Compare in the editor,
+   * the version before it with this one, at the same spot, still playing. Absent: no button (a host without Compare).
+   */
+  onSideBySide?: (before: string, version: string) => void;
   /** The version it plays is loading (viewing an older one): a spinner after 300 ms (DESIGN §9). */
   loading?: boolean;
   /** Its Play couldn't load the version: said in the card, where Restore's and Undo this turn's failures go (DESIGN §9). */
@@ -318,6 +323,7 @@ export function VersionCard(p: VersionCardProps) {
                 : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
             p.loading ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
             v.empty ? null : (p.before ?? null),
+            playing && !p.newest && !v.empty && p.onSideBySide && oldest.base ? h(Button, { variant: "ghost", icon: "compare", className: "carton-card-side", onClick: () => p.onSideBySide!(oldest.base!, v.ref) }, words.sideBySideBtn) : null,
             // (no Go back… while its Play runs: Restore… stays in ⋯, and Go back… comes back on Pause: design QA G18)
             p.readOnly || (playing && !p.newest)
               ? null

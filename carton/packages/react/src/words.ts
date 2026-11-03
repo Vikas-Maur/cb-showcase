@@ -708,6 +708,14 @@ export const words = {
   newTrack: "new track",
   anEarlierVersion: "an earlier version",
   yourEditSaid: "your edit",
+  // Compare's row detail (DESIGN-V2 §1.5): Then / Now
+  compareThen: "Then",
+  // Compare's other ways in (DESIGN-V2 §1.2, §1.11): a playing card, Fold in, a teammate's cut
+  sideBySideBtn: "Side by side",
+  seeThemSideBySide: "See them side by side",
+  backToFoldIn: "Back to Fold in…",
+  compareWithCut: (cut: string) => `Compare with ${cut}`,
+  compareNow: "Now",
   thisShot: "This shot",
   // the title bar's chip while a version is slow to come (design QA G1): "Loading Director's “Add captions…”"
   loadingView: (label: string) => `Loading ${label}`,

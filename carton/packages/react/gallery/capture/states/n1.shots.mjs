@@ -25,6 +25,15 @@ export function shots({ P, ED }) {
       await open(p);
     }),
     P("n1-cuts-menu", "n1-entry", "The cuts menu (History's cut bar): another cut's row offers ⇆ Compare on hover.", async (p) => { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); await p.locator(".carton-cut-row", { hasText: "30s Instagram cut" }).first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
+    W("n1-play-waiting", "n1-side", "Play both from 0:15 (the drone shot against the pier and a gap): 1.5 s in, the right side's shot is over and it waits on its last frame; the left plays on.", async (p) => { await open(p); await p.evaluate(() => window.__cap.page().comparePlayBoth({ from: 15 })); await p.waitForTimeout(1500); }),
+    W("n1-card-side", "n1-entry", "History: Sent to client's card → Play all, then ⇆ Side by side: Compare opens there, still playing.", async (p) => {
+      await p.locator(".carton-version", { hasText: "Sent to client" }).first().click();
+      await p.waitForTimeout(250);
+      await p.locator(".carton-card-version .carton-btn", { hasText: "Play all" }).first().click();
+      await p.waitForTimeout(500);
+      await p.locator(".carton-card-version .carton-btn", { hasText: "Side by side" }).first().click();
+      await open(p);
+    }),
     P("n1-panel", "n1-side", "The History panel during Compare: ← History, the range in words, the count, every change; the title change picked.", async (p) => { await open(p); await pick(p, "Summer sale"); }),
   ];
 }

@@ -65,13 +65,17 @@ const __cbCartonPortal = typeof Na === "object" && Na && typeof Na.createPortal 
 // compareDoc. onReady(true) once its engine runs. The names are Cardboard 1.4.0's; patch-carton.js checks each.
 // (typeof only: run outside the editor's bundle, as the capture page and the tests run this file, none of them exist)
 const __cbCartonPlayerOk = typeof YD === "function" && typeof L2 === "function" && typeof U === "function" && typeof hn === "object" && !!hn && typeof hn.get === "function" && typeof hn.subscribe === "function";
-function __cbCartonPlayer({ doc, follow, onReady }) {
-  const playing = U((s) => !!s.isPlaying);
+// clock: Compare's story while Play both runs (in step by shot, either side may wait: DESIGN-V2 §1.4): {active, get,
+// playing, subscribe}; otherwise the editor's own playhead and playback clock, mapped by follow(t).
+function __cbCartonPlayer({ doc, follow, onReady, clock }) {
+  const storePlaying = U((s) => !!s.isPlaying);
   const paused = U((s) => s.playheadTime ?? s.currentTime ?? 0);
   const [, tick] = o.useState(0);
-  o.useEffect(() => (playing ? hn.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [playing]);
-  const t = playing ? hn.get() : paused;
-  const at = typeof follow === "function" ? follow(t) : t;
+  const both = !!clock && clock.active();
+  o.useEffect(() => (clock ? clock.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [clock]);
+  o.useEffect(() => (!both && storePlaying ? hn.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [both, storePlaying]);
+  const playing = both ? clock.playing() : storePlaying;
+  const at = both ? clock.get() : typeof follow === "function" ? follow(storePlaying ? hn.get() : paused) : (storePlaying ? hn.get() : paused);
   const size = o.useMemo(() => L2(doc.aspectRatio), [doc.aspectRatio]);
   const items = o.useMemo(() => doc.timelineItems.filter((i) => i.type !== "audio").map((i) => (i.muted ? i : { ...i, muted: true })), [doc.timelineItems]);
   const r = YD({ width: size.width, height: size.height, timelineItems: items, tracks: doc.tracks, mediaItems: doc.media, currentTime: Number.isFinite(at) ? Math.max(0, at) : 0, isPlaying: playing, masterVolume: 0, enabled: true, drivenByExternalClock: false });

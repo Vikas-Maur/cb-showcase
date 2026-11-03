@@ -158,3 +158,16 @@ test(name("the marks sit at start × pixels per second on their track's row; a s
   assert.deepEqual(picked, ["k3", "k1"]);
   assert.equal($(m.container, ".carton-tl-marks")?.getAttribute("aria-hidden"), "true");
 });
+
+test(name("Play both's slates (DESIGN-V2 §1.4): a side with no shot there shows one in every mode, the right side's too, and “waiting” on the side that holds"), async () => {
+  const slate = { title: "“B-roll pier” isn't in your edit", body: "Its shot plays on the other side." };
+  for (const mode of ["side", "wipe", "flip"] as const) {
+    const m = await render(stage({ mode, right: { ...right, step: null, slate } }).el);
+    const s = $(m.container, ".carton-compare-slate");
+    assert.ok(s, `${mode}: the right side's slate`);
+    assert.match(s!.textContent!, /^“B-roll pier” isn't in your edit/);
+    await m.unmount();
+  }
+  const m = await render(stage({ left: { ...left, step: "waiting" } }).el);
+  assert.match($(m.container, '[data-side="left"] .carton-compare-tc')!.textContent!, /waiting/);
+});

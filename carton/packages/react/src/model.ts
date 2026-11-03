@@ -330,6 +330,11 @@ export interface OpenCompareOptions {
   readonly mode?: CompareMode;
   /** Put both players here: seconds on the right side's time (a card's ⇆ Side by side, at the spot it was playing). */
   readonly at?: number;
+  /** Start Play both once it is open (a card's ⇆ Side by side while its Play runs: "still playing"). */
+  readonly play?: boolean;
+  /** Opened from the Fold in dialog: the change list's footer offers Back to Fold in…, which reopens it with `fold`'s pair. */
+  readonly back?: "fold";
+  readonly fold?: { readonly from: string; readonly into: string };
   /** An agent's request (`OpenCompare`): who asked, in words; the page opens it only when the person is idle (§1.13). */
   readonly by?: string;
   /** An agent's request id: each is shown once. */

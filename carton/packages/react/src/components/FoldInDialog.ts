@@ -36,6 +36,8 @@ export interface FoldInDialogProps {
   onDone?: (r: FoldResult) => void;
   /** Use this plan instead of asking the view model (gallery). */
   plan?: FoldPlan;
+  /** See them side by side (DESIGN-V2 §1.2): Compare in the editor, the from-cut now with the into-cut now. Absent: none. */
+  onSideBySide?: (fromCutId: string, intoCutId: string) => void;
 }
 
 // What both sides did, as a verb for "Both cuts moved “Interview B”": the sides' own noun when they agree
@@ -324,6 +326,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
       ? [h("span", { key: "sp" }), h(Button, { key: "close", onClick: p.onClose }, words.close)]
       : [
           h("span", { key: "line", className: "carton-fold-later", "data-tone": unpicked.length ? "warning" : undefined }, footLine),
+          p.onSideBySide ? h(Button, { key: "side", variant: "ghost", icon: "compare", onClick: () => p.onSideBySide!(pair.from, pair.into) }, words.seeThemSideBySide) : null,
           h(Button, { key: "c", onClick: p.onClose }, words.cancel),
           h(
             Button,

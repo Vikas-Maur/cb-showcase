@@ -767,6 +767,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
     },
     [ui, openCmp, words],
   );
+  const sideBySide = useCallback((a: string, b: string) => {
+    cardPlayRef.current.stop();
+    void ui.openCompare?.(a, b, { play: true }).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.compareFailed));
+  }, [ui, words]);
   const startPick = useCallback((p: Picking) => {
     setMenu(null);
     setOpenKey(null);
@@ -1076,6 +1080,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
         loading: playLoading === v.id,
         playError: playReq?.key === key ? playError : null,
         before: beforeBtn,
+        // ⇆ Side by side while its Play runs (Compare in the editor: the host's openCompare, still playing)
+        ...(typeof ui.openCompare === "function" ? { onSideBySide: sideBySide } : {}),
         autoPlay: autoPlay === key,
         onSeek,
         onMenu: (el: HTMLElement) => onMenu(key, el),
