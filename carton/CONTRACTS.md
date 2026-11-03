@@ -264,6 +264,29 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     one row of a larger set (the Fold dialog), `names = namingDoc(base, allOps)`, made once per plan, names the
     records the set adds ("Moved 'W1' to track 'Text 1'", a track the same fold adds). A track nothing names is
     "another track", never "track another track".
+  - **The app's change rows (UX redesign 0.1, 0.2; docs/carton-ux DESIGN §8).** `changeList(ops, base, schema, {
+    intent, names, value })` is the one sentence table every app surface uses (History, a version's card, the Changes
+    view, the Fold dialog, toasts): one `ChangeRow` per change as `countChanges` counts it (same count, always), verb
+    first, the record by its name in curly quotes, positions as the timeline's timecodes ("Trimmed “Intro”, now ends
+    at 0:05", "Moved “W6” 2 s later (now starts at 0:09)", "Made “W2” bigger (font size 100 → 222)", "Changed “Hello” to
+    “Hello world”", "Split “clip.mp4” at 0:04"), never an id or a hash, with `kind` (add, remove, change), the record
+    and where it is (`at`/`end`: after the change, before it for a removal). `value` words a field's value as the host
+    does (Cardboard: `cardboardValue`). `changeSummary(rows, schema)` sums several up by verb ("Moved “A” and “B”,
+    trimmed “C”"); a track added for the clips moved onto it is `minor`, said by their row ("Moved “W6” to a new
+    track"). `describe()` keeps its exact lines ("Trimmed 'Intro' end 6.0 s → 5.0 s") for `cb` and agents.
+    `describeCard`'s sides use the same words ("Moved it to start at 0:07") and give the record's `name`.
+    `log({ summary: true, rows: true })` adds each version's `rows`, a structured `title` (a fold with what it took of
+    how many, the rest of a partial fold, a restore with the version it restored, an undo or redo of either) and an
+    undo's `undoes`, so the app words them with its own clock ("Restored the 12:41 pm version"). None of this is in the
+    history bundle.
+  - **A restore says which version it brought back** (`Change.restoreOf`, a node id; not hashed, not in the change's
+    identity): set on a local cut's restore of a node or a cut; a held state (a pin's header) and a shared cut's restore
+    have none, and read as "an earlier version".
+  - **What each version touched** (UX redesign 0.8): `touched({ cut, record?, after?, upTo? })` lists, oldest first,
+    the records (`coll/id`, a root field by name) each version touched, from what its change declared when it was saved
+    (`paths`; a compacted change's own ops), so a clip's History ("Only “clip”") answers at 10k versions without
+    reading a state or diffing. Versions as `log()` lists them: a fold-some is one (its left-out records not touched),
+    a withdraw row none. A ripple's shift touches only what it names.
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3

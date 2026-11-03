@@ -208,6 +208,26 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
   assert.equal(JSON.parse(named.stdout.trim().split("\n").pop()).status, "named", named.stderr);
   assert.equal(json(null, "history", "Demo").versions.find((v) => v.by?.id === "director/chat1/turn1")?.name, "Make the intro tighter");
+  // UX redesign 0.7: a running in-app turn shows in the project's History panels as working (one opened during it too),
+  // with the changes it made so far, and no more once it ends
+  const working = spawnSync(process.execPath, ["-e", `
+    const { cardboard14 } = require(${JSON.stringify(path.join(out, "carton", "carton-node.cjs"))});
+    const sent = [];
+    const w = cardboard14.worker({ library: { projects: { bundlePathFor: () => ${JSON.stringify(b)}, read: async () => null } }, emit: (e) => e.kind === "carton" && sent.push(e.message) });
+    (async () => {
+      await w.working({ projectId: "p", chat: "chat1", provider: "director", actor: "director/chat1/turn3", actors: ["director/chat1/turn3"], prompt: "Add music under the interview. Then more.", since: Date.now() });
+      await w.ui({ projectId: "p", client: "c1", message: { t: "hello" } });
+      for (let i = 0; i < 100 && !sent.some((m) => m.t === "init"); i++) await new Promise((r) => setTimeout(r, 20));
+      const init = sent.find((m) => m.t === "init");
+      await w.working({ projectId: "p", chat: "chat1", done: true });
+      for (let i = 0; i < 100 && !sent.some((m) => m.t === "topic" && m.topic === "working"); i++) await new Promise((r) => setTimeout(r, 20));
+      const end = sent.find((m) => m.t === "topic" && m.topic === "working");
+      console.log(JSON.stringify({ working: init?.topics?.working ?? null, after: end ? end.value : "none" }));
+      process.exit(0);
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `], { env: env(), encoding: "utf8", timeout: 60_000 });
+  const shown = JSON.parse(working.stdout.trim().split("\n").pop());
+  assert.deepEqual([shown.working?.actor?.name, shown.working?.label, shown.working?.edits, shown.after], ["Director", "Add music under the interview", 0, null], working.stderr);
   // The live-sync half's seam: an extension's services join the worker's namespace beside Carton's own (never replacing
   // one), it gets each project's open Carton and hears of every Carton opened, and one that throws is left out.
   const ext = spawnSync(process.execPath, ["-e", `

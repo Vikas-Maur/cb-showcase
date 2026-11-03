@@ -312,3 +312,24 @@ test("remote: changes, a row's changes, viewing, working and a clip's history cr
   assert.deepEqual([h.count({ item: "c" }), h.at({ item: "c" }, 0)!.id], [1, top.id]);
   assert.equal((await r.undoTurnOf(top.id)).ok, true);
 });
+
+test("0.2: a turn's row says what the whole turn did; when the turn goes on, that version says only its own change again", async () => {
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "color", "blue")], author: director("t7") });
+  await carton.commit({ ops: [set("b", "color", "blue")], author: director("t7") });
+  await ui.refresh();
+  await settle();
+  const describe = async () => {
+    for (let i = 0; i < ui.history().count("all"); i++) ui.history().at("all", i);
+    await settle();
+  };
+  await describe();
+  const row = () => ui.history().all!().find((v) => v.seq === 2)!;
+  assert.deepEqual([row().kind, row().changes, row().summary], ["turn", 2, "Changed the color of “A” and “B”"]);
+  await carton.commit({ ops: [set("c", "color", "blue")], author: director("t7") });
+  await settle();
+  await describe();
+  assert.deepEqual([row().kind, row().changes, row().summary], ["edit", 1, "Changed the color of “B” to “blue”"]);
+  const top = ui.history().at("all", 0)!;
+  assert.deepEqual([top.kind, top.changes, top.run, row().run], ["turn", 3, row().run, top.run], "one run, its newest the turn's row");
+});

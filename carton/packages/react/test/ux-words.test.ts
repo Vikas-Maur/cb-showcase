@@ -140,6 +140,20 @@ test("0.4: a person's run of edits is one row, at most 10 min apart; a named ver
   assert.equal((imported.at(-1) as Extract<HistoryRow, { kind: "start" }>).imported, true);
 });
 
+test("0.4: an agent turn's versions are one row, its newest; a turn and a person's edits never share a row", () => {
+  const all = [
+    r("e1", base - 40 * MIN),
+    r("t1", base - 30 * MIN, { author: director, run: "c1/t1#main@2" }), r("t2", base - 29 * MIN, { author: director, run: "c1/t1#main@2" }),
+    r("t3", base - 28 * MIN, { author: director, kind: "turn", run: "c1/t1#main@2", turn: { label: "Add captions", edits: 3 } }),
+    r("e2", base - 20 * MIN),
+    r("u1", base - 10 * MIN, { author: director, kind: "turn", run: "c1/t2#main@6", turn: { label: "Trim", edits: 1 } }),
+  ];
+  const rows = groupHistory(all, () => false, { group: true });
+  assert.deepEqual(keys(rows), ["day", "u1", "e2", "t3", "e1"]);
+  assert.deepEqual((rows[3] as Extract<HistoryRow, { kind: "version" }>).turn, ["t2", "t1"]);
+  assert.equal((rows[1] as Extract<HistoryRow, { kind: "version" }>).turn, undefined, "a turn of one version");
+});
+
 test("0.4: a group never crosses a day, and a folded day hides its groups but keeps its named versions", () => {
   const today = dayNumber(base);
   const all = [r("a1", base - 24 * H - 2 * MIN), r("a2", base - 24 * H, { name: "Rough cut" }), r("a3", base - 24 * H + MIN), r("b1", base - 2 * MIN), r("b2", base)];

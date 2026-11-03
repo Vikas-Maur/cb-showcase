@@ -412,7 +412,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   /** A named version ends a run (a turn without an id): the next version by the same agent starts the next turn. */
   const ends = (key: string, c: CoreVersion | null) => key.startsWith("run:") && !!c?.name;
   // Summaries survive object replacement (a turn row growing, a rename).
-  const byId = new Map<string, { summary: string; details?: readonly string[]; changes?: number; leftOut?: number; start?: "created" | "imported"; rows?: readonly ChangeRow[] }>();
+  // A version's own words, and, while it is a turn of several versions, the whole turn's (from `turn.base`): a row that
+  // stops being its turn's (the turn went on) shows its own again.
+  type Words = { summary: string; details?: readonly string[]; changes?: number; leftOut?: number; start?: "created" | "imported" };
+  const byId = new Map<string, Words & { turn?: Words & { base: string } }>();
+  /** A turn row's base when its changes are several versions' (they're then the whole turn's), else undefined. */
+  const turnBase = (v: Pick<Version, "kind" | "base" | "ref" | "seq">) => (v.kind === "turn" && v.base && v.base !== `${v.ref.slice(0, v.ref.lastIndexOf("@"))}@${(v.seq ?? 0) - 1}` ? v.base : undefined);
   // "Fold in the rest" (R2-9, R3-5, R4-2, R5-1..3). Per partial fold (its inverse change id):
   // - restInfo: what it set back, read once from history (immutable);
   // - restDecision: whether the head still holds those values (left out), valid until a change on its cut touches
@@ -458,6 +463,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const start = prev?.start ?? (c.kind === "root" || c.kind === "import" ? "created" : undefined);
     const base = kind === "turn" ? baseOf(c, runStart) : baseOf(c);
     const run = runOf(c, runStart);
+    // the whole turn's words while it is a turn of several versions from this base; else its own
+    const tb = turnBase({ kind, base, ref: `${c.ref.branchId}@${c.ref.seq}`, seq: c.ref.seq });
+    const w = tb ? (prev?.turn?.base === tb ? prev.turn : undefined) : prev;
     return {
       id,
       seq: c.ref.seq,
@@ -466,10 +474,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       author: ui(c.author),
       kind,
       // the root is described here; an import (which may be a project brought in) and a new cut's start once read
-      summary: prev?.summary ?? (start ? "Project created" : c.kind === "fork" ? "Made this cut" : ""),
-      ...(prev?.details ? { details: prev.details } : {}),
-      ...(prev?.changes !== undefined && kind !== "turn" ? { changes: prev.changes } : {}),
-      ...(prev?.leftOut ? { leftOut: prev.leftOut } : {}),
+      summary: w?.summary ?? prev?.summary ?? (start ? "Project created" : c.kind === "fork" ? "Made this cut" : ""),
+      ...(w?.details ? { details: w.details } : {}),
+      ...(w?.changes !== undefined ? { changes: w.changes } : {}),
+      ...(w?.leftOut ? { leftOut: w.leftOut } : {}),
       ...(base ? { base } : {}),
       ...(run ? { run } : {}),
       ...(start ? { start } : {}),
@@ -641,7 +649,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const queued = new Set<string>();
   let running = 0;
   const wantSummary = (v: Version) => {
-    if (v.provisional || queued.has(v.id) || byId.has(v.id)) return;
+    if (v.provisional || queued.has(v.id)) return;
+    const known = byId.get(v.id);
+    // described: unless it has since become a turn of several versions whose words aren't known yet
+    if (known && (!turnBase(v) || known.turn?.base === turnBase(v))) return;
     // an import and a new cut's start have words at once, said better once read (PLAN 0.2: "History starts here",
     // "Made this cut from Main cut at 12:20 pm")
     if (v.summary) {
@@ -683,8 +694,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const j = pos.get(id);
     if (j === undefined || disposed) return;
     const row = rows[j]!;
-    const { rows: _rows, ...shown } = w;
-    row.v = { ...row.v, ...shown };
+    const tb = turnBase(row.v);
+    const { turn, ...own } = w;
+    const shown = tb ? (turn?.base === tb ? turn : null) : own;
+    if (!shown) return; // the row became another turn's meanwhile: it asks again
+    const { base: _b, ...words } = shown as Words & { base?: string };
+    row.v = { ...row.v, ...words };
     changed(j);
     hub.notify("history");
   };
@@ -1320,11 +1335,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const p = (async (): Promise<readonly Change[]> => {
       // a turn of several versions: what the whole turn changed, each change by whoever in it made it last
       if (v.kind === "turn" && v.base && v.base !== `${c.ref.branchId}@${c.ref.seq - 1}`) return changesBetween(v.base, v.ref);
-      let list = byId.get(versionId)?.rows;
-      if (!list) {
-        const got = c.ref.seq > 0 ? (await carton.log({ cut: c.ref.branchId, before: c.ref.seq + 1, limit: 1, summary: true, rows: true }))[0] : undefined;
-        list = got?.ref.seq === c.ref.seq ? (got.rows ?? []) : [];
-      }
+      const got = c.ref.seq > 0 ? (await carton.log({ cut: c.ref.branchId, before: c.ref.seq + 1, limit: 1, summary: true, rows: true }))[0] : undefined;
+      const list = got?.ref.seq === c.ref.seq ? (got.rows ?? []) : [];
       return list.map((x) => toChange(x, { author: v.author, when: v.at })).sort(byPlace);
     })();
     changesInCache.set(key, p);
@@ -1337,7 +1349,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * A version in the app's words (PLAN 0.2), from what core gave (log's rows and title): what a fold, a restore, an undo
    * of either, a turn's undo, a new cut's start and History's start were; else its changes summed up.
    */
-  const wordsFor = async (r: Row, got?: CoreVersion) => {
+  const wordsFor = async (r: Row, got?: CoreVersion): Promise<Words & { turn?: Words & { base: string } }> => {
     const c = r.core!, v = r.v;
     const list: readonly ChangeRow[] = got?.rows ?? [];
     const t = got?.title;
@@ -1371,19 +1383,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const turn = turnOfChanges(got.undoes);
       if (turn) summary = `Took out ${versionLabel(turn, labelCtx())}`;
     }
-    // a turn: what the whole turn changed
-    let shown: readonly ChangeRow[] = list;
-    if (v.kind === "turn" && v.base && v.base !== `${c.ref.branchId}@${c.ref.seq - 1}`) {
-      try {
-        shown = await rowsBetween(v.base, v.ref);
-        changes = shown.length;
-      } catch {
-        shown = list;
-      }
+    const fallback = v.kind === "fold" ? "Folded in" : v.kind === "undo" ? "Undid a change" : v.kind === "restore" ? "Restored an earlier version" : "No visible change";
+    const own: Words = { summary: summary ?? (changeSummary(list, schema) || fallback), changes, ...(list.length > 1 ? { details: list.map((x) => x.text) } : {}), ...(leftOut ? { leftOut } : {}), ...(start ? { start } : {}) };
+    // a turn of several versions: what the whole turn changed, from before its first version
+    const tb = turnBase(v);
+    if (!tb) return own;
+    try {
+      const all = await rowsBetween(tb, v.ref);
+      return { ...own, turn: { base: tb, summary: changeSummary(all, schema) || own.summary, changes: all.length, ...(all.length > 1 ? { details: all.map((x) => x.text) } : {}) } };
+    } catch {
+      return own;
     }
-    summary ??= changeSummary(shown, schema) || (v.kind === "fold" ? "Folded in" : v.kind === "undo" ? "Undid a change" : v.kind === "restore" ? "Restored an earlier version" : "No visible change");
-    const details = shown.length > 1 ? shown.map((x) => x.text) : undefined;
-    return { summary, changes, ...(details ? { details } : {}), ...(leftOut ? { leftOut } : {}), ...(start ? { start } : {}), rows: list };
   };
   /**
    * What a view target shows, labelled in one place (PLAN 0.5, DESIGN §8 "Viewing"), so the chip, the frame and the
