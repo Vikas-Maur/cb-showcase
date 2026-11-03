@@ -440,7 +440,12 @@ unchanged by it).
   it is now: a hash of its record and own parts, "absent" when gone), and `place` / `ripple` previewing the above for
   the confirmation's line. `restoreClip(ref, record, { expect: token })` refuses a clip that changed since with
   `ChangedSince` (`code: "CHANGED_SINCE"`, "“Intro” just changed again. Nothing was brought back.", the new `token`),
-  checked inside the write, nothing written. A retried id answers with the same place and ripple. Not done: a changed
+  checked inside the write, nothing written. A retried id answers with the same place and ripple.
+- **Open (needs a sync-server deploy, not allowed 2026-11-03):** Exported and Sent landmarks reaching teammates
+  (DESIGN-V2 §2.1 "Everyone"): the server keeps a change's fields by a whitelist (`HISTORY_FIELDS`,
+  `packages/server/src/sequencer.ts`) and has no landmark message, so they stay `local` on the computer that recorded
+  them; the same whitelist drops `restoreOf`/`restoreRecord`, so a shared cut's bring-back reads as a restore to
+  teammates. Not done: a changed
   clip whose old timing overlaps another goes on a new track as well (same rule); no other placement rule.
 - **Compare across cuts.** `diff(a, b, { shots?, rows? })`, `shots(a, b)` and `checkout` take versions of any two cuts
   (a shared cut's, a teammate's tracking cut's); a cut id is that cut's head, read fresh. `rows: true` adds
