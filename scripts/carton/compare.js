@@ -413,8 +413,11 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
       if (e.key === "Escape") {
         if (e.defaultPrevented || e.isComposing) return;
         const target = e.target;
+        // Cardboard's own Esc clears a clip selection first, without saying so: that Esc was its (as viewing's)
+        const before = bridge.selection?.();
         setTimeout(() => {
           if (e.defaultPrevented || !ui.comparing?.()) return;
+          if (!Object.is(bridge.selection?.(), before)) return;
           if (target && target !== document.body && target !== document.documentElement && !target.closest?.("[data-carton-skin], .carton-compare, [data-carton-stage-host], [data-analytics-region='editor-timeline']")) return;
           if (live.current.flipped) { ui.compareFlip?.("right"); return; }
           void ui.closeCompare?.();
@@ -438,7 +441,7 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
     window.addEventListener("keydown", down, true);
     window.addEventListener("keyup", up, true);
     return () => { window.removeEventListener("keydown", down, true); window.removeEventListener("keyup", up, true); };
-  }, [ui]);
+  }, [ui, bridge]);
 
   // announced once on entering (§1.14); "Back to your edit" on leaving is ui.js's (the chip's report)
   const [said, setSaid] = useState("");
