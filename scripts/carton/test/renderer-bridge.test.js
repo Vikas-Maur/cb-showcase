@@ -650,8 +650,8 @@ test("PLAN 1.4: an edit refused while viewing is told by the page's Carton part,
 });
 
 // PLAN 1.6 (DESIGN §9): Export never exports what is viewed. beforeExport is null when nothing is (Export opens at
-// once), else the page's Carton part goes back and Export waits for it; without one, the bridge leaves the preview
-// itself. Carton off: null.
+// once); else the page's Carton part goes back its own way, the editor then takes head itself, and Export waits for it:
+// it opens only on your edit. Without a Carton part the bridge leaves the preview itself. Carton off: null.
 test("PLAN 1.6: Export while viewing goes back to your edit first; at once when nothing is viewed; nothing with Carton off", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
@@ -661,7 +661,7 @@ test("PLAN 1.6: Export while viewing goes back to your edit first; at once when 
   assert.equal(t.c.beforeExport(), null, "the page's part has nothing viewed either");
   await t.c.preview("p1", "main@3");
   offPart();
-  // the page's part goes back (its own way: a teammate's cut is a cut switch, not a preview)
+  // the page's part goes back (its own way), and Export waits for it and for head in the editor
   let back = null;
   const offB = t.c.onBack((why) => { asked.push(why); return new Promise((r) => (back = r)); });
   const p = t.c.beforeExport();
@@ -672,10 +672,11 @@ test("PLAN 1.6: Export while viewing goes back to your edit first; at once when 
   assert.equal(done, false, "until your edit is back");
   back();
   await p;
+  assert.equal(t.state().cartonPreview, null, "the editor shows head");
   assert.deepEqual(asked, ["export", "export"]);
   offB();
   // without a Carton part: the bridge leaves the preview itself, and Export opens on head
-  assert.notEqual(t.state().cartonPreview, null);
+  await t.c.preview("p1", "main@3");
   await t.c.beforeExport();
   assert.equal(t.state().cartonPreview, null, "your edit");
   assert.equal(t.c.beforeExport(), null);
@@ -683,6 +684,70 @@ test("PLAN 1.6: Export while viewing goes back to your edit first; at once when 
   await off.c.ready;
   off.setState({ cartonPreview: { ref: "main@3" } });
   assert.equal(off.c.beforeExport(), null, "Carton off: Export as Cardboard opens it");
+});
+
+// Review of feat/ux-1-viewing #1: two Exports while viewing, the second before the first is back. The page goes back
+// once per ask (its viewing hasn't cleared yet), and the older return, superseded in the bridge, used to count as done:
+// Export opened on the old timeline. Now both wait for one guard, which resolves only with head in the editor; a
+// version viewed again meanwhile makes it fail, and Export doesn't open.
+test("review #1: Exports asked while one goes back share it; a return superseded by a newer view doesn't open Export", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  await t.c.preview("p1", "main@3");
+  // head answers late, when released: the returns are under way while the next is asked
+  const release = [];
+  let slow = true;
+  const invoke = t.store.invoke;
+  t.store.invoke = (ch, m) => (slow && m.method === "head" ? new Promise((r) => release.push(() => r(t.disk.doc))) : invoke(ch, m));
+  const until = async (n) => { for (let i = 0; i < 50 && release.length < n; i++) await new Promise((r) => setTimeout(r, 2)); assert.equal(release.length, n); };
+  let asks = 0;
+  const offPart = t.c.onBack(() => { asks++; return t.c.preview("p1", null); });
+  const a = t.c.beforeExport();
+  await until(1);
+  const b = t.c.beforeExport();
+  assert.equal(a, b, "a second Export meanwhile waits for the same return");
+  assert.equal(asks, 1, "the page went back once");
+  let opened = 0;
+  a.then(() => opened++, () => {});
+  release.shift()();
+  await until(1);
+  assert.equal(opened, 0, "the page's return alone isn't enough: head in the editor first");
+  release.shift()();
+  await a;
+  assert.equal(opened, 1);
+  assert.equal(t.state().cartonPreview, null, "Export opens on your edit");
+  // a version viewed again while the guard's own return waits for head: superseded, so not back: Export doesn't open,
+  // and the person is told
+  offPart();
+  slow = false;
+  const told = [];
+  t.c.onNotice((x) => told.push(x));
+  await t.c.preview("p1", "main@3");
+  slow = true;
+  const c = t.c.beforeExport();
+  await until(1);
+  slow = false;
+  await t.c.preview("p1", "main@4");
+  release.shift()();
+  await assert.rejects(c, /still viewing/, "Export doesn't open");
+  assert.deepEqual(t.state().cartonPreview, { ref: "main@4" }, "the newer view stays");
+  assert.match(told.at(-1), /^Export didn't open/);
+  assert.equal(t.c.beforeExport() === c, false, "the next Export asks anew");
+});
+
+// Review of feat/ux-1-viewing #2: leaving a teammate's cut is a cut switch (no preview), which the editor adopts from
+// its change event a moment after the switch answers. Export waits for head in the editor, not for the switch alone.
+test("review #2: Export from a teammate's cut waits until the editor shows your cut's head", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  // the editor shows the teammate's cut (not a preview: a read-only cut switched to)
+  t.setState({ cartonBase: 100, timelineItems: [{ id: "theirs", endTime: 3 }] });
+  let switched = false;
+  t.c.onBack(() => Promise.resolve().then(() => { switched = true; t.disk.doc = t.project(300, [{ id: "mine", endTime: 5 }]); }));
+  await t.c.beforeExport();
+  assert.equal(switched, true);
+  assert.deepEqual(t.state().timelineItems.map((i) => i.id), ["mine"], "your cut's head in the editor");
+  assert.equal(t.state().cartonBase, 300);
 });
 
 // PLAN 1.3: a conflict's See it brings its clip into view without selecting it (a selection takes viewing's first Esc).

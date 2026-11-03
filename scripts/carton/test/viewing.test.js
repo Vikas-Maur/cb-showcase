@@ -326,6 +326,39 @@ test("PLAN 1.3: closing the panel or switching its tab brings your edit back; a 
   } finally { await m.done(); }
 });
 
+// Review of feat/ux-1-viewing #3: Play on an older version, then the panel closed before the version has loaded. The
+// return found nothing viewed yet and did nothing; the load then finished and swapped the editor, with the panel gone.
+// Now leaving cancels what is still loading: it never takes the stage. (The worker drops a view superseded by a newer
+// one itself, from-carton.ts viewGen; the mock's view is wrapped here to load late and do the same.)
+test("review #3: closing the panel while a Play still loads: the version never takes the stage", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  const real = ui.view.bind(ui);
+  let gen = 0, release = null;
+  ui.view = async (t) => {
+    const g = ++gen;
+    if (t?.kind === "version") await new Promise((r) => (release = r));
+    if (g !== gen) return;
+    return real(t);
+  };
+  const m = await mount(ui);
+  try {
+    await m.cmd("carton-history");
+    const rows = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && !r.hasAttribute("data-provisional") && r.getAttribute("data-kind") !== "start");
+    await m.click(rows[1]);
+    const play = [...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent));
+    await m.click(play);
+    assert.ok(release, "the version is loading");
+    assert.equal(m.ui.viewing(), null, "not shown yet");
+    await m.cmd("carton-history");
+    assert.ok(!m.side.querySelector(".carton-sidebar"), "the panel closed meanwhile");
+    await act(async () => { release(); await sleep(30); });
+    await m.settle(40);
+    assert.equal(m.ui.viewing(), null, "nothing viewed");
+    assert.ok(!m.did.previews.some((r) => r !== null), "the editor never swapped to it: " + JSON.stringify(m.did.previews));
+    assert.ok(!m.frame(), "no frame");
+  } finally { await m.done(); }
+});
+
 test("PLAN 1.3, 7.1: a conflict's See it views its side through ui.view, the clip in view and not selected", opt, async () => {
   const m = await mount();
   try {

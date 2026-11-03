@@ -63,16 +63,29 @@ function connect(projectId, bridge) {
   const client = projectId + ":" + Math.random().toString(36).slice(2);
   const r = remoteUi((message) => bridge.call("ui", [{ projectId, client, message }]).catch((e) => console.warn("[carton] the History panel lost the worker:", e?.message ?? e)));
   const off = bridge.onEvent((ev) => { if (ev?.client === client && ev.message) r.receive(ev.message); });
+  // Each view() or openPreview() asked here is a turn: one still loading when a newer one is asked (another Play, Back,
+  // the panel closed: review of feat/ux-1-viewing #3) never swaps the editor once it loads. pendingView(): what is
+  // still loading (the worker hasn't set viewing for it yet), so leaving can cancel it too.
+  let viewSeq = 0, pending = null;
+  r.ui.pendingView = () => pending?.target ?? null;
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
-  r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
+  r.ui.openPreview = (ref, label) => { ++viewSeq; pending = null; openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
   // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
   // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
   // A conflict's side (its card's See it, PLAN 7.1) brings the card's clip into view: the playhead at its start in the
   // side shown, the clip not selected, so the first Esc is viewing's, not Cardboard's deselect (PLAN 1.3).
   const view = r.ui.view.bind(r.ui);
   r.ui.view = async (target) => {
-    await view(target);
+    const seq = ++viewSeq;
+    pending = target ? { seq, target } : null;
+    try {
+      await view(target);
+    } finally {
+      if (pending?.seq === seq) pending = null;
+    }
+    // a newer view or a return asked while this one loaded owns the stage
+    if (seq !== viewSeq) return;
     await bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
     if (target?.kind === "conflict" && r.ui.viewing()?.conflictId === target.conflictId) {
       const item = r.ui.conflicts().find((c) => c.id === target.conflictId)?.item;
@@ -199,10 +212,18 @@ export function backToEdit(ui) {
   const cuts = ui.cuts(), current = cuts.find((c) => c.current), home = homeCut(cuts);
   if (current?.readOnly && home) return ui.switchCut(home.id);
   if (viewingOf(ui)) return ui.openPreview(null);
+  // still loading (connect()'s pendingView): asked off, so it never takes the stage when it loads
+  if (ui.pendingView?.()) return ui.view(null);
   return undefined;
 }
-/** What the panel showed goes with it (PLAN 1.3); a conflict's side belongs to its card on the stage. */
-const leavesWithPanel = (v) => !!v && v.kind !== "conflict";
+/**
+ * What the panel showed goes with it (PLAN 1.3), shown or still loading (a Play whose version hasn't loaded when the
+ * panel closes: review of feat/ux-1-viewing #3); a conflict's side belongs to its card on the stage.
+ */
+const leavesWithPanel = (ui) => {
+  const v = viewingOf(ui) ?? ui.pendingView?.() ?? null;
+  return !!v && v.kind !== "conflict";
+};
 /**
  * Whether History's list marks what is viewed itself (its row's "👁 Viewing ✕", or a teammate's cut in its cut bar),
  * so the stage frame needs no label (PLAN 1.1): History open on a version or how it was before one; never a conflict's
@@ -472,7 +493,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     const was = shownPanel.current;
     shownPanel.current = panel;
     if (!was || was === panel || !ready) return;
-    if (leavesWithPanel(viewingOf(conn.ui))) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
+    if (leavesWithPanel(conn.ui)) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
   }, [panel, ready, conn]);
   const [share, setShare] = useState(false);
   // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
@@ -739,7 +760,8 @@ function StageViewing({ projectId, bridge, panel }) {
   // Export while viewing (PLAN 1.6, DESIGN §9): never what is viewed. Back to your edit first, said in a toast; Export
   // opens once the editor shows your edit (the bridge's beforeExport waits for this).
   useEffect(() => bridge.onBack?.((why) => {
-    if (!viewingOf(ui)) return null;
+    // (a Play still loading counts: it would take the stage under Export once it loaded)
+    if (!viewingOf(ui) && !ui.pendingView?.()) return null;
     if (why === "export") toasts.show(words.backToExport);
     return Promise.resolve(backToEdit(ui));
   }), [bridge, ui]);

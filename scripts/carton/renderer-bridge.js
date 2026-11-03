@@ -63,6 +63,8 @@ module.exports = String.raw`window.__carton = (() => {
   // The page's Carton parts (scripts/carton/ui.js): what they show for an edit tried while viewing (blocked), and how
   // they bring your edit back when the editor asks (back: Export opened while viewing). The newest one answers.
   const blockedSubs = new Set(), backSubs = new Set();
+  // Export's way back to your edit, while one is under way: every Export asked meanwhile waits for the same one
+  let exportGuard = null;
   const notice = (text) => {
     console.info("[carton] " + text);
     for (const f of noticeSubs) try { f(text); } catch {}
@@ -71,6 +73,8 @@ module.exports = String.raw`window.__carton = (() => {
   // reached the worker) and nobody was told. Cardboard logs a failed save and goes on; now the person is told too, at
   // most every 20 s, and again after a save that landed.
   const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
+  // PLAN 1.6: Export asked while viewing, and your edit didn't come back (a version played again meanwhile, a failure)
+  const EXPORT_BACK_FAILED = "Export didn't open: your edit didn't come back. Press Esc, then try again.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
   // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
@@ -357,17 +361,34 @@ module.exports = String.raw`window.__carton = (() => {
     onBlocked(f) { blockedSubs.add(f); return () => blockedSubs.delete(f); },
     // PLAN 1.6 (DESIGN §9): Export never exports what is viewed. patch-carton's Export opens (the person's Export command,
     // an agent's scripted export) ask here first: null to go on as before (nothing viewed, or Carton off); else a promise
-    // that resolves once the editor shows your edit again (the page's Carton part goes back and says so; without one, the
-    // preview is left here), after which Export opens.
+    // that resolves only once the editor shows your edit, after which Export opens, and rejects when it doesn't (Export
+    // then doesn't open, and the person is told). The page's Carton part goes back its own way (view(null), or a
+    // teammate's cut left for your own: a cut switch, which the editor adopts on its own a moment later) and says so;
+    // then the editor takes head here itself, so neither a switch not yet adopted nor a return superseded by a newer one
+    // (a second Export meanwhile: review of feat/ux-1-viewing #1, #2) counts as being back. One at a time: an Export asked
+    // while one is under way waits for that one.
     beforeExport() {
       if (!on || !store) return null;
-      const st = store.state();
+      if (exportGuard) return exportGuard;
+      const st = store.state(), projectId = st.projectId;
+      let back = null;
       for (const f of [...backSubs].reverse()) {
-        let r;
-        try { r = f("export"); } catch { r = null; }
-        if (r) return Promise.resolve(r).then(() => undefined);
+        try { back = f("export"); } catch { back = null; }
+        if (back) break;
       }
-      return st.cartonPreview && st.projectId ? this.preview(st.projectId, null) : null;
+      if ((!back && !st.cartonPreview) || !projectId) return null;
+      const guard = (async () => {
+        if (back) await back;
+        // (a save still waiting goes first: taking head must never drop an edit)
+        if (!store.state().cartonPreview && store.armed()) await store.flush();
+        await this.preview(projectId, null);
+        const now = store.state();
+        if (now.cartonPreview || now.projectId !== projectId) throw new Error("still viewing");
+      })();
+      exportGuard = guard;
+      const done = () => { if (exportGuard === guard) exportGuard = null; };
+      guard.then(done, (e) => { done(); notice(EXPORT_BACK_FAILED); console.warn("[carton] Export didn't open: your edit didn't come back:", e?.message ?? e); });
+      return guard;
     },
     onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
