@@ -178,6 +178,8 @@ S["share-update-server"] = share(shared({ status: "offline", pending: 1, label: 
 S["join"] = () => ({ ui: mock({ versions: 0 }), chrome: "join" });
 // Title bar: the strip's icons, from the page's report (bridge.reportPanel), as the strip draws them.
 S["titlebar"] = () => ({ ui: mock({ versions: 0 }), chrome: "titlebar" });
+// Workstream 4: the mock's story (its newest versions: DESIGN §3), behind the app's History
+S["changes-story"] = () => { const ui = mock({ versions: 40 }); setCuts(ui, CUTS(newest(ui))); ui.setSync({ kind: "upToDate" }); ui.setConflicts([]); return { ui, panel: "history" }; };
 
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
@@ -215,6 +217,9 @@ function makeBridge(sc) {
     reportPanel(panel, live) { window.__cap.strip = { panel, live: live ?? null }; for (const f of stripSubs) f(window.__cap.strip); },
     preview(_projectId, ref) { window.__cap.previewRef = ref; for (const f of previewSubs) f(ref); return Promise.resolve(); },
     seek(t) { window.__cap.seekAt = t; },
+    // Play and Before (Workstream 4): Before's side loaded ahead, and your edit's length (the story's 0:38)
+    prefetch(_projectId, ref) { (window.__cap.prefetched ??= []).push(ref); },
+    editLength: () => 38,
     playhead: () => 12.4,
     selection: () => null,
     reveal(item) { window.__cap.revealed = item; },
