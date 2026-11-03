@@ -68,8 +68,11 @@ export function useLandmarks(cutId: string | undefined): LandmarkIndex {
   return index;
 }
 
-/** A landmark's title, the words after its tag (DESIGN-V2 §2.1): "1080p for the client", "Shared with Leo", "Sent to client". */
-export function landmarkTitle(l: Landmark, words: Words, fallback: string): string {
+/**
+ * A landmark's title, the words after its tag (DESIGN-V2 §2.1): "1080p for the client", "Shared with Leo", "Sent to
+ * client". `after`: a Before's next row's words (its restore, fold, bring-back), when known.
+ */
+export function landmarkTitle(l: Landmark, words: Words, fallback: string, after?: string): string {
   switch (l.kind) {
     case "exported":
       return words.exportedTitle(l.label);
@@ -78,7 +81,8 @@ export function landmarkTitle(l: Landmark, words: Words, fallback: string): stri
     case "start":
       return words.sessionTitle;
     case "before":
-      return l.before ? words.safetyTitle[l.before] : (l.label ?? fallback);
+      // (the row after it, in words, when History has it: "Restoring the 11:02 am version", not "an earlier version")
+      return (after ? words.safetyTitleOf(after) : null) ?? (l.before ? words.safetyTitle[l.before] : (l.label ?? fallback));
     default:
       return l.label || fallback;
   }

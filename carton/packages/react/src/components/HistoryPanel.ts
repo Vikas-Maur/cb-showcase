@@ -200,6 +200,8 @@ interface RowProps {
   onBack: () => void;
   /** Its landmark (DESIGN-V2 §2.1), the best of them, and the next one's tag for its meta line ("also exported"). */
   mark?: Landmark;
+  /** A Before landmark's next row, in words ("Restored the 11:02 am version"), for its title. */
+  markAfter?: string | undefined;
   alsoMark?: string;
   /** A search's hit on it, and the query (its words are marked in the title). */
   hit?: FindHit;
@@ -234,7 +236,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const plain = prompt ? `“${prompt}”` : named ? v.name! : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
   // a landmark reads as one phrase, its tag then its title ("EXPORTED 1080p for the client"); a turn keeps its prompt
   const mark = p.mark && p.mark.kind !== "turn" ? p.mark : undefined;
-  const title = mark ? landmarkTitle(mark, words, plain) : plain;
+  const title = mark ? landmarkTitle(mark, words, plain, p.markAfter) : plain;
   const when = p.holding
     ? h("span", { className: "carton-version-when", "data-viewing": "" }, h(Icon, { name: "eye", size: 12 }), words.holding)
     : p.viewing
@@ -511,6 +513,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // filter, and pick mode. Search and the Landmarks filter narrow the list to their versions (`only`), on top of the
   // filter: every row stays an ordinary row (its card, its ⋯, hold to peek, Shift+click).
   const marks = useLandmarks(cutId);
+  // each Before landmark's next row in words (its restore, fold or bring-back), by ref: newest first, and only while
+  // some are still to find (they sit just under their own rows)
+  const afterWords = useMemo(() => {
+    const want = new Set(marks.list.filter((l) => l.kind === "before" && l.after).map((l) => l.after!));
+    const out = new Map<string, string>();
+    const all = want.size && typeof hist.all === "function" ? hist.all() : [];
+    for (let i = all.length - 1; i >= 0 && out.size < want.size; i--) if (want.has(all[i]!.ref) && all[i]!.summary) out.set(all[i]!.ref, all[i]!.summary);
+    return out;
+  }, [marks, hist, revision]);
   const [query, setQuery] = useState("");
   const searching = searchable(query) && typeof ui.find === "function";
   // (all of them once asked: "The newest 200 of 312 versions · Show them all"; a new query starts at the newest 200)
@@ -1010,6 +1021,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
       onGroup: toggleGroup,
       onBack: back,
       mark: marks.byVersion.get(v.id)?.[0],
+      markAfter: (() => {
+        const mk = marks.byVersion.get(v.id)?.[0];
+        return mk?.kind === "before" && mk.after ? afterWords.get(mk.after) : undefined;
+      })(),
       alsoMark: (() => {
         const xs = marks.byVersion.get(v.id);
         // ("also exported", "also sent"; a day's start under another landmark is no news)

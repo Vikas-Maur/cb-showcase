@@ -88,6 +88,9 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-bringback-row:hover .carton-bringback-btn, .carton-bringback-btn:focus-visible){opacity:1}
 @media (hover: none){ :where(${S}) :where(.carton-bringback-btn){opacity:1} }
 :where(${S}) :where(.carton-bringback-confirm){padding:10px;border-radius:8px;background:var(--cb-raised);box-shadow:inset 0 0 0 1px #ffffff10}
+/* the action named first, on the left, when a narrow panel wraps the row (the stage cards' end alignment had put it
+   alone on the right, over Cancel: design QA v2) */
+:where(${S}) :is(.carton-goback, .carton-bringback-confirm) > .carton-card-actions{justify-content:flex-start}
 
 :where(${S}) :where(.carton-bringback-same){margin:8px 0 0!important;font-size:11.5px;line-height:16px;color:var(--cb-fg-3)}
 

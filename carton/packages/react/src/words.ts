@@ -593,6 +593,17 @@ export const words = {
   sharedWith: (who?: string) => (who ? `Shared with ${who}` : "Shared"),
   sessionTitle: "How it was when you opened it",
   safetyTitle: { restore: "Restoring an earlier version", fold: "Folding in another cut", "undo-turn": "Undoing an agent's turn", "bring-back": "Bringing back a clip" } as Record<"restore" | "fold" | "undo-turn" | "bring-back", string>,
+  /**
+   * A Before landmark's title from the row that came right after it (DESIGN-V2 §2.1: "Restoring the 11:02 am version"),
+   * so two restores' safety points can be told apart; null when its words aren't one of these (the generic title then).
+   */
+  safetyTitleOf: (after: string): string | null => {
+    const m = /^(Restored|Brought back|Folded in|Took out|Undid) (.+)$/.exec(after);
+    if (!m) return null;
+    const verb = ({ Restored: "Restoring", "Brought back": "Bringing back", "Folded in": "Folding in", "Took out": "Taking out", Undid: "Undoing" } as Record<string, string>)[m[1]!]!;
+    // (a bring-back's "from 10:20 am" is the landmark's own row's time: the clip is enough)
+    return `${verb} ${m[1] === "Brought back" ? m[2]!.replace(/ from .+$/, "") : m[2]}`;
+  },
   keptForYou: "Kept for you",
   onlyYouSee: "only you see this",
   alsoLandmark: (tag: string) => `also ${tag.toLowerCase()}`,

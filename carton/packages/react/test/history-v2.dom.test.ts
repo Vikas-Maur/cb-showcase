@@ -255,6 +255,11 @@ test(name("landmarks: tagged rows with a picture tile; the Landmarks filter list
   // (an export stays on this computer until the server carries it, N0's `local`: only you see it, and the row says so)
   assert.match(exported.textContent ?? "", /only you see this/);
   assert.match($(m.container, ".carton-version[data-landmark=before]")!.textContent ?? "", /Kept for you.*only you see this/, "a Before is yours only");
+  // its title says which restore, from the row after it (DESIGN-V2 §2.1; design QA v2: it read "an earlier version")
+  const restoredRow = $$(m.container, ".carton-version").find((r) => /^Restored the \d{1,2}:\d{2} [ap]m version/.test($(r, ".carton-version-title")?.textContent ?? ""));
+  assert.ok(restoredRow, "the restore's row");
+  const what = /^Restored (the \d{1,2}:\d{2} [ap]m version)/.exec($(restoredRow, ".carton-version-title")!.textContent!)![1];
+  assert.match($(m.container, ".carton-version[data-landmark=before] .carton-version-title")!.textContent ?? "", new RegExp(`Restoring ${what}`));
   assert.ok($(exported, ".carton-landmark-tile"), "a picture tile in place of the avatar");
   await waitFor(() => !!$(exported, ".carton-landmark-tile img"), "its picture, read once its row shows");
   const named = row(m.container, "Sent to client")!;
