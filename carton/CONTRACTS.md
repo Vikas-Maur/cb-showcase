@@ -387,72 +387,81 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 
 ## Carton UX v2, N0: find, landmarks, bring back one clip, compare across cuts, Compare on request
 
-Owner: N0 (`feat/ux2-n0`). N1 (Compare in the editor) and N2 (History's find UI) code against this. Nothing here is in
-the history bundle (`packages/core/src/history/` is untouched; `node scripts/size.mjs` is unchanged by it).
+Owner: N0 (`feat/ux2-n0`). N1 (Compare in the editor) and N2 (History's find UI) code against this. Words follow
+DESIGN-V2 (`design/carton-ux-v2` @ 68d40da1, `docs/carton-ux/v2/DESIGN-V2.md` §1.12, §1.13, §1.15, §2.1, §2.3, §3, §5,
+§6). Nothing here is in the history bundle (`packages/core/src/history/` is untouched; `node scripts/size.mjs` is
+unchanged by it).
 
 **Core (`@carton/core`).** New modules beside `carton.ts`: `find.ts`, `landmarks.ts`, `bring-back.ts`.
-- `carton.find(text, { cut?, limit = 50, before?, fields? }) → { matches, total, versions }`. A version matches when
-  its name (`name`), the prompt its agent turn was named from (`prompt`: a named version made by an agent turn), who
-  made it (`person`), a clip it touched by name, as it was before and after (`clip`, from the per-version `touched`
-  index), or title and caption text it set (`text`, the schema's new optional `CollectionDef.words(record)`) contains
-  `text`: any case, accents ignored. Newest first; each `FindMatch` has `field` (the best: name, prompt, clip, text,
-  person), `fields`, a `snippet` (at most about 80 characters, `…` where cut, never an id) with `hit: [lo, hi)`, and for a
-  clip or text match the `record` and `recordName`. The index is per cut, built on the first call by one forward walk
-  over the cut's rows, kept, and extended by the rows saved since on each later call (a compaction or a rebuild of
-  the cut starts it again). `find("")` builds it and matches nothing. Never on the save or open path.
-- `carton.landmarks({ cut?, kinds?, before?, limit = 200 }) → Landmark[]`, newest first. Kinds: `exported`, `sent`,
-  `shared`, `published`, `session`, `safety`, `turn`, `named`. Recorded ones (`exported`, `sent`, `shared`, `session`)
-  come from `carton.mark(kind, { ref?, cut?, label?, by?, at?, once?: "day" })`, which writes one row to the local
-  `ephemeral` table (`["landmark", cut, seq, kind, at]`: never exported with history, never synced). The rest are read
-  from the history, nothing written: `named` (a version's name, not a turn's), `turn` (an agent turn's newest
-  version, its label the turn's name), `published` (a Published cut's version, on the cut it came from), `safety` (the
-  version just before a restore, a fold in, an undo of a turn or a bring-back that this replica made; `before`, `after`).
-  `team`: true for `named`, `turn` and `published` (they come from what syncs), false for the rest (this person's own).
-  `picture`: `pictureKey(ref)`, `<cut>@<seq>`: one picture per version.
-- `carton.restoreClip(ref, record, { cut?, author?, id?, remove? }) → CommitResult & { brought }`: the clip
-  (`timelineItems/<id>` or `[coll, id]`) as it was at `ref`, saved as a new version on top that changes nothing else
-  (kind `restore`, with `restoreOf`, `restoreRecord`, `restoreName` on a local cut; a shared cut queues it like any
-  change, and a teammate's newer edit of the clip becomes a card, as restore's do). It covers the clip's record (all its
-  fields: keyframes, captions, effects), its own parts (`partOf`: a title's text entry), and what it needs that is gone
-  since (its track, its media file), as they were then. A clip deleted since comes back. One that wasn't there then is
-  removed only with `remove: true`; else `NotInVersion` (`code: "NOT_IN_VERSION"`, its message in editor words) and
-  nothing changes. `NoSuchClip` (`NO_SUCH_CLIP`) when neither version has it. `brought: { record, name, how: changed |
-  added | removed | same, parts, of }`; `same`: nothing saved (confirmed, empty). A stable `id` as restore's (a retry
-  answers the first). `log({ summary: true, rows: true })` titles it `{ kind: "bring-back", of, record, name }`; its
-  summary for `cb` is "Brought back 'Intro' from an earlier version".
+- `carton.find(text, { cut?, allCuts?, limit = 50, before?, fields?, now? }) → { clips, matches, total, versions }`
+  (DESIGN-V2 §2.3). Every word of `text` matches the start of a word in what a version holds, in any order, any case,
+  accents ignored ("intr cap" finds "Add captions to the intro"). Fields by weight (`FindField`): `clip` (a clip it
+  touched, by its name before or after it, from the per-version `touched` index), `text` (title and caption text it
+  set: the schema's optional `CollectionDef.words(record)`), `prompt` (the request an agent turn's version is named
+  from), `name` (a version's name and its landmark words: "exported", "sent", "named", "start", "before"), `person`
+  (who made it, as `log()` tells them), `day` ("today", "yesterday", "monday", "oct 30"). Newest first; each
+  `FindMatch` has `field` (the best), `fields`, a `snippet` (at most about 80 characters, `…` where cut, never an id),
+  `hit` and `hits` (each word's [lo, hi) in it), for a clip or text match `record`, `recordName` and `span` (where the
+  clip was after it: "“Intro” was 0:00–0:06 here"), and `landmarks` (its landmark kinds). `clips`: the clips the words
+  name ("A clip first", with Only this clip), best first. The index is per cut, built on the first call by one forward
+  walk over the cut's rows, kept, and extended by the rows saved since on each later call (a compaction or a rebuild of
+  the cut starts it again). `find("")` builds it and matches nothing. Never on the save or open path (the brief's hard
+  rule, over §6's "built at save time": measured below).
+- `carton.landmarks({ cut?, kinds?, before?, limit = 200 }) → Landmark[]`, newest first (DESIGN-V2 §2.1). Kinds:
+  `exported`, `sent` (a share link made, a review link sent, a video published; a Published cut's version), `named`,
+  `turn` (an agent turn's newest version, labelled with its prompt name), `start` (how it was when the project was
+  opened, or before the first change after an hour away), `before` (the version just before a restore, a fold in, an
+  undo of a turn or a bring-back made on this replica: `before`, `after`). `LANDMARK_ORDER` says which one a row shows.
+  `personal`: Start and Before, only their person sees them ("Only you see this"). `local`: kept on this computer only:
+  Start and Before always; Exported and Sent are everyone's in DESIGN-V2, but no sync path carries them yet (a server
+  change: listed as left), so they are local for now. Recorded ones come from `carton.mark(kind, { ref?, cut?, label?,
+  by?, at?, once?: "day" | "version" })`, which writes one row to the local `ephemeral` table (`["landmark", cut, seq,
+  kind, at]`: never exported with history). `picture`: `pictureKey(ref)`, `<cut>@<seq>`: one picture per version.
+- `carton.restoreClip(ref, record, { cut?, author?, id?, remove? }) → CommitResult & { brought }` (DESIGN-V2 §3.2):
+  the clip (`timelineItems/<id>` or `[coll, id]`) as it was at `ref`, saved as a new version on top that changes nothing
+  else (kind `restore`, with `restoreOf`, `restoreRecord`, `restoreName` on a local cut; a shared cut queues it like
+  any change, and a teammate's newer edit of the clip becomes a card, as restore's do; the server keeps no `restoreOf`,
+  so there it reads as a restore). It covers the clip's record (every field: keyframes, captions, effects), its own
+  parts (`partOf`: a title's text entry), and what it needs that is gone since (its track, its media file), as they
+  were then. A clip deleted since goes back where it was. One that wasn't there then is taken out only with `remove:
+  true`; else `NotInVersion` (`code: "NOT_IN_VERSION"`) and nothing changes. `NoSuchClip` (`NO_SUCH_CLIP`) when neither
+  side has it. `brought: { record, name, how: changed | added | removed | same, parts, of }`; `same`: nothing saved
+  (confirmed, empty). A stable `id` as restore's. `log({ summary: true, rows: true })` titles it `{ kind: "bring-back",
+  of, record, name }`. Not yet: §3.2's moving the rest back when a ripple delete took it out, and a new track when its
+  place is taken (it goes back at its own time and track; a soft overlap warning says so).
+- `carton.bringBackChoices(ref, { cut? }) → { changed, deleted, added, same }`: "Choose a clip…"'s three groups.
 - **Compare across cuts.** `diff(a, b, { shots?, rows? })`, `shots(a, b)` and `checkout` take versions of any two cuts
   (a shared cut's, a teammate's tracking cut's); a cut id is that cut's head, read fresh. `rows: true` adds
   `DiffResult.rows` (`changeList`) and `count` (`countChanges`).
 
 **Local (`@carton/local`).** WriteOps `{kind: "restoreClip", ref, record, cut?, remove?, head?}` (core's restoreClip
 under the request's id) and `{kind: "open", view: "compare", from, to}`: the holder calls its
-`ViewPrinter.openView(view, by)` and answers `{status: "confirmed", opened}` (how many editor windows were told; 0: none,
-or no holder: an `open` never starts a helper).
+`ViewPrinter.openView(view, by)` and answers `{status: "confirmed", opened, shown?}` (`opened`: windows told, 0 when no
+holder or none has the project open: an `open` never starts a helper; `shown`: the editor's answer, below).
 
-**`cb` and MCP (`@carton/cli-mcp`).**
-- `cb history --find <text>`: the matches, newest first, one line each: version, when, who, what matched (`name`,
-  `prompt`, `clip “Intro”`, `text`, `person`) and the snippet. `--json`: `{ matches, total }`.
-- `cb history --landmarks`: the landmarks, newest first: version, when, kind, words.
-- `cb restore <version> --clip <name or id> [--remove]`: "Brought back 'Intro' from main@41 (2 h ago)".
-- `cb compare <a> [b] --show`: what `cb compare` prints, and the comparison opens in the editor ("Opened a comparison
-  in the editor: …"); with no editor window open, it says so and prints the comparison alone. Refs: `<cut>@<seq>`, a
-  cut's name alone (its head: `cb compare "30s Instagram cut" main`), `head`, a header.
+**`cb` and MCP (`@carton/cli-mcp`), words as DESIGN-V2 §5.**
+- `cb history --find <text> [--all] [--all-cuts]`, `cb history --landmarks`, `cb restore <version> --clip <name or
+  id> [--remove]`, `cb compare <left> [right] --show`. A version may also be written as `sent`, `exported`, `today`,
+  `now`, a version's name, or a cut's name (that cut now).
 - MCP: `timeline_find`, `timeline_landmarks`, `timeline_restore_clip`, `timeline_compare` (with `show`).
 
 **The app (`scripts/carton`).**
 - `CartonUi` (`@carton/react` model.ts, optional methods, served by the worker through `serveUi` as the rest of the
-  History panel): `find(text, opts) → FindHits` (hits by History row id), `landmarks(opts) → Landmark[]` (topic
-  `landmarks` says when to read them again), `restoreClip(ref, itemId, { remove? }) → BringBack` (`made`, `how`,
-  `clipName`), `landmarkPicture(key) → data:image/jpeg URL | null`, `saveLandmarkPicture(key, jpegDataUrl)` (at most 64
-  KB; the worker keeps it as `<bundle>/.carton/pictures/<key>.jpg`; `fromCarton({ pictures })`).
+  History panel): `find(text, { allCuts? }) → FindHits`, `landmarks() → Landmark[]` (topic `landmarks` says when to read
+  them again), `restoreClip(ref, itemId, { remove? }) → BringBack`, `bringBackChoices(ref)`, `align(a, b) →
+  AlignEntry[]` (DESIGN-V2 §1.15, cached per pair), `changes(a, b, { between: "cuts" })` (difference sentences),
+  `landmarkPicture(key) → data:image/jpeg URL | null`, `saveLandmarkPicture(key, jpegDataUrl)` (at most 64 KB; the
+  worker keeps it as `<bundle>/.carton/pictures/<key>.jpg`; `fromCarton({ pictures })`).
 - The worker's `mark({ projectId, kind, label? })` (carton namespace): the renderer bridge calls it when an export
-  starts (`exported`, label the preset) and when a version is sent or shared; the worker marks `session` itself at the
-  first open of a project each day.
+  finishes (`exported`, label its preset) and when a link is made or a video published (`sent`); the worker marks
+  `start` itself when it opens a project and before the first change after an hour away.
 - **The Compare event.** On `cb compare … --show`, the worker sends the pages a `carton:event`
   `{ kind: "carton", id: <projectId>, topic: "compare", compare: OpenCompare }`, through the same channel the History
-  panel's messages and `cb cut switch` use. `OpenCompare`: `{ from, to, by: {kind, id, name?}, byName, at, request }`
-  (refs as History's `Version.ref`; a cut id is that cut's head). N1's `openCompare` in the renderer opens Compare on it;
-  a page shows each `request` once.
+  panel's messages and `cb cut switch` use. `OpenCompare`: `{ from, to, between, by: {kind, id, name?}, byName, at,
+  request }` (refs as History's `Version.ref`; a cut id is that cut's head). N1's `openCompare` in the renderer takes
+  it and answers the worker's `compareAnswer({ projectId, request, status: "opened" | "offered" | "refused", why? })`
+  within 10 s (DESIGN-V2 §1.13: it may wait up to 8 s for the person to be idle); `cb` prints what it said. No answer:
+  `cb` says it was sent to the editor.
 
 ## Carton UX v2, N1: Compare in the editor
 

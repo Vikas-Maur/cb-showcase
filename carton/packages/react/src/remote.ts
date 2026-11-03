@@ -39,7 +39,7 @@ const METHODS = [
   "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit", "conflictRef",
   "view", "changes", "changesIn", "undoTurnOf", "clipVersions",
   // Carton UX v2 (N0)
-  "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture",
+  "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture", "bringBackChoices", "align",
 ] as const;
 type Method = (typeof METHODS)[number];
 
@@ -277,11 +277,11 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     });
   // Changes between two versions are fixed once both are confirmed (`cut@seq`): kept per pair, like the server's
   const changeCache = new Map<string, Promise<readonly Change[]>>();
-  const changes = (a: string, b: string): Promise<readonly Change[]> => {
-    const key = `${a}|${b}`;
+  const changes = (a: string, b: string, o?: { between?: "versions" | "cuts" }): Promise<readonly Change[]> => {
+    const key = `${a}|${b}|${o?.between ?? ""}`;
     const hit = changeCache.get(key);
     if (hit) return hit;
-    const p = call<readonly Change[]>("changes", a, b);
+    const p = o?.between ? call<readonly Change[]>("changes", a, b, o) : call<readonly Change[]>("changes", a, b);
     if (/@\d+$/.test(a) && /@\d+$/.test(b)) {
       changeCache.set(key, p);
       if (changeCache.size > 16) changeCache.delete(changeCache.keys().next().value!);
@@ -334,6 +334,8 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     restoreClip: (ref, item, o) => call("restoreClip", ref, item, ...(o ? [o] : [])),
     landmarkPicture: (key) => call("landmarkPicture", key),
     saveLandmarkPicture: (key, jpeg) => call("saveLandmarkPicture", key, jpeg),
+    bringBackChoices: (ref) => call("bringBackChoices", ref),
+    align: (a, b) => call("align", a, b),
   };
 
   const receive = (m: ServerMessage) => {

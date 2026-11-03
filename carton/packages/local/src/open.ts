@@ -155,16 +155,20 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       // a hook event is for a running holder's materializer: it never starts a helper (one would have nothing to freeze
       // or credit, and a hook runs before every tool call); with no holder answering, nobody is told
       const hook = op.kind === "hook";
+      // opening a view in the editor needs the app's holder: never a helper (it has no pages to tell), and with no
+      // holder answering, no window has the project open (Carton UX v2, `cb compare --show`)
+      const show = op.kind === "open";
       const r = await submit("carton.commit", req, {
         lease,
         // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
         // sharing starts the pusher, so it always runs on a lease holder (a helper when the app is closed)
         needsHelper: async () => !hook && (op.kind === "share" || (await needsHelper(destCut(op)))),
-        ...(hook ? { noHelper: HOOK_NO_HELPER } : helperOk ? {} : { noHelper: `a helper would open this project with Cardboard's adapter, not "${adapter.name}": pass helperFactory` }),
+        ...(hook || show ? { noHelper: HOOK_NO_HELPER } : helperOk ? {} : { noHelper: `a helper would open this project with Cardboard's adapter, not "${adapter.name}": pass helperFactory` }),
         idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory: recipe?.factory ?? factory, config: { name, ...recipe?.config, projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
       if (hook && r.via === "error" && r.code === NO_HELPER) return hookUndelivered(op.event);
+      if (show && r.via !== "holder") return { status: "confirmed", seq: 0, ref: null, notices: [], opened: 0 };
       if (r.via === "error") return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
       const out = r.via === "holder" ? (r.result as CbResult) : await withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
       // written without the holder the probe found (it didn't answer, or its lease had expired): if it is alive after

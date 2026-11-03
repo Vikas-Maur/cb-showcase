@@ -3,25 +3,29 @@
 //
 // Two sources, one list:
 // - recorded: what History can't know by itself, kept outside the history bundle in this store's local `ephemeral`
-//   table (key `["landmark", cut, seq, kind, at]`), never exported with history and never synced: an export of the
-//   video (`exported`), a version sent or shared with someone (`sent`, `shared`), and the first open of the project
-//   each day (`session`). The app records them (`Carton.mark`), off the save path.
-// - derived from the history itself, so every replica has them and nothing is written: named versions (`named`),
-//   agent turns (`turn`, a turn's newest version), Published versions (`published`), and safety points (`safety`):
-//   the version just before a restore, a fold in, an undo of a turn or a bring-back, made on this replica.
+//   table (key `["landmark", cut, seq, kind, at]`), never exported with history and never synced yet: an export of the
+//   video (`exported`), a version shared, sent for review or published (`sent`), and how it was when the project was
+//   opened or after an hour away (`start`). The app records them (`Carton.mark`), off the save path.
+// - derived from the history itself, so nothing is written: named versions (`named`), agent turns (`turn`, a turn's
+//   newest version), a Published cut's version (`sent`), and `before`: the version just before a restore, a fold in,
+//   an undo of a turn or a bring-back made on this replica.
 //
-// Which a teammate sees (`team`): named versions, turns and Published versions come from what syncs, so teammates have
-// them too. The recorded ones and safety points are this person's own: they stay on this machine.
+// DESIGN-V2 §2.1: Start and Before are personal (only their person sees them: `personal`); the rest are everyone's.
+// Exported and Sent are recorded on this computer (`local`) until the sync server carries landmarks.
 import type { Actor, NodeId, StateRef } from "./types.ts";
 
-export type LandmarkKind = "exported" | "sent" | "shared" | "published" | "session" | "safety" | "turn" | "named";
+export type LandmarkKind = "exported" | "sent" | "named" | "turn" | "start" | "before";
 /** The kinds the app records (`Carton.mark`); the others are read from the history. */
-export type RecordedLandmarkKind = "exported" | "sent" | "shared" | "session";
-export const RECORDED_KINDS: readonly RecordedLandmarkKind[] = ["exported", "sent", "shared", "session"];
-export const LANDMARK_KINDS: readonly LandmarkKind[] = ["exported", "sent", "shared", "published", "session", "safety", "turn", "named"];
+export type RecordedLandmarkKind = "exported" | "sent" | "start";
+export const RECORDED_KINDS: readonly RecordedLandmarkKind[] = ["exported", "sent", "start"];
+export const LANDMARK_KINDS: readonly LandmarkKind[] = ["exported", "sent", "named", "turn", "start", "before"];
+/** Which one a row shows when a version is several (DESIGN-V2 §2.1): Named, Sent, Exported, Before, Start, then a turn. */
+export const LANDMARK_ORDER: readonly LandmarkKind[] = ["named", "sent", "exported", "before", "start", "turn"];
 
-/** What came right after a safety point. */
-export type SafetyBefore = "restore" | "fold" | "undo-turn" | "bring-back";
+/** What came right after a `before` landmark. */
+export type BeforeWhat = "restore" | "fold" | "undo-turn" | "bring-back";
+/** @deprecated the contract's first name for `BeforeWhat`. */
+export type SafetyBefore = BeforeWhat;
 
 export interface Landmark {
   /** Stable key: `<kind>:<cut>@<seq>`, and `:<at>` for a recorded one (a version exported twice is two landmarks). */
@@ -31,20 +35,28 @@ export interface Landmark {
   ref: StateRef;
   /** When it happened (an export's time; a derived one's: its version's). */
   at: number;
-  /** Who did it: exported, sent, named, made the turn or the restore. */
+  /** Who did it: exported, sent, named, made the turn, the restore. */
   by: Actor | null;
   /**
-   * Words the app may show with it, as they were given: an export's preset ("1080p"), whom it was sent or shared with
-   * ("Leo"), a turn's prompt label, a named version's name. Never an id.
+   * Words the app may show with it, as they were given: an export's preset or file ("1080p for the client"), whom it
+   * was sent to ("Leo"), a Published cut's name, a turn's prompt label, a named version's name. Never an id.
    */
   label?: string;
-  /** A safety point: what came right after it, and that version. */
-  before?: SafetyBefore;
+  /** A `before` landmark: what came right after it, and that version. */
+  before?: BeforeWhat;
   after?: NodeId;
   /** Recorded by the app (`mark`), not read from the history. */
   recorded: boolean;
-  /** Teammates have it too (it comes from what syncs); false: this person's own, on this machine only. */
-  team: boolean;
+  /**
+   * Only the person it belongs to sees it (DESIGN-V2 §2.1: Start and Before). "Only you see this" in its meta line.
+   */
+  personal: boolean;
+  /**
+   * Kept on this computer only. Start and Before always (they are personal). Exported and Sent are everyone's, but
+   * until the sync server carries landmarks a teammate doesn't have them yet; named, turns and Published versions come
+   * from what syncs (false).
+   */
+  local: boolean;
   /** Its picture's key (`pictureKey`): one per version, so two landmarks on one version share a picture. */
   picture: string;
 }
@@ -70,10 +82,10 @@ export interface MarkOptions {
   by?: Actor;
   at?: number;
   /**
-   * `"day"`: only if this kind has no landmark yet today (local time) on this cut: the session start. Answers null
-   * when one exists.
+   * `"version"`: only if this kind doesn't mark that version yet (a Start at each open, once per version); `"day"`: only
+   * if this kind has no landmark yet today (local time) on this cut. Answers null when one exists.
    */
-  once?: "day";
+  once?: "day" | "version";
 }
 
 /** A version's picture key: `<cut>@<seq>`, safe as a file name (anything else in a cut id becomes `_`). */
