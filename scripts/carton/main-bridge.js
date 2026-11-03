@@ -16,9 +16,10 @@
 //   through carton.db's lease row, so Cardboard's control socket needs no Carton method.) A method main itself must
 //   answer (the live-sync half, scripts/carton/sync: a dialog, a link) is added with handle(name, fn); fn gets the
 //   call's arguments and can reach the worker with forward(name, args).
-// With Carton off, each function hands back what it was given and adds nothing.
+// Carton is on by default; CARDBOARD_CARTON=0 (or false / off / no) turns it off (the same rule in cli-bridge.js and
+// store-bridge.js). With Carton off, each function hands back what it was given and adds nothing.
 module.exports = String.raw`var __cartonMain = (() => {
-  const on = process.env.CARDBOARD_CARTON === "1";
+  const on = !/^(?:0|false|off|no)$/i.test(String(process.env.CARDBOARD_CARTON ?? "").trim());
   let library = null;
   // The Director's running turn per chat, asked when a hook runs (the chat's process outlives its turns).
   const turns = new Map();
@@ -224,7 +225,7 @@ module.exports = String.raw`var __cartonMain = (() => {
     call(method, args) {
       // The pages ask once, at start, whether to take Carton's paths.
       if (method === "enabled") return on;
-      if (!on) throw new Error("Carton is off (CARDBOARD_CARTON=1 turns it on)");
+      if (!on) throw new Error("Carton is off (CARDBOARD_CARTON=0 is set; without it, Carton is on)");
       if (!/^[a-zA-Z]+$/.test(method)) throw new Error("Unknown Carton method " + method);
       if (handlers.has(method)) return handlers.get(method)(...args);
       return forward(method, args);

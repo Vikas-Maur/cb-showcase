@@ -1,8 +1,8 @@
 // The bridge between Cardboard's project store and timeline mirror and Carton. It is injected into both copies of
 // them: the CLI's (chunk-LL26E55H.mjs) and the library worker's (library-worker.js). patch-carton.js places the hooks;
 // carton/docs/INTEGRATION-1.4.0.md §4.1–4.2 says what each one does and why.
-// With Carton off (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code and nothing of Carton is
-// loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
+// Carton is on by default; CARDBOARD_CARTON=0 (or false / off / no) turns it off (the same rule in main-bridge.js and
+// cli-bridge.js). With Carton off, every hook runs Cardboard's own code and nothing of Carton is loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
 // Usage: require("./carton/store-bridge")({ dir, slice, who, codec }) → the preamble's text. `dir` is a JS expression
 // for the folder that holds carton-node.cjs. `slice` names the bundle's own function that cuts a project down to what
 // `.revs` keeps: tracks, items and aspect ratio, with code sources inlined. `who` is the actor when nothing else says:
@@ -79,8 +79,9 @@ module.exports = ({ dir, slice, who, codec }) => {
     "  others) by the time it returns (if it can't yet, its result says so), a view save's by the time its status file\n" +
     "  says how it landed.\n" +
     "- " + q("cb conflicts <project>") + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.\n";
-  const agentsMd = (text) => (process.env.CARDBOARD_CARTON === "1" ? text + VIEWS_MD : text);
-  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView, agentsMd };
+  const cartonOn = !/^(?:0|false|off|no)$/i.test(String(process.env.CARDBOARD_CARTON ?? "").trim());
+  const agentsMd = (text) => (cartonOn ? text + VIEWS_MD : text);
+  if (!cartonOn) return { on: false, skipInArchive, cartonView, agentsMd };
   const path = require("node:path");
   // H3: Carton's header form on Cardboard's rev line, read with @carton/cardboard's grammar (header.ts: findRev,
   // parseRevBody): the first "// cardboard:rev" line counts; a body of digits is 1.4.0's rev (ms), any other body is

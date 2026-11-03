@@ -2,9 +2,11 @@
 // commands and MCP tools on Cardboard's own program and tool table (its `history` and `undo` become Carton's, with
 // --cut, --stats and --turn), the git words, and the hook command host Claude Code runs (§6.2, §10). After a Carton
 // write changes head, head goes into project.json through Cardboard's own store, as any cb write does.
-// With Carton off (CARDBOARD_CARTON is not "1"), nothing is registered and `cb` is Cardboard's.
+// Carton is on by default; CARDBOARD_CARTON=0 (or false / off / no) turns it off, the same rule as main's and the
+// worker's (main-bridge.js, store-bridge.js), so a terminal cb agrees with the app. With Carton off, nothing is
+// registered and `cb` is Cardboard's.
 module.exports = String.raw`var __cartonCli = (() => {
-  const on = process.env.CARDBOARD_CARTON === "1";
+  const on = !/^(?:0|false|off|no)$/i.test(String(process.env.CARDBOARD_CARTON ?? "").trim());
   const path = require("node:path");
   let api;
   // resources/cli → resources/carton
@@ -70,7 +72,7 @@ module.exports = String.raw`var __cartonCli = (() => {
     },
     // cb undo --turn <id> with Carton off says it needs Carton (with it on, Carton's undo answers).
     async undoTurn() {
-      throw new Error(on ? "Carton didn't load, so a turn can't be undone" : "Undoing a turn needs Carton (CARDBOARD_CARTON=1)");
+      throw new Error(on ? "Carton didn't load, so a turn can't be undone" : "Undoing a turn needs Carton, and CARDBOARD_CARTON=0 turns it off");
     },
     // MCP: Carton's tools (timeline_history, undo_timeline, timeline_cuts, timeline_fold, timeline_credits,
     // timeline_publish) in Cardboard's table; Cardboard's own check_timeline stays and goes through Carton (H3).

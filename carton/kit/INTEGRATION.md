@@ -749,8 +749,9 @@ cuts (`branches`), for remote agents.
 ## Rolling it out safely
 
 - **A switch.** Keep Carton behind a flag that main reads once at start and passes to every process it starts (our
-  build: `CARDBOARD_CARTON=1`). With it off, every hook runs today's code, and the bytes written are today's.
-- **Mixed versions are safe.** An old `cb`, a text editor, or a terminal `cb` without the flag is a foreign writer:
+  build: `CARDBOARD_CARTON`, on unless it is `0`). With it off, every hook runs today's code, and the bytes written are
+  today's.
+- **Mixed versions are safe.** An old `cb`, a text editor, or a terminal `cb` with Carton turned off is a foreign writer:
   displaced and imported, never overwritten (H1). The `.cbproj` exclusions (H11) stay on even with Carton off.
 - **Gates before turning it on by default** (§16, [GATE] = measured on real machines):
   - G1: 3 remote writers at 1/s for 10 minutes: 0 lost local edits, 0 remote changes re-committed under the person's

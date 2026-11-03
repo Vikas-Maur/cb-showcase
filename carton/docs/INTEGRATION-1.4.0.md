@@ -61,9 +61,10 @@ with a plain rename. It says so once in the log. The tests check that `cb` then 
 **The on/off switch.**
 - **Build time.** `node scripts/build-windows.js --no-carton` leaves out every Carton step, so the output is the build
   as it was before Carton. `--baseline`, the media benchmarks' baseline, implies `--no-carton`.
-- **Run time.** `CARDBOARD_CARTON=1` turns Carton on and `0` turns it off. Main reads it once at start. The library
-  worker inherits it, and so does every agent main starts, so their `cb` calls agree. A build's default stays **off**
-  until gates G1 and G2 pass on Windows.
+- **Run time.** Carton is **on** by default. `CARDBOARD_CARTON=0` (or `false`, `off`, `no`) turns it off; unset, empty
+  or anything else leaves it on. Main reads it once at start. The library worker inherits it, and so does every agent
+  main starts, so their `cb` calls agree; a terminal `cb` reads the same variable with the same rule (cli-bridge.js,
+  main-bridge.js and store-bridge.js share it). The default flipped to on once gates G1 and G2 had passed on Windows.
 - **Carton off.** Each hooked method runs Cardboard's original code at once, and nothing of Carton is loaded. The cost
   is one extra property read per hook.
 - **Mixed states are safe by construction.** Some writers don't run Carton: an old `cb`, a text editor, a terminal `cb`

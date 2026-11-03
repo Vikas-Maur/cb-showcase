@@ -174,7 +174,7 @@ library worker and `cb`: history, cuts, fold, credits and `undo --turn`; the per
 freeze (H8), with the Director's and host Claude Code's hooks; and, between two libraries through a host on
 127.0.0.1, sharing, live edits, presence, offline and back, shared media (H10), `.cbproj` with history and "Bring in
 their changes" (H11), and `cb`'s cloud mode (H13). The editor's pages (H4–H7, the History tab, the Share panel) and
-main's hooks run only on Windows, so they have been tested against stand-ins. It is off by default
-(`CARDBOARD_CARTON=1`) until G1 and G2 pass. Not wired there yet: Carton's merge in the apply's preview (H3), the
+main's hooks run only on Windows, so they have been tested against stand-ins. It is on by default
+(`CARDBOARD_CARTON=0` turns it off). Not wired there yet: Carton's merge in the apply's preview (H3), the
 engine thread, a hook of its own for H1b, and H12 (dormant on desktop). This is windows-sync's branch, ahead of the
 snapshot the kit runs on; `carton/docs/INTEGRATION-1.4.0.md` §6 has the details.

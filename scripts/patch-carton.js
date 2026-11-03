@@ -2,7 +2,7 @@
 // in Cardboard's own terms, is in carton/docs/INTEGRATION-1.4.0.md; the numbers below (H1…H13) are its hook numbers.
 // It runs after the Windows patches, on the files they wrote. Each Windows patch script starts again from its pristine
 // copy, so a rebuild runs both in order; this script refuses a file that already has Carton in it.
-// With Carton off at run time (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code; only the .cbproj
+// With Carton off at run time (CARDBOARD_CARTON=0; it is on by default), every hook runs Cardboard's own code; only the .cbproj
 // exclusions (H11: .carton/ and Carton's own view files) apply either way. build-windows.js --no-carton leaves this
 // script out.
 // Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>

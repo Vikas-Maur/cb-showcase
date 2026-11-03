@@ -457,13 +457,15 @@ keyboard changes, 20 of the 25 page tests passed. The five failures were Ctrl+Y,
 missed Ctrl+D conflict, and the activity log, which didn't exist yet. With them, all 25 pass, and all 9
 accelerator tests.
 
-### Carton: version history for a project (off unless `CARDBOARD_CARTON=1`)
+### Carton: version history for a project (on by default; `CARDBOARD_CARTON=0` turns it off)
 
 Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
 by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
-`carton\docs\INTEGRATION-1.4.0.md`. The build includes
-it, and it stays **off** unless Cardboard starts with `CARDBOARD_CARTON=1`. With it off, every hook below runs
-Cardboard's own code. Gates G1 and G2 below decide when the default flips.
+`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: History and Share are in the
+title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
+(`false`, `off` and `no` work too; for every start, `setx CARDBOARD_CARTON 0` and restart Cardboard). With it off,
+every hook below runs Cardboard's own code, and the app and `cb` read the same variable, so they always agree.
+`build-windows.js --no-carton` leaves Carton out of the build altogether.
 
 What changes with it on:
 - **No lost edits.** The app and every `cb` agent used to read `project.json`, change it, and rename a new one over it.
@@ -796,9 +798,9 @@ set CB=out\Cardboard-win\resources\cli\cardboard.mjs
 
 The build's last step checks that `carton-node.cjs` loads in Cardboard's own Node.
 
-1. **No regression, Carton off.** Start `out\Cardboard-win\Cardboard.exe --remote-debugging-port=9334` without
-   `CARDBOARD_CARTON` and run `scripts\test-shortcuts.js` (both forms, see "Testing the keyboard"). Expect 25 and 9
-   passes, as before Carton. Repeat with `CARDBOARD_CARTON=1`: the same.
+1. **No regression, Carton off.** Start `out\Cardboard-win\Cardboard.exe --remote-debugging-port=9334` with
+   `CARDBOARD_CARTON=0` and run `scripts\test-shortcuts.js` (both forms, see "Testing the keyboard"). Expect 25 and 9
+   passes, as before Carton. Repeat without the variable (Carton on, the default): the same.
 2. **The lost update (B1), Carton off then on.** A signed-in app keeps its projects in its account's library,
    `%CARDBOARD_HOME%\accounts\<64 hex>` (made at the first sign-in), not in `%CARDBOARD_HOME%` itself, so the writers
    use that folder, or the app never shows their project: sign in once, then
@@ -807,10 +809,11 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
    `node scripts/carton/writers.js run "%CB%" "%LIB%" --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
    this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Each failed apply prints why after the table (`failed: W2 edit 41 apply, exit 1: <its message>`); `--out` keeps them in `failures`, and every edit in `samples`: its print's and apply's own times (`print`, `apply`) and how the apply's write showed in the app's `timeline.tsx` (`timeline`: `later` when it took longer than `cb`'s 2 s wait). Off, some writers can lose their last edit. On, none may, once
    history is in.
-3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
+3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON=0` and
+   `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
    "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,
    split, a change every second or two. Every save's round trip to the library worker lands in the file. Then the same
-   with `CARDBOARD_CARTON=1` and `g2-on.jsonl`. Alternate three runs of each. Pass: the p99 of `ms` with Carton on is
+   without `CARDBOARD_CARTON` (Carton on) and `g2-on.jsonl`. Alternate three runs of each. Pass: the p99 of `ms` with Carton on is
    no worse than off. Report medians and every run.
 4. **Gate G1: 3 writers at 1/s for 10 minutes** (§16; `run … --writers 3 --rate 1 --seconds 600`), Carton on, while
    you edit the clip on track "Mine" (split it, move the pieces). Then:

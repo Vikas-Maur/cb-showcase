@@ -8,7 +8,7 @@ const fs = require("fs"), os = require("os"), path = require("path");
 
 const load = (on) => {
   const saved = process.env.CARDBOARD_CARTON;
-  process.env.CARDBOARD_CARTON = on ? "1" : "";
+  process.env.CARDBOARD_CARTON = on ? "1" : "0"; // unset would be on: Carton's default
   try { return new Function("require", require("../store-bridge.js")({ dir: '"unused"', slice: "((d) => d)", who: "cli" }) + "return __carton;")(require); }
   finally { process.env.CARDBOARD_CARTON = saved ?? ""; if (saved === undefined) delete process.env.CARDBOARD_CARTON; }
 };

@@ -6,13 +6,20 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path");
 
+// Each test names the switch it wants; the base is "0" (Carton off), since unset now means on.
 const load = (env) => {
   const saved = { ...process.env };
-  Object.assign(process.env, { CARDBOARD_CARTON: "", CARDBOARD_CARTON_TIMING: "" }, env);
+  Object.assign(process.env, { CARDBOARD_CARTON: "0", CARDBOARD_CARTON_TIMING: "" }, env);
+  if (env && "CARDBOARD_CARTON" in env && env.CARDBOARD_CARTON === undefined) delete process.env.CARDBOARD_CARTON;
   try { return new Function("require", require("../main-bridge.js") + "return __cartonMain;")(require); }
   finally { process.env = saved; }
 };
 const gate = (out) => async () => out;
+
+test("the switch: Carton is on by default, and CARDBOARD_CARTON=0 / false / off / no turns it off", () => {
+  for (const v of [undefined, "", "1", "true", "on", "yes", " 1 "]) assert.equal(load({ CARDBOARD_CARTON: v }).call("enabled", []), true, `CARDBOARD_CARTON=${JSON.stringify(v)} is on`);
+  for (const v of ["0", "false", "off", "no", "OFF", " 0 "]) assert.equal(load({ CARDBOARD_CARTON: v }).call("enabled", []), false, `CARDBOARD_CARTON=${JSON.stringify(v)} is off`);
+});
 
 test("off: everything passes through", async () => {
   const m = load({});
@@ -553,7 +560,7 @@ test("a method main answers itself (the live-sync half) runs there, and can stil
 test("G2's timing log records each save's round trip, on and off", async () => {
   const file = path.join(os.tmpdir(), `carton-timing-${process.pid}.jsonl`);
   fs.rmSync(file, { force: true });
-  for (const on of ["1", ""]) {
+  for (const on of ["1", "0"]) {
     const m = load({ CARDBOARD_CARTON: on, CARDBOARD_CARTON_TIMING: file });
     assert.equal(await m.time(new Promise((r) => setTimeout(() => r(true), 20))), true);
   }
