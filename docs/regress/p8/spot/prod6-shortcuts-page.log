@@ -1,0 +1,27 @@
+PASS  Space plays and pauses
+PASS  Ctrl+→ jumps to the end, Ctrl+← to the beginning
+PASS  → / ← step one frame
+PASS  S toggles snapping
+PASS  \ toggles the timeline
+PASS  ] toggles the Director panel
+PASS  [ toggles the media panel
+PASS  / focuses the Director composer
+PASS  Ctrl+E opens Export, Esc closes it
+PASS  F toggles the full-screen preview
+PASS  Ctrl+A, Delete removes the clips; Ctrl+Z brings them back
+PASS  Ctrl+A, Backspace removes the clips
+PASS  Ctrl+Shift+Z redoes
+PASS  Ctrl+Y redoes (Windows' redo key)
+PASS  Ctrl+D duplicates the selection
+PASS  Ctrl+C, Ctrl+V pastes a copy
+PASS  Ctrl+X cuts
+PASS  B splits at the playhead
+PASS  M mutes the selection
+PASS  Ctrl+Tab / Ctrl+Shift+Tab cycle tabs
+PASS  Alt opens the menu, Esc closes it
+PASS  F10 opens the menu; Enter, Enter runs File ▸ New Project
+PASS  Shortcuts page draws a Windows keyboard
+PASS  Recording Ctrl+D for Split says Duplicate has it
+PASS  Activity log has shortcuts, unhandled keys and page errors
+
+25 passed, 0 failed

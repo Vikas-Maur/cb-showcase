@@ -1,0 +1,162 @@
+run                 edits applied failed lost | median   p90   p95    max | >=3s >=5s | worker lines (any / 'waited')
+lat-b8-off-w1-r1       35      35      0    0 |   1404  1823  4292  11164 |    2    1 | 0 / 0
+lat-b8-off-w1-r2       47      47      0    0 |   1241  1483  1809   1854 |    0    0 | 0 / 0
+lat-b8-off-w1-r3       47      47      0    0 |   1239  1500  1760   1867 |    0    0 | 0 / 0
+lat-b8-off-w1-r4       26      26      0    0 | 1617.5  2164 11145  11166 |    2    2 | 0 / 0
+lat-b8-off-w1-r5       46      46      0    0 | 1241.5  1567  1856   2221 |    0    0 | 0 / 0
+lat-b8-off-w1-r6       50      50      0    0 |   1207  1436  1538   1742 |    0    0 | 0 / 0
+lat-b8-off-w4-r1      170     170      0    0 |   1174  1647  1826  11320 |    5    2 | 0 / 0
+lat-b8-off-w4-r2      191     191      0    2 |   1186  1557  1681   2284 |    0    0 | 0 / 0
+lat-b8-off-w4-r3      197     197      0    0 |   1124  1554  1618   2014 |    0    0 | 0 / 0
+lat-b8-off-w4-r4      190     190      0    3 | 1215.5  1574  1660   2357 |    0    0 | 0 / 0
+lat-b8-off-w4-r5       92      92      0    0 |   1468 11203 11243  11476 |   11   11 | 0 / 0
+lat-b8-off-w4-r6      188     188      0    3 |   1222  1562  1629   3162 |    1    0 | 0 / 0
+lat-b8-on-w1-r1        37      37      0    0 |   1377  2092  3294  10114 |    2    1 | 0 / 0
+lat-b8-on-w1-r2        34      34      0    0 |   1460  3293  5348   6892 |    4    2 | 0 / 0
+lat-b8-on-w1-r3        42      42      0    0 |   1418  1567  2013   2261 |    0    0 | 0 / 0
+lat-b8-on-w1-r4        44      44      0    0 |   1310  1504  1750   3314 |    1    0 | 0 / 0
+lat-b8-on-w1-r5        45      45      0    0 |   1316  1501  1564   2650 |    0    0 | 0 / 0
+lat-b8-on-w1-r6        44      44      0    0 | 1336.5  1541  1642   1941 |    0    0 | 0 / 0
+lat-b8-on-w4-r1       168     168      0    0 | 1348.5  1882  2158   2459 |    0    0 | 0 / 0
+lat-b8-on-w4-r2       149     149      0    0 |   1324  3278  3564   5484 |   20    2 | 0 / 0
+lat-b8-on-w4-r3       148     148      0    0 |   1388  2165  3353   5305 |   12    1 | 0 / 0
+lat-b8-on-w4-r4       173     173      0    0 |   1320  1689  1891   3272 |    1    0 | 0 / 0
+lat-b8-on-w4-r5        51      51      0    0 |   5264  5389  5456  11385 |   51   38 | 0 / 0
+lat-b8-on-w4-r6       145     145      0    0 |   1371  3171  3351   5849 |   16    3 | 0 / 0
+
+side      runs  run medians                               median of run medians  pooled median  pooled p90  pooled p95  per-run p95                     >=3s (of n)  >=5s  applies per run
+w1 off       6  1404, 1241, 1239, 1617.5, 1241.5, 1207                  1241.25           1293        1679        1841  4292, 1809, 1760, 11145, 1856, 1538    4 (of 251)     3  35, 47, 47, 26, 46, 50
+w1 on        6  1377, 1460, 1418, 1310, 1316, 1336.5                    1356.75         1374.5        1684        2044  3294, 5348, 2013, 1750, 1564, 1642    7 (of 246)     3  37, 34, 42, 44, 45, 44
+w4 off       6  1174, 1186, 1124, 1215.5, 1468, 1222                    1200.75           1215        1599        1736  1826, 1681, 1618, 1660, 11243, 1629   17 (of 1028)    13  170, 191, 197, 190, 92, 188
+w4 on        6  1348.5, 1324, 1388, 1320, 5264, 1371                    1359.75           1370        3257        5188  2158, 3564, 3353, 1891, 5456, 3351  100 (of 834)    44  168, 149, 148, 173, 51, 145
+
+== every trip >= 3 s (128)
+held by: {"apply":128} | timeline answers: {"null":21,"shown":107} | with a matching worker line: 0
+lat-b8-off-w1-r1 W1 edit 20: 4292 ms = print 262 + apply 4030 (held: apply), timeline null | no worker line
+lat-b8-off-w1-r1 W1 edit 22: 11164 ms = print 264 + apply 10899 (held: apply), timeline null | no worker line
+lat-b8-off-w1-r4 W1 edit 17: 11145 ms = print 262 + apply 10882 (held: apply), timeline null | no worker line
+lat-b8-off-w1-r4 W1 edit 25: 11166 ms = print 250 + apply 10915 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r1 W1 edit 29: 11318 ms = print 297 + apply 11020 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r1 W1 edit 36: 3391 ms = print 293 + apply 3097 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r1 W2 edit 34: 3184 ms = print 256 + apply 2927 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r1 W3 edit 31: 11320 ms = print 301 + apply 11018 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r1 W4 edit 45: 3330 ms = print 290 + apply 3039 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W1 edit 3: 11243 ms = print 295 + apply 10947 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W1 edit 4: 11476 ms = print 240 + apply 11235 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W1 edit 20: 11216 ms = print 275 + apply 10940 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W2 edit 6: 11244 ms = print 275 + apply 10968 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W2 edit 12: 11164 ms = print 261 + apply 10902 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W2 edit 18: 11224 ms = print 276 + apply 10947 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W3 edit 4: 11306 ms = print 329 + apply 10976 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W3 edit 7: 11212 ms = print 275 + apply 10936 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W3 edit 15: 11276 ms = print 310 + apply 10965 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W4 edit 22: 11207 ms = print 279 + apply 10926 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r5 W4 edit 29: 11203 ms = print 268 + apply 10934 (held: apply), timeline null | no worker line
+lat-b8-off-w4-r6 W4 edit 3: 3162 ms = print 313 + apply 2849 (held: apply), timeline null | no worker line
+lat-b8-on-w1-r1 W1 edit 2: 3294 ms = print 281 + apply 3013 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r1 W1 edit 18: 10114 ms = print 625 + apply 9489 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r2 W1 edit 2: 3293 ms = print 266 + apply 3027 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r2 W1 edit 10: 6892 ms = print 281 + apply 6609 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r2 W1 edit 14: 3769 ms = print 287 + apply 3480 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r2 W1 edit 34: 5348 ms = print 283 + apply 5064 (held: apply), timeline shown | no worker line
+lat-b8-on-w1-r4 W1 edit 41: 3314 ms = print 279 + apply 3034 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 11: 3564 ms = print 313 + apply 3250 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 16: 3368 ms = print 342 + apply 3025 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 20: 3794 ms = print 316 + apply 3478 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 29: 3758 ms = print 736 + apply 3021 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 32: 3375 ms = print 356 + apply 3018 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W1 edit 35: 3282 ms = print 300 + apply 2981 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W2 edit 4: 5484 ms = print 451 + apply 5032 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W2 edit 9: 3258 ms = print 317 + apply 2940 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W2 edit 11: 4910 ms = print 397 + apply 4513 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W2 edit 32: 5332 ms = print 338 + apply 4993 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W3 edit 9: 3278 ms = print 332 + apply 2945 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W3 edit 15: 3257 ms = print 285 + apply 2971 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W3 edit 19: 3284 ms = print 338 + apply 2945 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W3 edit 40: 4840 ms = print 320 + apply 4519 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 2: 3249 ms = print 294 + apply 2954 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 15: 3257 ms = print 290 + apply 2966 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 26: 3382 ms = print 367 + apply 3014 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 29: 3332 ms = print 354 + apply 2977 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 32: 3245 ms = print 318 + apply 2926 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r2 W4 edit 39: 4920 ms = print 324 + apply 4596 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W1 edit 8: 3354 ms = print 344 + apply 3009 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W1 edit 9: 3190 ms = print 294 + apply 2895 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W1 edit 16: 3352 ms = print 325 + apply 3026 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W1 edit 18: 4073 ms = print 771 + apply 3302 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W2 edit 12: 3439 ms = print 326 + apply 3112 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W2 edit 16: 3793 ms = print 695 + apply 3098 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W2 edit 26: 3873 ms = print 787 + apply 3086 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W2 edit 34: 3489 ms = print 314 + apply 3174 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W3 edit 19: 3353 ms = print 324 + apply 3028 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W4 edit 26: 3261 ms = print 304 + apply 2955 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W4 edit 29: 5305 ms = print 789 + apply 4515 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r3 W4 edit 30: 3247 ms = print 294 + apply 2951 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r4 W1 edit 7: 3272 ms = print 350 + apply 2921 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 1: 5373 ms = print 346 + apply 5026 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 2: 5389 ms = print 383 + apply 5005 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 3: 5321 ms = print 333 + apply 4987 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 4: 5260 ms = print 323 + apply 4936 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 5: 5250 ms = print 304 + apply 4946 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 6: 5153 ms = print 280 + apply 4872 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 7: 5635 ms = print 281 + apply 5353 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 8: 5331 ms = print 341 + apply 4989 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 9: 5268 ms = print 291 + apply 4976 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 10: 5387 ms = print 297 + apply 5089 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 11: 5307 ms = print 287 + apply 5019 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W1 edit 12: 5209 ms = print 283 + apply 4924 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 1: 11385 ms = print 384 + apply 11000 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 2: 5297 ms = print 291 + apply 5005 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 3: 5218 ms = print 273 + apply 4944 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 4: 5204 ms = print 280 + apply 4923 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 5: 5188 ms = print 272 + apply 4914 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 6: 5188 ms = print 252 + apply 4934 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 7: 5308 ms = print 341 + apply 4966 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 8: 5301 ms = print 303 + apply 4996 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 9: 5391 ms = print 307 + apply 5083 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 10: 3289 ms = print 319 + apply 2969 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W2 edit 11: 5247 ms = print 312 + apply 4934 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 1: 5320 ms = print 339 + apply 4981 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 2: 5456 ms = print 345 + apply 5111 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 3: 5318 ms = print 325 + apply 4992 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 4: 5316 ms = print 321 + apply 4994 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 5: 3219 ms = print 284 + apply 2933 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 6: 3302 ms = print 281 + apply 3019 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 7: 3267 ms = print 365 + apply 2901 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 8: 3170 ms = print 292 + apply 2877 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 9: 3201 ms = print 295 + apply 2905 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 10: 5264 ms = print 327 + apply 4937 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 11: 5220 ms = print 315 + apply 4904 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 12: 5385 ms = print 303 + apply 5081 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 13: 3227 ms = print 323 + apply 2903 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W3 edit 14: 5262 ms = print 305 + apply 4956 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 1: 5375 ms = print 347 + apply 5028 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 2: 5426 ms = print 314 + apply 5111 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 3: 5374 ms = print 325 + apply 5048 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 4: 3228 ms = print 295 + apply 2932 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 5: 3109 ms = print 296 + apply 2813 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 6: 5388 ms = print 285 + apply 5102 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 7: 3195 ms = print 323 + apply 2871 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 8: 3177 ms = print 328 + apply 2848 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 9: 3209 ms = print 292 + apply 2915 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 10: 3344 ms = print 348 + apply 2996 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 11: 5331 ms = print 312 + apply 5019 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 12: 5280 ms = print 272 + apply 5007 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 13: 5287 ms = print 310 + apply 4976 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r5 W4 edit 14: 5219 ms = print 304 + apply 4914 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W1 edit 1: 5849 ms = print 356 + apply 5492 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W1 edit 4: 3165 ms = print 297 + apply 2867 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W1 edit 24: 3325 ms = print 337 + apply 2987 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W1 edit 30: 3324 ms = print 344 + apply 2979 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W2 edit 18: 3309 ms = print 339 + apply 2970 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W2 edit 24: 5344 ms = print 351 + apply 4992 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W2 edit 26: 3606 ms = print 382 + apply 3224 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W3 edit 1: 3315 ms = print 376 + apply 2938 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W3 edit 11: 3278 ms = print 298 + apply 2979 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W3 edit 15: 5359 ms = print 372 + apply 4986 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W3 edit 26: 4735 ms = print 303 + apply 4431 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W3 edit 33: 4787 ms = print 304 + apply 4482 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W4 edit 1: 3453 ms = print 348 + apply 3104 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W4 edit 7: 3295 ms = print 306 + apply 2987 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W4 edit 10: 3171 ms = print 296 + apply 2875 (held: apply), timeline shown | no worker line
+lat-b8-on-w4-r6 W4 edit 36: 3351 ms = print 361 + apply 2989 (held: apply), timeline shown | no worker line

@@ -1,0 +1,31 @@
+04:47:53 host up on 8792
+04:47:54 A pid 4180
+04:47:54 B pid 29400
+04:48:42 both onboarded; B's library: 0 projects
+Opening the project in Cardboard...
+04:48:55 A shared, invite made
+  [s-join3] tabs at start: []
+  [s-join3] page: Ctrl+F | Dashboard | Projects | Recipes | What's new | Report an issue | Settings | V | Vikas Maur | What video are we making today, Vikas? | Describe your video or bring in your media to get started. | Opus 5.5 | Montage | Vlog
+  [s-join3] join control: {"x":927.1687393188477,"y":773.4000244140625,"text":"Join a shared project"}
+  [s-join3]   shot join8-0-empty.png
+  [s-join3] place before Join: {"cur":"Dashboard","scrollTop":0}
+  [s-join3] +0.0s place: {"cur":"Dashboard","scrollTop":0}
+  [s-join3] +0.0s dialog: Join a shared project | Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it. | Invite link | Your name | Teammates see this next to your edits. | Joining… | Cancel
+  [s-join3] +0.2s dialog: Join a shared project | Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it. | “Join me” is in your library now. | Its footage arrives while your teammate's computer sends it: video as preview copies. | Open | Done
+  [s-join3]   shot join8-1-open.png
+  [s-join3] +1.8s place: {"cur":"Dashboard","scrollTop":56}
+  [s-join3] +2.0s place: {"cur":"Dashboard","scrollTop":78}
+  [s-join3] RESULT: Open / Done dialog stayed untouched for 6 s or more
+  [s-join3]   shot join8-2-held.png
+  [s-join3] press Open: {"x":550.2937507629395,"y":488.5375061035156}
+  [s-join3] dialog after: (none)
+  [s-join3] tabs after: ["Dashboard","Join me"]
+  [s-join3] place after: {"cur":"Dashboard","scrollTop":78}
+  [s-join3] joined tile: no tile
+  [s-join3] editor pages: ["app://cardboard/app/editor/0f9cb715-87ad-4f60-a9ed-0b909ee10a44"]
+  [s-join3] tiles: ["New project Start empty","Join a shared project From an invite link","Open Join me"]
+  [s-join3]   shot join8-3-after.png
+04:49:14 B pages: app://cardboard/app/warm , app://cardboard/app/editor/0f9cb715-87ad-4f60-a9ed-0b909ee10a44 , app://cardboard/tabs.html , app://cardboard/app/home
+missing-media text per page: {"app/warm":null,"app/editor/0f9cb715-87ad-4f60-a9ed-0b909ee10a44":null,"tabs.html":null,"app/home":null}
+editor notice: ["This video plays from preview copies. Its originals stay on your teammate's computer."]
+04:49:15 RESULT: editor tab OPEN (0f9cb715-87ad-4f60-a9ed-0b909ee10a44)

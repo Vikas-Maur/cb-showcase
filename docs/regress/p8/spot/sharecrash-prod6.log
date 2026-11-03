@@ -1,0 +1,18 @@
+04:45:07 host up on 8791
+04:45:07 A pid 27948
+04:45:08 B pid 5804
+04:45:34 both onboarded
+Opening the project in Cardboard...
+Opening the project in Cardboard...
+04:45:46 projects 6eab6757-f574-4172-9e4a-fbc3dad78a1a d5714a00-95d1-4bd7-ab86-733d17b467d6
+04:45:52 A shared
+04:45:53 invite link made
+04:45:57 B joined and opened 6eab6757-f574-4172-9e4a-fbc3dad78a1a
+04:46:05 round 1: A PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ben"],"live":true,"pass":true} | B PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ana"],"live":true,"pass":true}
+04:46:05 round 2: B closes the project and opens it again
+Opening the project in Cardboard...
+04:46:21 round 2: A PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ben"],"live":true,"pass":true} | B PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ana"],"live":true,"pass":true}
+04:46:21 round 3: B closes the project and opens it again
+Opening the project in Cardboard...
+04:46:36 round 3: A PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ben"],"live":true,"pass":true} | B PASS {"tabSnag":false,"panelSnag":false,"panelOpen":true,"sync":"Up to date","peers":["Ana"],"live":true,"pass":true}
+04:46:36 RESULT carton-prod6: A 3/3, B 3/3

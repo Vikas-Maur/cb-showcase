@@ -1,0 +1,4 @@
+{"t":"2026-11-03T09:59:36.054+05:30","ev":"app.start","version":"1.4.0","electron":"43.7.0","os":"10.0.26300","displays":["1536x864@1.25"]}
+{"t":"2026-11-03T09:59:46.726+05:30","ev":"temp-sweep","deleted":0,"bytes":0,"recent":0,"failed":0,"ms":38,"done":true}
+{"t":"2026-11-03T09:59:51.059+05:30","ev":"gpu","vendor":"0x10de","device":"0x25ec","gpus":3,"asked":"high-performance"}
+{"t":"2026-11-03T10:00:48.170+05:30","ev":"app.quit"}

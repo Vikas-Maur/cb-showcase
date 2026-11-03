@@ -1,0 +1,101 @@
+04:05:55 start timing B (Update 8) on carton-prod6 (66ee2f3f)
+04:05:56 compile cache warmed (one cb project list per mode)
+04:05:59 someone is using the laptop: waiting
+04:06:59 someone is using the laptop: waiting
+04:08:00 B b8-on-w4-r1
+Opening the project in Cardboard...
+b8-on-w4-r1: edits 168, applied 168, failed 0, trips>=3s 0, lost 0
+04:09:24 clean b8-on-w4-r1 (84s)
+04:09:26 B b8-off-w4-r1
+Opening the project in Cardboard...
+b8-off-w4-r1: edits 170, applied 170, failed 0, trips>=3s 5, lost 0
+04:10:49 clean b8-off-w4-r1 (83s)
+04:10:51 B b8-off-w1-r1
+Opening the project in Cardboard...
+b8-off-w1-r1: edits 35, applied 35, failed 0, trips>=3s 2, lost 0
+04:12:15 clean b8-off-w1-r1 (84s)
+04:12:17 B b8-on-w1-r1
+Opening the project in Cardboard...
+b8-on-w1-r1: edits 37, applied 37, failed 0, trips>=3s 2, lost 0
+04:13:41 clean b8-on-w1-r1 (84s)
+04:13:43 B b8-off-w4-r2
+Opening the project in Cardboard...
+b8-off-w4-r2: edits 191, applied 191, failed 0, trips>=3s 0, lost 2
+04:15:08 clean b8-off-w4-r2 (85s)
+04:15:09 B b8-on-w4-r2
+Opening the project in Cardboard...
+b8-on-w4-r2: edits 149, applied 149, failed 0, trips>=3s 20, lost 0
+04:16:37 clean b8-on-w4-r2 (88s)
+04:16:39 B b8-on-w1-r2
+Opening the project in Cardboard...
+b8-on-w1-r2: edits 34, applied 34, failed 0, trips>=3s 4, lost 0
+04:18:06 clean b8-on-w1-r2 (87s)
+04:18:08 B b8-off-w1-r2
+Opening the project in Cardboard...
+b8-off-w1-r2: edits 47, applied 47, failed 0, trips>=3s 0, lost 0
+04:19:31 clean b8-off-w1-r2 (83s)
+04:19:32 B b8-on-w4-r3
+Opening the project in Cardboard...
+b8-on-w4-r3: edits 148, applied 148, failed 0, trips>=3s 12, lost 0
+04:20:54 clean b8-on-w4-r3 (82s)
+04:20:56 B b8-off-w4-r3
+Opening the project in Cardboard...
+b8-off-w4-r3: edits 197, applied 197, failed 0, trips>=3s 0, lost 0
+04:22:19 clean b8-off-w4-r3 (83s)
+04:22:20 B b8-off-w1-r3
+Opening the project in Cardboard...
+b8-off-w1-r3: edits 47, applied 47, failed 0, trips>=3s 0, lost 0
+04:23:44 clean b8-off-w1-r3 (84s)
+04:23:45 B b8-on-w1-r3
+Opening the project in Cardboard...
+b8-on-w1-r3: edits 42, applied 42, failed 0, trips>=3s 0, lost 0
+04:25:09 clean b8-on-w1-r3 (84s)
+04:25:11 B b8-off-w4-r4
+Opening the project in Cardboard...
+b8-off-w4-r4: edits 190, applied 190, failed 0, trips>=3s 0, lost 3
+04:26:34 clean b8-off-w4-r4 (83s)
+04:26:36 B b8-on-w4-r4
+Opening the project in Cardboard...
+b8-on-w4-r4: edits 173, applied 173, failed 0, trips>=3s 1, lost 0
+04:28:01 clean b8-on-w4-r4 (85s)
+04:28:03 B b8-on-w1-r4
+Opening the project in Cardboard...
+b8-on-w1-r4: edits 44, applied 44, failed 0, trips>=3s 1, lost 0
+04:29:27 clean b8-on-w1-r4 (84s)
+04:29:29 B b8-off-w1-r4
+Opening the project in Cardboard...
+b8-off-w1-r4: edits 26, applied 26, failed 0, trips>=3s 2, lost 0
+04:30:52 clean b8-off-w1-r4 (83s)
+04:30:54 B b8-on-w4-r5
+Opening the project in Cardboard...
+b8-on-w4-r5: edits 51, applied 51, failed 0, trips>=3s 51, lost 0
+04:32:39 clean b8-on-w4-r5 (105s)
+04:32:41 B b8-off-w4-r5
+Opening the project in Cardboard...
+b8-off-w4-r5: edits 92, applied 92, failed 0, trips>=3s 11, lost 0
+04:34:07 clean b8-off-w4-r5 (86s)
+04:34:09 B b8-off-w1-r5
+Opening the project in Cardboard...
+b8-off-w1-r5: edits 46, applied 46, failed 0, trips>=3s 0, lost 0
+04:35:39 clean b8-off-w1-r5 (90s)
+04:35:41 B b8-on-w1-r5
+Opening the project in Cardboard...
+b8-on-w1-r5: edits 45, applied 45, failed 0, trips>=3s 0, lost 0
+04:37:05 clean b8-on-w1-r5 (84s)
+04:37:07 B b8-off-w4-r6
+Opening the project in Cardboard...
+b8-off-w4-r6: edits 188, applied 188, failed 0, trips>=3s 1, lost 3
+04:38:30 clean b8-off-w4-r6 (83s)
+04:38:31 B b8-on-w4-r6
+Opening the project in Cardboard...
+b8-on-w4-r6: edits 145, applied 145, failed 0, trips>=3s 16, lost 0
+04:39:56 clean b8-on-w4-r6 (85s)
+04:39:58 B b8-on-w1-r6
+Opening the project in Cardboard...
+b8-on-w1-r6: edits 44, applied 44, failed 0, trips>=3s 0, lost 0
+04:41:22 clean b8-on-w1-r6 (84s)
+04:41:24 B b8-off-w1-r6
+Opening the project in Cardboard...
+b8-off-w1-r6: edits 50, applied 50, failed 0, trips>=3s 0, lost 0
+04:42:47 clean b8-off-w1-r6 (84s)
+04:42:47 done

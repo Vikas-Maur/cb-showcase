@@ -1,0 +1,1396 @@
+{
+  "project": "D:\\cbwork\\carton\\profiles\\lat-b8-on-w4-r3\\home\\accounts\\51118cce5d093bc950d4a7950909a41d854412ce72f318c936a64bc9da5d17ec\\Carton gates.cardboard",
+  "writers": 4,
+  "rate": 1,
+  "seconds": 60,
+  "lost": 0,
+  "rows": [
+    {
+      "writer": "W1",
+      "applied": 35,
+      "failed": 0,
+      "last": 135,
+      "onDisk": 135,
+      "kept": true,
+      "p50": 1439,
+      "p90": 3190,
+      "p99": 4073
+    },
+    {
+      "writer": "W2",
+      "applied": 35,
+      "failed": 0,
+      "last": 1135,
+      "onDisk": 1135,
+      "kept": true,
+      "p50": 1369,
+      "p90": 3439,
+      "p99": 3873
+    },
+    {
+      "writer": "W3",
+      "applied": 41,
+      "failed": 0,
+      "last": 2141,
+      "onDisk": 2141,
+      "kept": true,
+      "p50": 1374,
+      "p90": 1810,
+      "p99": 3353
+    },
+    {
+      "writer": "W4",
+      "applied": 37,
+      "failed": 0,
+      "last": 3137,
+      "onDisk": 3137,
+      "kept": true,
+      "p50": 1377,
+      "p90": 2044,
+      "p99": 5305
+    }
+  ],
+  "failures": [],
+  "samples": {
+    "W1": [
+      {
+        "edit": 1,
+        "start": 1793679589070,
+        "ms": 1419,
+        "print": 337,
+        "apply": 1081,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793679590489,
+        "ms": 1298,
+        "print": 327,
+        "apply": 970,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793679591787,
+        "ms": 1295,
+        "print": 332,
+        "apply": 962,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793679593082,
+        "ms": 1357,
+        "print": 345,
+        "apply": 1011,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793679594439,
+        "ms": 1415,
+        "print": 327,
+        "apply": 1087,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793679595854,
+        "ms": 1283,
+        "print": 343,
+        "apply": 939,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793679597137,
+        "ms": 1400,
+        "print": 337,
+        "apply": 1062,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793679598537,
+        "ms": 3354,
+        "print": 344,
+        "apply": 3009,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793679601891,
+        "ms": 3190,
+        "print": 294,
+        "apply": 2895,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793679605081,
+        "ms": 1439,
+        "print": 332,
+        "apply": 1107,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793679606521,
+        "ms": 1288,
+        "print": 343,
+        "apply": 944,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793679607809,
+        "ms": 1507,
+        "print": 308,
+        "apply": 1198,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793679609316,
+        "ms": 1341,
+        "print": 324,
+        "apply": 1016,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793679610657,
+        "ms": 1248,
+        "print": 318,
+        "apply": 929,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793679611905,
+        "ms": 1367,
+        "print": 376,
+        "apply": 990,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793679613272,
+        "ms": 3352,
+        "print": 325,
+        "apply": 3026,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793679616624,
+        "ms": 1525,
+        "print": 324,
+        "apply": 1200,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793679618149,
+        "ms": 4073,
+        "print": 771,
+        "apply": 3302,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793679622222,
+        "ms": 1663,
+        "print": 726,
+        "apply": 937,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793679623885,
+        "ms": 1217,
+        "print": 288,
+        "apply": 928,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793679625102,
+        "ms": 1243,
+        "print": 277,
+        "apply": 965,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793679626345,
+        "ms": 1783,
+        "print": 314,
+        "apply": 1468,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793679628128,
+        "ms": 1562,
+        "print": 384,
+        "apply": 1177,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793679629690,
+        "ms": 1846,
+        "print": 791,
+        "apply": 1055,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793679631536,
+        "ms": 1373,
+        "print": 296,
+        "apply": 1076,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793679632909,
+        "ms": 1552,
+        "print": 310,
+        "apply": 1241,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793679634461,
+        "ms": 2107,
+        "print": 332,
+        "apply": 1773,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793679636568,
+        "ms": 1672,
+        "print": 727,
+        "apply": 944,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793679638240,
+        "ms": 1229,
+        "print": 323,
+        "apply": 905,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 30,
+        "start": 1793679639469,
+        "ms": 2165,
+        "print": 320,
+        "apply": 1844,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 31,
+        "start": 1793679641634,
+        "ms": 1520,
+        "print": 345,
+        "apply": 1175,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 32,
+        "start": 1793679643154,
+        "ms": 1345,
+        "print": 329,
+        "apply": 1015,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 33,
+        "start": 1793679644499,
+        "ms": 1385,
+        "print": 354,
+        "apply": 1030,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 34,
+        "start": 1793679645884,
+        "ms": 1483,
+        "print": 493,
+        "apply": 990,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 35,
+        "start": 1793679647367,
+        "ms": 1858,
+        "print": 841,
+        "apply": 1017,
+        "timeline": "shown",
+        "outcome": "applied"
+      }
+    ],
+    "W2": [
+      {
+        "edit": 1,
+        "start": 1793679589082,
+        "ms": 1419,
+        "print": 370,
+        "apply": 1047,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793679590501,
+        "ms": 1349,
+        "print": 329,
+        "apply": 1020,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793679591850,
+        "ms": 1319,
+        "print": 357,
+        "apply": 961,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793679593169,
+        "ms": 1360,
+        "print": 366,
+        "apply": 993,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793679594529,
+        "ms": 1350,
+        "print": 343,
+        "apply": 1006,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793679595879,
+        "ms": 1282,
+        "print": 345,
+        "apply": 937,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793679597161,
+        "ms": 1353,
+        "print": 340,
+        "apply": 1013,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793679598514,
+        "ms": 1283,
+        "print": 344,
+        "apply": 939,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793679599798,
+        "ms": 1477,
+        "print": 310,
+        "apply": 1166,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793679601275,
+        "ms": 1339,
+        "print": 309,
+        "apply": 1029,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793679602615,
+        "ms": 1293,
+        "print": 322,
+        "apply": 970,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793679603908,
+        "ms": 3439,
+        "print": 326,
+        "apply": 3112,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793679607347,
+        "ms": 1227,
+        "print": 272,
+        "apply": 954,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793679608574,
+        "ms": 1605,
+        "print": 694,
+        "apply": 910,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793679610179,
+        "ms": 1446,
+        "print": 315,
+        "apply": 1130,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793679611625,
+        "ms": 3793,
+        "print": 695,
+        "apply": 3098,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793679615418,
+        "ms": 1737,
+        "print": 801,
+        "apply": 935,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793679617155,
+        "ms": 1834,
+        "print": 306,
+        "apply": 1527,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793679618989,
+        "ms": 1239,
+        "print": 314,
+        "apply": 924,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793679620228,
+        "ms": 1428,
+        "print": 317,
+        "apply": 1110,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793679621656,
+        "ms": 2255,
+        "print": 803,
+        "apply": 1451,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793679623911,
+        "ms": 1221,
+        "print": 295,
+        "apply": 926,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793679625132,
+        "ms": 1269,
+        "print": 281,
+        "apply": 987,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793679626401,
+        "ms": 1822,
+        "print": 811,
+        "apply": 1010,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793679628223,
+        "ms": 1444,
+        "print": 358,
+        "apply": 1085,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793679629667,
+        "ms": 3873,
+        "print": 787,
+        "apply": 3086,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793679633540,
+        "ms": 1311,
+        "print": 296,
+        "apply": 1014,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793679634851,
+        "ms": 1328,
+        "print": 308,
+        "apply": 1019,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793679636179,
+        "ms": 1264,
+        "print": 297,
+        "apply": 966,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 30,
+        "start": 1793679637443,
+        "ms": 2864,
+        "print": 298,
+        "apply": 2565,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 31,
+        "start": 1793679640307,
+        "ms": 1241,
+        "print": 286,
+        "apply": 954,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 32,
+        "start": 1793679641548,
+        "ms": 1561,
+        "print": 355,
+        "apply": 1205,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 33,
+        "start": 1793679643109,
+        "ms": 1369,
+        "print": 340,
+        "apply": 1028,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 34,
+        "start": 1793679644479,
+        "ms": 3489,
+        "print": 314,
+        "apply": 3174,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 35,
+        "start": 1793679647968,
+        "ms": 1459,
+        "print": 318,
+        "apply": 1140,
+        "timeline": "shown",
+        "outcome": "applied"
+      }
+    ],
+    "W3": [
+      {
+        "edit": 1,
+        "start": 1793679589093,
+        "ms": 1322,
+        "print": 327,
+        "apply": 994,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793679590415,
+        "ms": 1240,
+        "print": 329,
+        "apply": 910,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793679591655,
+        "ms": 1293,
+        "print": 314,
+        "apply": 979,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793679592948,
+        "ms": 1445,
+        "print": 375,
+        "apply": 1069,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793679594393,
+        "ms": 1303,
+        "print": 340,
+        "apply": 962,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793679595696,
+        "ms": 1297,
+        "print": 349,
+        "apply": 947,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793679596993,
+        "ms": 1413,
+        "print": 349,
+        "apply": 1063,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793679598406,
+        "ms": 1278,
+        "print": 343,
+        "apply": 934,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793679599684,
+        "ms": 1291,
+        "print": 316,
+        "apply": 973,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793679600975,
+        "ms": 1403,
+        "print": 335,
+        "apply": 1068,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793679602378,
+        "ms": 1347,
+        "print": 358,
+        "apply": 988,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793679603725,
+        "ms": 1250,
+        "print": 312,
+        "apply": 937,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793679604975,
+        "ms": 1605,
+        "print": 340,
+        "apply": 1264,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793679606580,
+        "ms": 1379,
+        "print": 313,
+        "apply": 1066,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793679607959,
+        "ms": 1379,
+        "print": 313,
+        "apply": 1066,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793679609338,
+        "ms": 1295,
+        "print": 341,
+        "apply": 953,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793679610633,
+        "ms": 1237,
+        "print": 307,
+        "apply": 929,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793679611870,
+        "ms": 1432,
+        "print": 379,
+        "apply": 1053,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793679613302,
+        "ms": 3353,
+        "print": 324,
+        "apply": 3028,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793679616655,
+        "ms": 1454,
+        "print": 329,
+        "apply": 1124,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793679618109,
+        "ms": 1810,
+        "print": 842,
+        "apply": 967,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793679619919,
+        "ms": 1448,
+        "print": 337,
+        "apply": 1110,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793679621367,
+        "ms": 1851,
+        "print": 821,
+        "apply": 1029,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793679623218,
+        "ms": 1214,
+        "print": 284,
+        "apply": 928,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793679624432,
+        "ms": 1206,
+        "print": 296,
+        "apply": 909,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793679625638,
+        "ms": 1541,
+        "print": 286,
+        "apply": 1254,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793679627179,
+        "ms": 1308,
+        "print": 329,
+        "apply": 978,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793679628487,
+        "ms": 1283,
+        "print": 356,
+        "apply": 926,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793679629770,
+        "ms": 1907,
+        "print": 772,
+        "apply": 1135,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 30,
+        "start": 1793679631677,
+        "ms": 1332,
+        "print": 297,
+        "apply": 1035,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 31,
+        "start": 1793679633009,
+        "ms": 1535,
+        "print": 290,
+        "apply": 1244,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 32,
+        "start": 1793679634544,
+        "ms": 1293,
+        "print": 329,
+        "apply": 963,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 33,
+        "start": 1793679635837,
+        "ms": 1431,
+        "print": 284,
+        "apply": 1145,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 34,
+        "start": 1793679637268,
+        "ms": 1272,
+        "print": 347,
+        "apply": 924,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 35,
+        "start": 1793679638540,
+        "ms": 1333,
+        "print": 331,
+        "apply": 1001,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 36,
+        "start": 1793679639873,
+        "ms": 1791,
+        "print": 307,
+        "apply": 1483,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 37,
+        "start": 1793679641664,
+        "ms": 1419,
+        "print": 341,
+        "apply": 1078,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 38,
+        "start": 1793679643083,
+        "ms": 1344,
+        "print": 342,
+        "apply": 1002,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 39,
+        "start": 1793679644427,
+        "ms": 1481,
+        "print": 392,
+        "apply": 1089,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 40,
+        "start": 1793679645908,
+        "ms": 1374,
+        "print": 305,
+        "apply": 1068,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 41,
+        "start": 1793679647282,
+        "ms": 1943,
+        "print": 645,
+        "apply": 1297,
+        "timeline": "shown",
+        "outcome": "applied"
+      }
+    ],
+    "W4": [
+      {
+        "edit": 1,
+        "start": 1793679589103,
+        "ms": 1482,
+        "print": 334,
+        "apply": 1147,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 2,
+        "start": 1793679590585,
+        "ms": 1291,
+        "print": 356,
+        "apply": 935,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 3,
+        "start": 1793679591876,
+        "ms": 1421,
+        "print": 354,
+        "apply": 1066,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 4,
+        "start": 1793679593297,
+        "ms": 1551,
+        "print": 401,
+        "apply": 1149,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 5,
+        "start": 1793679594849,
+        "ms": 1219,
+        "print": 323,
+        "apply": 896,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 6,
+        "start": 1793679596068,
+        "ms": 1216,
+        "print": 330,
+        "apply": 885,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 7,
+        "start": 1793679597284,
+        "ms": 1360,
+        "print": 334,
+        "apply": 1026,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 8,
+        "start": 1793679598644,
+        "ms": 1294,
+        "print": 329,
+        "apply": 963,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 9,
+        "start": 1793679599938,
+        "ms": 1219,
+        "print": 317,
+        "apply": 901,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 10,
+        "start": 1793679601157,
+        "ms": 1548,
+        "print": 309,
+        "apply": 1239,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 11,
+        "start": 1793679602705,
+        "ms": 1298,
+        "print": 319,
+        "apply": 978,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 12,
+        "start": 1793679604003,
+        "ms": 1262,
+        "print": 321,
+        "apply": 940,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 13,
+        "start": 1793679605265,
+        "ms": 1339,
+        "print": 306,
+        "apply": 1032,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 14,
+        "start": 1793679606604,
+        "ms": 1328,
+        "print": 318,
+        "apply": 1010,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 15,
+        "start": 1793679607932,
+        "ms": 1362,
+        "print": 312,
+        "apply": 1049,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 16,
+        "start": 1793679609294,
+        "ms": 1224,
+        "print": 316,
+        "apply": 906,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 17,
+        "start": 1793679610518,
+        "ms": 1328,
+        "print": 359,
+        "apply": 968,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 18,
+        "start": 1793679611846,
+        "ms": 1359,
+        "print": 374,
+        "apply": 984,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 19,
+        "start": 1793679613205,
+        "ms": 1462,
+        "print": 323,
+        "apply": 1139,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 20,
+        "start": 1793679614667,
+        "ms": 1523,
+        "print": 294,
+        "apply": 1228,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 21,
+        "start": 1793679616190,
+        "ms": 1365,
+        "print": 354,
+        "apply": 1010,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 22,
+        "start": 1793679617555,
+        "ms": 1624,
+        "print": 629,
+        "apply": 994,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 23,
+        "start": 1793679619179,
+        "ms": 1196,
+        "print": 293,
+        "apply": 901,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 24,
+        "start": 1793679620375,
+        "ms": 1192,
+        "print": 292,
+        "apply": 900,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 25,
+        "start": 1793679621567,
+        "ms": 1549,
+        "print": 588,
+        "apply": 960,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 26,
+        "start": 1793679623116,
+        "ms": 3261,
+        "print": 304,
+        "apply": 2955,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 27,
+        "start": 1793679626377,
+        "ms": 1777,
+        "print": 774,
+        "apply": 1002,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 28,
+        "start": 1793679628154,
+        "ms": 1563,
+        "print": 389,
+        "apply": 1173,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 29,
+        "start": 1793679629717,
+        "ms": 5305,
+        "print": 789,
+        "apply": 4515,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 30,
+        "start": 1793679635022,
+        "ms": 3247,
+        "print": 294,
+        "apply": 2951,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 31,
+        "start": 1793679638269,
+        "ms": 1282,
+        "print": 336,
+        "apply": 945,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 32,
+        "start": 1793679639551,
+        "ms": 2044,
+        "print": 343,
+        "apply": 1700,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 33,
+        "start": 1793679641595,
+        "ms": 1537,
+        "print": 358,
+        "apply": 1178,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 34,
+        "start": 1793679643132,
+        "ms": 1391,
+        "print": 377,
+        "apply": 1014,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 35,
+        "start": 1793679644523,
+        "ms": 1407,
+        "print": 364,
+        "apply": 1042,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 36,
+        "start": 1793679645930,
+        "ms": 1377,
+        "print": 318,
+        "apply": 1058,
+        "timeline": "shown",
+        "outcome": "applied"
+      },
+      {
+        "edit": 37,
+        "start": 1793679647307,
+        "ms": 1918,
+        "print": 593,
+        "apply": 1324,
+        "timeline": "shown",
+        "outcome": "applied"
+      }
+    ]
+  }
+}
