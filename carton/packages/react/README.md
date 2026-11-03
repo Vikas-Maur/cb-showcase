@@ -52,7 +52,7 @@ Cardboard's own team, which has the source, would use React directly with no cha
 
 | Component | What it shows |
 |---|---|
-| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's) as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
+| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's), who and when down to the subagent, "Not sent yet" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
 | `CutsMenu` | Which cut you're on and every cut: a colour dot for each but Main (`cutColor`), who changed it last and when, teammates' cuts under "From teammates" marked View only. New cut from your edit, one "Fold in changes from a cut…" however many cuts, Rename, and "Agents work on the cut you're on." While an agent's turn holds the timeline a switch opens in place with "Switch when it finishes" (queued: `switchWhenDone`, run once at the turn's end, dropped by a switch by hand) and "Switch now". Scrolls past 8 cuts, a search past 12. `openCutsMenu(ui)` opens it with focus in it from elsewhere (the title bar's cut chip) |
 | `TeammateCutActions` | On a teammate's cut: "Fold into Main cut…" and "New cut from it" (no Restore); the cut bar shows Viewing ✕ back to your cut |
 | `FoldInDialog` | "Fold in changes": From and Into pickers, one line on what happens ("Main cut gets what changed on “30s cut” since it was made from Main cut at 12:20 pm."), every change as a change row (time in the edit, the kind of clip, the sentence, who) with a tick box, a lock on a project setting that can't be left out, "Left out on Oct 30" on what an earlier partial fold left out (those come in together), a conflict as an inline pick between the two cuts, and the counted button ("Fold in 3 changes": what History will count; "Fold in the rest"). The nothing-to-fold state, and §13's missing-base text when the copy builds on a version you don't have |
@@ -64,11 +64,30 @@ Cardboard's own team, which has the source, would use React directly with no cha
 | `PresenceAvatars`, `GhostLayer` | People, each with their agents and subagents; ghosts of remote drags over your timeline |
 | `SyncStatusWords` | Syncing · Up to date · Offline: N edits waiting |
 | `WatchTheChanges` | The shot diff laid out like a side-by-side text diff, with Play changes and an aligned Before/After toggle |
-| `PreviewBanner` | "Previewing …", read-only, with "Return to current to edit" (§9 R2-16) |
+| `PreviewBanner` | "You're looking at …", with "Back to my edit" (§9 R2-16). Retired by the viewing frame (UX redesign PLAN 1.1) |
 
 The components carry roles, keyboard handling and class names, and no colours. `skin/cardboard` styles them to look
 native in Cardboard: it reads Cardboard's CSS variables (`--popover`, `--surface-raised`, `--font-sans`…), with 1.4.0's
 values as fallbacks.
+
+## The UX redesign's view model (docs/carton-ux, PLAN workstream 0)
+
+What the redesigned History, Changes view, cuts and Fold, and conflict cards read. The mock implements all of it with the
+mockups' story (Main cut today, a 0:38 edit), so components can be built before the engine is wired.
+
+| Read or call | What it gives |
+|---|---|
+| `changes(a, b)` | Every change from `a` to `b` as change rows (`Change`: `text`, `kind` add/remove/change, `clip` kind, `itemId`, `at`/`end` in seconds, `author`, `when`), in timeline order. One per change as core's `countChanges` counts them, so `.length` is the count every other place shows. Kept per pair of versions. Never reads a shot diff |
+| `changesIn(versionId)` | What one History row did (a turn: all of it, from before its first version): the version card's rows |
+| `viewing()`, `view(target)` | What the stage shows when it isn't your edit, with one label for the chip, the frame and the row ("Director's “Add captions…”", "Before …", "Claude Code's move of “Interview B”", "Leo's Main cut"). `view` loads first and rejects with "Couldn't load this version. Try again."; `view(null)` is back. `openPreview` stays as a deprecated alias |
+| `undoTurnOf(versionId)` | Takes out one agent turn, any turn; later edits stay; a clash is a conflict card |
+| `working()` | An agent's in-app turn holding the timeline: `{ actor, label, edits, since }` |
+| `clipVersions(itemId)`, filter `{ item }` | The versions that touched one clip, from the per-version index core keeps at save (no diff at 10k versions). Filters also take `"mine"` |
+| `versionLabel(v)`, `clock(at)` | The one label for a version (its name, an agent's prompt cut to 24 characters, or "your edit from 12:41 pm") and the one clock (always am/pm, "yesterday at 4:10 pm") |
+| `groupHistory(…, { group: true })` | Day rows plus a person's run of edits as one group row, an agent turn as one row, the start of History as one "Project created" row, the newest flagged `now` |
+
+Version rows carry `changes` (how many), `leftOut` (a partial fold's), `base` (where their changes start), `run` (the
+turn they're part of) and `start`. Every sentence comes from core's `changeList` (one table, DESIGN §8).
 
 ## Performance, by design
 

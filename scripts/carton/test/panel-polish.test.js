@@ -52,9 +52,10 @@ test("P2-4: Restore says which version it restored, and that nothing is lost", o
   T.confirmations(ui);
   await ui.restore("main@3");
   assert.deepEqual(ui.calls, [["restore", "main@3"]]);
-  assert.match(T.toasts.value.text, /^Restored the version from 12:41(\s?PM)?\. It's saved as a new version\.$/);
+  // the one label for a version (UX redesign 0.9), always with am/pm; DESIGN §6.7's restore toast
+  assert.match(T.toasts.value.text, /^Restored Claude Code's edit from (12:41 pm|Nov 2 at 12:41 pm|yesterday at 12:41 pm)\. Later changes are in History\.$/);
   await ui.restore("main@4");
-  assert.equal(T.toasts.value.text, "Restored “Sent to client”. It's saved as a new version.");
+  assert.equal(T.toasts.value.text, "Restored “Sent to client”. Later changes are in History.");
 });
 
 test("P2-4: Fold in says what went where, and offers to switch to the cut it went into", opt, async () => {

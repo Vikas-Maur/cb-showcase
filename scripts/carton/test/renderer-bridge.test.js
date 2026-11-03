@@ -127,7 +127,7 @@ test("H6 (laptop bugs 3, 4): the session's start goes with each step; the projec
   assert.ok(!t.log.some((l) => l[0] === "replace"), "the project wasn't fetched again");
 });
 
-test("a preview is read-only: changes wait, undo doesn't take it, and Return to current takes head", async () => {
+test("a preview is read-only: changes wait, undo doesn't take it, and Back to my edit takes head", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
   await t.c.preview("p1", "main@3");
@@ -145,10 +145,10 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
 });
 
 // Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
-// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Return to current puts it
+// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Back to my edit puts it
 // back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is
 // Cardboard's `playheadTime` while paused (its `currentTime` follows the pointer's hover then: review #1) and its
-// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Watch the changes, a
+// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, WatchTheChanges, a
 // comment's timecode, play) is the person's, even one that ends where the preview put it (review #3).
 function cardboardPlayhead(t, { at, hover = null }) {
   const subs = new Set();
@@ -163,7 +163,7 @@ function cardboardPlayhead(t, { at, hover = null }) {
   t.store.clock = () => clock;
   return { set, subs, play: (s) => { clock = s; set({ isPlaying: true }); }, hover: (h) => set({ currentTime: h }) };
 }
-test("final N5: a preview shorter than the playhead takes it to its end; Return to current puts it back", async () => {
+test("final N5: a preview shorter than the playhead takes it to its end; Back to my edit puts it back", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
   t.disk.doc = t.project(200, [{ id: "a", endTime: 10 }]);
@@ -181,7 +181,7 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
   assert.equal(p.subs.size, 0, "and nothing is left listening");
   // moved during the preview, even back to where the preview put it: the person's place stays
   await t.c.preview("p1", "main@2");
-  t.c.seek(0.5); // Watch the changes, a comment's timecode
+  t.c.seek(0.5); // WatchTheChanges, a comment's timecode
   t.state().setPlaybackPosition(1.5); // a click on the ruler, at the version's end
   await t.c.preview("p1", null);
   assert.equal(t.state().playheadTime, 1.5, "where the person put it");
@@ -221,7 +221,7 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
 
 // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
 // a double-click on one) and dropped what was typed. Cardboard's own edits are refused there by its guard (`me()`:
-// its "Previewing an earlier version. Return to current to edit." over the timeline); the text editor isn't a write, so
+// its refusal over the timeline); the text editor isn't a write, so
 // patch-carton.js asks the bridge first. Refused only in a Carton preview, never with Carton off.
 test("baseline P3-9: an edit that isn't a write is refused in a preview, with Cardboard's own note; not otherwise", async () => {
   const t = load({ enabled: true });

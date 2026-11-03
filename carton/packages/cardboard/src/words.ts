@@ -25,7 +25,7 @@ export function cardboardValue(key: string, v: unknown, doc: Doc | undefined): s
     case "mediaItemId": {
       const m = doc && typeof v === "string" ? ((doc[MEDIA] as Rec[] | undefined) ?? []).find((x) => x.id === v) : undefined;
       const name = m && mediaName(m);
-      return name ? `'${name}'` : undefined;
+      return name ? `“${name}”` : undefined;
     }
     default:
       return undefined;
@@ -36,7 +36,7 @@ export function cardboardValue(key: string, v: unknown, doc: Doc | undefined): s
  * Plain words for a conflict card in Cardboard (fromCarton's `describeCard`): `mine` words core's `ours` side and
  * `theirs` core's `theirs`, as that option takes them. `doc` (the cut's head) names the clip, its media and its track.
  */
-export function describeCardboardCard(card: ConflictCard, schema: Schema = cardboardSchema, doc?: Doc): { title: string; mine: string; theirs: string; reason?: string } {
+export function describeCardboardCard(card: ConflictCard, schema: Schema = cardboardSchema, doc?: Doc): { title: string; mine: string; theirs: string; reason?: string; name?: string } {
   const w = describeCard(card, schema, doc, { value: cardboardValue });
-  return { title: w.title, mine: w.ours, theirs: w.theirs, ...(w.reason ? { reason: w.reason } : {}) };
+  return { title: w.title, mine: w.ours, theirs: w.theirs, ...(w.name ? { name: w.name } : {}), ...(w.reason ? { reason: w.reason } : {}) };
 }

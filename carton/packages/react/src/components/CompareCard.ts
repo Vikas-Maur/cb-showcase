@@ -1,5 +1,5 @@
 // Compare card (§9, generalizing the recovery picker): for two versions, when and by whom, how many clips, how long,
-// and "N shots / X s of Y s differ", with a way into Watch the changes.
+// and "N shots / X s of Y s differ", with a way into WatchTheChanges.
 
 import { createElement as h, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { duration, exactTime, when } from "../format.ts";
@@ -73,7 +73,7 @@ export function CompareCard(p: CompareCardProps) {
       h(
         "p",
         { key: "diff", className: "carton-compare-diff", "data-same": same ? "" : undefined },
-        // counted as History and Watch the changes count them (a split one change), not by its lines
+        // counted as History and WatchTheChanges count them (a split one change), not by its lines
         words.compareSummary(c.changeCount ?? (changes ? changes.length : null), c.diff.seconds, c.diff.total),
       ),
       shown.length

@@ -40,7 +40,7 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   await carton.commit({ ops: [set("a", "startTime", 2), set("a", "endTime", 7), set("b", "name", "B1"), set("c", "name", "C1")] });
   await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 600 })));
-  await waitFor(() => /Moved 'A', changed 'B' and 'C'/.test(m.container.textContent ?? ""), "the summary");
+  await waitFor(() => /Moved “A”, renamed “B” and “C”/.test(m.container.textContent ?? ""), "the summary");
   const row = $$(m.container, "[role=option]")[0]!;
   const more = $(row, ".carton-version-expand")!;
   assert.ok(more, "an expand control on the row");
@@ -51,7 +51,7 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   const open1 = $$(m.container, "[role=option]")[0]!;
   assert.equal($(open1, ".carton-version-expand")!.getAttribute("aria-expanded"), "true");
   const items = $$(open1, ".carton-version-details li").map((li) => li.textContent);
-  assert.deepEqual(items, ["Moved 'A' 0.0 s → 2.0 s", 'Changed \'B\' name "B" → "B1"', 'Changed \'C\' name "C" → "C1"']);
+  assert.deepEqual(items, ["Moved “A” 2 s later (now starts at 0:02)", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
   // the rows below make room: the next row starts below the expanded one
   const vrows = $$(m.container, ".carton-vrow");
   const y = (el: HTMLElement) => Number(/translateY\((\d+)px\)/.exec(el.style.transform)?.[1]);
