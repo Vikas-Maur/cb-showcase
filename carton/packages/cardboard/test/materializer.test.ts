@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow, type MaterializerOptions } from "../src/node/materializer.ts";
+import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow, type MaterializerOptions, type SlowShow } from "../src/node/materializer.ts";
 import { jsonTimelineCodec } from "../src/codec.ts";
 import { findRev } from "../src/header.ts";
 import { FakeClock, FakeEngine, plainHost } from "./helpers/fake-engine.ts";
@@ -1405,13 +1405,13 @@ test("apply-ryw review #2: an offline terminal's pending edit shows in the file 
 // names the cause: the holder's look at carton.db, the wait for the materializer's queue, its own rewrite, what
 // answered it, what held rewrites back, and the longest tasks meanwhile. A prompt answer reports nothing.
 test("apply-tail: a slow read-your-writes answer is reported with where its time went; a prompt one isn't", async (t) => {
-  const reports: import("../src/node/materializer.ts").SlowShow[] = [];
+  const reports: SlowShow[] = [];
   const s = await setup(t, [clip("a", 0, 5)], { mz: { onSlowShow: (r) => reports.push(r) } });
   // prompt: the coalesced rewrite is made at once
   s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "prompt"), "agent.1");
   s.mz.onHeadChange("local");
   assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000, { beforeMs: 3 }), "shown");
-  assert.deepEqual(reports, [], "nothing for a prompt answer");
+  assert.equal(reports.length, 0, "nothing for a prompt answer");
 
   // a host write still landing holds the rewrite back until the wait ends: the wait's end answers it
   let land!: () => void;
@@ -1458,4 +1458,6 @@ test("apply-tail: a slow read-your-writes answer is reported with where its time
   assert.ok(q.tasks.length >= 1 && q.tasks[0]!.ms === 800, JSON.stringify(q.tasks));
   assert.match(q.tasks[0]!.task, /holdsChange|showing/, "the task that ran: the answer's own look and rewrite");
   assert.ok(q.tasks.every((x) => x.task.length <= 120));
+  assert.equal(q.print?.pin, 800, "the rewrite's steps: the pin took the time");
+  assert.ok(q.print!.look + q.print!.print + q.print!.install + q.print!.tell < 50, JSON.stringify(q.print));
 });

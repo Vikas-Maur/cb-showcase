@@ -341,6 +341,9 @@ export interface MaterializerOptions {
  *   or the file was frozen, when it was answered.
  * - `tasks`: the materializer's longest tasks while it waited (20 ms or more, at most 4, longest first): the first
  *   line of each one's source and how long it ran.
+ * - `print`: the shared file's last rewrite since it was asked, step by step: `look` (the file read, a foreign save
+ *   imported, the freeze checked), `pin`, `print` (project.json read, the printer), `install` (the bundle's install
+ *   lock, displace and link) and `tell` (the read-back of the file that tells the waiting writes); `at` when it began.
  */
 export interface SlowShow {
   change: string;
@@ -355,6 +358,7 @@ export interface SlowShow {
   retrying: boolean;
   frozen: boolean;
   tasks: { task: string; ms: number }[];
+  print?: { at: number; look: number; pin: number; print: number; install: number; tell: number };
 }
 
 export interface ViewRow {
@@ -504,6 +508,8 @@ export class Materializer {
   private readonly ran: { task: () => Promise<unknown>; at: number; ms: number }[] = [];
   /** The task running now, and since when (`SlowShow.tasks`: one still running counts up to the report). */
   private current: { task: () => Promise<unknown>; at: number } | null = null;
+  /** The shared file's last rewrite, step by step (`SlowShow.print`). */
+  private lastPrint: SlowShow["print"] | null = null;
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
   /** project.json's envelope for its stamp; `hash` null when the host gave it (`HostWrite`) and the file wasn't read. */
@@ -1027,8 +1033,9 @@ export class Materializer {
       .sort((a, b) => b.ms - a.ms)
       .slice(0, 4)
       .map((r) => ({ task: String(r.task).split("\n").slice(0, 2).join(" ").replace(/\s+/g, " ").slice(0, 120), ms: r.ms }));
+    const print = this.lastPrint && this.lastPrint.at >= since ? { ...this.lastPrint, at: this.lastPrint.at - since } : null;
     try {
-      this.onSlowShow!({ ...s, landing: this.landing.size > 0, retrying: this.writeRetryTimers.size > 0, frozen: this.freeze.active, tasks });
+      this.onSlowShow!({ ...s, landing: this.landing.size > 0, retrying: this.writeRetryTimers.size > 0, frozen: this.freeze.active, tasks, ...(print ? { print } : {}) });
     } catch {
       // a report that fails changes nothing
     }
@@ -1325,6 +1332,11 @@ export class Materializer {
   }
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
+    // how long each step took, for a slow read-your-writes answer's report (`SlowShow.print`)
+    const steps: NonNullable<SlowShow["print"]> = { at: this.clock.now(), look: 0, pin: 0, print: 0, install: 0, tell: 0 };
+    let mark = steps.at;
+    const step = (k: "look" | "pin" | "print" | "install" | "tell"): void => { const n = this.clock.now(); steps[k] += n - mark; mark = n; };
+    this.lastPrint = steps;
     // the path is read once: what the import found there (current, not parsing yet, or nothing) is what the "unchanged"
     // check below compares, and a write landing in between is read at its own event; after an import it is read again
     const seen = await this.importUnseen(TIMELINE_FILE);
@@ -1332,6 +1344,7 @@ export class Materializer {
     // the freeze view only on the cut it belongs to (if the cut moved since, head until the next check restarts it)
     const frozen = this.freeze.active && !!this.freeze.view && this.freeze.cut === (this.engine.cut?.() ?? null);
     const shown = frozen ? await this.withPending() : null;
+    step("look");
     // superseded prints are released past `keepPrints` (R7-01's bound); the pin's record goes with the next meta write
     // (the path's token before the install, or its state after it) instead of one write of its own
     // the print the file shows is never released, whatever was pinned since (a print that failed, a restart point),
@@ -1340,12 +1353,16 @@ export class Materializer {
     const pinned = shown
       ? await this.engine.pin({ owner: "shared-view", doc: shown.doc, seq: this.freeze.baseSeq, causal: [...this.freeze.causal, ...shown.ids], ttlMs: 7 * DAY, keep, deferRecord: true })
       : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY, keep, deferRecord: true });
+    step("pin");
     const carry = { rows: pinned.record ? [pinned.record] : [] };
     // what the file shows once this print is there (read-your-writes, `showChange`): told to the writes waiting for it
     const holds = { cut: pinned.cut, seq: pinned.seq, ids: new Set(shown ? [...this.freeze.causal, ...shown.ids] : (pinned.pending ?? [])) };
+    let installed = false;
     const showed = async (hash: string): Promise<void> => {
+      if (!installed) step("print"); // unchanged: project.json read (and printed again to compare)
       this.printed = { ...holds, hash };
       if (this.showing.size) await this.wakeShowing();
+      step("tell");
     };
     let landedBefore: number | null = null;
     try {
@@ -1375,7 +1392,10 @@ export class Materializer {
       }
       const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
       const text = await this.codec.print(this.host.toProject(pinned.doc, project), header.slice(REV_PREFIX.length));
+      step("print");
       await this.install(TIMELINE_FILE, text, undefined, carry);
+      step("install");
+      installed = true;
       this.sharedRef = body; // only once installed: a failed rewrite must not read as done
       this.sharedCut = pinned.cut;
       this.sharedEnv = src.key;
