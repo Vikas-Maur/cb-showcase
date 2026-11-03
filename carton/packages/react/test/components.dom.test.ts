@@ -42,34 +42,41 @@ test(name("sync status words: Syncing · Up to date · Offline: N edits waiting,
   await m.unmount();
 });
 
-test(name("History renders a window of a 10k list, marks checkpoints, named and waiting versions"), async () => {
+test(name("History renders a window of a 10k list, marks agent turns, named and not-yet-sent versions"), async () => {
   const ui = createMockUi({ versions: 10_000, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: "main@10000" })));
   const rows = $$(m.container, "[role=option]");
   assert.ok(rows.length > 5 && rows.length < 40, `${rows.length} rows in the DOM for 10,004 versions`);
   assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Not sent yet/.test(r.textContent ?? "")));
-  assert.ok(rows.some((r) => r.dataset.kind === "turn" && !/Checkpoint/.test(r.textContent ?? "") && /Tighten the intro/.test(r.textContent ?? "")));
-  assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client/.test(r.textContent ?? "")));
+  // an agent's turn is titled by its prompt, in quotes; no engineer's badge (AUDIT H3)
+  assert.ok(rows.some((r) => r.dataset.kind === "turn" && /“Tighten the intro and add a lower third”/.test(r.textContent ?? "") && /Claude Code/.test(r.textContent ?? "")));
+  assert.ok(!rows.some((r) => /Checkpoint/i.test(r.textContent ?? "")));
+  assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client/.test(r.textContent ?? "") && /Named by You/.test(r.textContent ?? "")));
   // The list's full height is there for the scrollbar: 10k versions over several days are grouped by day (UI audit
   // P2-17), every day but the newest folded to its named versions and turns, so the height is the rows shown.
   const inner = $(m.container, ".carton-vlist > div")!;
   const days = $$(m.container, ".carton-day");
   assert.ok(days.length >= 1 && days[0]!.getAttribute("aria-expanded") === "true", "the newest day is open");
   const height = parseFloat(inner.style.height);
-  assert.ok(height > 600 && height < 10_004 * 52, `${height}px for the grouped list`);
+  assert.ok(height > 600 && height < 10_004 * 56, `${height}px for the grouped list`);
   assert.equal(height % 2, 0);
-  // Named filter.
-  await click(byText(m.container, "[role=radio]", "Named"));
-  const named = $$(m.container, "[role=option]");
-  assert.ok(named.length > 0 && named.every((r) => r.dataset.named !== undefined));
+  // Named filter, from the filter menu: only named versions (and their days), and the filter shows as a chip
+  await click($(m.container, ".carton-filter-btn"));
+  await click(byText(m.container, "[role=menuitemradio]", "Named versions"));
+  const named = $$(m.container, ".carton-version");
+  // (an agent's version with a name reads as its prompt, in quotes, as versionLabel names it: PLAN 0.9)
+  assert.ok(named.length > 0 && named.every((r) => r.dataset.named !== undefined || r.dataset.prompt !== undefined));
+  assert.ok(named.some((r) => r.dataset.named !== undefined));
+  assert.equal($(m.container, ".carton-filter-chip-text")?.textContent, "Named versions");
   await m.unmount();
 });
 
-test(name("History: keyboard moves the active row and Enter opens a read-only preview"), async () => {
+test(name("History: keyboard moves the active row; Enter opens its card and never changes what the editor shows"), async () => {
   const ui = createMockUi({ versions: 50 });
-  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 }), h(PreviewBanner)));
+  let outer = 0;
+  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600 }))));
   const list = $(m.container, "[role=listbox]")!;
-  // The two newest versions are still waiting to sync: the third is the Director's checkpoint.
+  // Today's header, then the newest two versions: the third row is your group of edits
   await key(list, "ArrowDown");
   await key(list, "ArrowDown");
   await key(list, "ArrowDown");
@@ -77,18 +84,23 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
   assert.equal(active.length, 1);
   assert.equal(list.getAttribute("aria-activedescendant"), active[0]!.id);
   await key(list, "Enter");
-  assert.ok(ui.preview(), "a preview is open");
-  assert.match(m.container.textContent ?? "", /You're looking at/);
-  assert.doesNotMatch(m.container.textContent ?? "", /Read-only|Previewing/);
-  await click(byText(m.container, "button", "Back to my edit"));
-  assert.equal(ui.preview(), null);
+  await flush();
+  assert.ok($(m.container, ".carton-card-version[role=region]"), "its card is open, under it");
+  assert.equal(active[0]!.getAttribute("aria-expanded"), "true");
+  assert.equal(ui.viewing(), null, "the editor still shows your edit (DESIGN §4.2)");
+  // Esc closes the card (the innermost layer), and only it
+  await key(list, "Escape");
+  assert.equal($(m.container, ".carton-card-version"), null);
+  assert.equal(outer, 0, "the panel around it never saw that Esc");
+  await key(list, "Escape");
+  assert.equal(outer, 1, "with no card open, Esc goes on to the panel (stop viewing, close)");
   await m.unmount();
 });
 
 test(name("History: name a version in place"), async () => {
   const ui = createMockUi({ versions: 30 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const row = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit" && r.dataset.provisional === undefined)!;
+  const row = $$(m.container, ".carton-version").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit" && r.dataset.provisional === undefined && r.querySelector(".carton-version-more"))!;
   await click(row.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Name this version"));
   const input = $(m.container, "input.carton-input");
@@ -96,7 +108,7 @@ test(name("History: name a version in place"), async () => {
   await type(input, "Picture lock");
   await act(() => (input!.closest("form") as HTMLFormElement).requestSubmit());
   await flush();
-  assert.ok(byText(m.container, ".carton-version-text", "Picture lock"));
+  assert.ok(byText(m.container, ".carton-version-title", "Picture lock"));
   await m.unmount();
 });
 
@@ -304,7 +316,7 @@ test(name("ghost layer draws remote drags without rendering through React"), asy
 test(name("R1-14: Enter and arrows typed in the naming field belong to the field, not the list"), async () => {
   const ui = createMockUi({ versions: 30, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined && r.dataset.named === undefined)!;
+  const row = $$(m.container, ".carton-version").find((r) => r.dataset.provisional === undefined && r.dataset.named === undefined && r.querySelector(".carton-version-more"))!;
   await click(row.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Name this version"));
   const input = $(m.container, "input.carton-input")!;
@@ -312,6 +324,7 @@ test(name("R1-14: Enter and arrows typed in the naming field belong to the field
   await act(() => void input.dispatchEvent(ev));
   assert.equal(ev.defaultPrevented, false, "the list doesn't swallow Enter, so the form submits");
   assert.equal(ui.preview(), null, "and no preview opened");
+  assert.equal(ui.viewing(), null);
   const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
   await act(() => void input.dispatchEvent(arrow));
   assert.equal(arrow.defaultPrevented, false);
@@ -322,19 +335,22 @@ test(name("R1-15: the context-menu key opens the active version's actions; still
   const ui = createMockUi({ versions: 30, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   const list = $(m.container, "[role=listbox]")!;
-  await key(list, "ArrowDown"); // the newest: still waiting to sync
+  await key(list, "ArrowDown"); // Today
+  await key(list, "ArrowDown"); // the newest: not sent yet
   await key(list, "Enter");
-  assert.equal(ui.preview(), null, "nothing to preview yet");
+  assert.equal(ui.viewing(), null, "nothing viewed");
   await key(list, "ContextMenu");
   const menu = $(m.container, "[role=menu]");
   assert.ok(menu, "actions menu open");
-  // Restore's hint is a line under its name (no tooltip over the next item)
-  assert.equal($$(menu!, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))?.getAttribute("aria-disabled"), "true");
+  // what waits for it to be sent says so, in a line under its name (no tooltip over the next item)
+  const play = $$(menu!, "[role=menuitem]").find((e) => e.textContent?.startsWith("Play its changes"))!;
+  assert.equal(play.getAttribute("aria-disabled"), "true");
+  assert.match(play.textContent ?? "", /Available once it's sent/);
   assert.equal(document.activeElement?.closest("[role=menu]"), menu, "focus moved into the menu");
   await m.unmount();
 });
 
-test(name("an empty version (the start of an imported project) offers no Preview, New cut from here or Restore, and says why"), async () => {
+test(name("an empty version (the start of an imported project) offers no Play, New cut or Restore, and says why"), async () => {
   const ui = createMockUi({ versions: 0 });
   const system = { key: "system/carton", kind: "system" as const, name: "" };
   ui.addVersion({ author: system, summary: "Started the cut", empty: true });
@@ -348,35 +364,43 @@ test(name("an empty version (the start of an imported project) offers no Preview
   await click(row("Started the cut").querySelector(".carton-version-more"));
   const menu = $(m.container, "[role=menu]")!;
   const items = () => $$(menu, "[role=menuitem]").map((e) => e.textContent ?? "");
-  assert.ok(!items().some((t) => t.startsWith("Preview")), "no Preview");
-  assert.ok(!items().some((t) => t.startsWith("New cut from here")), "no New cut from here");
+  assert.ok(!items().some((t) => t.startsWith("Play")), "no Play");
+  assert.ok(!items().some((t) => t.startsWith("New cut")), "no New cut");
   const r = $$(menu, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!;
   assert.equal(r.getAttribute("aria-disabled"), "true", "Restore isn't offered");
   assert.match(r.textContent ?? "", /before the project was added/, "and it says why");
   await click(r);
   assert.deepEqual(restored, [], "a click does nothing");
-  // opening the row (Enter, double-click) previews nothing
+  // opening the row (a click, Enter) views nothing
   await click(row("Started the cut"));
   await key($(m.container, "[role=listbox]")!, "Enter");
   assert.equal(ui.preview(), null);
-  // the version after it is the project: every action is there
+  assert.equal(ui.viewing(), null);
+  // the version after it is the project (and your edit now): New cut is there; there's nothing to restore to yet
   await click(row("Imported the project").querySelector(".carton-version-more"));
   const menu2 = $(m.container, "[role=menu]")!;
-  assert.ok($$(menu2, "[role=menuitem]").some((e) => e.textContent?.startsWith("New cut from here")));
-  assert.equal($$(menu2, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!.getAttribute("aria-disabled"), null);
+  assert.ok($$(menu2, "[role=menuitem]").some((e) => e.textContent?.startsWith("New cut from this version")));
+  assert.equal($$(menu2, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore")), undefined, "no Restore on the newest version");
   await m.unmount();
 });
 
-test(name("a restore the app refuses says why in the panel"), async () => {
+test(name("a restore the app refuses says so in its card, with the app's reason in the tooltip"), async () => {
   const ui = createMockUi({ versions: 3 });
   ui.restore = async () => { throw new Error("Nothing to restore: that version is empty"); };
   const m = await render(wrap(ui, h("div", { style: { height: 600 } }, h(HistoryPanel, { initialHeight: 600 }))));
   await flush();
-  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined)!;
+  const row = $$(m.container, ".carton-version").filter((r) => r.dataset.provisional === undefined && r.querySelector(".carton-version-more"))[1]!;
   await click(row.querySelector(".carton-version-more"));
   await click($$(m.container, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!);
-  await waitFor(() => !!$(m.container, ".carton-history-error[role=alert]"), "the error line");
-  assert.equal($(m.container, ".carton-history-error")!.textContent, "Nothing to restore: that version is empty");
+  await flush();
+  // Restore… asks first, in the card, with what it does
+  const card = $(m.container, ".carton-card-version")!;
+  assert.match($(card, ".carton-card-confirm-title")!.textContent ?? "", /^Restore .+\?$/);
+  await click(byText(card, "button", "Restore"));
+  await waitFor(() => !!$(m.container, ".carton-card-version .carton-card-error[role=alert]"), "the error line");
+  const err = $(m.container, ".carton-card-version .carton-card-error")!;
+  assert.equal(err.textContent, "Couldn't restore this version. Try again.");
+  assert.equal(err.getAttribute("title"), "Nothing to restore: that version is empty");
   await m.unmount();
 });
 

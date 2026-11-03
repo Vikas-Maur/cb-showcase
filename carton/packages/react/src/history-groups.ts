@@ -28,7 +28,11 @@ export type HistoryRow =
   | {
       /** Consecutive plain edits by one person, at most GROUP_GAP_MS apart, nothing named or an agent's between them. */
       readonly kind: "group";
-      /** `group:<newest id>`: stable while the group grows at its old end; it moves when a newer edit joins. */
+      /**
+       * `group:<oldest id>`: stable while the group grows at its newer end, as it does while the person goes on editing
+       * (review of feat/ux-3-history #7: keyed by its newest, each new edit made a new row, and the list scrolled back
+       * to it as the row the keyboard was on).
+       */
       readonly key: string;
       /** The newest version's id and index: the row shows its sentence. */
       readonly id: string;
@@ -148,7 +152,7 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
         if (x.changes === undefined) known = false;
         else sum += x.changes;
       }
-      const key = `group:${v.id}`;
+      const key = `group:${versions[m]!.id}`;
       const open = !!opts.open?.(key);
       rows.push(flag({ kind: "group", key, id: v.id, index: n - 1 - k, ids, author: v.author, count: known ? sum : ids.length, open }));
       if (open) for (let q = k; q >= m; q--) rows.push({ kind: "version", key: versions[q]!.id, id: versions[q]!.id, index: n - 1 - q, child: true });

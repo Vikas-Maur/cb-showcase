@@ -40,8 +40,9 @@ export {
   type AsyncState,
 } from "./hooks.ts";
 export { Avatar, ActorName, HoverMore, Button, Dialog, MenuButton, MenuItem, MenuList, MenuSeparator, MenuLabel, InlineName } from "./components/ui.ts";
-export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./components/HistoryPanel.ts";
-// The shared change row and change map (docs/carton-ux DESIGN §5.1; Workstreams 3, 4 and 6 use them)
+export { HistoryPanel, VERSION_ROW_HEIGHT, CHILD_ROW_HEIGHT, WORKING_ROW_HEIGHT, type HistoryPanelProps } from "./components/HistoryPanel.ts";
+// The redesign's version card and the shared change row and map (docs/carton-ux PLAN 3.3; Workstreams 4 and 6 import them)
+export { VersionCard, CARD_ROWS, CARD_ROWS_MAX, type VersionCardProps, type PlayRequest, type PlayState, type CardMode } from "./components/VersionCard.ts";
 export { ChangeRow, ChangeList, setChangeProgress, CLIP_ICON, type ChangeRowProps, type ChangeListProps } from "./components/ChangeRow.ts";
 export { ChangeMap, moveMapPlayhead, mapLength, type ChangeMapProps } from "./components/ChangeMap.ts";
 export { CutsMenu, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";

@@ -481,6 +481,16 @@ What changes with it on:
   turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). Your
   own Claude Code's edits are credited to "Claude Code" (they used to read "Director (chat …)", and its turns went
   unnamed). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one agent turn.
+- **The History panel** (Ctrl+Shift+H) reads as a list of what happened, by day: each row says who (an agent's own
+  mark), what (an agent's prompt in quotes, a version's name, or the change itself: "Moved “Interview B” 2 s later")
+  and when (always with am/pm; the newest says **Now**). Your run of edits is one row ("You · 6 changes ›"), an agent
+  at work shows as a live row ("Keep editing. Director sees your changes when its turn ends."), and the cut's start is
+  one row at the bottom. A click opens the version's card under it: how far your edit has moved on since ("Your edit has
+  7 changes since this · See them"), where each change is in the edit (0:12) and on what kind of clip, Play all, and
+  Restore… (it asks first, saying how many later changes it undoes) or Undo this turn. A click never changes what the
+  editor shows; only Play does, and the row then says "Viewing ✕". A filter (the icon by the cut) shows named
+  versions, agent turns, your changes, or only the versions that touched the clip selected on the timeline, with that
+  clip's credits.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and

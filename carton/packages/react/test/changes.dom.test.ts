@@ -346,3 +346,81 @@ test(name("History: Compare with your edit opens the Changes view in place of th
   assert.equal(ui.viewing(), null, "none of it changed the stage");
   await m.unmount();
 });
+
+// ---------------------------------------------------------------- History's card, on Play and the Changes view
+// (Workstream 3's VersionCard: its Play all, ▶, Pause, See them and Before go to this workstream's player and view)
+const card = (root: HTMLElement) => $(root, ".carton-card-version")!;
+const historyRow = (root: HTMLElement, text: string) => $$(root, ".carton-version").find((r) => r.textContent?.includes(text)) ?? null;
+async function openCardOf(root: HTMLElement, text: string) {
+  await click(historyRow(root, text));
+  await waitFor(() => !!card(root) && !!byText(card(root), "button", "Play all") && !(byText(card(root), "button", "Play all") as HTMLButtonElement).disabled, "the card's Play all");
+}
+
+test(name("History's card: Play all on an older version views it; its Before (held, or B) shows how it was before it; Pause, then Play all goes on"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const { director } = story(ui);
+  const hs = host();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, play: hs.play })));
+  await flush();
+  await openCardOf(m.container, "Add captions to the interview");
+  await click(byText(card(m.container), "button", "Play all"));
+  await waitFor(() => ui.viewing()?.ref === director.ref, "the Director's version viewed");
+  assert.ok($(card(m.container), ".carton-change[data-playing]"), "its row lit");
+  assert.ok(hs.prefetched.includes(director.base!), "before it, loaded ahead");
+  const before = $(card(m.container), ".carton-before")!;
+  assert.ok(before, "Before while it plays");
+  await hold(before, 600, false);
+  assert.equal(ui.viewing()?.kind, "before");
+  assert.equal(ui.viewing()?.ref, director.base, "how it was before the Director's turn");
+  assert.match(ui.viewing()?.label ?? "", /^Before Director's “Add captions/);
+  const real = Date.now;
+  Date.now = () => real() + 600;
+  await act(() => void before.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true, pointerId: 1 })));
+  Date.now = real;
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref, "let go: back on the version playing");
+  // B held in History, stopped there
+  let reached = 0;
+  m.container.parentElement!.addEventListener("keydown", () => reached++);
+  const list = $(m.container, ".carton-history-list")!;
+  await act(() => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true })));
+  await flush();
+  assert.equal(ui.viewing()?.kind, "before");
+  Date.now = () => real() + 600;
+  await act(() => void list.dispatchEvent(new KeyboardEvent("keyup", { key: "b", bubbles: true, cancelable: true })));
+  Date.now = real;
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref);
+  assert.equal(reached, 0, "the editor's own B never saw it");
+  // the frames go on the editor's playhead; Pause, then Play all goes on from there, not from the top
+  await hs.fc.frames(5);
+  const at = hs.frames.at(-1)!;
+  await click(byText(card(m.container), "button", "Pause"));
+  assert.ok(byText(card(m.container), "button", "Play all"));
+  await click(byText(card(m.container), "button", "Play all"));
+  await hs.fc.frames(1);
+  assert.ok(hs.frames.at(-1)! >= at, "went on where it paused");
+  await m.unmount();
+});
+
+test(name("History's card: See them opens the Changes view in place of the list, ← History comes back to the card's row; Shift+↓ compares two"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, play: host().play })));
+  await flush();
+  await openCardOf(m.container, "Add captions to the interview");
+  await click(byText(card(m.container), "button", "See them"));
+  const view = $(m.container, ".carton-changes-view")!;
+  assert.ok(view, "the Changes view");
+  assert.match($(view, ".carton-changes-sub")!.textContent!, /^From Director's “Add captions to the interview” to your edit now$/);
+  assert.equal($(m.container, ".carton-history-list"), null, "in place of the list");
+  await click(byText(view, "button", "History"));
+  assert.ok($(m.container, ".carton-history-list"));
+  assert.match($(m.container, ".carton-version[data-active]")?.textContent ?? "", /Add captions to the interview/, "back on its row");
+  // Shift+↓ from the active row: the changes between it and the next version
+  const list = $(m.container, ".carton-history-list")!;
+  await act(() => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true, cancelable: true })));
+  await flush();
+  assert.match($(m.container, ".carton-changes-title")?.textContent ?? "", /^(Changes from|No changes from) /);
+  assert.equal(ui.viewing(), null, "none of it changed the stage");
+  await m.unmount();
+});

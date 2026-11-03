@@ -449,11 +449,16 @@ export interface Version {
    * folded in, by name; how many changes it took, of how many), the rest of a partial fold, a restore (the version it
    * restored: `of`, a node id, when known), or an undo or a redo of a restore or a fold.
    */
-  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore"; cut?: string; of?: NodeId; taken?: number; total?: number };
+  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore"; cut?: string; of?: NodeId; taken?: number; total?: number; rest?: boolean };
   /** A restore: the version it restored (a node id), when the restore recorded it. */
   restoreOf?: NodeId;
-  /** An undo (`log({summary: true, rows: true})`): the changes it undid (an agent turn's, for "Took out Director's …"). */
+  /** An undo: the changes it undid (an agent turn's, for "Took out Director's …"; which of a turn's are undone already). */
   undoes?: ChangeId[];
+  /**
+   * Where the version's changes start, when it isn't the seq before it: a fold-some's (before its fold), a compacted
+   * version's (before the run it holds). Its changes are `<cut>@<startsAt>` to it.
+   */
+  startsAt?: number;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";

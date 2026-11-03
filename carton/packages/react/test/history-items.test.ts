@@ -255,6 +255,7 @@ test("baseline P3-12b: the rest of a partial fold is a fold row; its undo an und
   assert.equal(rest.kind, "fold");
   assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
   assert.equal((await rows(ui))[0]!.kind, "undo");
+  assert.equal((await rows(ui))[0]!.summary, "Undid the fold of the rest of “Alt”");
   ui.dispose();
 });
 

@@ -174,7 +174,8 @@ test(name("a teammate's cut (PLAN 6.2): its versions in History offer no Restore
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: ui.cuts()[0]!.head })));
   const menuItems = async () => {
-    await click($(m.container, ".carton-version-more"));
+    // an older version's menu (the newest is your edit itself: History offers no Restore of it, Workstream 3)
+    await click($$(m.container, ".carton-version-more")[1]!);
     const items = $$(m.container, "[role=menuitem]").map((e) => e.textContent ?? "");
     await key(document.activeElement, "Escape");
     return items;

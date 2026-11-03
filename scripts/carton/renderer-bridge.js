@@ -33,6 +33,9 @@ module.exports = String.raw`window.__carton = (() => {
   // A preview shorter than the playhead moved it to its end: where it was, where the preview put it, and the store
   // subscription that drops it at the person's first move (preview()). "seeking": the bridge's own seek under way.
   let held = null, seeking = false;
+  // Each preview() call's turn: one whose checkout answers after a newer call (back to your edit meanwhile) shows
+  // nothing (review of the UX data #3: the older version came back over "Back to my edit")
+  let previewGen = 0;
   const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
   // Play and Before (docs/carton-ux PLAN 4.3): holding Before flips the editor between two states at the same moment,
   // so neither flip may wait on the worker.
@@ -323,6 +326,7 @@ module.exports = String.raw`window.__carton = (() => {
     // preview, unless the person moved it meanwhile (held: that place and where the preview put it, until a move).
     async preview(projectId, ref) {
       if (!on || !store) return;
+      const gen = ++previewGen;
       if (ref != null) await store.flush();
       // Back to current, at once: the editor's own timeline as the preview found it (see own, above)
       const st0 = store.state(), mine = ref == null ? own : null;
@@ -332,6 +336,7 @@ module.exports = String.raw`window.__carton = (() => {
       if (ref != null && !st0.cartonPreview && st0.projectId === projectId)
         own = { project: projectId, base: st0.cartonBase ?? null, timeline: { tracks: st0.tracks, timelineItems: st0.timelineItems, aspectRatio: st0.aspectRatio, duration: duration(st0.timelineItems ?? []) } };
       const doc = await (ref == null ? call("head", { projectId, ref }) : checkout(projectId, ref));
+      if (gen !== previewGen) return;
       const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
       // a place held for another project (the editor opened another one meanwhile) isn't this one's
       if (held && held.project !== projectId) release();
@@ -407,6 +412,20 @@ module.exports = String.raw`window.__carton = (() => {
     // The editor's clip selection, as its store holds it (a new array when it changes): Esc clears it in the editor
     // without saying so, and the preview banner's Esc leaves that Esc to it (regress 2026-11-02 #4).
     selection: () => (on && store ? store.state().selectedTimelineItemIds ?? null : null),
+    // History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected on the timeline, by id and by
+    // the name the change sentences give it (its own name or text, else its media's file name), or null when none or
+    // several are selected. Read when the filter menu opens, never on a timer.
+    selectedClip() {
+      if (!on || !store) return null;
+      const st = store.state(), ids = st.selectedTimelineItemIds;
+      if (!Array.isArray(ids) || ids.length !== 1) return null;
+      const it = (st.timelineItems ?? []).find((i) => i.id === ids[0]);
+      if (!it) return null;
+      const text = (v) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 60) : null);
+      const media = it.mediaItemId ? store.projects?.getState().projects.find((p) => p.id === st.projectId)?.media?.find((m) => m.id === it.mediaItemId) : null;
+      const name = text(it.name) ?? text(it.textContent) ?? text(it.captionText) ?? text(media?.data?.fileName) ?? text(media?.data?.content) ?? text(it.type) ?? "clip";
+      return { id: it.id, name };
+    },
     // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
     // editor doesn't show it (another project, or the clip isn't in this version).
     reveal(itemId) {

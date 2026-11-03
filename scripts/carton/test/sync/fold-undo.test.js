@@ -121,7 +121,7 @@ test("P2-1: fold-some, then the rest: Ctrl+Z ① undoes the rest, ② the whole 
 
     const z1 = await step("undo");
     assert.equal(z1.status, "confirmed", JSON.stringify(z1));
-    assert.equal(await panel.newest(rest + 1), "Undid the fold of “Alt”");
+    assert.equal(await panel.newest(rest + 1), "Undid the fold of the rest of “Alt”");
     assert.deepEqual(await shape(), [1, 150], "Ctrl+Z ①: the split undone, the partial fold kept");
     const z2 = await step("undo");
     assert.equal(z2.status, "confirmed", JSON.stringify(z2));
@@ -138,7 +138,7 @@ test("P2-1: fold-some, then the rest: Ctrl+Z ① undoes the rest, ② the whole 
     assert.deepEqual(await shape(), [1, 150], "redo ①: the partial fold");
     const r2 = await step("redo");
     assert.equal(r2.status, "confirmed");
-    assert.equal(await panel.newest(rest + 4), "Redid the fold of “Alt”");
+    assert.equal(await panel.newest(rest + 4), "Redid the fold of the rest of “Alt”");
     assert.deepEqual(await shape(), [2, 150], "redo ②: the rest");
     assert.deepEqual(r2.can, { undo: true, redo: false }, "nothing left to redo");
   } finally {
@@ -156,7 +156,7 @@ test("P2-1: the same with `cb undo` from a terminal while the app runs", t, asyn
     const { main, rest } = await foldSomeThenRest(pc, id, panel);
     const shape = async () => { const d = await S.projectOf(pc, id); return [videos(d), font(d)]; };
     const u1 = must(pc.cb(["undo", "Demo", "--cut", main.id]), "cb undo ①");
-    assert.equal(await panel.newest(rest + 1), "Undid the fold of “Alt”");
+    assert.equal(await panel.newest(rest + 1), "Undid the fold of the rest of “Alt”");
     assert.deepEqual(await shape(), [1, 150], "cb undo ①: the rest: " + u1.out);
     const u2 = must(pc.cb(["undo", "Demo", "--cut", main.id]), "cb undo ②");
     assert.equal(await panel.newest(rest + 2), "Undid the fold of “Alt”");

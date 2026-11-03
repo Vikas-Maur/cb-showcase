@@ -144,6 +144,23 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Back to my
   assert.equal(t.c.stale, false);
 });
 
+// Review of the UX data #3: a version asked for, then "Back to my edit" before its checkout answered: the editor stays
+// on your edit; the late answer shows nothing.
+test("a preview whose checkout answers after a newer one (back to your edit) shows nothing", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let answer;
+  t.answers.checkout = () => new Promise((r) => (answer = r));
+  const slow = t.c.preview("p1", "main@3");
+  await new Promise((r) => setImmediate(r));
+  await t.c.preview("p1", null);
+  assert.equal(t.state().cartonPreview, null);
+  answer(t.project(150, [{ id: "old", endTime: 2 }]));
+  await slow;
+  assert.equal(t.state().cartonPreview, null, "still your edit");
+  assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
+});
+
 // Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
 // "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Back to my edit puts it
 // back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is
@@ -410,6 +427,28 @@ test("the editor's clip selection, as its store holds it, for the preview's Esc;
   const off = load({ enabled: false });
   await off.c.ready;
   assert.equal(off.c.selection(), null);
+});
+
+// History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected, by the name the change sentences
+// give it: its own name or text, else its media's file name; nothing for none, several, or Carton off.
+test("the one clip selected, by its name, for History's Only “clip”; nothing for none or several, or with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.store.projects.getState = () => ({ projects: [{ id: "p1", media: [{ id: "m1", data: { fileName: "interview-b.mp4" } }] }] });
+  t.store.raw({ timelineItems: [{ id: "a", name: "  Interview   B " }, { id: "b", mediaItemId: "m1" }, { id: "c", textContent: "Summer launch" }, { id: "d", type: "video" }] });
+  assert.equal(t.c.selectedClip(), null, "nothing selected");
+  for (const [id, name] of [["a", "Interview B"], ["b", "interview-b.mp4"], ["c", "Summer launch"], ["d", "video"]]) {
+    t.store.raw({ selectedTimelineItemIds: [id] });
+    assert.deepEqual(t.c.selectedClip(), { id, name });
+  }
+  t.store.raw({ selectedTimelineItemIds: ["a", "b"] });
+  assert.equal(t.c.selectedClip(), null, "several selected");
+  t.store.raw({ selectedTimelineItemIds: ["gone"] });
+  assert.equal(t.c.selectedClip(), null, "a clip this version doesn't have");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.store.raw({ selectedTimelineItemIds: ["a"], timelineItems: [{ id: "a", name: "A" }] });
+  assert.equal(off.c.selectedClip(), null);
 });
 
 test("the title bar's icons: the page hears carton:command and reports the panel open to main; nothing with Carton off", async () => {

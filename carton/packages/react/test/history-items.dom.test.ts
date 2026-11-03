@@ -41,37 +41,42 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 600 })));
   await waitFor(() => /Moved “A”, renamed “B” and “C”/.test(m.container.textContent ?? ""), "the summary");
-  const row = $$(m.container, "[role=option]")[0]!;
-  const more = $(row, ".carton-version-expand")!;
-  assert.ok(more, "an expand control on the row");
-  assert.equal(more.getAttribute("aria-expanded"), "false");
-  assert.equal($(row, ".carton-version-details"), null, "collapsed: no list");
-  await click(more);
-  await flush();
-  const open1 = $$(m.container, "[role=option]")[0]!;
-  assert.equal($(open1, ".carton-version-expand")!.getAttribute("aria-expanded"), "true");
-  const items = $$(open1, ".carton-version-details li").map((li) => li.textContent);
+  // the newest version's row, under Today's header: a click opens its card (docs/carton-ux DESIGN §5.2)
+  const row = $$(m.container, ".carton-version")[0]!;
+  assert.equal(row.getAttribute("aria-expanded"), "false");
+  assert.equal($(m.container, ".carton-card-version"), null, "closed: no card");
+  await click(row);
+  await waitFor(() => $$(m.container, ".carton-card-version .carton-change").length > 0, "the card's changes");
+  assert.equal($$(m.container, ".carton-version")[0]!.getAttribute("aria-expanded"), "true");
+  // every change, one change row each, from the engine (PLAN 0.1: changesIn), in timeline order, with its place
+  const items = $$(m.container, ".carton-card-version .carton-change-words").map((li) => li.textContent);
   assert.deepEqual(items, ["Moved “A” 2 s later (now starts at 0:02)", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
-  // the rows below make room: the next row starts below the expanded one
+  assert.deepEqual($$(m.container, ".carton-card-version .carton-change-time").map((t) => t.textContent), ["0:02", "0:05", "0:10"]);
+  // the rows below make room: the next row starts below the card
   const vrows = $$(m.container, ".carton-vrow");
   const y = (el: HTMLElement) => Number(/translateY\((\d+)px\)/.exec(el.style.transform)?.[1]);
-  assert.ok(y(vrows[1]!) >= y(vrows[0]!) + Number.parseFloat(vrows[0]!.style.height), "the next row is below the expanded one");
-  assert.ok(Number.parseFloat(vrows[0]!.style.height) > 52, "the expanded row is taller");
-  await click($(open1, ".carton-version-expand"));
+  const at = vrows.findIndex((r) => r.querySelector(".carton-card-version"));
+  assert.ok(at >= 0 && y(vrows[at + 1]!) >= y(vrows[at]!) + Number.parseFloat(vrows[at]!.style.height), "the next row is below the card");
+  assert.ok(Number.parseFloat(vrows[at]!.style.height) > 56, "the opened row is taller");
+  await click($$(m.container, ".carton-version")[0]!);
   await flush();
-  assert.equal($($$(m.container, "[role=option]")[0]!, ".carton-version-details"), null, "collapsed again");
-  // a version of one change has nothing to expand
-  assert.equal($($$(m.container, "[role=option]").at(-1)!, ".carton-version-expand"), null);
+  assert.equal($(m.container, ".carton-card-version"), null, "closed again");
   await m.unmount();
   ui.dispose();
 });
 
 test(name("P1-10: the turns filter reads 'Agent turns'"), async () => {
-  const { ui } = await open();
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "name", "A1")] });
+  await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 400 })));
-  assert.ok(byText(m.container, "[role=radio]", "Agent turns"));
-  await click(byText(m.container, "[role=radio]", "Agent turns"));
-  assert.match(m.container.textContent ?? "", /No agent turns yet/);
+  await waitFor(() => !!$(m.container, ".carton-filter-btn"), "the filter, in the cut bar");
+  // the filter menu (docs/carton-ux DESIGN §6.1), then the empty list's words for what would appear there
+  await click($(m.container, ".carton-filter-btn"));
+  assert.ok(byText(m.container, "[role=menuitemradio]", "Agent turns"));
+  await click(byText(m.container, "[role=menuitemradio]", "Agent turns"));
+  assert.match(m.container.textContent ?? "", /No agent turns yet\. When an agent edits, its turn shows here\./);
+  assert.equal($(m.container, ".carton-filter-chip-text")?.textContent, "Agent turns", "the filter shows as a chip");
   await m.unmount();
   ui.dispose();
 });

@@ -575,9 +575,10 @@ export interface CartonUi {
   undoTurnOf(versionId: string): Promise<FoldResult>;
   /**
    * The versions that touched one clip (PLAN 0.8), from the per-version index written at save: History's "Only “clip”"
-   * filter (`{ item }`). Never diffs every version.
+   * filter (`{ item }`). Never diffs every version. `after` (a version id): only the versions newer than it, for a
+   * filter that already holds the rest.
    */
-  clipVersions(itemId: string): Promise<ClipVersions>;
+  clipVersions(itemId: string, opts?: { after?: string }): Promise<ClipVersions>;
   /**
    * "See it": a ref of the cut with one side of a card kept, for openPreview (the side shown now is head itself; the
    * other a held state with that side applied). Null when the card is gone. Optional: a host without it shows no

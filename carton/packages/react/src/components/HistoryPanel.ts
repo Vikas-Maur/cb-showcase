@@ -1,146 +1,261 @@
-// History (§0.1: the list of versions). Newest first, virtualized for 10k+ versions. Named versions and Director
-// turns (shown as checkpoints, like the chat's) stand out, and each row says who and when, down to the subagent.
-// A version still waiting for the server says so: its place is provisional until confirmed (L5).
+// History (§0.1: the list of versions), redesigned (docs/carton-ux DESIGN §6.1, PLAN workstream 3). Newest first,
+// virtualized for 10k+ versions, grouped by day:
+// - the cut bar: the cut (the cuts menu) and a filter (All versions, Named versions, Agent turns, Your changes, and
+//   Only “clip” when one clip is selected), an active filter shown as a removable chip, with the clip's credits on top;
+// - rows of 56 px: who (an avatar, or each agent's own mark), what (an agent's prompt in quotes, a name in bold, or the
+//   sentence of what changed), when (always with am/pm; the newest reads "Now"), then who · how many changes;
+// - a person's run of changes as one row ("You · 6 changes ›"), the history's start as one row at the bottom;
+// - an agent working as a live row on top, with the one line that explains turn holds;
+// - a version's card, inline under its row (VersionCard): what it did, and how far your edit has moved on since.
+// A click or Enter on a row opens its card and never changes what the editor shows: only Play does (DESIGN §4.2).
+// A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
-import { createElement as h, memo, useCallback, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { exactTime, versionLabel, when } from "../format.ts";
-import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useWords } from "../hooks.ts";
-import { Icon, type IconName } from "../icons.ts";
-import type { HistoryFilter, Version } from "../model.ts";
+import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
+import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
+import { Icon } from "../icons.ts";
+import type { Actor, CartonUi, Credits, HistoryFilter, Version, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
-import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, spansDays, type HistoryRow } from "../history-groups.ts";
-import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSeparator, cx, radioKeys, tipIfCut } from "./ui.ts";
+import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
+import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
 import { ChangesView } from "./ChangesView.ts";
-import type { PlayHost } from "./Play.ts";
+import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
+import { CutsMenu } from "./CutsMenu.ts";
+import { VersionCard, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
 
-export const VERSION_ROW_HEIGHT = 52;
-/** About the height of a row's actions menu: with less room than this below a row, it opens above it. */
-const MENU_ROOM = 260;
-/** One line of an expanded version's list of changes (UI audit P1-5), and the space below the list. */
+/** A version's row (DESIGN §6.1: 56 px). */
+export const VERSION_ROW_HEIGHT = 56;
+/** One of an open group's versions, listed under it (32 px, indented). */
+export const CHILD_ROW_HEIGHT = 32;
+/** The live row of an agent working, with its line (two lines at the panel's narrowest). */
+export const WORKING_ROW_HEIGHT = 92;
+/** Kept for hosts that imported it: a line of the old expanded list of changes. */
 export const VERSION_DETAIL_HEIGHT = 18;
-const DETAILS_PAD = 8;
+/** About the height of a row's actions menu: with less room than this below a row, it opens above it. */
+const MENU_ROOM = 300;
+/** The card's height before it has laid out once (it reports its own then). */
+const CARD_ESTIMATE = 220;
+/** The space under an open card, before the next row. */
+const CARD_GAP = 8;
 
 export interface HistoryPanelProps {
-  /** Open a version (Enter or double-click). Default: a read-only preview of it (§9). */
-  onOpen?: (v: Version) => void;
-  /** Ref of the current state. Deprecated: the Changes view finds your edit itself. */
-  currentRef?: string;
   /**
-   * The host's player for Play and Before (DESIGN §5.3): the editor's playhead, loading a version ahead, your edit's
-   * length. Without one, Play still lights the rows and views versions.
+   * The cut bar's left side: the cut and its menu. Default: `<CutsMenu />` (no Fold in); a host passes its own (with
+   * `onFoldIn`), or null for none.
+   */
+  cuts?: ReactNode;
+  /**
+   * Under the cut bar, above the list: what the cut on screen offers (Workstream 6's TeammateCutActions on a teammate's
+   * cut: "Fold into Main cut…", "New cut from it"). A host's element; it renders nothing on your own cuts.
+   */
+  actions?: ReactNode;
+  /**
+   * The clip selected on the timeline, when exactly one is: the filter menu offers "Only “clip”" (PLAN 0.8). Read when
+   * the menu opens, so the list never re-renders for a selection.
+   */
+  selectedClip?: () => { readonly id: string; readonly name: string } | null;
+  /**
+   * Everything between two refs: "See them" and "See the 4" on a card, "Compare with your edit" in a row's menu,
+   * Shift+click or Shift+↑↓ on a second version. Default: the Changes view (Workstream 4) in place of the list; a host
+   * gives its own to show them elsewhere.
+   */
+  onCompare?: (a: string, b: string) => void;
+  /**
+   * Play a card's changes (PLAN 4.2). Default: Play (usePlayChanges) on `play`, the host's player: on the cut's newest
+   * version on your edit, on an older one viewing it first; the card's Before (hold, or B) shows how it was before it.
+   * A host that plays them itself gives `onPlay`, `onPause` and `playing`.
+   */
+  onPlay?: (req: PlayRequest) => void;
+  onPause?: () => void;
+  /** What plays now (the host's player): its row in the open card is lit. */
+  playing?: PlayState | null;
+  /** A change row's click: the editor's playhead there (on your edit). Default: `play.seek`. */
+  onSeek?: (at: number) => void;
+  /**
+   * The host's player for Play and Before (DESIGN §5.3), the card's and the Changes view's: the editor's playhead
+   * (`onFrame`, `seek`), loading a version ahead (`prefetch`), your edit's length.
    */
   play?: PlayHost;
+  /** Ref of the current state. Deprecated: History finds your edit itself. */
+  currentRef?: string;
   className?: string;
   /** Viewport height used before the list can measure itself. */
   initialHeight?: number;
   filter?: HistoryFilter;
 }
 
-const markIcon = (v: Version): IconName =>
-  v.kind === "turn" ? "flag" : v.name ? "bookmark" : v.kind === "fold" ? "fold" : v.kind === "restore" || v.kind === "undo" ? "restore" : "dot";
+type Row = HistoryRow | { readonly kind: "working"; readonly key: "working" };
+type DayHistoryRow = Extract<HistoryRow, { kind: "day" }>;
+
+const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
+/** An agent's prompt, when the version is its turn (as versionLabel reads it). */
+const promptOf = (v: Version) => v.turn?.label || (isAgent(v.author) ? v.name : undefined) || undefined;
+const filterKey = (f: HistoryFilter) => (typeof f === "object" ? `item:${f.item}` : f);
+
+// ------------------------------------------------------------------------------------------------- the rows' parts
+
+/** A row's mark: a person's avatar or an agent's own mark; a named version's bookmark, a fold's or a restore's sign. */
+function RowMark({ v, live }: { v: Version; live?: boolean }) {
+  const named = !!v.name && !promptOf(v);
+  const sign = named ? "bookmarkFill" : v.kind === "fold" ? "foldIn" : v.kind === "restore" ? "restoreArc" : v.kind === "undo" ? "undo" : null;
+  if (sign) return h("span", { className: "carton-version-mark carton-mark-sign", "data-sign": named ? "named" : v.kind, "aria-hidden": true }, h(Icon, { name: sign, size: named ? 11 : 12 }));
+  return h("span", { className: "carton-version-mark", "data-live": live ? "" : undefined, "aria-hidden": true }, h(Avatar, { actor: v.author, size: 20, named: true }));
+}
+
+/** Who did it, and how many changes: "Claude Code · 4 changes", "Named by You · 1 change", "You · 2 of 3 changes". */
+function Meta({ v, count, ui }: { v: Version; count?: number; ui: CartonUi }) {
+  const words = useWords();
+  const named = !!v.name && !promptOf(v);
+  const n = count ?? v.changes;
+  return h(
+    Fragment,
+    null,
+    v.author.kind === "system" ? null : named ? h("span", { className: "carton-actor-name" }, words.namedBy(actorLabel(v.author, ui.actor.bind(ui), words.you))) : h(ActorName, { actor: v.author }),
+    n !== undefined ? h("span", { className: "carton-version-count" }, v.leftOut ? words.changesOf(n, n + v.leftOut) : words.changes(n)) : null,
+  );
+}
 
 interface RowProps {
   v: Version;
+  rowKey: string;
   domId: string;
+  height: number;
   active: boolean;
   /** Its actions menu is open: it looks picked while the menu is, and only then (UI audit P2-2). */
   menuOpen: boolean;
-  naming: "version" | "cut" | null;
-  now: number;
-  onPick: (id: string, e: MouseEvent) => void;
-  onOpen: (id: string) => void;
-  onMenu: (id: string, el: HTMLElement) => void;
+  /** Its card is open. */
+  open: boolean;
+  /** The newest version (and no agent working above it): its time reads "Now". */
+  now: boolean;
+  /** The editor shows this version (DESIGN §4.2): "👁 Viewing ✕" in its time column. */
+  viewing: boolean;
+  /** The version the Compare card compares (until the Changes view replaces it). */
+  compared?: boolean;
+  naming: boolean;
+  /** One of an open group's versions, listed under it. */
+  child?: boolean;
+  /** A person's run of changes (a group row): its versions' total changes, and whether its versions are listed. */
+  group?: boolean;
+  groupCount?: number;
+  groupOpen?: boolean;
+  onPick: (key: string, e: MouseEvent) => void;
+  onMenu: (key: string, el: HTMLElement) => void;
   onName: (id: string, name: string | null) => void;
-  expanded: boolean;
-  onExpand: (id: string) => void;
+  onGroup: (key: string) => void;
+  onBack: () => void;
 }
 
-// memo: a row re-renders only when its own version object, its active state or the minute changes. A new version
-// arriving above it, or a sync status change, does not touch it.
+// memo: a row re-renders only when its own version object or its own state changes. A new version arriving above it,
+// the minute ticking, or a sync status change does not touch it (its time is a clock time, never "4 min ago").
 const VersionRow = memo(function VersionRow(p: RowProps) {
+  const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
   const v = p.v;
-  // A turn without a label (the engine knows none) is titled by what it did.
-  const title = v.name || v.turn?.label || v.summary;
-  // A system row (the cut's start) names no one: no avatar, no name, only its time.
-  const meta = [
-    v.author.kind === "system" ? null : h(Avatar, { key: "a", actor: v.author, size: 14, named: true }),
-    v.author.kind === "system" ? null : h(ActorName, { key: "n", actor: v.author }),
-    v.turn ? h("span", { key: "e", className: "carton-version-edits" }, words.turnEdits(v.turn.edits)) : null,
-    h(HoverMore, { key: "t", as: "time", dateTime: new Date(v.at).toISOString(), short: when(v.at, p.now, locale, words.justNow), more: exactTime(v.at, locale) }),
-    // A version of several changes (a fold, a restore, a save of many edits): its list on expand (UI audit P1-5)
-    v.details?.length
-      ? h(
+  const prompt = promptOf(v);
+  const named = !!v.name && !prompt;
+  const title = prompt ? `“${prompt}”` : named ? v.name! : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
+  const when = p.viewing
+    ? h(
+        "span",
+        { className: "carton-version-when", "data-viewing": "" },
+        h(Icon, { name: "eye", size: 12 }),
+        words.viewingMark,
+        h(
           "button",
           {
-            key: "x",
             type: "button",
-            className: "carton-version-expand",
-            "aria-expanded": p.expanded,
-            "aria-label": p.expanded ? words.hideChanges(v.details.length) : words.showChanges(v.details.length),
+            className: "carton-version-back",
             tabIndex: -1,
+            "aria-label": words.backToMyEditKey,
+            "data-carton-tip": words.backToMyEditKey,
             onClick: (e: MouseEvent) => {
               e.stopPropagation();
-              p.onExpand(v.id);
+              p.onBack();
             },
-            onDoubleClick: (e: MouseEvent) => e.stopPropagation(),
           },
-          h(Icon, { name: p.expanded ? "caretDown" : "caretRight", size: 10 }),
-          words.versionChanges(v.details.length),
-        )
-      : null,
-  ];
+          h(Icon, { name: "x", size: 11 }),
+        ),
+      )
+    : p.now
+      ? h("span", { className: "carton-version-when", "data-now": "" }, words.nowRow)
+      : h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(v.at).toISOString(), short: clockOfDay(v.at, locale), more: exactTime(v.at, locale) });
   return h(
     "div",
     {
       id: p.domId,
       role: "option",
       "aria-selected": p.active,
+      "aria-expanded": p.child ? undefined : p.open,
       className: "carton-version",
+      style: { height: p.height },
       "data-kind": v.kind,
-      "data-named": v.name ? "" : undefined,
+      "data-named": named ? "" : undefined,
+      "data-prompt": prompt ? "" : undefined,
       "data-provisional": v.provisional ? "" : undefined,
       "data-active": p.active ? "" : undefined,
       "data-menu": p.menuOpen ? "" : undefined,
-      "data-expanded": p.expanded && v.details?.length ? "" : undefined,
-      onClick: (e: MouseEvent) => p.onPick(v.id, e),
-      onDoubleClick: () => p.onOpen(v.id),
+      "data-open": p.open ? "" : undefined,
+      "data-now": p.now ? "" : undefined,
+      "data-viewing": p.viewing ? "" : undefined,
+      "data-compared": p.compared ? "" : undefined,
+      "data-group": p.group ? "" : undefined,
+      "data-child": p.child ? "" : undefined,
+      onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
-        p.onMenu(v.id, e.currentTarget as HTMLElement);
+        p.onMenu(p.rowKey, e.currentTarget as HTMLElement);
       },
     },
-    h("span", { className: "carton-version-mark", "aria-hidden": true }, h(Icon, { name: markIcon(v), size: v.kind === "edit" && !v.name ? 12 : 14 })),
-    h(
-      "div",
-      { className: "carton-version-main" },
-      p.naming
-        ? h(InlineName, {
-            initial: p.naming === "version" ? (v.name ?? "") : "",
-            placeholder: p.naming === "version" ? words.nameVersionPlaceholder : words.newCutPlaceholder,
-            label: p.naming === "version" ? words.nameVersion : words.newCutName,
-            saveLabel: p.naming === "version" ? words.save : words.create,
+    p.child ? h("span", { className: "carton-version-mark", "aria-hidden": true }) : h(RowMark, { v }),
+    p.naming
+      ? h(
+          "div",
+          { className: "carton-version-main" },
+          h(InlineName, {
+            initial: v.name ?? "",
+            placeholder: words.nameVersionPlaceholder,
+            label: words.nameVersion,
+            saveLabel: words.save,
             onSave: (name) => p.onName(v.id, name),
             onCancel: () => p.onName(v.id, null),
-          })
-        : h(
-            "div",
-            { className: "carton-version-title" },
-            // cut off at the panel's width: the whole name on hover (P2-16)
-            h("span", { className: "carton-version-text", onMouseEnter: tipIfCut }, title),
-          ),
-      p.naming ? null : h(
-        "div",
-        { className: "carton-version-meta" },
-        ...meta,
-        v.published ? h("span", { className: "carton-badge", "data-tone": "info" }, words.published) : null,
-        v.provisional ? h("span", { className: "carton-badge", "data-tone": "muted", "aria-description": words.provisionalHint }, words.provisional) : null,
-      ),
-      !p.naming && p.expanded && v.details?.length ? h("ul", { className: "carton-version-details" }, ...v.details.map((d, i) => h("li", { key: i, title: d }, d))) : null,
-    ),
-    p.naming
+          }),
+        )
+      : h(
+          Fragment,
+          null,
+          // cut off at the panel's width: the whole text on hover (P2-16)
+          h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, title),
+          when,
+          p.child
+            ? null
+            : h(
+                "span",
+                { className: "carton-version-meta" },
+                h(Meta, { v, count: p.group ? p.groupCount : undefined, ui }),
+                p.group
+                  ? h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "carton-version-group",
+                        tabIndex: -1,
+                        "aria-expanded": !!p.groupOpen,
+                        "aria-label": p.groupOpen ? words.groupClose(p.groupCount ?? 0) : words.groupOpen(p.groupCount ?? 0),
+                        onClick: (e: MouseEvent) => {
+                          e.stopPropagation();
+                          p.onGroup(p.rowKey);
+                        },
+                      },
+                      h(Icon, { name: p.groupOpen ? "caretDown" : "caretRight", size: 10 }),
+                    )
+                  : null,
+                v.provisional ? h("span", { className: "carton-pill", "data-tone": "wait", "aria-description": words.notSentHint }, h(Icon, { name: "cloudSlash", size: 11 }), words.notSentYet) : null,
+                v.published ? h("span", { className: "carton-pill", "data-tone": "info" }, words.published) : null,
+              ),
+        ),
+    p.naming || p.child
       ? null
       : h(
           "button",
@@ -151,7 +266,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
             tabIndex: -1,
             onClick: (e: MouseEvent) => {
               e.stopPropagation();
-              p.onMenu(v.id, e.currentTarget as HTMLElement);
+              p.onMenu(p.rowKey, e.currentTarget as HTMLElement);
             },
           },
           h(Icon, { name: "dots" }),
@@ -159,9 +274,42 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   );
 });
 
-type DayHistoryRow = Extract<HistoryRow, { kind: "day" }>;
+/** History's start, one row (PLAN 0.4): "Project created · Oct 28", or "History starts here" for an imported project. No menu, no card. */
+const StartRow = memo(function StartRow({ row, domId, active }: { row: Extract<HistoryRow, { kind: "start" }>; domId: string; active: boolean }) {
+  const words = useWords();
+  const locale = useLocale();
+  return h(
+    "div",
+    { id: domId, role: "option", "aria-selected": active, className: "carton-version carton-start", style: { height: VERSION_ROW_HEIGHT }, "data-start": "", "data-active": active ? "" : undefined },
+    h("span", { className: "carton-version-mark carton-mark-sign", "data-sign": "start", "aria-hidden": true }, h(Icon, { name: "flag", size: 12 })),
+    h("span", { className: "carton-version-title" }, words.startOn(row.imported ? words.historyStartsHere : words.projectCreated, shortDate(row.at, locale))),
+    h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(row.at).toISOString(), short: clockOfDay(row.at, locale), more: exactTime(row.at, locale) }),
+  );
+});
 
-/** A day's header (UI audit P2-17): which day, how many versions, open or folded (its named versions and turns stay). */
+/** An agent working (PLAN 0.7, DESIGN §6.1): its prompt, "Working", how far it got, and the line on turn holds. */
+const WorkingRow = memo(function WorkingRow({ w, domId, active }: { w: Working; domId: string; active: boolean }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const who = actorLabel(w.actor, ui.actor.bind(ui), words.you);
+  return h(
+    "div",
+    { id: domId, role: "option", "aria-selected": active, className: "carton-version carton-working", style: { height: WORKING_ROW_HEIGHT }, "data-working": "", "data-active": active ? "" : undefined, "aria-label": `${words.agentWorking(who)}: ${w.label}` },
+    h("span", { className: "carton-version-mark", "data-live": "", "aria-hidden": true }, h(Avatar, { actor: w.actor, size: 20, named: true })),
+    h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, `“${w.label}”`),
+    h("span", { className: "carton-version-when", "data-now": "" }, words.nowRow),
+    h(
+      "span",
+      { className: "carton-version-meta" },
+      h("span", { className: "carton-pill", "data-tone": "live" }, words.working),
+      h(ActorName, { actor: w.actor }),
+      h("span", { className: "carton-version-count" }, words.changesSoFar(w.edits)),
+    ),
+    h("span", { className: "carton-working-line" }, words.keepEditing(who)),
+  );
+});
+
+/** A day's header (UI audit P2-17): which day; folded, how many versions (its named versions stay). */
 const DayRow = memo(function DayRow({ row, label, domId, active, onToggle }: { row: DayHistoryRow; label: string; domId: string; active: boolean; onToggle: (day: number) => void }) {
   const words = useWords();
   return h(
@@ -178,283 +326,768 @@ const DayRow = memo(function DayRow({ row, label, domId, active, onToggle }: { r
     },
     h("span", { className: "carton-day-mark", "aria-hidden": true }, h(Icon, { name: row.collapsed ? "caretRight" : "caretDown", size: 12 })),
     h("span", { className: "carton-day-label" }, label),
-    h("span", { className: "carton-day-count" }, row.collapsed && row.hidden ? words.dayFolded(row.count, row.count - row.hidden) : words.dayCount(row.count)),
+    // an open day shows no count; a folded one says what it holds (DESIGN §6.1)
+    row.collapsed && row.count ? h("span", { className: "carton-day-count" }, words.dayVersions(row.count, row.count - row.hidden)) : null,
   );
 });
+
+/** The clip History is filtered to: its credits, oldest first ("Added by You on Oct 30 · trimmed by Director · …"). */
+function ClipCredits({ item, name }: { item: string; name: string }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const locale = useLocale();
+  const now = useNow();
+  const credits = useAsync<Credits>(() => ui.credits(item), [ui, item]);
+  if (credits.status !== "ready" || !credits.value.lines.length) return null;
+  const lines = [...credits.value.lines].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const today = dayNumber(now);
+  const text = lines
+    .map((l, i) => {
+      const who = actorLabel(l.author, ui.actor.bind(ui), words.you);
+      const verb = words.creditVerb[l.what] ?? `${l.what.toLowerCase()} changed`;
+      const when = l.at === undefined ? "" : dayNumber(l.at) === today ? words.creditAt(clockOfDay(l.at, locale)) : dayNumber(l.at) === today - 1 ? clock(l.at, { now, locale }) : words.creditOn(shortDate(l.at, locale));
+      const s = words.creditPart(verb, who, when);
+      return i === 0 ? s[0]!.toUpperCase() + s.slice(1) : s;
+    })
+    .join(" · ");
+  return h(
+    "div",
+    { className: "carton-clip-credits" },
+    h("div", { className: "carton-clip-credits-name" }, `“${credits.value.clip || name}”`),
+    h("p", null, text),
+  );
+}
+
+// ------------------------------------------------------------------------------------------------- the panel
 
 export function HistoryPanel(props: HistoryPanelProps) {
   const ui = useCartonUi();
   const words = useWords();
+  const locale = useLocale();
   const now = useNow();
   const listId = useId();
-  const [filter, setFilter] = useState<HistoryFilter>(props.filter ?? "all");
+  const [filter, setFilterState] = useState<HistoryFilter>(props.filter ?? "all");
+  // the clip a "Only “clip”" filter shows, by name (the selection is read when the menu opens)
+  const [clipName, setClipName] = useState<string>("");
   const count = useHistoryCount(filter);
+  const allCount = useHistoryCount("all");
   // The list re-renders when History changes at all (a provisional version confirmed); rows skip by identity.
   const revision = useTopic("history", (u) => u.history().revision());
-  const [activeId, setActiveId] = useState<string | null>(null);
-  // A row being named in place: naming the version itself, or naming a new cut made from it.
-  const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number; bottom?: number } | null>(null);
-  // The Changes view in place of the list (DESIGN §5.4): between a version and your edit (Compare with your edit), or
-  // two versions (Shift+click, Shift+↑↓). The list keeps its filter and its row; ← History comes back to it.
-  const [changes, setChanges] = useState<{ from: Version; to: Version | null } | null>(null);
-  // Why the last restore or new cut didn't happen, in the words the app gave.
-  const [failed, setFailed] = useState<string | null>(null);
-  const act = useCallback((p: Promise<unknown>) => {
-    setFailed(null);
-    p.catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed));
-  }, [words]);
-  // The one version whose list of changes is open (UI audit P1-5)
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const onExpand = useCallback((id: string) => setExpandedId((x) => (x === id ? null : id)), []);
-  const panel = useRef<HTMLElement>(null);
   const hist = ui.history();
-  // All versions, grouped by day (P2-17): headers with counts, a folded day keeping its named versions and turns. Days
-  // the person opened or folded stay so; with a long History every day but the newest starts folded.
+  const status = hist.status?.(filter) ?? { loading: false };
+  const working = useWorking();
+  const cutId = useCurrentCutId();
+  // A teammate's cut on screen (PLAN 6.2, Workstream 6): it stays as its owner left it, so its versions offer no
+  // Restore and no Undo this turn (fold it in or copy it as a new cut instead: TeammateCutActions above the list). Read
+  // so a head moving doesn't re-render the list.
+  const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
+  const viewing = useViewing();
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [cardMode, setCardMode] = useState<CardMode>(null);
+  const [cardHeight, setCardHeight] = useState(CARD_ESTIMATE);
+  // a menu's "Play its changes", or Space on a row: play as soon as its card has read what changed
+  const [autoPlay, setAutoPlay] = useState<string | null>(null);
+  const [naming, setNaming] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ key: string; x: number; y: number; bottom?: number } | null>(null);
+  const [filterMenu, setFilterMenu] = useState<{ clip: { id: string; name: string } | null } | null>(null);
+  // The Changes view in place of the list (DESIGN §5.4): from a version to your edit (null) or to another version
+  const [changesView, setChangesView] = useState<{ from: Version; to: Version | null } | null>(null);
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [folds, setFolds] = useState<ReadonlyMap<number, boolean>>(() => new Map());
-  const grouped = filter === "all" && typeof hist.all === "function";
-  const rows = useMemo(() => {
-    if (!grouped) return null;
-    const all = hist.all!();
-    if (!spansDays(all)) return null;
-    const long = all.length > COLLAPSE_OVER;
-    return groupHistory(all, (day, newest) => folds.get(day) ?? (long && !newest));
-  }, [grouped, hist, revision, folds]);
-  const rowIndex = useMemo(() => (rows ? new Map(rows.map((r, i) => [r.key, i])) : null), [rows]);
-  const versionAtRow = useCallback((i: number) => {
-    if (!rows) return hist.at(filter, i);
-    const r = rows[i];
-    return r?.kind === "version" ? hist.at("all", r.index) : undefined;
-  }, [rows, hist, filter]);
-  const toggleDay = useCallback((day: number) => {
-    const r = rows?.find((x) => x.kind === "day" && x.day === day) as DayHistoryRow | undefined;
-    setFolds((m) => new Map(m).set(day, !(r?.collapsed ?? false)));
-  }, [rows]);
-  const today = dayNumber(now);
   const [scrolled, setScrolled] = useState(false);
-  const active = activeId ? (rowIndex ? (rowIndex.get(activeId) ?? -1) : hist.indexOf(filter, activeId)) : -1;
+  // the row at the top of the view: its day's header stays pinned there (DESIGN §6.1, sticky day headers)
+  const [topRow, setTopRow] = useState(0);
+  // Why the last action from a menu didn't happen, in the words the app gave.
+  const [failed, setFailed] = useState<string | null>(null);
+  const panel = useRef<HTMLElement>(null);
+  const filterBtn = useRef<HTMLButtonElement>(null);
+  const scrollTop = useRef<(() => void) | null>(null);
+
+  // ---------------------------------------------------------------- rows: days, groups, the start, an agent working
+  const fkey = filterKey(filter);
+  const versions = useMemo(() => {
+    if (typeof hist.all !== "function") return null;
+    const all = hist.all();
+    if (filter === "all") return all;
+    // the filter's versions, in History's order, without describing any (indexOf is a lookup, at() would ask for a summary)
+    return all.filter((v) => hist.indexOf(filter, v.id) >= 0);
+    // `count` and `status.loading` too: a clip's index arrives after the filter is picked (remote.ts asks the worker),
+    // with no new version, so History's revision doesn't move
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hist, revision, fkey, count, status.loading]);
+  const grouped = useMemo(() => {
+    if (!versions) return null;
+    const long = versions.length > COLLAPSE_OVER;
+    return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k) });
+    // `revision` too: a source's all() is one array it appends to in place (remote.ts, mock.ts)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [versions, revision, folds, openGroups]);
+  // the live row of an agent working on this cut, on top (in Today), in the lists that show turns
+  const live = working && (!working.cutId || !cutId || working.cutId === cutId) && (filter === "all" || filter === "turns") ? working : null;
+  const today = dayNumber(now);
+  const rows = useMemo<Row[] | null>(() => {
+    if (!grouped) return null;
+    if (!live) return grouped;
+    const top = grouped[0];
+    const w = { kind: "working", key: "working" } as const;
+    if (top?.kind === "day" && top.day === today && !top.collapsed) return [top, w, ...grouped.slice(1)];
+    return [{ kind: "day", key: `day:${today}`, day: today, count: 0, collapsed: false, hidden: 0 }, w, ...grouped];
+  }, [grouped, live, today]);
+  const rowIndex = useMemo(() => (rows ? new Map(rows.map((r, i) => [r.key, i])) : null), [rows]);
+  // each row's day header (its index), for the header pinned at the top while that day scrolls by
+  const dayOf = useMemo(() => {
+    if (!rows) return null;
+    const out = new Int32Array(rows.length);
+    let d = -1;
+    for (let i = 0; i < rows.length; i++) out[i] = rows[i]!.kind === "day" ? (d = i) : d;
+    return out;
+  }, [rows]);
+  const newestId = useMemo(() => hist.at("all", 0)?.id ?? null, [hist, revision]);
+  // Only the start rows: History has nothing of the person's yet (the empty state)
+  const onlyStart = !!rows && rows.every((r) => r.kind === "day" || r.kind === "start");
 
   const find = useCallback((id: string) => {
     const hs = ui.history();
     const i = hs.indexOf("all", id);
     return i >= 0 ? hs.at("all", i) : undefined;
   }, [ui]);
-
-  // What the stage says it shows (P2-7, PLAN 0.9): the version's one label ("Your edit from 12:41 pm", "Director's
-  // “Add captions…”", "“Sent to client”"), never a change's summary ("You're looking at Changed 'W5' font size…").
-  const locale = useLocale();
-  const previewLabel = useCallback((v: Version) => versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true }), [ui, locale]);
-  const open = useCallback(
-    (id: string) => {
-      const v = find(id);
-      // A version still waiting to sync has no state to show yet (L5); an empty one has none at all.
-      if (!v || v.provisional || v.empty) return;
-      if (props.onOpen) props.onOpen(v);
-      else ui.openPreview(v.ref, previewLabel(v));
+  /** The version a row stands for (a group: its newest), by the row's key. */
+  const rowOf = useCallback((key: string | null) => (key && rows && rowIndex ? rows[rowIndex.get(key) ?? -1] : undefined), [rows, rowIndex]);
+  const versionOfRow = useCallback(
+    (r: Row | undefined): Version | undefined => {
+      if (!r) return undefined;
+      if (r.kind === "version" || r.kind === "group") return rows ? hist.at(filter, r.index) : undefined;
+      return undefined;
     },
-    [find, props.onOpen, ui, previewLabel],
+    [rows, hist, filter],
   );
+  const versionAt = useCallback((i: number) => (rows ? versionOfRow(rows[i]) : hist.at(filter, i)), [rows, versionOfRow, hist, filter]);
+  const keyAt = useCallback((i: number) => (rows ? (rows[i]?.key ?? String(i)) : (hist.at(filter, i)?.id ?? String(i))), [rows, hist, filter]);
 
-  const activeRef = useRef(activeId);
-  activeRef.current = activeId;
-  // Shift+click on a second version: the Changes view between the two. A plain click picks the row.
-  const onPick = useCallback(
-    (id: string, e: MouseEvent) => {
-      const was = activeRef.current;
-      if (e.shiftKey && was && was !== id) {
-        const a = find(was), b = find(id);
-        if (a && b && !a.provisional && !b.provisional) return setChanges({ from: a, to: b });
+  const toggleDay = useCallback((day: number) => {
+    const r = rows?.find((x) => x.kind === "day" && x.day === day) as DayHistoryRow | undefined;
+    setFolds((m) => new Map(m).set(day, !(r?.collapsed ?? false)));
+  }, [rows]);
+  const toggleGroup = useCallback((key: string) => {
+    setOpenGroups((s) => {
+      const n = new Set(s);
+      if (!n.delete(key)) n.add(key);
+      return n;
+    });
+  }, []);
+
+  // ---------------------------------------------------------------- actions
+  const setFilter = useCallback((f: HistoryFilter, name = "") => {
+    setFilterState(f);
+    setClipName(name);
+    setOpenKey(null);
+    setCardMode(null);
+    setMenu(null);
+    setActiveKey(null);
+  }, []);
+  const toList = useCallback(() => {
+    requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>(".carton-history-list")?.focus({ preventScroll: true }));
+  }, []);
+  const openCard = useCallback((key: string, mode: CardMode = null) => {
+    setActiveKey(key);
+    setOpenKey(key);
+    setCardMode(mode);
+    setFailed(null);
+  }, []);
+  const closeCard = useCallback(() => {
+    setOpenKey(null);
+    setCardMode(null);
+    setAutoPlay(null);
+  }, []);
+
+  // ---------------------------------------------------------------- Play and Before (docs/carton-ux PLAN 4.2–4.3)
+  // A card's Play all and ▶ go to Play (usePlayChanges) on the host's player, unless the host plays them itself
+  // (`onPlay`): on the cut's newest version it plays on your edit, nothing viewed; on an older one it views it first.
+  // Before shows how it was before the card's changes (a run of changes: before its oldest) at the same moment. The card
+  // lights the row playing (`playing`); Play all again on the version paused in goes on from there.
+  const onSeek = props.onSeek ?? props.play?.seek;
+  const [playReq, setPlayReq] = useState<{ req: PlayRequest; base?: string; n: number } | null>(null);
+  const pv = playReq?.req.version;
+  const yourLength = playReq?.req.newest ? props.play?.length?.() : undefined;
+  const beforeRef = playReq?.base ?? pv?.base;
+  const cardPlay = usePlayChanges({
+    changes: playReq?.req.changes ?? null,
+    newer: !pv || playReq!.req.newest ? null : { kind: "version", versionId: pv.id, ref: pv.ref },
+    older: pv && beforeRef && !pv.empty ? { kind: "before", versionId: pv.id, ref: beforeRef } : null,
+    ...(yourLength && yourLength > 0 ? { length: yourLength } : {}),
+    ...(props.play ? { host: props.play } : {}),
+  });
+  const cardPlayRef = useRef(cardPlay);
+  cardPlayRef.current = cardPlay;
+  const playReqRef = useRef(playReq);
+  playReqRef.current = playReq;
+  const openKeyRef = useRef(openKey);
+  openKeyRef.current = openKey;
+  const ownPlay = useCallback(
+    (req: PlayRequest) => {
+      const was = playReqRef.current, cp = cardPlayRef.current;
+      if (was && was.req.version.id === req.version.id && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
+      // a person's run of changes (a group row): Before is before its oldest version
+      const r = rowOf(openKeyRef.current);
+      const oldest = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : undefined;
+      setPlayReq((p) => ({ req, ...(oldest?.base ? { base: oldest.base } : {}), n: (p?.n ?? 0) + 1 }));
+    },
+    [rowOf, find],
+  );
+  // a request plays once its rows are the player's (the render that set it)
+  useEffect(() => {
+    if (!playReq) return;
+    const { req } = playReq;
+    if (req.only) cardPlayRef.current.playRow(req.changes.indexOf(req.only));
+    else cardPlayRef.current.playAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playReq?.n]);
+  // the card closed: its play is over
+  useEffect(() => {
+    if (openKey) return;
+    cardPlayRef.current.stop();
+    setPlayReq(null);
+  }, [openKey]);
+  let litKey: string | null = null;
+  for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
+  const playOn = !!playReq && (cardPlay.status === "playing" || cardPlay.status === "loading");
+  const ownPlaying = useMemo<PlayState | null>(() => (playOn && pv ? { versionId: pv.id, key: litKey } : null), [playOn, pv, litKey]);
+  const play = props.onPlay ?? ownPlay;
+  const pause = props.onPlay ? props.onPause : cardPlay.toggle;
+  const playing = props.onPlay ? (props.playing ?? null) : ownPlaying;
+  const onPlay = useCallback((req: PlayRequest) => {
+    setAutoPlay(null);
+    play(req);
+  }, [play]);
+  // the card's Before, while a play is on (BeforeButton shows itself then)
+  const beforeBtn = props.onPlay ? null : h(BeforeButton, { play: cardPlay });
+  // B held while History has focus is Before (DESIGN §7), stopped here: the editor's own B never sees it
+  const onBeforeKey = (e: KeyboardEvent<HTMLElement>, up: boolean) => {
+    if ((e.key !== "b" && e.key !== "B") || e.ctrlKey || e.metaKey || e.altKey || !cardPlay.before.available) return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (up) cardPlay.before.release();
+    else if (!e.repeat) cardPlay.before.press();
+  };
+  const sectionRef = useCallback((el: HTMLElement | null) => {
+    (panel as { current: HTMLElement | null }).current = el;
+    cardPlayRef.current.rootRef(el);
+  }, []);
+
+  // ---------------------------------------------------------------- the Changes view
+  const versionByRef = useCallback((ref: string) => {
+    const all = ui.history().all?.();
+    if (all) for (let k = all.length - 1; k >= 0; k--) if (all[k]!.ref === ref) return all[k];
+    return undefined;
+  }, [ui]);
+  const openChanges = useCallback(
+    (a: string, b: string) => {
+      const from = versionByRef(a);
+      if (!from) return;
+      const head = ui.cuts().find((c) => c.current)?.head;
+      cardPlayRef.current.stop();
+      setMenu(null);
+      setChangesView({ from, to: b === head ? null : (versionByRef(b) ?? null) });
+    },
+    [ui, versionByRef],
+  );
+  const compare = props.onCompare ?? openChanges;
+
+  // The rows' handlers are one function each for the panel's life (memoized rows skip a new version: U6); what they
+  // read as it is now comes through this ref.
+  const live_ = useRef({ onCompare: compare, activeKey, versionOfRow, rowOf });
+  live_.current = { onCompare: compare, activeKey, versionOfRow, rowOf };
+  const onPick = useCallback((key: string, e: MouseEvent) => {
+    const { onCompare, activeKey: from, versionOfRow: vOf, rowOf: rOf } = live_.current;
+    // Shift+click a second version: the changes between the two (the Changes view, Workstream 4)
+    if (e.shiftKey && onCompare && from && from !== key) {
+      const a = vOf(rOf(from)), b = vOf(rOf(key));
+      if (a && b) {
+        const [older, newer] = a.at <= b.at ? [a, b] : [b, a];
+        onCompare(older.ref, newer.ref);
+        return;
       }
-      setActiveId(id);
-    },
-    [find],
-  );
+    }
+    setActiveKey(key);
+    // a click opens the row's card (or closes it); it never changes what the editor shows (DESIGN §4.2)
+    setOpenKey((k) => (k === key ? null : key));
+    setCardMode(null);
+    setFailed(null);
+  }, []);
   // The menu opens below its row, or above it when there isn't room below (the last rows: P2-3). Opening it doesn't
   // make its row the active one: the row looks picked while its menu is open, and stops when it closes (P2-2).
-  const onMenu = useCallback((id: string, el: HTMLElement) => {
+  const onMenu = useCallback((key: string, el: HTMLElement) => {
     const box = panel.current?.getBoundingClientRect();
     const r = el.getBoundingClientRect();
     setFailed(null);
     const below = box ? r.bottom - box.top + 4 : 0;
     const up = !!box && box.height - below < MENU_ROOM && r.top - box.top > box.height - below;
-    setMenu({ id, x: box ? r.right - box.left : 0, y: below, ...(up && box ? { bottom: box.bottom - r.top + 4 } : {}) });
+    setMenu({ key, x: box ? r.right - box.left : 0, y: below, ...(up && box ? { bottom: box.bottom - r.top + 4 } : {}) });
   }, []);
-  // Back to the list after a menu closed with Esc, or the Changes view closed: never to <body> (P2-1).
-  const toList = useCallback(() => {
-    requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>(".carton-history-list")?.focus({ preventScroll: true }));
-  }, []);
-  const namingRef = useRef(naming);
-  namingRef.current = naming;
   const onName = useCallback(
     (id: string, name: string | null) => {
-      const mode = namingRef.current?.mode;
       setNaming(null);
-      if (!name) return;
-      if (mode === "cut") {
-        const v = find(id);
-        if (v) act(ui.newCut(name, v.ref));
-      } else void ui.nameVersion(id, name);
+      toList();
+      if (name) void ui.nameVersion(id, name).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed));
     },
-    [ui, find, act],
+    [ui, toList, words],
   );
+  const back = useCallback(() => void ui.view(null).catch(() => {}), [ui]);
 
-  // Keyboard: the context-menu key on the active row opens its actions, anchored to the row.
+  // Keyboard (DESIGN §7): Enter / → open a row's card, a day or a group, ← closes it; Space plays (or pauses) the
+  // version's changes; F2 names it; Esc closes the card first (then the host's: stop viewing, close the panel).
+  const onKey = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>, i: number): boolean => {
+      const r = rows ? rows[i] : undefined;
+      const key = i >= 0 ? keyAt(i) : null;
+      if (e.key === "Escape") {
+        if (!openKey) return false;
+        closeCard();
+        return true;
+      }
+      if (i < 0 || !key) return false;
+      // Shift+↑↓: the Changes view between this version and the one above or below it (DESIGN §7)
+      if (e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const a = versionAt(i), step = e.key === "ArrowDown" ? 1 : -1, n = rows ? rows.length : count;
+        let b: Version | undefined;
+        for (let j = i + step; j >= 0 && j < n && !(b = versionAt(j)); j += step);
+        if (a && b && !a.provisional && !b.provisional) {
+          const [older, newer] = a.at <= b.at ? [a, b] : [b, a];
+          compare(older.ref, newer.ref);
+        }
+        return true;
+      }
+      if (e.key === "ArrowRight") {
+        if (r?.kind === "day") {
+          if (r.collapsed) toggleDay(r.day);
+        } else if (r?.kind === "group" && !r.open) toggleGroup(r.key);
+        else if (r?.kind !== "start" && r?.kind !== "working") openCard(key);
+        return true;
+      }
+      if (e.key === "ArrowLeft") {
+        if (openKey === key) closeCard();
+        else if (r?.kind === "group" && r.open) toggleGroup(r.key);
+        else if (r?.kind === "day" && !r.collapsed) toggleDay(r.day);
+        else if (r?.kind === "version" && r.child) {
+          // from one of a group's versions, back to its group
+          for (let k = i - 1; k >= 0; k--) if (rows![k]!.kind === "group") return setActiveKey(rows![k]!.key), true;
+        }
+        return true;
+      }
+      if (e.key === " " || e.key === "Spacebar") {
+        const v = versionAt(i);
+        if (!v || r?.kind === "start" || r?.kind === "working") return false;
+        if (playing && playing.versionId === v.id) pause?.();
+        else {
+          openCard(key);
+          setAutoPlay(key);
+        }
+        return true;
+      }
+      if (e.key === "F2") {
+        const v = versionAt(i);
+        if (!v || v.provisional || r?.kind === "start" || r?.kind === "working") return false;
+        setNaming(v.id);
+        return true;
+      }
+      return false;
+    },
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare],
+  );
+  const onActivate = useCallback(
+    (i: number) => {
+      const r = rows?.[i];
+      if (r?.kind === "day") return toggleDay(r.day);
+      if (r?.kind === "start" || r?.kind === "working") return;
+      const key = keyAt(i);
+      setOpenKey((k) => (k === key ? null : key));
+      setCardMode(null);
+    },
+    [rows, toggleDay, keyAt],
+  );
+  // The context-menu key on the active row opens its actions, anchored to the row.
   const onKeyMenu = useCallback(
     (i: number) => {
-      const v = versionAtRow(i);
-      if (!v) return;
-      const rowId = `${listId}-${v.id}`;
-      const row = [...(panel.current?.querySelectorAll<HTMLElement>("[role=option]") ?? [])].find((el) => el.id === rowId);
-      if (row) onMenu(v.id, row.querySelector<HTMLElement>(".carton-version-more") ?? row);
+      const r = rows?.[i];
+      if (r && r.kind !== "version" && r.kind !== "group") return;
+      const key = keyAt(i);
+      const row = [...(panel.current?.querySelectorAll<HTMLElement>("[role=option]") ?? [])].find((el) => el.id === `${listId}-${key}`);
+      if (row) onMenu(key, row.querySelector<HTMLElement>(".carton-version-more") ?? row);
     },
-    [versionAtRow, listId, onMenu],
+    [rows, keyAt, listId, onMenu],
   );
 
-  const expandedV = expandedId ? find(expandedId) : undefined;
-  // its row in the list shown: in a History grouped by day, the day headers count as rows too (P2-17)
-  const expandedAt = expandedV?.details?.length ? (rowIndex ? (rowIndex.get(expandedV.id) ?? -1) : hist.indexOf(filter, expandedV.id)) : -1;
-  const expanded = expandedAt >= 0 ? { index: expandedAt, extra: expandedV!.details!.length * VERSION_DETAIL_HEIGHT + DETAILS_PAD } : null;
-  const menuVersion = menu ? find(menu.id) : undefined;
-  const waiting = !!menuVersion?.provisional;
-  // A teammate's cut on screen (UX redesign PLAN 6.2): it stays as its owner left it, so its versions offer no Restore
-  // (fold it in or copy it as a new cut instead, above the list). Read so a head moving doesn't re-render the list.
-  const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
-  const filters = useMemo(() => (["all", "named", "turns"] as const).map((f) => ({ f, label: words.historyFilters[f] })), [words]);
-  const empty = filter === "named" ? words.historyEmptyNamed : filter === "turns" ? words.historyEmptyTurns : words.historyEmpty;
+  // ---------------------------------------------------------------- what the list shows
+  const active = activeKey ? (rowIndex ? (rowIndex.get(activeKey) ?? -1) : hist.indexOf(filter, activeKey)) : -1;
+  // (the open card's row as it is now: a run of changes that grew since keeps its card in this very render)
+  const openNow = openKey && rowIndex && !rowIndex.has(openKey) ? rowsFollow(rows, openKey) : openKey;
+  const openAt = openNow ? (rowIndex ? (rowIndex.get(openNow) ?? -1) : hist.indexOf(filter, openNow)) : -1;
+  // A person's run of changes grows at its newer end as they edit, and its row's key is its newest version's: its open
+  // card, its listed versions and the keyboard's row follow it there (a version that joins a run follows it too). A
+  // card whose row went otherwise (a filter, a day folded) closes.
+  const follow = useCallback((key: string | null): string | null => (!key || !rows || !rowIndex || rowIndex.has(key) ? key : rowsFollow(rows, key)), [rows, rowIndex]);
+  useEffect(() => {
+    if (!rows || !rowIndex) return;
+    if (openKey && !rowIndex.has(openKey)) {
+      const k = follow(openKey);
+      if (k) setOpenKey(k);
+      else closeCard();
+    }
+    if (activeKey && !rowIndex.has(activeKey)) {
+      const k = follow(activeKey);
+      if (k) setActiveKey(k);
+    }
+    // (a group hidden by a folded day or a filter is closed: review #1, a key kept that no row has looped renders)
+    if ([...openGroups].some((k) => !rowIndex.has(k))) {
+      const next = new Set<string>();
+      for (const k of openGroups) {
+        const f = follow(k);
+        if (f) next.add(f);
+      }
+      setOpenGroups((s) => (s.size === next.size && [...next].every((k) => s.has(k)) ? s : next));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
+  useEffect(() => {
+    if (openKey && openAt < 0 && !rows) closeCard();
+  }, [openKey, openAt, rows, closeCard]);
+  const expanded = openAt >= 0 ? { index: openAt, extra: cardHeight + CARD_GAP } : null;
+  const heightOf = useCallback(
+    (i: number) => {
+      const r = rows?.[i];
+      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT;
+    },
+    [rows],
+  );
+  const viewedId = viewing && (viewing.kind === "version" || viewing.kind === "before") ? (viewing.versionId ?? null) : null;
 
-  // Shift+↑↓ on the list: the Changes view between the row and the one above or below it (DESIGN §7).
-  const onShiftArrow = (e: KeyboardEvent<HTMLElement>) => {
-    if (!e.shiftKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (!(e.target as HTMLElement).classList?.contains("carton-history-list") || active < 0) return;
-    const step = e.key === "ArrowDown" ? 1 : -1;
-    let j = active + step, b: Version | undefined;
-    for (; j >= 0 && j < (rows ? rows.length : count) && !(b = versionAtRow(j)); j += step);
-    const a = versionAtRow(active);
-    e.preventDefault();
-    e.stopPropagation();
-    if (a && b && !a.provisional && !b.provisional) setChanges({ from: a, to: b });
-  };
-  const closeChanges = useCallback(() => {
-    setChanges((c) => {
-      if (c) setActiveId(c.from.id);
-      return null;
+  const renderRow = (i: number): ReactNode => {
+    const r = rows?.[i];
+    const key = keyAt(i);
+    const domId = `${listId}-${key}`;
+    if (r?.kind === "day") return h(DayRow, { row: r, label: dayLabel(r.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId, active: key === activeKey, onToggle: toggleDay });
+    if (r?.kind === "start") return h(StartRow, { row: r, domId, active: key === activeKey });
+    if (r?.kind === "working") return live ? h(WorkingRow, { w: live, domId, active: key === activeKey }) : null;
+    const v = versionAt(i);
+    if (!v) return null;
+    const group = r?.kind === "group" ? r : null;
+    const child = r?.kind === "version" && !!r.child;
+    const isOpen = key === openNow;
+    const row = h(VersionRow, {
+      v,
+      rowKey: key,
+      domId,
+      height: child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT,
+      active: key === activeKey,
+      menuOpen: key === menu?.key,
+      open: isOpen,
+      now: v.id === newestId && !live && !child,
+      viewing: !!viewedId && (v.id === viewedId || (!!group && group.ids.includes(viewedId))),
+      naming: naming === v.id,
+      child,
+      group: !!group,
+      groupCount: group?.count,
+      groupOpen: group?.open,
+      onPick,
+      onMenu,
+      onName,
+      onGroup: toggleGroup,
+      onBack: back,
     });
-    toList();
-  }, [toList]);
-
-  if (changes)
+    // the same shape open or closed (the row, then its card or nothing), so opening the card keeps the row's own DOM
+    if (!isOpen) return h(Fragment, null, row, null);
+    const versionsOf = group ? group.ids.map((id) => find(id)).filter((x): x is Version => !!x) : undefined;
     return h(
-      "section",
-      { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-changes": "" },
-      h(ChangesView, { from: changes.from, to: changes.to, onBack: closeChanges, noRestore: theirCut, ...(props.play ? { host: props.play } : {}) }),
+      Fragment,
+      null,
+      row,
+      h(CardHost, {
+        key: `card:${key}`,
+        id: `${domId}-card`,
+        version: v,
+        group: versionsOf,
+        newest: v.id === newestId,
+        readOnly: theirCut,
+        mode: cardMode,
+        onMode: setCardMode,
+        // "See them", "See the 4", a long list: the Changes view (Workstream 4), or the host's own
+        onCompare: compare,
+        onPlay,
+        onPause: pause,
+        playing,
+        before: beforeBtn,
+        autoPlay: autoPlay === key,
+        onSeek,
+        onMenu: (el: HTMLElement) => onMenu(key, el),
+        onClose: () => {
+          closeCard();
+          toList();
+        },
+        onHeight: setCardHeight,
+      }),
     );
+  };
 
-  return h(
-    "section",
-    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-menu-open": menu ? "" : undefined, "data-scrolled": scrolled ? "" : undefined, onKeyDownCapture: onShiftArrow },
-    h(
-      "header",
-      { className: "carton-panel-head" },
-      h("h2", { className: "carton-panel-title" }, words.history),
-      h(
-        "div",
-        { className: "carton-segmented", role: "radiogroup", "aria-label": words.history, onKeyDown: radioKeys },
-        ...filters.map(({ f, label }) =>
-          h(
-            "button",
-            {
-              key: f,
-              type: "button",
-              role: "radio",
-              "aria-checked": filter === f,
-              tabIndex: filter === f ? 0 : -1,
-              className: "carton-segment",
-              onClick: () => {
-                setFilter(f);
-                setMenu(null);
-              },
-            },
-            label,
-          ),
-        ),
-      ),
-    ),
-    failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
-    count === 0
-      ? h("p", { className: "carton-empty" }, empty)
-      : h(VirtualList, {
-          key: typeof filter === "object" ? `item:${filter.item}` : filter,
-          className: "carton-history-list",
-          label: words.history,
-          count: rows ? rows.length : count,
-          rowHeight: VERSION_ROW_HEIGHT,
-          ...(rows ? { heightOf: (i: number) => (rows[i]?.kind === "day" ? DAY_ROW_HEIGHT : VERSION_ROW_HEIGHT), layoutKey: rows } : {}),
-          onScrolledChange: setScrolled,
-          initialHeight: props.initialHeight,
-          newestFirst: true,
-          expanded,
-          active,
-          activeId: (i: number) => `${listId}-${rows ? (rows[i]?.key ?? i) : (hist.at(filter, i)?.id ?? i)}`,
-          onActiveChange: (i: number) => setActiveId(rows ? (rows[i]?.key ?? null) : (hist.at(filter, i)?.id ?? null)),
-          onMenu: onKeyMenu,
-          onActivate: (i: number) => {
-            const r = rows?.[i];
-            if (r?.kind === "day") return toggleDay(r.day);
-            const v = versionAtRow(i);
-            if (v) open(v.id);
-          },
-          rowKey: (i: number) => (rows ? (rows[i]?.key ?? String(i)) : (hist.at(filter, i)?.id ?? String(i))),
-          renderRow: (i: number) => {
-            const r = rows?.[i];
-            if (r?.kind === "day")
-              return h(DayRow, { row: r, label: dayLabel(r.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId: `${listId}-${r.key}`, active: r.key === activeId, onToggle: toggleDay });
-            const v = versionAtRow(i);
-            if (!v) return null;
-            return h(VersionRow, {
-              v,
-              domId: `${listId}-${v.id}`,
-              active: v.id === activeId,
-              menuOpen: v.id === menu?.id,
-              naming: naming?.id === v.id ? naming.mode : null,
-              // Rows only need minute precision; passing the shared minute keeps memo effective.
-              now,
-              onPick,
-              onOpen: open,
-              onMenu,
-              onName,
-              expanded: v.id === expandedId,
-              onExpand,
-            });
-          },
-        }),
+  // ---------------------------------------------------------------- the row menu (DESIGN §6.1, PLAN 3.5)
+  const menuRow = menu ? rowOf(menu.key) : undefined;
+  const menuVersion = menu ? (rows ? versionOfRow(menuRow) : find(menu.key)) : undefined;
+  const waiting = !!menuVersion?.provisional;
+  const closeMenu = () => setMenu(null);
+  const head = () => ui.cuts().find((c) => c.current)?.head;
+  const rowMenu =
     menu && menuVersion
       ? h(
           MenuList,
           {
-            label: words.versionActions(menuVersion.name ?? menuVersion.summary),
+            label: words.versionActions(versionLabel(menuVersion, { locale, actor: ui.actor.bind(ui) })),
             onClose: (why?: string) => {
-              const id = menu.id;
+              const key = menu.key;
               setMenu(null);
               // Esc (the keyboard): back to the list on the row whose menu it was, so ↓ goes on from there, not from
               // the top (regress 2026-11-02 P3-5). A click elsewhere leaves no row picked (P2-2).
               if (why === "escape") {
-                setActiveId(id);
+                setActiveKey(key);
                 toList();
               }
             },
             className: "carton-history-menu",
-            style: menu.bottom != null ? { position: "absolute", bottom: menu.bottom, left: Math.max(8, menu.x - 220) } : { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
+            style: menu.bottom != null ? { position: "absolute", bottom: menu.bottom, left: Math.max(8, menu.x - 260) } : { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 260) },
           },
-          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5). An empty one
-          // (the start of an imported project's history) has nothing to preview, restore or make a cut from: it says so.
-          menuVersion.empty ? null : h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
-          h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setChanges({ from: menuVersion, to: null })) }, words.compareWithYourEdit),
-          h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
-          menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
-          menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
-          theirCut ? null : h(MenuSeparator, null),
-          theirCut ? null : h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
+          // A version still waiting to be sent can't be played, compared, named or restored yet (L5). An empty one
+          // (the start of an imported project's history) has nothing to play, restore or make a cut from.
+          menuVersion.empty
+            ? null
+            : h(MenuItem, { icon: "play", disabled: waiting, title: waiting ? words.availableOnceSent : undefined, onSelect: () => (closeMenu(), openCard(menu.key), setAutoPlay(menu.key)) }, words.playItsChanges),
+          h(MenuItem, {
+            icon: "layers",
+            disabled: waiting,
+            onSelect: () => {
+              closeMenu();
+              const b = head() ?? props.currentRef;
+              if (b) compare(menuVersion.ref, b);
+            },
+          }, words.compareWithYourEdit),
+          h(MenuSeparator, null),
+          h(MenuItem, { icon: "bookmark", disabled: waiting, title: waiting ? words.availableOnceSent : undefined, onSelect: () => (closeMenu(), setNaming(menuVersion.id)) }, menuVersion.name && !promptOf(menuVersion) ? words.renameEllipsis : words.nameVersion),
+          menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (closeMenu(), openCard(menu.key, "newCut")) }, words.newCutFromVersion),
+          menuVersion.foldRest
+            ? h(MenuItem, { icon: "foldIn", onSelect: () => (closeMenu(), void ui.foldRest(menuVersion.id).then((r) => !r.ok && setFailed(r.error ?? words.failed), (e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed))) }, words.foldRest)
+            : null,
+          // the newest version is your edit: nothing to go back to. An empty one says why it can't be restored. A
+          // teammate's cut has no Restore at all (Workstream 6).
+          theirCut || (menuVersion.id === newestId && !menuVersion.empty) ? null : h(MenuSeparator, null),
+          theirCut || (menuVersion.id === newestId && !menuVersion.empty)
+            ? null
+            : h(MenuItem, { icon: "restoreArc", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.availableOnceSent : words.restoreMenuHint, onSelect: () => (closeMenu(), openCard(menu.key, "restore")) }, words.restoreEllipsis),
+        )
+      : null;
+
+  // ---------------------------------------------------------------- the filter (DESIGN §6.1, PLAN 3.2)
+  const openFilter = () => {
+    if (filterMenu) return setFilterMenu(null);
+    const clip = props.selectedClip?.() ?? null;
+    setFilterMenu({ clip: clip ? { id: clip.id, name: clip.name } : null });
+  };
+  const pickFilter = (f: HistoryFilter, name = "") => {
+    setFilterMenu(null);
+    setFilter(f, name);
+    filterBtn.current?.focus({ preventScroll: true });
+  };
+  const filterLabel = typeof filter === "object" ? words.onlyClip(clipName || words.version) : filter === "all" ? "" : words.filters[filter];
+  const filterChoices = ["all", "named", "turns", "mine"] as const;
+  const filterPop = filterMenu
+    ? h(
+        MenuList,
+        {
+          label: words.show,
+          className: "carton-filter-menu",
+          ignore: () => [filterBtn.current],
+          onClose: (why) => {
+            setFilterMenu(null);
+            if (why === "escape") filterBtn.current?.focus({ preventScroll: true });
+          },
+        },
+        h(MenuLabel, null, words.show),
+        ...filterChoices.map((f) => h(MenuItem, { key: f, checked: filter === f, onSelect: () => pickFilter(f) }, words.filters[f])),
+        filterMenu.clip
+          ? [
+              h(MenuSeparator, { key: "s" }),
+              h(MenuItem, { key: "clip", checked: typeof filter === "object" && filter.item === filterMenu.clip.id, title: words.onlyClipHint, onSelect: () => pickFilter({ item: filterMenu.clip!.id }, filterMenu.clip!.name) }, words.onlyClip(filterMenu.clip.name)),
+            ]
+          : null,
+      )
+    : null;
+
+  // ---------------------------------------------------------------- the panel
+  // one element for the panel's life: History re-rendering for a new version never re-renders the cuts menu (U6)
+  const ownCuts = useMemo(() => h(CutsMenu, null), []);
+  const cut = props.cuts === undefined ? ownCuts : props.cuts;
+  const stickyAt = scrolled && rows && dayOf && topRow < rows.length ? dayOf[topRow]! : -1;
+  const sticky = stickyAt >= 0 && stickyAt < topRow ? (rows![stickyAt] as DayHistoryRow) : null;
+  const nothing = allCount === 0 || (filter === "all" && onlyStart);
+  const empty = !status.loading && (count === 0 || (filter === "all" && onlyStart));
+  const loading = status.loading && count === 0;
+  // ← History from the Changes view: back on the row it came from (a run of changes: its group's row)
+  const closeChanges = () => {
+    const from = changesView?.from;
+    setChangesView(null);
+    if (from) setActiveKey(follow(from.id) ?? from.id);
+    toList();
+  };
+  if (changesView)
+    return h(
+      "section",
+      { ref: sectionRef, className: cx("carton-history", props.className), "aria-label": words.history, "data-changes": "" },
+      h(ChangesView, { from: changesView.from, to: changesView.to, onBack: closeChanges, noRestore: theirCut, ...(props.play ? { host: props.play } : {}) }),
+    );
+
+  return h(
+    "section",
+    {
+      ref: sectionRef,
+      className: cx("carton-history", props.className),
+      "aria-label": words.history,
+      "data-menu-open": menu ? "" : undefined,
+      "data-scrolled": scrolled ? "" : undefined,
+      onKeyDown: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, false),
+      onKeyUp: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, true),
+    },
+    h(
+      "header",
+      { className: "carton-panel-head carton-cutbar" },
+      cut,
+      // (the cuts menu grows into the bar itself: its Viewing pill on a teammate's cut sits at the bar's right)
+      cut == null ? h("span", { className: "carton-cutbar-gap" }) : null,
+      nothing && filter === "all"
+        ? null
+        : h(
+            "span",
+            { className: "carton-menu-anchor carton-filter-anchor", "data-align": "end" },
+            h(
+              "button",
+              {
+                ref: filterBtn,
+                type: "button",
+                className: "carton-filter-btn",
+                "aria-label": words.show,
+                "aria-haspopup": "menu",
+                "aria-expanded": !!filterMenu,
+                "data-active": filter !== "all" || filterMenu ? "" : undefined,
+                "data-carton-tip": filterMenu ? undefined : words.show,
+                onClick: openFilter,
+              },
+              h(Icon, { name: "filter", size: 16 }),
+            ),
+            filterPop ? h("div", { className: "carton-menu-pop" }, filterPop) : null,
+          ),
+    ),
+    props.actions ?? null,
+    filter !== "all"
+      ? h(
+          "div",
+          { className: "carton-filter-chips" },
+          h(
+            "span",
+            { className: "carton-filter-chip" },
+            h("span", { className: "carton-filter-chip-text" }, filterLabel),
+            h("button", { type: "button", className: "carton-filter-chip-x", "aria-label": words.removeFilter, "data-carton-tip": words.removeFilter, onClick: () => setFilter("all") }, h(Icon, { name: "x", size: 11 })),
+          ),
+          status.since !== undefined ? h("span", { className: "carton-filter-note" }, words.clipSince(clock(status.since, { now, locale }))) : null,
         )
       : null,
+    typeof filter === "object" ? h(ClipCredits, { key: filter.item, item: filter.item, name: clipName }) : null,
+    failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
+    loading
+      ? h(
+          "div",
+          { className: "carton-history-skeleton", role: "status", "aria-label": words.history },
+          ...[0, 1, 2].map((k) => h("div", { key: k, className: "carton-skeleton-row" }, h("span"), h("span"), h("span"))),
+        )
+      : empty
+        ? filter === "all"
+          ? h(EmptyHistory, { start: rows?.find((r) => r.kind === "start") as Extract<HistoryRow, { kind: "start" }> | undefined })
+          : h("p", { className: "carton-empty" }, typeof filter === "object" ? words.clipEmpty(clipName || words.version) : words.filterEmpty[filter])
+        : h(
+            "div",
+            { className: "carton-history-body" },
+            h(VirtualList, {
+              key: fkey,
+              className: "carton-history-list",
+              label: words.history,
+              count: rows ? rows.length : count,
+              rowHeight: VERSION_ROW_HEIGHT,
+              heightOf,
+              layoutKey: rows,
+              onScrolledChange: setScrolled,
+              initialHeight: props.initialHeight,
+              newestFirst: true,
+              expanded,
+              active,
+              activeId: (i: number) => `${listId}-${keyAt(i)}`,
+              onActiveChange: (i: number) => setActiveKey(keyAt(i)),
+              onMenu: onKeyMenu,
+              onActivate,
+              onKey,
+              scrollTopRef: scrollTop,
+              onFirstVisible: setTopRow,
+              rowKey: keyAt,
+              renderRow,
+            }),
+            // the day scrolled into keeps its header on top (a click folds it, as the header's own does)
+            sticky
+              ? h(
+                  "div",
+                  { className: "carton-day-sticky", "aria-hidden": true },
+                  h(DayRow, { row: sticky, label: dayLabel(sticky.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId: `${listId}-sticky`, active: false, onToggle: toggleDay }),
+                )
+              : null,
+            // "↑ Newest", in a strip of its own under the list while it is scrolled: it covers no row's text
+            scrolled
+              ? h(
+                  "div",
+                  { className: "carton-newest" },
+                  h("button", { type: "button", className: "carton-newest-btn", onClick: () => scrollTop.current?.() }, h(Icon, { name: "arrowUp", size: 12 }), words.newest),
+                )
+              : null,
+          ),
+    rowMenu,
+  );
+}
+
+/** The row a key went to when a person's run of changes grew (a group's key is its newest version's), or null. */
+function rowsFollow(rows: readonly Row[] | null, key: string): string | null {
+  if (!rows) return null;
+  const id = key.startsWith("group:") ? key.slice(6) : key;
+  const g = rows.find((r) => r.kind === "group" && r.ids.includes(id));
+  return g ? g.key : null;
+}
+
+/**
+ * The card under its row, with what it needs from the cut you're on (its head, for "N changes since this"; its name,
+ * for a new cut): read here, so a commit moving the head re-renders the open card, never the list.
+ */
+function CardHost(p: Omit<VersionCardProps, "head" | "cutName">) {
+  const cut = useCurrentCut();
+  return h(VersionCard, { ...p, head: cut?.head, cutName: cut?.name });
+}
+
+/** Nothing of yours yet (DESIGN §6.1): what History is, in one paragraph, and when the cut started. */
+function EmptyHistory({ start }: { start?: Extract<HistoryRow, { kind: "start" }> }) {
+  const words = useWords();
+  const locale = useLocale();
+  const now = useNow();
+  const cut = useCurrentCut();
+  const at = start?.at;
+  const when = at === undefined ? null : dayNumber(at) === dayNumber(now) ? words.todayAt(clockOfDay(at, locale)) : clock(at, { now, locale });
+  return h(
+    "div",
+    { className: "carton-history-empty" },
+    h("span", { className: "carton-history-empty-mark", "aria-hidden": true }, h(Icon, { name: "versions", size: 16 })),
+    h("p", { className: "carton-history-empty-title" }, words.historyEmptyTitle),
+    h("p", { className: "carton-history-empty-body" }, words.historyEmptyBody),
+    when ? h("p", { className: "carton-history-empty-cut" }, words.cutStarted(cut?.name ?? words.mainCut, when)) : null,
   );
 }

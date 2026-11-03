@@ -14,7 +14,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -261,27 +261,20 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const openFold = useCallback((from, into) => setFold({ from: from.id, into: into.id }), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
-  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus on its first item
-  // (MenuList's own focus), from the list. The menu is the cuts button's own (the one with the class
-  // carton-cuts-trigger, CutsMenu's), opened as a click opens it, so the chip's menu and History's are one menu. The
-  // request is the side panel's (CartonSide's), consumed there once the menu opens (review of feat/ux-2-8 #3: kept
-  // here, it outlived History closing, and reopening History opened the menu again). With the Changes view open in
-  // place of the list (its cut bar hidden), it goes back to the list first (its ← History), then the menu opens.
+  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus in it, from the list.
+  // The menu is History's own (in its cut bar), opened through Workstream 6's openCutsMenu (the newest mounted
+  // CutsMenu opens, or the next to mount within 2 s), so the chip's menu and History's are one menu. The request is the
+  // side panel's (CartonSide's), consumed there once the menu opened or that wait ran out (review of feat/ux-2-8 #3:
+  // kept here, it outlived History closing, and reopening History opened the menu again). The Changes view, open in
+  // place of the list and its cut bar, goes back to the list first (its ← History): the cut bar's menu mounts again.
+  const ui = useCartonUi();
   useEffect(() => {
     if (!cutsAsk) return undefined;
-    const open = () => {
-      const t = box.current?.querySelector(".carton-cuts-trigger, .carton-sidebar-cuts [aria-haspopup=menu]");
-      if (t && t.getAttribute("aria-expanded") !== "true") t.click();
-      onCutsAsked?.();
-    };
-    let id = requestAnimationFrame(() => {
-      const back = box.current?.querySelector(".carton-history[data-changes] .carton-changes-nav button");
-      if (!back) return open();
-      back.click();
-      id = requestAnimationFrame(open);
-    });
-    return () => cancelAnimationFrame(id);
-  }, [cutsAsk, onCutsAsked]);
+    box.current?.querySelector(".carton-history[data-changes] .carton-changes-nav button")?.click();
+    let live = true;
+    openCutsMenu(ui, { within: 2000 }).then(() => { if (live) onCutsAsked?.(); });
+    return () => { live = false; };
+  }, [cutsAsk, onCutsAsked, ui]);
   // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: its playhead
   // follows Play's, real frames there, at most 10 seeks a second while it plays, and always the last one.
   const seeker = useMemo(() => {
@@ -297,6 +290,11 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     };
   }, [bridge]);
   useEffect(() => seeker.stop, [seeker]);
+  // History's cut bar holds Workstream 6's cuts menu (docs/carton-ux DESIGN §6.1) and, on a teammate's cut, its actions
+  // under the bar: one element each, so History re-rendering for a new version never re-renders them
+  const cutsMenu = useMemo(() => h(CutsMenu, { onFoldIn: openFold }), [openFold]);
+  const teammateActions = useMemo(() => h(TeammateCutActions, { onFoldIn: openFold }), [openFold]);
+  const selectedClip = useCallback(() => bridge.selectedClip?.() ?? null, [bridge]);
   // What Play needs of the editor (@carton/react's PlayHost): the playhead (followed while playing, set by a click on a
   // change), Before's side checked out ahead so the flip doesn't wait (the bridge keeps it), and your edit's length.
   // Play never selects a clip: Cardboard's own Esc clears a selection first and would swallow the person's Esc.
@@ -307,9 +305,8 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     length: () => bridge.editLength?.(),
   }), [seeker, bridge, projectId]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
-    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: openFold })),
-    h(TeammateCutActions, { onFoldIn: openFold }),
-    h(HistoryPanel, { currentRef: current, play }),
+    // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2)
+    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }
 
