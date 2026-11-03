@@ -235,7 +235,7 @@ test("A crafted .cbproj's .carton/ and Carton view files never survive Open Proj
   await carol.stopWorker();
 
   // cb's copy with Carton off: Cardboard 1.4.0's import, less the planted folders
-  const off = cliOpen(dave, file, { CARDBOARD_CARTON: "" });
+  const off = cliOpen(dave, file, { CARDBOARD_CARTON: "0" });
   assert.equal(off.ok, true, off.error);
   assert.ok(fs.existsSync(path.join(bundleOf(dave), "project.json")));
   assert.ok(!fs.existsSync(path.join(bundleOf(dave), ".carton")), "no .carton/ with Carton off either");
@@ -244,7 +244,7 @@ test("A crafted .cbproj's .carton/ and Carton view files never survive Open Proj
   // The app's Save As with Carton off (the worker's copy of the walk): Dave's own files go into the file, Carton's
   // view files (here as a Carton build elsewhere would have left them) don't.
   plantViews(bundleOf(dave), S.cartonViewFiles("y"));
-  await dave.startWorker({ CARDBOARD_CARTON: "" });
+  await dave.startWorker({ CARDBOARD_CARTON: "0" });
   // the app lists its projects at start; until then the worker's Save As finds none (and answers null)
   assert.ok((await dave.call("projects.list")).some((x) => x.id === id), "Dave's library has the project");
   const daveFile = path.join(dave.home, "d1.cbproj");
@@ -419,12 +419,12 @@ test("A clip whose file this library lost comes back from a newer file of Bob's,
 });
 
 test("Carton off, or a file without Carton's entry: 1.4.0's import and its error", t, async () => {
-  const off = cliOpen(alice, path.join(bob.home, "b2.cbproj"), { CARDBOARD_CARTON: "" });
+  const off = cliOpen(alice, path.join(bob.home, "b2.cbproj"), { CARDBOARD_CARTON: "0" });
   assert.equal(off.ok, false);
   assert.match(off.error, /already exists in (your|this) library/);
   // Bob saves with Carton off: no export entry, and nothing of Carton's in the file.
   const plain = path.join(bob.home, "b4.cbproj");
-  cbOk(bob, ["project", "save-as", "Demo", plain], { CARDBOARD_CARTON: "" });
+  cbOk(bob, ["project", "save-as", "Demo", plain], { CARDBOARD_CARTON: "0" });
   assert.ok(!zip(plain).names.some((n) => n.startsWith(".carton")), JSON.stringify(zip(plain).names));
   const on = cliOpen(alice, plain);
   assert.equal(on.ok, false);
@@ -454,7 +454,7 @@ test("Open Project of a project folder is never scrubbed: on the same machine it
     assert.deepEqual(files(backup), [], "every file is kept");
     assert.deepEqual(history(backup), bobs, "the history came along: every version, with its author");
     // cb's copy with Carton off: nothing of Carton's is touched
-    const off = cliOpen(judy, bundleOf(bob), { CARDBOARD_CARTON: "" }, "copyOpen");
+    const off = cliOpen(judy, bundleOf(bob), { CARDBOARD_CARTON: "0" }, "copyOpen");
     assert.equal(off.ok, true, off.error);
     assert.deepEqual(files(judy), []);
     assert.equal(fs.statSync(path.join(bundleOf(judy), ".carton", "carton.db")).size, fs.statSync(path.join(bundleOf(bob), ".carton", "carton.db")).size, "carton.db as it was");

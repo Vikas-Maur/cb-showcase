@@ -65,7 +65,7 @@ async function cell({ tree, build, mode, writers, trips, round, quiet, tmpdir, c
   const S = require(path.join(tree, "scripts", "carton", "test", "sync", "support.js"));
   const b = builtIn(S.TMP);
   const pc = await S.computer(`c${round}-${mode}-w${writers}-${process.pid}`, b);
-  if (mode === "off") pc.env.CARDBOARD_CARTON = "";
+  if (mode === "off") pc.env.CARDBOARD_CARTON = "0";
   // cb's temp folder (Node's compile cache defaults to <os temp>/node-compile-cache): one per build, kept across cells,
   // as %TEMP% is on the laptop. Never the shared /tmp.
   pc.env.TMPDIR = tmpdir;
@@ -178,7 +178,7 @@ async function pairedCell({ sides, mode, trips, round, quiet, cbEnv = {} }) {
       const S = require(path.join(side.tree, "scripts", "carton", "test", "sync", "support.js"));
       const b = builtIn(S.TMP);
       const pc = await S.computer(`p${round}-${mode}-${process.pid}`, b);
-      if (mode === "off") pc.env.CARDBOARD_CARTON = "";
+      if (mode === "off") pc.env.CARDBOARD_CARTON = "0";
       pc.env.TMPDIR = side.tmpdir;
       const cli = path.join(b.cli, "cardboard.mjs");
       const run = (argv, env = {}) => new Promise((resolve) => {
