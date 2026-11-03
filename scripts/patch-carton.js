@@ -365,6 +365,10 @@ if (mode === "--cli") {
     replace('e().pushTimelineHistory("rippleDeleteAllGaps"),t({timelineItems:i.timelineItems})', 'e().pushTimelineHistory("rippleDeleteAllGaps"),window.__carton.intent({kind:"remap",tracks:[n],gaps:r}),t({timelineItems:i.timelineItems})');
     replace('return e().pushTimelineHistory("removeSilences"),t(c=>({', 'return e().pushTimelineHistory("removeSilences"),r.results.forEach(c=>window.__carton.intent({kind:"remap",tracks:[c.sourceItem.trackId],at:c.sourceItem.endTime,delta:-c.timeSaved,lineage:{from:c.itemId,to:c.newItemIds}})),t(c=>({');
     replace('i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")', 'window.__carton.intent({kind:"split",id:n,at:r,into:[a.firstClip.id,a.secondClip.id]}),i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")');
+    // Carton UX v2 (N0, DESIGN-V2 §2.1): an export that finished is an Exported landmark. Rx is where the editor hands
+    // every telemetry event to main (export_completed: the Export dialog's, with its resolution); the bridge only notes
+    // it (one worker call, not awaited), and Cardboard's own capture runs as before.
+    replace("Rx=(t,e)=>{const n=ree(t,e)??nee(t,e)", 'Rx=(t,e)=>{t==="export_completed"&&window.__carton?.exported?.(e);const n=ree(t,e)??nee(t,e)');
     prepend(require("./carton/renderer-bridge"));
   });
   // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.

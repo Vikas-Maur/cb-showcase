@@ -63,7 +63,7 @@ test("cb restore <version> --clip: brought back, nothing else; not there then sa
     await local.write({ kind: "commit", ops: [set("c0", "endTime", 3), set("c3", "endTime", 19)] }); // @3
     const r = await cb(local, ["restore", "sent", "--clip", "Intro"]);
     assert.equal(r.code, 0, r.err + r.out);
-    assert.match(r.out, /^Brought back “Intro” as it was in “Sent to client” \(today at \d+:\d\d [ap]m\): now 0:00–0:05, was 0:00–0:03\.\nNothing else changed\. The user can undo it with Ctrl\+Z; you can with: cb undo$/);
+    assert.match(r.out, /^Brought back “Intro” as it was in “Sent to client” \(today at \d+:\d\d [ap]m\): now 0:00–0:05, was 0:00–0:03\.\nNothing else changed\. The user can undo it with Ctrl\+Z; you can with: cb undo <project>$/);
     const { doc } = await local.carton.head();
     const items = Object.fromEntries((doc.timelineItems as any[]).map((x) => [x.id, x]));
     assert.equal(items.c0.endTime, 5);
@@ -79,7 +79,7 @@ test("cb restore <version> --clip: brought back, nothing else; not there then sa
     const seq = (await local.carton.head()).ref.seq;
     const no = await cb(local, ["restore", "sent", "--clip", "Drone shot"]);
     assert.equal(no.code, 1);
-    assert.equal(no.out, "“Drone shot” wasn't in “Sent to client” (today at " + no.out.match(/today at ([^)]+)\)/)![1] + "), so bringing that version back means taking it out (0:20–0:24). Nothing changed. To take it out: cb restore sent --clip 'Drone shot' --remove");
+    assert.equal(no.out, "“Drone shot” wasn't in “Sent to client” (today at " + no.out.match(/today at ([^)]+)\)/)![1] + "), so bringing that version back means taking it out (0:20–0:24). Nothing changed. To take it out: cb restore <project> sent --clip 'Drone shot' --remove");
     assert.equal((await local.carton.head()).ref.seq, seq, "nothing written");
     const out = await cb(local, ["restore", "sent", "--clip", "Drone shot", "--remove"]);
     assert.equal(out.code, 0, out.err);

@@ -82,7 +82,7 @@ export async function findCommand(ctx: CbContext, a: Record<string, any>): Promi
   const rows: string[][] = [];
   for (const m of r.matches) rows.push(await matchRow(ctx, m, cuts, now, !!a["all-cuts"]));
   lines.push(...table(rows).split("\n").map((l) => `  ${l}`));
-  if (r.total > r.matches.length) lines.push(`  … ${r.total - r.matches.length} more: cb history --find ${shellWord(text)} --all${a["all-cuts"] ? " --all-cuts" : ""}`);
+  if (r.total > r.matches.length) lines.push(`  … ${r.total - r.matches.length} more: cb history <project> --find ${shellWord(text)} --all${a["all-cuts"] ? " --all-cuts" : ""}`);
   return { json: { cut: { id: cut.id, name: cut.name }, clips: r.clips, matches: r.matches.map((m) => ({ ...m, version: refOf(cuts, m.ref) })), total: r.total, versions: r.versions }, text: lines.join("\n") };
 }
 
@@ -192,7 +192,7 @@ export async function restoreClipCommand(ctx: CbContext, a: Record<string, any>)
   const text = String(a.clip);
   const found = clipsNamed(carton, [then, head.doc], text);
   const ver = await versionWords(carton, ref, now);
-  if (!found.length) throw new UsageError(`No clip named ${quote(text)} in ${ver.words} or in the user's edit now. Nothing changed. See the clips with: cb source print`);
+  if (!found.length) throw new UsageError(`No clip named ${quote(text)} in ${ver.words} or in the user's edit now. Nothing changed. See the clips with: cb source print <project>`);
   if (found.length > 1) {
     const named = found.slice(0, 4).map((c) => `${quote(c.name)}${c.start !== undefined ? ` (${timecode(c.start)})` : ""}`);
     const list = named.length === 2 ? named.join(" and ") : `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
@@ -204,19 +204,19 @@ export async function restoreClipCommand(ctx: CbContext, a: Record<string, any>)
   const was = rec(then), is = rec(head.doc);
   const place = (r: Record<string, unknown> | undefined) => (r && tl ? `${timecode(Number(r[tl.start]))}–${timecode(Number(r[tl.end]))}` : "");
   if (!was && !a.remove) {
-    return { json: { status: "not-in-version", clip }, text: `${quote(clip.name)} wasn't in ${ver.words}, so bringing that version back means taking it out${is ? ` (${place(is)})` : ""}. Nothing changed. To take it out: cb restore ${shellWord(String(a.version))} --clip ${shellWord(text)} --remove`, exitCode: 1 };
+    return { json: { status: "not-in-version", clip }, text: `${quote(clip.name)} wasn't in ${ver.words}, so bringing that version back means taking it out${is ? ` (${place(is)})` : ""}. Nothing changed. To take it out: cb restore <project> ${shellWord(String(a.version))} --clip ${shellWord(text)} --remove`, exitCode: 1 };
   }
   const r: CbResult = await ctx.project.write({ kind: "restoreClip", ref: `${ref.branchId}@${ref.seq}`, record: `${coll}/${clip.id.replace(/~/g, "~0").replace(/\//g, "~1")}`, ...(a.remove ? { remove: true } : {}) }, { actor: ctx.actor });
   if (r.status === "error" || r.status === "rejected") return { json: r, text: resultText(r), exitCode: exitCodeOf(r) };
   const brought = (r as { brought?: { how: string; parts: string[] } }).brought;
   const lines = [...noticeLines(r.notices ?? [])];
   if (brought?.how === "same") lines.push(`${quote(clip.name)} is already as it was in ${ver.words}. Nothing changed.`);
-  else if (brought?.how === "removed") lines.push(`Took out ${quote(clip.name)}: it wasn't in ${ver.words}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo");
+  else if (brought?.how === "removed") lines.push(`Took out ${quote(clip.name)}: it wasn't in ${ver.words}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
   else if (brought?.how === "added") {
     const gone = (await carton.touched({ cut: head.ref.branchId, record: `${coll}/${clip.id}`, after: ref.branchId === head.ref.branchId ? ref.seq : 0 })).at(-1);
     const track = was && tl ? String((then[tl.lanes] as Record<string, unknown>[] | undefined)?.find((t) => t.id === was[tl.lane])?.name ?? "its track") : "its track";
-    lines.push(`Brought back ${quote(clip.name)}${gone ? ` (deleted by ${person(gone.author, ctx.actor)} ${whenAt(gone.at, now)})` : ""} where it was: ${tl && was ? timecode(Number(was[tl.start])) : ""} on ${track}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo");
-  } else lines.push(`Brought back ${quote(clip.name)} as it was in ${ver.words}${was && is ? `: now ${place(was)}, was ${place(is)}` : ""}.`, "Nothing else changed. The user can undo it with Ctrl+Z; you can with: cb undo");
+    lines.push(`Brought back ${quote(clip.name)}${gone ? ` (deleted by ${person(gone.author, ctx.actor)} ${whenAt(gone.at, now)})` : ""} where it was: ${tl && was ? timecode(Number(was[tl.start])) : ""} on ${track}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
+  } else lines.push(`Brought back ${quote(clip.name)} as it was in ${ver.words}${was && is ? `: now ${place(was)}, was ${place(is)}` : ""}.`, "Nothing else changed. The user can undo it with Ctrl+Z; you can with: cb undo <project>");
   if (r.status === "pending") lines.push("It is saved here and goes to the team's server when it's back.");
   if (r.status === "conflicts") lines.push(`A teammate changed ${quote(clip.name)} meanwhile: their value was kept, as a card. See it with: cb conflicts`);
   return { json: { ...r, clip }, text: lines.join("\n"), exitCode: exitCodeOf(r) };
@@ -254,11 +254,12 @@ export async function compareShowCommand(ctx: CbContext, a: Record<string, any>)
   const pair = `${capital(l.words)} with ${rt.words}`;
   const head: string[] = [];
   if (!opened) head.push("No editor window has this project open, so nothing opened. Here is the comparison:", `${pair}: ${count}${n ? ":" : "."}`);
-  else if (!shown || shown.status === "opened") head.push(`Opened in the editor: ${pair}. ${count}${n ? ":" : "."}`);
+  else if (!shown) head.push(`Sent to the editor (it didn't say whether it opened): ${pair}. ${count}${n ? ":" : "."}`);
+  else if (shown.status === "opened") head.push(`Opened in the editor: ${pair}. ${count}${n ? ":" : "."}`);
   else if (shown.status === "offered" && (shown.why === "viewing" || shown.why === "comparing")) head.push(`The user is already looking at another version. They have a note in the editor with Open; nothing was replaced.`, `${pair}: ${count}${n ? ":" : "."}`);
   else if (shown.status === "offered") head.push(`The user is busy ${shown.why === "playing" ? "playing the edit" : "editing"}, so the comparison didn't open. They have a note in the editor with Open.`, `${pair}: ${count}${n ? ":" : "."}`);
   else head.push(`The comparison can't open in the editor: ${shown.why === "not-here" ? "a side hasn't reached this computer yet" : "the editor refused it"}.`, `${pair}: ${count}${n ? ":" : "."}`);
-  const tail = opened && (!shown || shown.status === "opened") ? ["The user can press Esc to go back to their edit."] : [];
+  const tail = opened && shown?.status === "opened" ? ["The user can press Esc to go back to their edit."] : [];
   return { json: { from: l.ref, to: rt.ref, between, count: n, rows: rows.map((x) => ({ at: x.at, text: x.text, kind: x.kind })), opened, shown: shown ?? null }, text: [...head, ...(n ? list : []), ...tail].join("\n") };
 }
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
