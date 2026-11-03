@@ -14,6 +14,7 @@ import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi
 import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
 import stripSource from "../../../../../scripts/carton/strip-buttons.js";
 import { addWs59 } from "./ws59.js";
+import STATES from "capture-states"; // every states/*.js (build.mjs): a feature's own scenarios
 import editorPanelSource from "../../../../../scripts/carton/editor-panel.js";
 
 const params = new URLSearchParams(location.search);
@@ -295,8 +296,11 @@ S["ux-history"] = ux();
 S["ux-working"] = ux((ui) => ui.setWorking("director"));
 S["ux-clip"] = () => {
   const r = ux()();
-  // the clip's credits as the mockup has them (the mock's own are generic)
-  r.ui.credits = async () => ({ clip: "Interview B", lines: [{ what: "Added", author: people.alice, at: at(-4, 15, 55) }, { what: "Timing", author: people.director, at: at(-1, 16, 10) }, { what: "Timing", author: people.alice, at: at(0, 12, 41) }] });
+  // the clip's credits as the mockup has them (the mock's own are generic): each timing line names the change that last
+  // touched it, so its verb says what that did (a trim, a move: design QA G7)
+  const last = (re) => r.ui.history().all().findLast((v) => re.test(v.summary));
+  const line = (v) => (v ? [{ what: "Timing", author: v.author, at: v.at, versionId: v.id }] : []);
+  r.ui.credits = async () => ({ clip: "Interview B", lines: [{ what: "Added", author: people.alice, at: at(-4, 15, 55) }, ...line(last(/^Trimmed “Interview B”/)), ...line(last(/^Moved “Interview B” 2 s later/))] });
   return r;
 };
 S["ux-many"] = () => {
@@ -349,6 +353,13 @@ S["ws1-conflict"] = () => {
 S["ws1-other-cut"] = () => { const r = ux()(); setCuts(r.ui, WS6_CUTS(newest(r.ui), "cut-ig")); return { ...r, panel: null }; };
 
 addWs59(S, { ux, hist, stage, people, createMockComments }); // workstreams 5 and 9: toasts with Undo, Comments
+// A feature's states (states/<feature>.js, README there): each file's addStates(S, ctx) adds its scenarios with these.
+const CTX = { S, ux, hist, stage, ws6, mock, people, leo, leosDirector, codex, SYSTEM, createMockComments, card, CARDS, shared, peer, PEERS, setCuts, cut, CUTS, WS6_CUTS, newest, at, chg, MIN, now0, planWith };
+for (const m of STATES) {
+  // a name taken twice is an error, not a silent replacement
+  const own = new Proxy(S, { set(t, k, v) { if (k in t) throw new Error(`states/${m.file}: scenario "${String(k)}" exists already`); t[k] = v; return true; } });
+  m.addStates?.(own, { ...CTX, S: own });
+}
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 
@@ -458,6 +469,8 @@ function TitleBar({ strip }) {
     h("button", { type: "button", className: __STRIP_BUTTON_CLASS__ + " group gap-1.5 px-[6px] text-white/45 hover:bg-white/[0.06] hover:text-white/80", "aria-label": "Report an issue (stand-in)" }, ico(["M12 8v5", "M12 16h.01", "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"])),
     h("button", { type: "button", className: "cap-export" }, "Export", h("span", null, "Ctrl+E")),
     h("span", { className: "cap-sidebar-toggle" }, ico(["M4 5h16v14H4z", "M15 5v14"])),
+    // ?win=1: Windows' caption buttons (patch-strip.js #3 leaves 138 px for them), for the 960 px title bar (PLAN 2.3)
+    params.get("win") ? h("span", { className: "cap-wincontrols", style: { flex: "none", display: "flex", width: 138, justifyContent: "space-around", color: "#a3a3a3", fontSize: 12 } }, "—", "▢", "✕") : null,
   );
 }
 
