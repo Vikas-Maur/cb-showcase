@@ -322,7 +322,7 @@ test(name("review #1: a group listed open, then hidden (its day folded, a filter
   await m.unmount();
 });
 
-test(name("review #3: a card opened on a version not sent yet reads it again once it is confirmed"), async () => {
+test(name("review #4: a card opened on a version not sent yet reads it again once it is confirmed"), async () => {
   const ui = createMockUi({ versions: 8, now: noon48(), provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
   await flush();
