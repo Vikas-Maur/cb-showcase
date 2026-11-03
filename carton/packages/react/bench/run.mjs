@@ -35,6 +35,7 @@ if (process.argv.includes("--cell")) {
       if (c.kind === "list") return b.list(c.n, c.full);
       if (c.kind === "live") return b.live(c.seconds, c.vps, c.burst);
       if (c.kind === "idle") return b.idle(c.seconds);
+      if (c.kind === "find") return b.find(c.n, c.word);
       return b.play(c.changes, c.seconds);
     }, cell);
     console.log(JSON.stringify({ ...cell, load1: load, uptime: spawnSync("uptime").stdout.toString().trim(), result, errors }));
@@ -47,6 +48,8 @@ if (process.argv.includes("--cell")) {
 // ------------------------------------------------------------ the runner
 const runs = Number(arg("--runs", "3"));
 const only = (arg("--only", "idle,list,live,play") ?? "").split(",");
+// (Carton UX v2 search, N2: not in the default set; --only find)
+if (only.includes("find")) cells.push({ kind: "find", n: 12_000, word: "interview" });
 const cells = [];
 if (only.includes("idle")) cells.push({ kind: "idle", seconds: 5 });
 if (only.includes("list"))
@@ -70,7 +73,9 @@ for (let r = 0; r < runs; r++)
       const j = JSON.parse(line);
       const s = j.result;
       const brief =
-        c.kind === "idle"
+        c.kind === "find"
+          ? `keys p50 ${[...s.typing.keys].sort((x, y) => x - y)[s.typing.keys.length >> 1].toFixed(1)} max ${Math.max(...s.typing.keys).toFixed(1)} ms, list mutations while typing ${s.typing.listMutations}, last key → results ${s.toResults.toFixed(0)} ms (mock find ${s.findMs.toFixed(0)} ms), ${s.rowsInDom} rows, back ${s.toAll.toFixed(0)} ms`
+          : c.kind === "idle"
           ? `empty page: frames p50 ${s.frames.stats.p50.toFixed(1)} p99 ${s.frames.stats.p99.toFixed(1)} ms, ${s.frames.stats.frames} frames in ${s.seconds} s`
           : c.kind === "list"
           ? `mount ${s.mountMs.toFixed(1)} ms, ${s.rowsInDom} rows in DOM, scroll p50 ${s.scroll.stats.p50.toFixed(1)} p99 ${s.scroll.stats.p99.toFixed(1)} ms`

@@ -190,6 +190,8 @@ test(name("each filter's empty list says what would appear there"), async () => 
 
 test(name("rows: Now on the newest, prompts in quotes, a named version, a group of your changes, a fold's 2 of 3, each agent's mark, one start row"), async () => {
   const ui = story();
+  // (the rows' own anatomy, without Carton UX v2's landmarks, which tag some of them: history-v2.dom.test.ts has those)
+  delete (ui as { landmarks?: unknown }).landmarks;
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 2000 })));
   await flush();
   const claude = row(m.container, "Tighten the intro")!;
@@ -216,7 +218,7 @@ test(name("rows: Now on the newest, prompts in quotes, a named version, a group 
   await m.unmount();
 });
 
-test(name("the row menu: Play its changes, Compare with your edit, Name, New cut, Restore… with its line"), async () => {
+test(name("the row menu: Play its changes, Compare with your edit, Compare with…, Name, New cut, Restore… with its line, Undo this turn"), async () => {
   const ui = story();
   const compared: [string, string][] = [];
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, onCompare: (a: string, b: string) => compared.push([a, b]) })));
@@ -224,15 +226,16 @@ test(name("the row menu: Play its changes, Compare with your edit, Name, New cut
   const dir = row(m.container, "Add captions to the interview")!;
   await click($(dir, ".carton-version-more"));
   const items = $$(m.container, "[role=menu] [role=menuitem]");
-  assert.deepEqual(items.map((i) => $(i, ".carton-menu-text")!.firstChild!.textContent), ["Play its changes", "Compare with your edit", "Name this version", "New cut from this version…", "Restore…"]);
-  assert.match(items[4]!.textContent ?? "", /Go back to this version\. Later changes stay in History\./);
+  // (Carton UX v2: Compare with… is pick mode; an older agent turn's Undo this turn opens Go back… with it picked)
+  assert.deepEqual(items.map((i) => $(i, ".carton-menu-text")!.firstChild!.textContent), ["Play its changes", "Compare with your edit", "Compare with…", "Name this version", "New cut from this version…", "Restore…", "Undo this turn"]);
+  assert.match(items[5]!.textContent ?? "", /Go back to this version\. Later changes stay in History\./);
   await click(items[1]!);
   const theTurn = [...ui.history().all!()].reverse().find((v) => v.turn?.label === "Add captions to the interview")!;
   assert.deepEqual(compared, [[theTurn.ref, ui.cuts().find((c) => c.current)!.head]], "the Changes view: this version to your edit");
   await m.unmount();
 });
 
-test(name("Restore… asks in the card, with how many later changes it undoes; Undo this turn on the newest agent turn"), async () => {
+test(name("Restore… opens Go back… in the card, Restore the whole edit picked, with how many later changes it undoes; Undo this turn on the newest agent turn"), async () => {
   const ui = story();
   const restored: string[] = [];
   const restore = ui.restore.bind(ui);
@@ -245,12 +248,13 @@ test(name("Restore… asks in the card, with how many later changes it undoes; U
   const group = $(m.container, ".carton-version[data-group]")!;
   await click($(group, ".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", /^Restore…/));
-  await waitFor(() => /The 4 changes/.test($(m.container, ".carton-card-confirm-body")?.textContent ?? ""), "the count");
-  assert.match($(m.container, ".carton-card-confirm-title")!.textContent ?? "", /^Restore your edit from 12:41 pm\?$/);
-  assert.equal($(m.container, ".carton-card-confirm-body")!.textContent, "Your edit goes back to how it was then. The 4 changes made since are undone. They stay in History, and Ctrl+Z brings them back.");
-  assert.ok(byText(m.container, ".carton-card-confirm button", "See the 4"));
-  await click(byText(m.container, ".carton-card-confirm button", "Cancel"));
-  assert.equal($(m.container, ".carton-card-confirm"), null);
+  // Go back… (Carton UX v2, DESIGN-V2 §3.1): the consequence read before it happens, in the picked choice's line
+  await waitFor(() => /The 4 changes after it are undone/.test($(m.container, ".carton-goback-choice[aria-checked=true]")?.textContent ?? ""), "the count");
+  assert.match($(m.container, ".carton-goback-title")!.textContent ?? "", /^Go back to your edit from 12:41 pm$/);
+  assert.equal($(m.container, ".carton-goback-choice[aria-checked=true] .carton-goback-line")!.textContent, "Your edit becomes this version. The 4 changes after it are undone. They stay in History.");
+  assert.equal($(m.container, ".carton-goback .carton-btn[data-variant=primary]")!.textContent, "Restore the whole edit");
+  await click(byText(m.container, ".carton-goback button", "Cancel"));
+  assert.equal($(m.container, ".carton-goback"), null);
   assert.deepEqual(restored, [], "nothing restored by asking");
   // the newest (Claude Code's turn): Undo this turn, which takes out only its changes
   await click(row(m.container, "Tighten the intro"));
@@ -451,11 +455,19 @@ test(name("review #8: leaving New cut or Restore… with Esc or Cancel keeps the
   const dir = row(m.container, "Add captions to the interview")!;
   await click($(dir, ".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", /^New cut from this version/));
+  // (an older version: Go back… with Start a new cut from here picked, then its name field: Carton UX v2, DESIGN-V2 §3.1)
+  await waitFor(() => !!$(m.container, ".carton-goback .carton-btn[data-variant=primary]"), "Go back…");
+  assert.equal($(m.container, ".carton-goback-choice[aria-checked=true] .carton-goback-name")!.textContent, "Start a new cut from here");
+  await click($(m.container, ".carton-goback .carton-btn[data-variant=primary]"));
   await waitFor(() => !!$(m.container, ".carton-card-newcut input"), "the new cut's field");
   const input = $(m.container, ".carton-card-newcut input")!;
   input.focus();
   await press(input, "Escape");
   assert.equal($(m.container, ".carton-card-newcut"), null);
+  // back on Go back…'s choices, the keyboard still in the card; Esc again leaves them for the card
+  await waitFor(() => !!$(m.container, ".carton-goback") && !!document.activeElement && $(m.container, ".carton-card-version")!.contains(document.activeElement), "focus in the chooser, not <body>");
+  await press(document.activeElement!, "Escape");
+  assert.equal($(m.container, ".carton-goback"), null);
   // (focus comes back on the next frame; preact's act holds frames, so wait for it rather than for a frame)
   await waitFor(() => document.activeElement === $(m.container, ".carton-card-version"), "focus on the card, not <body>");
   await press(document.activeElement!, "Escape");

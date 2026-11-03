@@ -46,6 +46,7 @@ import type {
 import { diffSummary } from "./shots.ts";
 import { actorLabel } from "./actors.ts";
 import { conflictWords } from "./conflict-words.ts";
+import { mockFind } from "./mock-find.ts";
 
 function rng(seed: number) {
   let a = seed >>> 0;
@@ -697,6 +698,20 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       if (!ref) throw new Error("Couldn't load this version. Try again.");
       return setViewing({ ref, kind: "version", ...(v ? { versionId: v.id } : {}), label: v ? versionLabel(v, { ...labelCtx, start: true }) : (target.label ?? ref), short: v ? versionShort(v, labelCtx) : (target.label ?? ref) });
     },
+
+    // Carton UX v2 (N2's gallery and tests): find, landmarks, bring back one clip, landmark pictures
+    ...mockFind({
+      all: () => all,
+      did: (id) => did.get(id) ?? [],
+      between,
+      head: headOf,
+      actor: (k) => actors.get(k),
+      addVersion: (v, c) => addVersion(v, c),
+      made: madeHere,
+      notify: (t) => hub.notify(t),
+      me: people.alice,
+      now: now0,
+    }),
 
     addVersion,
     confirmAll() {

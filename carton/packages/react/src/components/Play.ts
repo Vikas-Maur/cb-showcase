@@ -32,6 +32,8 @@ export interface PlayHost {
   prefetch?: (ref: string) => void;
   /** Your edit's length in seconds, when the host knows it (the change map's scale, "7 changes · 0:38"). */
   length?: () => number | undefined;
+  /** What the stage shows now as a small JPEG, for landmarks' pictures (Carton UX v2: HistoryPanel's `capturePicture`). */
+  picture?: () => Promise<string | null>;
   /** A clock for tests and benchmarks. */
   clock?: Clock;
 }

@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ws59Shots } from "./ws59-shots.mjs";
+import { n2Shots } from "./n2-shots.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -65,7 +66,7 @@ const AFTER = [
   P("after-history-default", "ux-history", "The story: Claude Code's turn Now, your six changes as one row, the Director's turn, Sent to client, a fold, a restore, Codex; older days folded.", foldOlder),
   P("after-history-expanded", "ux-history", "after-history-default, then a click on Claude Code's turn (the newest): its card, with the first change hovered.", async (p) => { await foldOlder(p); await openCard(p, "Tighten the intro"); await p.locator(".carton-card-version .carton-change").first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
   P("after-history-older", "ux-history", "A click on the Director's older turn: \"Your edit has 7 changes since this\", its map and rows, Play all, Restore….", async (p) => { await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-change").first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
-  P("after-history-restore", "ux-history", "⋯ on your six changes → Restore…: the confirmation in the card.", async (p) => { await foldOlder(p); await uxMenu(p, "Moved “Interview B” 2 s later"); await menuItem(p, "Restore…").click(); await p.locator(".carton-card-confirm").waitFor(); await p.waitForTimeout(250); }),
+  P("after-history-restore", "ux-history", "⋯ on your six changes → Restore…: Go back… in the card, Restore the whole edit picked (DESIGN-V2 §3.1).", async (p) => { await foldOlder(p); await uxMenu(p, "Moved “Interview B” 2 s later"); await menuItem(p, "Restore…").click(); await p.locator(".carton-goback").waitFor(); await p.waitForTimeout(250); }),
   P("after-history-menu", "ux-history", "⋯ on the Director's turn: Play its changes, Compare with your edit, Name, New cut, Restore….", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "Play its changes").hover(); await p.waitForTimeout(120); }, { keepHover: true }),
   P("after-history-filter", "ux-history", "The filter menu, with \"Interview B\" selected on the timeline (Only “Interview B”).", async (p) => { await foldOlder(p); await p.locator(".carton-filter-btn").click(); await p.waitForTimeout(150); await menuItem(p, "Agent turns").hover(); await p.waitForTimeout(120); }, { keepHover: true }),
   P("after-history-clip", "ux-clip", "Filter → Only “Interview B”: the chip, the clip's credits, the versions that touched it.", async (p) => { await p.locator(".carton-filter-btn").click(); await p.waitForTimeout(150); await menuItem(p, "Only “Interview B”").click(); await p.waitForTimeout(400); }),
@@ -80,6 +81,7 @@ const AFTER = [
 ];
 // workstreams 5 and 9 (toasts with Undo, Comments), beside after/toasts.png and comments-*.png
 const WS59 = ws59Shots({ P, T, menuItem, foldOlder, uxMenu, openCard, cutsMenu, tab });
+const N2 = n2Shots({ P, menuItem, foldOlder, uxMenu, openCard }); // Carton UX v2, History (N2)
 // Viewing without banners (docs/carton-ux workstream 1): beside after/editor-viewing.png, editor-edit-attempt.png,
 // editor-conflict-theirs.png, editor-other-cut.png, titlebar-viewing.png (history-viewing-*.png: after-history-viewing).
 const W = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "window", perWidth: false, ...o });
@@ -94,7 +96,7 @@ const WS1 = [
   W("ws1-editor-comments-see", "ux-history", "Comments open, a version viewed without a row (as Comments' See it as it was views one): the frame's label tab.", async (p) => { await p.locator('[role=tab][aria-label="Comments"]').click(); await p.waitForTimeout(200); await p.evaluate(() => window.__cap.ui.view({ kind: "version", ref: "main@20", label: "Your edit from 11:02 am" })); await p.waitForTimeout(300); }),
   { name: "ws1-titlebar-viewing", s: "ux-history", how: "The title bar while viewing the Director's turn: the chip's second part, 👁 label ✕.", target: "titlebar", steps: playDirector },
 ];
-const SHOTS = [...AFTER, ...WS1, ...WS59,
+const SHOTS = [...AFTER, ...WS1, ...WS59, ...N2,
   // Workstream 4: the Changes view, Play and Before (after/changes-384.png, changes-300.png, changes-playing-384.png, changes-none-384.png)
   P("changes", "changes-story", "History, ⋯ → Compare with your edit on the Director's “Add captions to the interview”: the Changes view in place of the list.", (p) => changes(p)),
   P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),

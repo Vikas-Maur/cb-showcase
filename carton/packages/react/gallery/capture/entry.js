@@ -14,6 +14,7 @@ import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi
 import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
 import stripSource from "../../../../../scripts/carton/strip-buttons.js";
 import { addWs59 } from "./ws59.js";
+import { addN2 } from "./n2.js";
 import editorPanelSource from "../../../../../scripts/carton/editor-panel.js";
 
 const params = new URLSearchParams(location.search);
@@ -349,6 +350,7 @@ S["ws1-conflict"] = () => {
 S["ws1-other-cut"] = () => { const r = ux()(); setCuts(r.ui, WS6_CUTS(newest(r.ui), "cut-ig")); return { ...r, panel: null }; };
 
 addWs59(S, { ux, hist, stage, people, createMockComments }); // workstreams 5 and 9: toasts with Undo, Comments
+addN2(S, { ux }); // Carton UX v2, History (N2): landmarks, search, Go back…, Bring back one clip, Compare, peek
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 

@@ -9,6 +9,9 @@
 // Everything is scoped under `[data-carton-skin="cardboard"]` and wrapped in :where(), so it never leaks into the
 // host and a host rule always wins.
 
+// Carton UX v2, History (N2): its own sheet, injected with this one
+import { historyV2Css } from "./history-v2.ts";
+
 export const baseCss = `
 :where(.carton-menu-anchor){position:relative;display:inline-flex}
 :where(.carton-menu-pop){position:absolute;top:calc(100% + 6px);left:0;z-index:50}
@@ -834,4 +837,5 @@ export function injectStyles(doc: Document, css: string, id: string): HTMLStyleE
 export function injectCardboardSkin(doc: Document = document): void {
   injectStyles(doc, baseCss, "carton-base-css");
   injectStyles(doc, cardboardSkin, "carton-skin-cardboard");
+  injectStyles(doc, historyV2Css, "carton-skin-history-v2");
 }

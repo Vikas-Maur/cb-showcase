@@ -17,6 +17,7 @@ import type { Change, Version } from "../model.ts";
 import { ChangeList, ChangeRow } from "./ChangeRow.ts";
 import { ChangeMap } from "./ChangeMap.ts";
 import { Button, cx } from "./ui.ts";
+import { GoBack, type ClipChoice, type GoBackChoice } from "./GoBack.ts";
 
 /** The rows a closed card lists (DESIGN §5.2): then "and N more". */
 export const CARD_ROWS = 4;
@@ -39,8 +40,12 @@ export interface PlayState {
   readonly key: string | null;
 }
 
-/** The card's inline steps (DESIGN §6.2): the restore confirmation, or the new cut's name. */
-export type CardMode = "restore" | "newCut" | null;
+/**
+ * The card's inline steps (DESIGN §6.2, DESIGN-V2 §3.1): Go back… (its chooser; "restore", "undoTurn" and "newCut" open
+ * it with that choice picked, from the row's ⋯), "bringBack" (straight to its clip list), or the new cut's name (the
+ * newest version and a teammate's cut, which have no Go back…).
+ */
+export type CardMode = "goBack" | "bringBack" | "restore" | "undoTurn" | "newCut" | null;
 
 export interface VersionCardProps {
   /** The version (a group: its newest). */
@@ -79,6 +84,10 @@ export interface VersionCardProps {
   onHeight?: (px: number) => void;
   /** Play all as soon as the card has read what changed (a row's "Play its changes", Space on a row). */
   autoPlay?: boolean;
+  /** The clip selected on the timeline, when exactly one is: Go back… picks Bring back one clip for it (DESIGN-V2 §3.1). */
+  selectedClip?: () => { readonly id: string; readonly name: string } | null;
+  /** Bring back's "See it first": Compare this version with your edit at that clip (DESIGN-V2 §3.2). */
+  onSeeFirst?: (version: Version, clip: ClipChoice) => void;
   id?: string;
 }
 
@@ -193,8 +202,14 @@ export function VersionCard(p: VersionCardProps) {
     }
   };
 
-  // (a teammate's cut offers no Restore: a mode asked for anyway, by a host, shows nothing of it)
-  const mode = p.readOnly && p.mode === "restore" ? null : (p.mode ?? null);
+  // (a teammate's cut offers no Restore: a mode asked for anyway, by a host, shows nothing of it). Go back… is for the
+  // versions before the newest, on your own cuts; there "newCut" is its fourth choice, elsewhere the name form alone.
+  const goBackable = !p.readOnly && !p.newest && !v.empty && !waiting;
+  const asked = p.mode ?? null;
+  const mode: CardMode = asked === "newCut" ? (goBackable ? "goBack" : "newCut") : asked && !goBackable ? null : asked;
+  const goBackPick: GoBackChoice | null = asked === "restore" ? "restore" : asked === "undoTurn" ? "turn" : asked === "newCut" ? "newCut" : asked === "bringBack" ? "clip" : null;
+  const inGoBack = mode === "goBack" || mode === "bringBack" || mode === "restore" || mode === "undoTurn";
+  const selectedClip = useMemo(() => (inGoBack ? (p.selectedClip?.() ?? null) : null), [inGoBack]);
   const shown = changes ? (mode ? changes.slice(0, 1) : all ? changes.slice(0, CARD_ROWS_MAX) : changes.slice(0, CARD_ROWS)) : [];
   const more = changes ? changes.length - shown.length : 0;
   const showAuthor = useMemo(() => !!changes && new Set(changes.map((c) => c.author?.key ?? "")).size > 1, [changes]);
@@ -203,7 +218,9 @@ export function VersionCard(p: VersionCardProps) {
   const n = since.status === "ready" ? since.value : null;
 
   const rows: ReactNode =
-    did.status === "loading"
+    inGoBack
+      ? null
+      : did.status === "loading"
       ? h("div", { className: "carton-card-skeleton", "aria-label": words.loadingChanges, role: "status" }, h("span"), h("span"))
       : did.status === "error"
         ? h("p", { className: "carton-error carton-card-error", role: "alert", title: reason(did.error) }, words.failed)
@@ -258,21 +275,20 @@ export function VersionCard(p: VersionCardProps) {
       : null;
 
   const footer: ReactNode =
-    mode === "restore"
-      ? h(
-          "div",
-          { className: "carton-card-confirm", role: "group", "aria-label": words.restoreQuestion(label) },
-          h("p", { className: "carton-card-confirm-title" }, words.restoreQuestion(label)),
-          h("p", { className: "carton-card-confirm-body" }, words.restoreBody(n ?? 0)),
-          h(
-            "div",
-            { className: "carton-card-actions" },
-            h(Button, { variant: "primary", icon: "restoreArc", busy, onClick: () => act(() => ui.restore(v.ref), words.restoreFailed) }, words.restore),
-            h(Button, { variant: "ghost", onClick: leaveMode }, words.cancel),
-            h("span", { className: "carton-card-gap" }),
-            n && p.onCompare ? h("button", { type: "button", className: "carton-link", onClick: () => p.onCompare!(v.ref, p.head!) }, words.seeThe(n)) : null,
-          ),
-        )
+    inGoBack
+      ? h(GoBack, {
+          version: v,
+          head: p.head,
+          after: n,
+          picked: goBackPick,
+          list: mode === "bringBack",
+          selectedClip,
+          readOnly: p.readOnly,
+          newCut: (cancel: () => void) => h(NewCutForm, { cutName: p.cutName ?? words.mainCut, busy, onCancel: cancel, onSave: (name: string) => act(() => ui.newCut(name, v.ref), words.newCutFailed) }),
+          ...(p.onSeeFirst ? { onSeeFirst: (c: ClipChoice) => p.onSeeFirst!(v, c) } : {}),
+          onCancel: leaveMode,
+          onDone: p.onClose,
+        })
       : mode === "newCut"
         ? h(NewCutForm, { cutName: p.cutName ?? words.mainCut, busy, onCancel: leaveMode, onSave: (name: string) => act(() => ui.newCut(name, v.ref), words.newCutFailed) })
         : h(
@@ -293,7 +309,7 @@ export function VersionCard(p: VersionCardProps) {
                 : null
               : v.empty
                 ? null
-                : h(Button, { variant: "ghost", icon: "restoreArc", disabled: waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => p.onMode?.("restore") }, words.restoreEllipsis),
+                : h(Button, { variant: "ghost", icon: "restoreArc", disabled: waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => p.onMode?.("goBack") }, words.goBack),
             h("span", { className: "carton-card-gap" }),
             p.onMenu
               ? h(Button, { variant: "ghost", icon: "dots", label: words.versionActions(label), className: "carton-card-menu", onClick: (e) => p.onMenu!(e.currentTarget) })
@@ -309,7 +325,7 @@ export function VersionCard(p: VersionCardProps) {
       "aria-label": words.cardRegion(label),
       // focusable itself, so the keyboard stays in the card when a step inside it closes
       tabIndex: -1,
-      className: cx("carton-card-version", mode ? `carton-card-${mode}` : null),
+      className: cx("carton-card-version", mode ? `carton-card-${inGoBack ? "goback" : mode}` : null),
       "data-own-keys": "",
       onKeyDown,
     },

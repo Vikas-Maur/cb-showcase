@@ -14,15 +14,21 @@ import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useM
 import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Actor, CartonUi, Credits, HistoryFilter, Version, Working } from "../model.ts";
+import type { Actor, CartonUi, Credits, FindHit, HistoryFilter, Landmark, Version, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
-import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
+import { ActorName, Avatar, Button, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
 import { ChangesView } from "./ChangesView.ts";
 import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
 import { CutsMenu } from "./CutsMenu.ts";
 import { VersionCard, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
+// Carton UX v2 (N2: DESIGN-V2 §2–§4): landmarks, search, hold to peek, Compare with… and the Compare button
+import { LandmarkTag, LandmarkTile, landmarkTitle, useLandmarks, useStagePictures } from "./LandmarkRow.ts";
+import { SearchBox, highlight, searchable, snippetOf, useFind, type SearchBoxHandle } from "./SearchBox.ts";
+import { CompareButton, PickLine, openCompareVia, type Picking } from "./CompareMenu.ts";
+import { usePeek } from "./peek.ts";
+import type { ClipChoice } from "./GoBack.ts";
 
 /** A version's row (DESIGN §6.1: 56 px). */
 export const VERSION_ROW_HEIGHT = 56;
@@ -80,6 +86,12 @@ export interface HistoryPanelProps {
   /** Ref of the current state. Deprecated: History finds your edit itself. */
   currentRef?: string;
   className?: string;
+  /**
+   * A small JPEG (`data:image/jpeg`, 88 × 50, at most 64 KB) of what the stage shows now, or null when it can't make one
+   * (no picture yet, a black frame): landmarks' pictures (DESIGN-V2 §2.2) are made from it when the stage shows one's
+   * version. Absent: landmarks show their icons.
+   */
+  capturePicture?: () => Promise<string | null>;
   /** Viewport height used before the list can measure itself. */
   initialHeight?: number;
   filter?: HistoryFilter;
@@ -116,6 +128,37 @@ function Meta({ v, count, ui }: { v: Version; count?: number; ui: CartonUi }) {
   );
 }
 
+/**
+ * A landmark's meta line (DESIGN-V2 §2.1): who ("Named by You"), "Kept for you" on a safety point, "only you see this"
+ * on the personal ones (a day's start, a safety point), and a second landmark's tag ("also exported").
+ */
+function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string | undefined }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const by = mark.by ?? v.author;
+  const who = actorLabel(by, ui.actor.bind(ui), words.you);
+  return h(
+    Fragment,
+    null,
+    mark.kind === "safety" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
+    mark.team ? null : h("span", { className: "carton-version-count" }, words.onlyYouSee),
+    also ? h("span", { className: "carton-version-count" }, words.alsoLandmark(also)) : null,
+  );
+}
+
+/** Why a search found a version (DESIGN-V2 §2.3): "Prompt · 4 changes", "Caption text · “in half” · Leo", "Clip name · You". */
+function HitMeta({ hit, v }: { hit: FindHit; v: Version }) {
+  const words = useWords();
+  const shows = hit.field === "clip" || hit.field === "text";
+  return h(
+    Fragment,
+    null,
+    h("span", { className: "carton-find-why" }, words.findFields[hit.field]),
+    shows && hit.snippet ? h("span", { className: "carton-find-snippet" }, snippetOf(hit)) : null,
+    hit.field === "prompt" && v.changes !== undefined ? h("span", { className: "carton-version-count" }, words.changes(v.changes)) : v.author.kind === "system" ? null : h(ActorName, { actor: v.author }),
+  );
+}
+
 interface RowProps {
   v: Version;
   rowKey: string;
@@ -144,6 +187,17 @@ interface RowProps {
   onName: (id: string, name: string | null) => void;
   onGroup: (key: string) => void;
   onBack: () => void;
+  /** Its landmark (DESIGN-V2 §2.1), the best of them, and the next one's tag for its meta line ("also exported"). */
+  mark?: Landmark;
+  alsoMark?: string;
+  /** A search's hit on it, and the query (its words are marked in the title). */
+  hit?: FindHit;
+  query?: string;
+  /** Pick mode (DESIGN-V2 §4.1): every row offers ⇆ Compare; the one compared from wears the From pill. */
+  picking?: boolean;
+  pickFrom?: boolean;
+  /** Held to peek: its time column says "Holding". */
+  holding?: boolean;
 }
 
 // memo: a row re-renders only when its own version object or its own state changes. A new version arriving above it,
@@ -155,8 +209,13 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const v = p.v;
   const prompt = promptOf(v);
   const named = !!v.name && !prompt;
-  const title = prompt ? `“${prompt}”` : named ? v.name! : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
-  const when = p.viewing
+  const plain = prompt ? `“${prompt}”` : named ? v.name! : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
+  // a landmark reads as one phrase, its tag then its title ("EXPORTED 1080p for the client"); a turn keeps its prompt
+  const mark = p.mark && p.mark.kind !== "turn" ? p.mark : undefined;
+  const title = mark ? landmarkTitle(mark, words, plain) : plain;
+  const when = p.holding
+    ? h("span", { className: "carton-version-when", "data-viewing": "" }, h(Icon, { name: "eye", size: 12 }), words.holding)
+    : p.viewing
     ? h(
         "span",
         { className: "carton-version-when", "data-viewing": "" },
@@ -202,13 +261,16 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-compared": p.compared ? "" : undefined,
       "data-group": p.group ? "" : undefined,
       "data-child": p.child ? "" : undefined,
+      "data-landmark": mark ? mark.kind : undefined,
+      "data-pick-from": p.pickFrom ? "" : undefined,
+      "data-hold": p.holding ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
         p.onMenu(p.rowKey, e.currentTarget as HTMLElement);
       },
     },
-    p.child ? h("span", { className: "carton-version-mark", "aria-hidden": true }) : h(RowMark, { v }),
+    p.child ? h("span", { className: "carton-version-mark", "aria-hidden": true }) : mark ? h(LandmarkTile, { kind: mark.kind, picture: mark.picture }) : h(RowMark, { v }),
     p.naming
       ? h(
           "div",
@@ -226,14 +288,16 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           Fragment,
           null,
           // cut off at the panel's width: the whole text on hover (P2-16)
-          h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, title),
+          h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, mark ? h(LandmarkTag, { kind: mark.kind }) : null, mark ? h("span", { className: "carton-landmark-title", "data-named": mark.kind === "named" ? "" : undefined }, p.query ? highlight(title, p.query) : title) : p.query ? highlight(title, p.query) : title),
+          p.picking && !p.pickFrom ? h("span", { className: "carton-version-pick", "aria-hidden": true }, h(Icon, { name: "compare", size: 12 }), words.compare) : null,
           when,
           p.child
             ? null
             : h(
                 "span",
                 { className: "carton-version-meta" },
-                h(Meta, { v, count: p.group ? p.groupCount : undefined, ui }),
+                p.pickFrom ? h("span", { className: "carton-pill carton-pick-from", "data-tone": "info" }, h(Icon, { name: "compare", size: 11 }), words.fromPill) : null,
+                p.hit ? h(HitMeta, { hit: p.hit, v }) : mark ? h(MarkMeta, { mark, v, also: p.alsoMark }) : h(Meta, { v, count: p.group ? p.groupCount : undefined, ui }),
                 p.group
                   ? h(
                       "button",
@@ -310,7 +374,7 @@ const WorkingRow = memo(function WorkingRow({ w, domId, active }: { w: Working; 
 });
 
 /** A day's header (UI audit P2-17): which day; folded, how many versions (its named versions stay). */
-const DayRow = memo(function DayRow({ row, label, domId, active, onToggle }: { row: DayHistoryRow; label: string; domId: string; active: boolean; onToggle: (day: number) => void }) {
+const DayRow = memo(function DayRow({ row, label, domId, active, onToggle, marked }: { row: DayHistoryRow; label: string; domId: string; active: boolean; onToggle: (day: number) => void; marked?: boolean }) {
   const words = useWords();
   return h(
     "div",
@@ -327,12 +391,13 @@ const DayRow = memo(function DayRow({ row, label, domId, active, onToggle }: { r
     h("span", { className: "carton-day-mark", "aria-hidden": true }, h(Icon, { name: row.collapsed ? "caretRight" : "caretDown", size: 12 })),
     h("span", { className: "carton-day-label" }, label),
     // an open day shows no count; a folded one says what it holds (DESIGN §6.1)
-    row.collapsed && row.count ? h("span", { className: "carton-day-count" }, words.dayVersions(row.count, row.count - row.hidden)) : null,
+    // (with landmarks, what a folded day keeps is its landmarks: "41 versions · 4 landmarks", DESIGN-V2 §2.5)
+    row.collapsed && row.count ? h("span", { className: "carton-day-count" }, marked && row.count - row.hidden ? words.dayVersionsMarks(row.count, row.count - row.hidden) : words.dayVersions(row.count, row.count - row.hidden)) : null,
   );
 });
 
 /** The clip History is filtered to: its credits, oldest first ("Added by You on Oct 30 · trimmed by Director · …"). */
-function ClipCredits({ item, name }: { item: string; name: string }) {
+function ClipCredits({ item, name, title }: { item: string; name: string; title?: string }) {
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
@@ -353,7 +418,7 @@ function ClipCredits({ item, name }: { item: string; name: string }) {
   return h(
     "div",
     { className: "carton-clip-credits" },
-    h("div", { className: "carton-clip-credits-name" }, `“${credits.value.clip || name}”`),
+    h("div", { className: "carton-clip-credits-name" }, title ?? `“${credits.value.clip || name}”`),
     h("p", null, text),
   );
 }
@@ -403,26 +468,59 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const panel = useRef<HTMLElement>(null);
   const filterBtn = useRef<HTMLButtonElement>(null);
   const scrollTop = useRef<(() => void) | null>(null);
+  // Carton UX v2 (DESIGN-V2 §2, §4): the landmarks, the search (its query, debounced by the field), the Landmarks
+  // filter, and pick mode. Search and the Landmarks filter narrow the list to their versions (`only`), on top of the
+  // filter: every row stays an ordinary row (its card, its ⋯, hold to peek, Shift+click).
+  const marks = useLandmarks(cutId);
+  const [query, setQuery] = useState("");
+  const searching = searchable(query) && typeof ui.find === "function";
+  const found = useFind(searching ? query : "", cutId);
+  const [marksOnly, setMarksOnly] = useState(false);
+  // a search's own folded days (its older days fold after 20 results; a click opens one), new for each query
+  const [findFolds, setFindFolds] = useState<{ q: string; days: ReadonlyMap<number, boolean> }>({ q: "", days: new Map() });
+  const [pick, setPick] = useState<Picking | null>(null);
+  // a polite line for screen readers (hold to peek's "Showing … Release to go back.")
+  const [said, setSaid] = useState("");
+  const search = useRef<SearchBoxHandle>(null);
+  const only: { has(id: string): boolean } | null = searching ? found.byId : marksOnly ? marks.ids : null;
+  // what the list depends on of the search: nothing until it searches (one letter regroups nothing)
+  const findKey = searching ? query : "";
 
   // ---------------------------------------------------------------- rows: days, groups, the start, an agent working
   const fkey = filterKey(filter);
   const versions = useMemo(() => {
     if (typeof hist.all !== "function") return null;
     const all = hist.all();
-    if (filter === "all") return all;
+    // a search's or the Landmarks filter's versions (`only`), within the filter's
+    if (filter === "all") return only ? all.filter((v) => only.has(v.id)) : all;
     // the filter's versions, in History's order, without describing any (indexOf is a lookup, at() would ask for a summary)
-    return all.filter((v) => hist.indexOf(filter, v.id) >= 0);
+    return all.filter((v) => hist.indexOf(filter, v.id) >= 0 && (!only || only.has(v.id)));
     // `count` and `status.loading` too: a clip's index arrives after the filter is picked (remote.ts asks the worker),
     // with no new version, so History's revision doesn't move
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hist, revision, fkey, count, status.loading]);
+  }, [hist, revision, fkey, count, status.loading, only]);
   const grouped = useMemo(() => {
     if (!versions) return null;
     const long = versions.length > COLLAPSE_OVER;
-    return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k) });
+    // A search's results are rows of their own (no runs), and its older days fold after 20 results ("3 more",
+    // DESIGN-V2 §2.3). Elsewhere a landmark is a row of its own, and a folded day keeps it (§2.5, §2.6).
+    if (searching) {
+      const shut = new Set<number>();
+      let seen = 0, last = NaN;
+      for (let i = versions.length - 1; i >= 0; i--) {
+        const d = dayNumber(versions[i]!.at);
+        if (d !== last && seen >= 20) shut.add(d);
+        last = d;
+        seen++;
+      }
+      const own = findFolds.q === findKey ? findFolds.days : null;
+      return groupHistory(versions, (day) => own?.get(day) ?? shut.has(day), { anchor: () => false });
+    }
+    const marked = marks.ids.size ? marks.ids : null;
+    return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k), ...(marked ? { anchor: (v: Version) => !!v.name || marked.has(v.id), alone: (v: Version) => marked.has(v.id) } : {}) });
     // `revision` too: a source's all() is one array it appends to in place (remote.ts, mock.ts)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [versions, revision, folds, openGroups]);
+  }, [versions, revision, folds, openGroups, searching, marks, findFolds, findKey]);
   // the live row of an agent working on this cut, on top (in Today), in the lists that show turns
   const live = working && (!working.cutId || !cutId || working.cutId === cutId) && (filter === "all" || filter === "turns") ? working : null;
   const today = dayNumber(now);
@@ -457,18 +555,19 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const versionOfRow = useCallback(
     (r: Row | undefined): Version | undefined => {
       if (!r) return undefined;
-      if (r.kind === "version" || r.kind === "group") return rows ? hist.at(filter, r.index) : undefined;
+      if (r.kind === "version" || r.kind === "group") return !rows ? undefined : only ? find(r.id) : hist.at(filter, r.index);
       return undefined;
     },
-    [rows, hist, filter],
+    [rows, hist, filter, only, find],
   );
   const versionAt = useCallback((i: number) => (rows ? versionOfRow(rows[i]) : hist.at(filter, i)), [rows, versionOfRow, hist, filter]);
   const keyAt = useCallback((i: number) => (rows ? (rows[i]?.key ?? String(i)) : (hist.at(filter, i)?.id ?? String(i))), [rows, hist, filter]);
 
   const toggleDay = useCallback((day: number) => {
     const r = rows?.find((x) => x.kind === "day" && x.day === day) as DayHistoryRow | undefined;
-    setFolds((m) => new Map(m).set(day, !(r?.collapsed ?? false)));
-  }, [rows]);
+    if (searching) setFindFolds((f) => ({ q: findKey, days: new Map(f.q === findKey ? f.days : []).set(day, !(r?.collapsed ?? false)) }));
+    else setFolds((m) => new Map(m).set(day, !(r?.collapsed ?? false)));
+  }, [rows, searching, findKey]);
   const toggleGroup = useCallback((key: string) => {
     setOpenGroups((s) => {
       const n = new Set(s);
@@ -602,13 +701,40 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [ui, versionByRef],
   );
   const compare = props.onCompare ?? openChanges;
+  // History's v2 Compare entries (Compare with…, the Compare button, See it first): the editor's Compare when the host
+  // has it (N1's openCompare: any two refs, a cut, your edit), else `compare` above
+  const openCmp = useMemo(() => openCompareVia(ui, compare), [ui, compare]);
+  const compareTo = useCallback(
+    (from: string, to: string | null, at?: number) => {
+      setMenu(null);
+      cardPlayRef.current.stop();
+      const run = at !== undefined && typeof ui.openCompare === "function" ? ui.openCompare(from, to, { at }) : openCmp(from, to);
+      return run.catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.compareFailed));
+    },
+    [ui, openCmp, words],
+  );
+  const startPick = useCallback((p: Picking) => {
+    setMenu(null);
+    setOpenKey(null);
+    setCardMode(null);
+    setPick(p);
+  }, []);
 
   // The rows' handlers are one function each for the panel's life (memoized rows skip a new version: U6); what they
   // read as it is now comes through this ref.
-  const live_ = useRef({ onCompare: compare, activeKey, versionOfRow, rowOf });
-  live_.current = { onCompare: compare, activeKey, versionOfRow, rowOf };
+  const live_ = useRef({ onCompare: compare, activeKey, versionOfRow, rowOf, pick, compareTo });
+  live_.current = { onCompare: compare, activeKey, versionOfRow, rowOf, pick, compareTo };
   const onPick = useCallback((key: string, e: MouseEvent) => {
-    const { onCompare, activeKey: from, versionOfRow: vOf, rowOf: rOf } = live_.current;
+    const { onCompare, activeKey: from, versionOfRow: vOf, rowOf: rOf, pick: picking, compareTo: cmp } = live_.current;
+    // pick mode (DESIGN-V2 §4.1): a click is the second version (the From row again: stop picking)
+    if (picking && !e.shiftKey) {
+      const v = vOf(rOf(key));
+      if (!v || v.provisional) return;
+      setPick(null);
+      if (picking.from && picking.from.id === v.id) return;
+      void cmp(picking.from ? picking.from.ref : v.ref, picking.from ? v.ref : null);
+      return;
+    }
     // Shift+click a second version: the changes between the two (the Changes view, Workstream 4)
     if (e.shiftKey && onCompare && from && from !== key) {
       const a = vOf(rOf(from)), b = vOf(rOf(key));
@@ -644,6 +770,23 @@ export function HistoryPanel(props: HistoryPanelProps) {
   );
   const back = useCallback(() => void ui.view(null).catch(() => {}), [ui]);
 
+  // Hold a row to peek (DESIGN-V2 §2.4): viewing, while held, through viewing's own fast back. A version still on its
+  // way, an empty one or your edit now (the cut's newest) has nothing to peek at.
+  const peekable = useCallback((v: Version | undefined) => (v && !v.provisional && !v.empty && v.id !== hist.at("all", 0)?.id ? v : undefined), [hist]);
+  const peek = usePeek({
+    ui,
+    versionOf: (el) => {
+      const key = el.id.startsWith(`${listId}-`) ? el.id.slice(listId.length + 1) : null;
+      return pick ? undefined : peekable(versionOfRow(rowOf(key)));
+    },
+    ...(props.play?.prefetch ? { prefetch: props.play.prefetch } : {}),
+    // the one thing said while held (DESIGN-V2 §2.4)
+    announce: (v) => setSaid(words.peekShowing(versionLabel(v, { locale, actor: ui.actor.bind(ui) }))),
+  });
+  useEffect(() => {
+    if (!peek.holding) setSaid("");
+  }, [peek.holding]);
+
   // Keyboard (DESIGN §7): Enter / → open a row's card, a day or a group, ← closes it; Space plays (or pauses) the
   // version's changes; F2 names it; Esc closes the card first (then the host's: stop viewing, close the panel).
   const onKey = useCallback(
@@ -651,11 +794,13 @@ export function HistoryPanel(props: HistoryPanelProps) {
       const r = rows ? rows[i] : undefined;
       const key = i >= 0 ? keyAt(i) : null;
       if (e.key === "Escape") {
+        if (pick) return setPick(null), true;
         if (!openKey) return false;
         closeCard();
         return true;
       }
       if (i < 0 || !key) return false;
+      if (peek.keyDown(e, peekable(versionAt(i)))) return true;
       // Shift+↑↓: the Changes view between this version and the one above or below it (DESIGN §7)
       if (e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const a = versionAt(i), step = e.key === "ArrowDown" ? 1 : -1, n = rows ? rows.length : count;
@@ -702,7 +847,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       }
       return false;
     },
-    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare],
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, pick, peek, peekable],
   );
   const onActivate = useCallback(
     (i: number) => {
@@ -710,10 +855,19 @@ export function HistoryPanel(props: HistoryPanelProps) {
       if (r?.kind === "day") return toggleDay(r.day);
       if (r?.kind === "start" || r?.kind === "working") return;
       const key = keyAt(i);
+      // Enter on a row while picking is that row as the second version
+      if (pick) {
+        const v = versionAt(i);
+        if (v && !v.provisional) {
+          setPick(null);
+          if (!pick.from || pick.from.id !== v.id) void compareTo(pick.from ? pick.from.ref : v.ref, pick.from ? v.ref : null);
+        }
+        return;
+      }
       setOpenKey((k) => (k === key ? null : key));
       setCardMode(null);
     },
-    [rows, toggleDay, keyAt],
+    [rows, toggleDay, keyAt, pick, versionAt, compareTo],
   );
   // The context-menu key on the active row opens its actions, anchored to the row.
   const onKeyMenu = useCallback(
@@ -770,12 +924,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [rows],
   );
   const viewedId = viewing && (viewing.kind === "version" || viewing.kind === "before") ? (viewing.versionId ?? null) : null;
+  // a landmark's picture, made when the stage shows its version: held, viewed (not "before" it), or your edit while it
+  // is that version (DESIGN-V2 §2.2); never while something plays
+  useStagePictures({ marks, shownId: peek.holding ?? (viewing ? (viewing.kind === "version" ? (viewing.versionId ?? null) : null) : newestId), busy: playOn, capture: props.capturePicture ?? props.play?.picture });
 
   const renderRow = (i: number): ReactNode => {
     const r = rows?.[i];
     const key = keyAt(i);
     const domId = `${listId}-${key}`;
-    if (r?.kind === "day") return h(DayRow, { row: r, label: dayLabel(r.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId, active: key === activeKey, onToggle: toggleDay });
+    if (r?.kind === "day") return h(DayRow, { row: r, label: dayLabel(r.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId, active: key === activeKey, onToggle: toggleDay, marked: marks.ids.size > 0 && !searching });
     if (r?.kind === "start") return h(StartRow, { row: r, domId, active: key === activeKey });
     if (r?.kind === "working") return live ? h(WorkingRow, { w: live, domId, active: key === activeKey }) : null;
     const v = versionAt(i);
@@ -803,6 +960,17 @@ export function HistoryPanel(props: HistoryPanelProps) {
       onName,
       onGroup: toggleGroup,
       onBack: back,
+      mark: marks.byVersion.get(v.id)?.[0],
+      alsoMark: (() => {
+        const xs = marks.byVersion.get(v.id);
+        // ("also exported", "also sent"; a day's start under another landmark is no news)
+        return xs && xs.length > 1 && xs[0]!.kind !== "turn" && xs[1]!.kind !== "session" ? words.landmarkTags[xs[1]!.kind] || undefined : undefined;
+      })(),
+      hit: searching ? found.byId.get(v.id) : undefined,
+      query: searching ? query : undefined,
+      picking: !!pick,
+      pickFrom: !!pick?.from && pick.from.id === v.id,
+      holding: peek.holding === v.id,
     });
     // the same shape open or closed (the row, then its card or nothing), so opening the card keeps the row's own DOM
     if (!isOpen) return h(Fragment, null, row, null);
@@ -830,6 +998,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
         autoPlay: autoPlay === key,
         onSeek,
         onMenu: (el: HTMLElement) => onMenu(key, el),
+        ...(props.selectedClip ? { selectedClip: props.selectedClip } : {}),
+        onSeeFirst: (ver: Version, c: ClipChoice) => void compareTo(ver.ref, null, (c.now ?? c.then)?.[0]),
         onClose: () => {
           closeCard();
           toList();
@@ -878,6 +1048,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
               if (b) compare(menuVersion.ref, b);
             },
           }, words.compareWithYourEdit),
+          // pick mode (DESIGN-V2 §4.1): this version, and the one clicked next, in any cut
+          h(MenuItem, { icon: "compare", disabled: waiting, onSelect: () => startPick({ from: menuVersion }) }, words.compareWith),
           h(MenuSeparator, null),
           h(MenuItem, { icon: "bookmark", disabled: waiting, title: waiting ? words.availableOnceSent : undefined, onSelect: () => (closeMenu(), setNaming(menuVersion.id)) }, menuVersion.name && !promptOf(menuVersion) ? words.renameEllipsis : words.nameVersion),
           menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (closeMenu(), openCard(menu.key, "newCut")) }, words.newCutFromVersion),
@@ -890,6 +1062,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
           theirCut || (menuVersion.id === newestId && !menuVersion.empty)
             ? null
             : h(MenuItem, { icon: "restoreArc", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.availableOnceSent : words.restoreMenuHint, onSelect: () => (closeMenu(), openCard(menu.key, "restore")) }, words.restoreEllipsis),
+          // an older agent turn: Go back… with its Undo picked (DESIGN-V2 §3.1: the consequence is read first)
+          theirCut || menuVersion.id === newestId || menuVersion.provisional || !(menuVersion.author.kind === "agent" || menuVersion.author.kind === "subagent") || !(menuVersion.kind === "turn" || menuVersion.turn)
+            ? null
+            : h(MenuItem, { icon: "undo", onSelect: () => (closeMenu(), openCard(menu.key, "undoTurn")) }, words.undoThisTurn),
         )
       : null;
 
@@ -904,7 +1080,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     setFilter(f, name);
     filterBtn.current?.focus({ preventScroll: true });
   };
-  const filterLabel = typeof filter === "object" ? words.onlyClip(clipName || words.version) : filter === "all" ? "" : words.filters[filter];
+  const filterLabel = typeof filter === "object" ? words.onlyClip(clipName || words.version) : filter === "all" ? (marksOnly ? words.landmarksFilter : "") : words.filters[filter];
   const filterChoices = ["all", "named", "turns", "mine"] as const;
   const filterPop = filterMenu
     ? h(
@@ -919,7 +1095,13 @@ export function HistoryPanel(props: HistoryPanelProps) {
           },
         },
         h(MenuLabel, null, words.show),
-        ...filterChoices.map((f) => h(MenuItem, { key: f, checked: filter === f, onSelect: () => pickFilter(f) }, words.filters[f])),
+        ...filterChoices.flatMap((f) => [
+          h(MenuItem, { key: f, checked: filter === f && !marksOnly, onSelect: () => (setMarksOnly(false), pickFilter(f)) }, words.filters[f]),
+          // Landmarks, second after All versions (DESIGN-V2 §2.5): the story of the project in a screenful
+          f === "all" && typeof ui.landmarks === "function"
+            ? h(MenuItem, { key: "landmarks", checked: marksOnly, title: words.landmarksFilterHint, onSelect: () => (pickFilter("all"), setMarksOnly(true)) }, words.landmarksFilter)
+            : null,
+        ]),
         filterMenu.clip
           ? [
               h(MenuSeparator, { key: "s" }),
@@ -935,9 +1117,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const cut = props.cuts === undefined ? ownCuts : props.cuts;
   const stickyAt = scrolled && rows && dayOf && topRow < rows.length ? dayOf[topRow]! : -1;
   const sticky = stickyAt >= 0 && stickyAt < topRow ? (rows![stickyAt] as DayHistoryRow) : null;
-  const nothing = allCount === 0 || (filter === "all" && onlyStart);
-  const empty = !status.loading && (count === 0 || (filter === "all" && onlyStart));
-  const loading = status.loading && count === 0;
+  // (a search's or the Landmarks filter's narrowed list says nothing of History itself: the field stays while it loads)
+  const nothing = allCount === 0 || (filter === "all" && !only && onlyStart);
+  // a search or the Landmarks filter counts what it narrowed the list to (DESIGN-V2 §2.3, §2.5)
+  const shown = only ? (versions?.length ?? 0) : count;
+  // (a search on its way: the last results stay on screen, and "nothing found" waits for its answer)
+  const findWaits = searching && (found.q !== query || found.status === "loading");
+  const empty = !status.loading && !findWaits && (shown === 0 || (filter === "all" && !only && onlyStart));
+  const loading = (status.loading && count === 0) || (findWaits && found.status !== "ready" && shown === 0);
+  // "“Intro”, the clip" first, when the newest hits name one clip (DESIGN-V2 §2.3)
+  const clipHit = searching && found.status === "ready" ? found.hits.find((x) => x.field === "clip" && x.itemId) : undefined;
   // ← History from the Changes view: back on the row it came from (a run of changes: its group's row)
   const closeChanges = () => {
     const from = changesView?.from;
@@ -960,8 +1149,31 @@ export function HistoryPanel(props: HistoryPanelProps) {
       "aria-label": words.history,
       "data-menu-open": menu ? "" : undefined,
       "data-scrolled": scrolled ? "" : undefined,
-      onKeyDown: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, false),
-      onKeyUp: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, true),
+      "data-picking": pick ? "" : undefined,
+      onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
+        // Ctrl+F or / while History has focus: the search field (DESIGN-V2 §2.3)
+        const t = e.target as HTMLElement;
+        if (((e.key === "f" || e.key === "F") && (e.ctrlKey || e.metaKey) && !e.altKey) || (e.key === "/" && !e.ctrlKey && !e.metaKey && t.tagName !== "INPUT" && t.tagName !== "TEXTAREA")) {
+          if (search.current) {
+            e.preventDefault();
+            e.stopPropagation();
+            search.current.focus();
+            return;
+          }
+        }
+        // Esc in pick mode stops picking, wherever the keyboard is in History (a menu's or the card's own goes first)
+        if (e.key === "Escape" && pick && !e.defaultPrevented) {
+          e.preventDefault();
+          e.stopPropagation();
+          setPick(null);
+          return;
+        }
+        onBeforeKey(e, false);
+      },
+      onKeyUp: (e: KeyboardEvent<HTMLElement>) => {
+        peek.keyUp(e);
+        onBeforeKey(e, true);
+      },
     },
     h(
       "header",
@@ -969,6 +1181,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       cut,
       // (the cuts menu grows into the bar itself: its Viewing pill on a teammate's cut sits at the bar's right)
       cut == null ? h("span", { className: "carton-cutbar-gap" }) : null,
+      // ⇆ Compare (DESIGN-V2 §4.2): the questions people ask, "Compare your edit with…"
+      nothing ? null : h(CompareButton, { landmarks: marks.list, today, dayOf: dayNumber, onCompare: compareTo, onPick: startPick, findVersion: find }),
       nothing && filter === "all"
         ? null
         : h(
@@ -993,7 +1207,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
           ),
     ),
     props.actions ?? null,
-    filter !== "all"
+    // the search field, always shown under the cut bar (DESIGN-V2 §2.3), once there is something to find
+    typeof ui.find === "function" && !nothing ? h(SearchBox, { ref: search, onQuery: setQuery, onDown: toList }) : null,
+    pick ? h(PickLine, { pick, onCompare: compareTo, onLeave: () => setPick(null) }) : null,
+    filter !== "all" || marksOnly
       ? h(
           "div",
           { className: "carton-filter-chips" },
@@ -1001,12 +1218,21 @@ export function HistoryPanel(props: HistoryPanelProps) {
             "span",
             { className: "carton-filter-chip" },
             h("span", { className: "carton-filter-chip-text" }, filterLabel),
-            h("button", { type: "button", className: "carton-filter-chip-x", "aria-label": words.removeFilter, "data-carton-tip": words.removeFilter, onClick: () => setFilter("all") }, h(Icon, { name: "x", size: 11 })),
+            h("button", { type: "button", className: "carton-filter-chip-x", "aria-label": words.removeFilter, "data-carton-tip": words.removeFilter, onClick: () => (setMarksOnly(false), setFilter("all")) }, h(Icon, { name: "x", size: 11 })),
           ),
           status.since !== undefined ? h("span", { className: "carton-filter-note" }, words.clipSince(clock(status.since, { now, locale }))) : null,
         )
       : null,
     typeof filter === "object" ? h(ClipCredits, { key: filter.item, item: filter.item, name: clipName }) : null,
+    clipHit && typeof filter !== "object"
+      ? h(
+          "div",
+          { className: "carton-find-clip" },
+          h(ClipCredits, { key: clipHit.itemId, item: clipHit.itemId!, name: clipHit.clipName ?? "", title: words.findClip(clipHit.clipName ?? "") }),
+          h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId! }, clipHit.clipName ?? "")) }, words.onlyThisClip),
+        )
+      : null,
+    searching && found.status === "ready" && shown ? h("p", { className: "carton-find-count", role: "status" }, words.findCount(found.total)) : null,
     failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
     loading
       ? h(
@@ -1014,18 +1240,29 @@ export function HistoryPanel(props: HistoryPanelProps) {
           { className: "carton-history-skeleton", role: "status", "aria-label": words.history },
           ...[0, 1, 2].map((k) => h("div", { key: k, className: "carton-skeleton-row" }, h("span"), h("span"), h("span"))),
         )
+      : empty && searching
+        ? h(
+            "div",
+            { className: "carton-find-empty", role: "status" },
+            h("p", { className: "carton-find-empty-title" }, found.status === "error" ? words.findFailed : words.findNone(query.trim())),
+            h("p", { className: "carton-find-empty-body" }, words.findNoneHint),
+            h("p", { className: "carton-find-empty-body" }, words.findSearched(ui.cuts().find((c) => c.current)?.label ?? words.mainCut)),
+            h(Button, { onClick: () => (search.current?.clear(), search.current?.focus()) }, words.clearFind),
+          )
+      : empty && marksOnly
+        ? h("p", { className: "carton-empty" }, words.landmarksEmpty)
       : empty
         ? filter === "all"
           ? h(EmptyHistory, { start: rows?.find((r) => r.kind === "start") as Extract<HistoryRow, { kind: "start" }> | undefined })
           : h("p", { className: "carton-empty" }, typeof filter === "object" ? words.clipEmpty(clipName || words.version) : words.filterEmpty[filter])
         : h(
             "div",
-            { className: "carton-history-body" },
+            { className: "carton-history-body", ...peek.list },
             h(VirtualList, {
               key: fkey,
               className: "carton-history-list",
               label: words.history,
-              count: rows ? rows.length : count,
+              count: rows ? rows.length : shown,
               rowHeight: VERSION_ROW_HEIGHT,
               heightOf,
               layoutKey: rows,
@@ -1062,6 +1299,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
               : null,
           ),
     rowMenu,
+    h("p", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
   );
 }
 
