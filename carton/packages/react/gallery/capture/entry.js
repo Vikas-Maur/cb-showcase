@@ -368,7 +368,7 @@ const ui = scenario.ui;
 
 // ------------------------------------------------------------------ the fake bridge (window.__carton in the app)
 function makeBridge(sc) {
-  const events = new Set(), commands = new Set(), early = [], notices = new Set(), servers = new Map(), blockedSubs = new Set(), backSubs = new Set();
+  const events = new Set(), commands = new Set(), early = [], earlyNotices = [], notices = new Set(), servers = new Map(), blockedSubs = new Set(), backSubs = new Set();
   const emit = (ev) => queueMicrotask(() => { for (const f of [...events]) f(ev); });
   const comments = sc.comments ?? createMockComments({ seed: false });
   const calls = [];
@@ -397,9 +397,10 @@ function makeBridge(sc) {
     // a command sent before the panel listens (the page mounts late on a busy machine) waits for it, as a menu click
     // in the app can't come before the window: the panel used not to open now and then (a rig race, design QA §1)
     onCommand(f) { commands.add(f); for (const action of early.splice(0)) setTimeout(() => f({ action }), 0); return () => commands.delete(f); },
-    onNotice(f) { notices.add(f); return () => notices.delete(f); },
+    // a notice (the failed-save toast) sent before the stage listens waits for it, as a command does
+    onNotice(f) { notices.add(f); for (const text of earlyNotices.splice(0)) setTimeout(() => f(text), 0); return () => notices.delete(f); },
     command(action) { if (!commands.size) early.push(action); for (const f of [...commands]) f({ action }); },
-    notice(text) { for (const f of [...notices]) f(text); },
+    notice(text) { if (!notices.size) earlyNotices.push(text); for (const f of [...notices]) f(text); },
     // the title bar's report, as main hands it to the strip (main-bridge.js panel): the cut chip's part too
     reportPanel(panel, live, chip) { window.__cap.strip = { panel, live: live ?? null, ...(chip ?? {}) }; for (const f of stripSubs) f(window.__cap.strip); },
     preview(_projectId, ref) { window.__cap.previewRef = ref; for (const f of previewSubs) f(ref); return Promise.resolve(); },
