@@ -19,7 +19,7 @@ import { Component, createElement as h, memo, useCallback, useEffect, useLayoutE
 import { Button, CartonProvider, Dialog, Glyph, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu, cutRef, pickUndoneText, commentWords } from "@carton/react";
 import { injectCardboardSkin, injectStyles } from "@carton/react/skin/cardboard";
 // Compare in the editor (Carton UX v2, N1): the comparison on the page's view model, the stage, the change list
-import { attachCompare, CompareStage, CompareSide, comparingLabel } from "./compare.js";
+import { attachCompare, CompareStage, CompareSide, comparingLabel, useComparing } from "./compare.js";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
 // person couldn't tell they had worked. One at a time, gone after 6 s, and kept while the pointer or the keyboard is on
@@ -576,7 +576,7 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   }), [seeker, bridge, projectId]);
   // Compare in the editor (N1, DESIGN-V2 §1.2): every way into the Changes view opens Compare; while comparing,
   // History is its change list
-  const comparing = useComparingNow(ui);
+  const comparing = useComparing(ui);
   const onCompare = useCallback((a, b) => void Promise.resolve(ui.openCompare?.(a, b)).catch(() => {}), [ui]);
   const foldIds = useCallback((from, into) => setFold({ from, into }), []);
   return h("div", { ref: box, className: "carton-sidebar-history" },
@@ -586,13 +586,6 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     h("div", { style: { display: comparing ? "none" : "contents" } },
       h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play, ...(typeof ui.openCompare === "function" ? { onCompare } : {}) })),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
-}
-
-/** Whether Compare is open (N1), re-read when it opens, closes or changes. */
-function useComparingNow(ui) {
-  const [, bump] = useState(0);
-  useEffect(() => (typeof ui.onCompare === "function" ? ui.onCompare(() => bump((n) => (n + 1) | 0)) : undefined), [ui]);
-  return typeof ui.comparing === "function" ? ui.comparing() : null;
 }
 
 /** The project's timecoded comments (@carton/comments, served by the worker): pinned at the playhead, a timecode seeks. */

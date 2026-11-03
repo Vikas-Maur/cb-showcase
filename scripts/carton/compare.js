@@ -10,7 +10,7 @@
 // - CompareSide, in the side panel: the change list in place of History's list while comparing.
 // The second player is editor-panel.js's (Cardboard's own preview engine on a canvas of its own), handed in as
 // `player`; without one (an older bundle, a failure) Compare is Flip only (§1.10).
-import { createElement as h, Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createElement as h, Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
   clock, compareMarks, compareModeShown, compareModesFor, cutRef, followTime, leadTime, rowRange, stepAt, stripOf, timecode,
@@ -100,8 +100,8 @@ export const comparingLabel = (c) => (c ? words.comparing(c.left.label, c.right.
  */
 export function attachCompare(ui, o) {
   const subs = new Set();
-  let value = null, data = null, seq = 0, back = null, selected = null, flipped = false;
-  const notify = () => { for (const f of [...subs]) try { f(); } catch (e) { console.warn("[carton] compare:", e?.message ?? e); } };
+  let value = null, data = null, seq = 0, back = null, selected = null, flipped = false, version = 0;
+  const notify = () => { version++; for (const f of [...subs]) try { f(); } catch (e) { console.warn("[carton] compare:", e?.message ?? e); } };
   const projectId = o.projectId;
   const bridge = o.bridge;
   // the right side's stage: your edit held read-only as it is (no checkout), else that version, read-only
@@ -141,6 +141,8 @@ export function attachCompare(ui, o) {
   };
 
   ui.comparing = () => value;
+  // goes up at every change (the comparison, what it loaded, the row picked, Flip): useComparing re-reads on it
+  ui.compareVersion = () => version;
   ui.onCompare = (f) => { subs.add(f); return () => { subs.delete(f); }; };
   ui.compareData = () => data;
   ui.compareSelected = () => selected;
@@ -256,10 +258,14 @@ export function attachCompare(ui, o) {
 
 // ---------------------------------------------------------------- hooks
 
-/** The comparison, re-read when it changes. */
+/**
+ * The comparison, re-read at every change (what it loaded, the row picked too). An external store: a change between a
+ * render and its effect (Preact runs effects after paint) is never missed.
+ */
 export function useComparing(ui) {
-  const [, bump] = useState(0);
-  useEffect(() => (typeof ui.onCompare === "function" ? ui.onCompare(() => bump((n) => (n + 1) | 0)) : undefined), [ui]);
+  const subscribe = useCallback((f) => (typeof ui.onCompare === "function" ? ui.onCompare(f) : () => {}), [ui]);
+  const version = useCallback(() => (typeof ui.compareVersion === "function" ? ui.compareVersion() : 0), [ui]);
+  useSyncExternalStore(subscribe, version, version);
   return typeof ui.comparing === "function" ? ui.comparing() : null;
 }
 
