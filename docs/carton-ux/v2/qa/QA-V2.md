@@ -1,0 +1,160 @@
+# Carton v2: design QA of the built UI, and its fixes
+
+**What was judged:** `origin/feat/carton-ux`, from `bbb9d771` (History v2: N2) through `6f5c00d6` (N2b, Bring back on
+N0b), `0a51cbda` (N1, Compare in the editor) and `f2136b1c` (N2c, another cut's versions in pick mode).
+**Against:** `origin/design/carton-ux-v2` @ `68d40da1`, `docs/carton-ux/v2/DESIGN-V2.md` and its mockups in
+`docs/carton-ux/v2/after/`. The first design (`design/carton-ux`) and the first QA (`design/carton-ux-qa`,
+`docs/carton-ux/qa/QA.md`) still hold where v2 says nothing.
+**For whom:** a video editor who has never used version control. The user's asks: *"make version stuff as much easy
+for the end user as possible"*, and the complaints DESIGN-V2 §0 lists (a messy History to roll back from, a git-like
+diff of any two versions, Compare congested in the panel, comparing separate cuts, the agent opening Compare).
+**By:** a design QA reviewer who neither designed nor built it. The fixes are on `fix/ux2-qa`.
+
+**How:** the capture rig (`carton/packages/react/gallery/capture`, `npm run screens`) renders the real components with
+Cardboard 1.4.0's own CSS and fonts, on React and on preact/compat. Every History state was shot at 384 and 300 px,
+and the editor compositions at the mockups' 1522 × 810, 1250 and 1100 px. N2's and N1's rig states were used as they
+are; `states/qa2.js` and `states/qa2.shots.mjs` add the states they didn't reach: search cleared and with a filter,
+each Go back… choice, Bring back's confirmations and toasts, a past day opened, Another cut, pick mode with search,
+and the editor around them. Shots beside the mockups are in `shots/`. Bugs that only a real browser shows were
+reproduced in headless Chromium with scripts (`rig/` in the scratch copy) before they were fixed.
+
+**Scores are from renders.** They are a ceiling until the Windows checks in §5 pass.
+
+## 1. Verdict
+
+- **The user's four complaints are answered on screen.**
+  - *A messy History to roll back from:* landmarks (Exported, Sent, Named, Before, Start) with pictures, folded days
+    that keep their landmarks, search, hold-to-peek, and **Go back…**, which puts the four ways back side by side with
+    what each does. Nobody restores a whole edit when they meant one clip.
+  - *A git-like diff of any two:* **Compare** on the stage, with the change list in the panel and marks on Cardboard's
+    own timeline. Pick mode compares any two rows, and N2c any version of any cut.
+  - *Compare congested in the panel:* gone. Compare takes over the stage: Side by side, Wipe or Flip, Play both, and
+    the panel is only the list.
+  - *Separate cuts, and the agent opening it:* both work, and both name both sides.
+- **Fidelity to the mockups is high** for N2's History and N1's Compare. Most differences are the rig's data, not the
+  build.
+- **What I found and fixed tonight** (§3): a bring-back's row read as the plain change it undid, in the real view model;
+  a Before landmark couldn't say which restore it kept; "↑ Newest" stuck over search results; Compare's list wasn't in
+  timeline order; Play both sat at the stage's foot, far under the pictures; the timeline legend squeezed the timecode in a narrow window;
+  a version of another cut was "an earlier version" three times on screen, and Fold in named that version though it
+  folds the cut.
+- **What stops it short of 10/10:** N1b's four items (Play both letting a side wait and the slates, the row detail,
+  the three missing ways into Compare, re-measuring), landmark titles cut off at 300 px, past days not folding their
+  runs, and the few open gaps in §4.
+- **Overall: History about 8.5/10, Compare about 8.5/10 on renders**, up from about 7.5 and 7.5 before tonight's fixes.
+
+## 2. Scores, before and after the fixes
+
+Scores out of 10, for a newcomer editor. "Before" is the build as it came in; "after" is `fix/ux2-qa`.
+
+| Region | Before | After | Why |
+|---|---|---|---|
+| **History: landmarks, Landmarks filter, folded days** | 7 | 8 | Tags, pictures, "41 versions · 4 landmarks", the filter: as designed. Before, two restores' safety points both read "BEFORE Restoring an earlier version", and a bring-back's "BEFORE Bringing back a clip". Fixed: "Restoring the 11:02 am version", "Bringing back “B-roll 3”". Open: titles cut at 300 px (G9), past days don't fold their runs (G10) |
+| **Search: results, empty, clearing** | 7 | 8 | Debounced, newest first, the clip first with Only this clip, each row says why. Before, a search from a scrolled list kept "↑ Newest" over results already at the top, and after Clear search. Fixed. Open: the clip's credits run to five lines at 300 px (G12), no "Search every cut" (G13) |
+| **Hold to peek** | 8 | 8 | "Holding" in the row, the frame and chip while held. The hint is a native tooltip: the real app decides it |
+| **Go back… (each choice, a clip selected)** | 8 | 9 | Four choices smallest first, nothing picked, "Choose one", each button names its action, "Ctrl+Z undoes any of these", a selected clip picked. Before, at 300 px the wrapped row put the named action alone on the right, over Cancel. Fixed |
+| **Bring back one clip (list, confirm, changed again, toast)** | 7.5 | 9 | N2b brought place, ripple and the "changed again" refusal. Before, in the real view model the new version's row read "Trimmed “Intro”, now ends at 0:05": the change it undid, so a bring-back couldn't be told from an edit. Fixed: "Brought back “Intro” from 10:20 am" / "Took out “Drone shot”" |
+| **⇆ Compare menu and pick mode** | 7 | 8.5 | The questions people ask, with pictures; pick mode with the From pill and ⇆ Compare on every row; search works while picking. At 300 px the menu ran out of the panel's left edge (N2c fixed it at the same time). N2c's another-cut picker reads well |
+| **Cuts, viewing, toasts, conflict cards** | 8.5 | 8.5 | No regressions from v2: chip, frame, row mark, toasts with Undo, conflict cards, the cuts menu |
+| **Compare: Side by side** | 8 | 9 | Close to the mockup. Before, Play both sat at the stage's foot, far under the pictures at 1522 × 810, and the list was in the engine's order (0:12 before 0:07). Fixed |
+| **Compare: Wipe** | 8.5 | 8.5 | The line, the corner labels, the hint |
+| **Compare: Flip, Flip only** | 8 | 8 | Hold B, the blue tag, the pill. While B is held the timeline is the left side's, so its marks go (G15: the spec should say so) |
+| **Compare: the marks, the strip, the legend** | 7.5 | 8.5 | Every mark kind, the strip, tags. Before, the legend followed the window's width (a 900 px media query): in a 1100 px window it stayed in a timeline far narrower than 900 px. Fixed: the timeline's own width |
+| **Compare: chip and the ways out** | 9 | 9 | One label everywhere; Esc, ✕, Done comparing, ← History |
+| **Compare: an edit tried** | 9 | 9 | One line in Compare's words, Done comparing, Esc, the pulse |
+| **Compare: narrow windows, the drawer** | 7.5 | 8.5 | Flip at 1250, Flip only at 1100, icons, "Done", the frame's own label. The legend fix is what moved it |
+| **Compare: across cuts** | 6 | 8 | Opened from the cuts menu, Another cut and N2c's picker. Before, another cut's older version read "“30s Instagram cut” (an earlier version)" in the chip, "(an earlier version) · an earlier version" in the range line, and in Fold in's button. Fixed: "Comparing “30s Instagram cut” at 1:53 pm with Main cut now", and the count gives each cut's length (G14) |
+| **Compare: agent-opened, idle and busy** | 9 | 9 | Idle: it opens, one toast says who. Busy or viewing: never replaced, an offer with Open |
+| **Compare: the change list** | 7.5 | 8.5 | The range in words, the count, ▶ on a row. The row detail is N1b's |
+
+## 3. Gaps fixed on `fix/ux2-qa`
+
+Each with a test where it's behaviour; every one shot before and after in the rig.
+
+| # | Gap | Fix | Proof |
+|---|---|---|---|
+| G1 | **A bring-back's row read as the change it undid** in the real view model ("Trimmed “Intro”, now ends at 0:05"): `from-carton.ts` had no words for core's `bring-back` title | "Brought back “Intro” from 10:20 am" (the version's name or time), or "Took out “Drone shot”" when every row is a removal, as the toast says it | `ux2-n0.test.ts`: fails on the old code with exactly that summary |
+| G2 | **"↑ Newest" stuck over search results** that start at the top, and after Clear search: History's list unmounts while a search loads, and its host never heard it wasn't scrolled | `VirtualList` tells its host on unmount | Reproduced in Chromium (pill shown at scrollTop 0), gone after; `history-v2.dom.test.ts` "search from a scrolled list" |
+| G3 | **Before landmarks couldn't say which restore** they kept: every one read "Restoring an earlier version" or "Bringing back a clip" | Its title comes from the row after it: "Restoring the 11:02 am version", "Bringing back “B-roll 3”" (`words.safetyTitleOf`) | `history-v2.dom.test.ts` landmarks; shot `landmarks-before-title` |
+| G4 | **Compare's list wasn't in timeline order** (the engine's is by clip): 0:12 "Removed “B-roll pier”" above 0:07 | Sorted by place, stable, no-place last; ↑↓ follow it | `compare-view.dom.test.ts` |
+| G5 | **Play both sat at the stage's foot**, far under the two pictures at 1522 × 810 | Side by side lays the pictures and Play both out as one block in the middle | shot `compare-side-by-side` before/after |
+| G6 | **The legend squeezed the timecode** onto three lines in a 1100 px window: it hid by window width (≤ 900 px), not the timeline's | It shows only when the timeline's toolbar row is 900 px or wider (DESIGN-V2 §1.6). Cardboard's timeline region is `display: contents`, so the row is measured | `compare.test.js` §1.6, a narrow and a wide toolbar row |
+| G7 | **Another cut's older version was "an earlier version"** in the chip, twice in the range line, and in "Fold in changes from “30s Instagram cut” (an earlier version)…", though Fold in folds that cut as it is now | `openCompare` reads that version from its cut's History before naming the sides: "Comparing “30s Instagram cut” at 1:53 pm with Main cut now"; the range line "“30s Instagram cut” · 1:53 pm / with Main cut · your edit now"; Fold in names the cut | `compare.test.js` "N1 with N2" |
+| G14 | Across cuts the count gave one length ("7 differences · 0:38"); §1.12 gives each cut's | The panel's count gives both, left first: "7 differences · 0:30 and 0:36" | `compare.test.js` §1.1 |
+| G8 | **Go back…'s and Bring back's actions** at 300 px: the named action alone on the right, over Cancel | Left-aligned when they wrap | shot `bring-back-confirm-300` before/after |
+| — | Two rig shots broke when ⋯ entries started opening Go back… (`after-toast-newcut`, `history-restore-error`) | Their steps go through Go back… | the rig, both runtimes |
+
+N2c fixed the Compare menu's clipping at 300 px at the same time as I did; its CSS was kept.
+
+## 4. Open gaps, by impact, with their exact fixes
+
+**N1b's, being built (not fixed here, by agreement):**
+- Play both doesn't let a side wait: a longer left shot is cut short, and a left-only shot is skipped (§1.4: hold the
+  last frame with "waiting", and the slate "“Drone shot” isn't in “Sent to client”").
+- The row detail in Compare's list: Then / Now in words, and Bring back one clip there (§1.5, §3.2).
+- The card's "⇆ Side by side" while playing, Fold in's "See them side by side", a teammate cut's "Compare with Main
+  cut".
+- Re-measuring Play both.
+
+**Mine to list (too big, or not mine, tonight):**
+
+| # | Gap | Impact | Exact fix |
+|---|---|---|---|
+| G9 | **Landmark titles are cut at 300 px** ("EXPORTED 1080p for th…", "BEFORE Restoring an ea…"). DESIGN-V2 §2.1: "Below 340 px a landmark's title wraps to two lines rather than losing its words to the tag" | Medium: at the narrowest panel the moments people look for lose their words | Rows are fixed-height virtual rows. In `HistoryPanel.ts`, `heightOf(i)`: a landmark row (not a turn) gets `VERSION_ROW_HEIGHT + 18` when the panel is under 340 px (the panel's width is known from its ResizeObserver); in `history-v2.ts`, `@container (max-width: 340px)` gives `.carton-version[data-landmark]:not([data-landmark=turn]) .carton-version-title` `white-space: normal; -webkit-line-clamp: 2; display: -webkit-box`. The tops array already takes per-row heights |
+| G10 | **An opened past day lists every version** instead of its landmarks with one line per run between them ("› 18 changes by You and Claude Code", §2.5) | Medium: yesterday's 23 rows are noise when looking for a moment | In `history-groups.ts`, a past, opened day becomes: each landmark row, and between two landmarks a `run` row (`{ kind: "run", ids, authors }`, words "N changes by A and B") that opens in place like a group. Today is never folded this way |
+| G11 | The mock's bring-back row still says "from an earlier version" (gallery only: the real view model is fixed by G1) | Low: rig only | `mock-find.ts` `restoreClip`: summary `Brought back “X” from ${clockOfDay(version.at)}` |
+| G12 | The search's "“Intro”, the clip" credits run to five lines at 300 px ("color changed by You yesterday at 12:30 pm · text changed by Director at 2:05 pm · …") | Low–medium: pushes the results below the fold | `ClipCredits` in the search: one line, latest two parts and "+ N more", e.g. "Added by Bob on Oct 31 · trimmed by Director today", the rest in its tooltip |
+| G13 | Search's empty state has no "Search every cut" (§2.3) | Low | `HistoryPanel` empty-search: a `carton-link` "Search every cut" that re-runs `find(q, { allCuts: true })`; each hit's meta line gets its cut's dot and name |
+| G15 | While B is held in Flip, the timeline's marks, strip and legend go. That is right for what's on screen: Flip swaps the editor's timeline to the left side too (Before's swap), and the marks are placed on the right side's clips. The mockup keeps them | Low: a flick, and the list stays | No code change. DESIGN-V2 §1.3's Flip row should say "While held, the timeline shows the left side as well; its marks come back on release" |
+| G16 | The pinned day header says "Today" for about one header's height after yesterday's rows reach the top | Low | `HistoryPanel` `stickyAt`: use the row under the header's bottom edge (`scrollTop + 32`) for `topRow`, not `scrollTop` |
+| G17 | A removed caption's ghost has no name when the clip is narrow (mockup: "our new" in red) | Low | `CompareMarks`: draw the ghost's name when it's at least 24 px wide (the tag's 36 px rule is for tags) |
+| G18 | Without a host Compare (no `openCompare`), the Compare menu's "Another cut" opens nothing | Low: every shipped host has N1 now | `CompareMenu`: list the cut entries only when `typeof ui.openCompare === "function"` |
+
+## 5. What only the real Windows app can judge
+
+- **The second player:** ready within 2 s, the Flip-only fallback on a real failure, GPU memory, Play both in step on
+  real footage, and no cost while not comparing (DESIGN-V2 §6; N1's FEASIBILITY.md §5). On mains power, the NVIDIA GPU
+  checked (AGENTS.md).
+- **The marks on Cardboard's canvas timeline:** their places on real clips, at zoom and scroll; the legend's hiding on
+  the real toolbar row (G6 measures `.justify-between`, the rig's stand-in has the same structure).
+- **Hold to peek:** the 300 ms hold against a real stage swap, and the native tooltip "Click to open · hold to peek".
+- **Landmark pictures** made from the real stage, and never during playback or export.
+- **The agent's `cb compare --show`:** idle detection with real keys and mouse, the offer toast while busy.
+- **Bring back's place and ripple** on a real project: a new track above when the place is taken, the rest moving 3 s.
+- **Another cut's History** read a page at a time on a long cut (N2c), and G7's one-version read before Compare opens.
+- **Fonts and sizes at 125 %**, Windows' caption buttons, and the 960, 1100 and 1522 px windows.
+
+## 6. React and preact/compat
+
+The v2 states (N1's, N2's, N2c's, this QA's, and the editor compositions) were shot on both after the fixes and compared
+pixel by pixel (a pixel counts when a channel differs by more than 16). No Preact shot failed. Four pairs differ:
+- `editor-before`, `editor-edit-attempt`: a few pixels where the playhead was caught at another instant;
+- `n1-edit-attempt`: the frame's pulse, an animation shot mid-way;
+- `qa2-editor-goback`: my shot's selector, not the UI. Two rows share the title "Add captions to the interview" (today's
+  and Oct 31's), and the two runtimes put a different one first in the DOM, so the shot opened Go back… on different
+  rows. Both render it the same way.
+
+`npm test -w packages/react` passes on both runtimes; the full `npm run typecheck` passes; `compare.test.js`,
+`viewing.test.js`, `panel-polish.test.js` and `cut-chip.test.js` pass; the history bundle stays within its 32 KB budget
+(nothing was added to `packages/core/src/history/`).
+
+## 7. Shots
+
+In `shots/`, each with its mockup beside it where one exists. 384 and 300 px panels, 1522 × 810 editor.
+
+| File | Shows |
+|---|---|
+| `history-landmarks.png` | Landmarks at 384 and 300 beside the mockups; G9 visible at 300 |
+| `landmarks-before-title.png` | G3: the Before titles after the fix, after a restore and after a bring-back |
+| `history-search.png` | Search: results, 300 px, empty, beside the mockups |
+| `search-newest.png` | G2: the editor with "intro" searched, before (↑ Newest over the results) and after |
+| `history-goback.png` | Go back…: nothing picked, a clip selected, Restore picked at 300, beside the mockups |
+| `bring-back.png` | The clip list and the confirmations (deleted, taken out, changed, changed again), beside the mockups |
+| `bring-back-confirm-300.png` | G8 before/after |
+| `bring-back-toast.png` | The editor after Bring back: the toast and the row (G1's words are the real view model's) |
+| `compare-menu.png` | ⇆ Compare menu at 384 and 300, Another cut, pick mode, N2c's picker |
+| `compare-side-by-side.png` | G4 and G5: before and after, beside the mockup |
+| `compare-modes.png` | Wipe, Flip, Flip only, beside the mockups |
+| `compare-narrow.png` | 1250 and 1100 px windows, the drawer hidden |
+| `compare-cuts.png` | Across cuts: the cuts menu's Compare (G14's two lengths), and G7 before/after (opened from N2c's picker in a scenario with no second player, so Flip only) |
+| `compare-agent.png` | Agent-opened, idle and busy; the edit attempt |
