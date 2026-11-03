@@ -11,7 +11,7 @@ frames.push(shot("compare-panel-300", 300, 760, cmpPanel({ w: 300, h: 760, sel: 
 const addDetail = `<div class="chgx"><div class="tn"><span>Then</span><span>Not in ${SENT}</span><span>Now</span><span>0:12–0:16</span></div>
   <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn xs sec">${I("restore", 12)}Take out “Drone shot”</button></div>
   <div class="hint" style="margin-top:6px;font-size:11.5px">It wasn't in ${SENT}. Everything after moves 4 s earlier. Ctrl+Z takes it back.</div></div>`;
-frames.push(shot("compare-panel-added-384", 384, 560, cmpPanel({ h: 560, sel: 5, detail: addDetail })));
+frames.push(shot("compare-panel-added-384", 384, 640, cmpPanel({ h: 640, sel: 5, detail: addDetail })));
 
 // Toasts and lines on the stage while comparing, and the agent's two ways in.
 const T = (html) => `<div class="toast" style="white-space:normal;margin-bottom:12px">${html}</div>`;
@@ -24,7 +24,7 @@ frames.push(shot("compare-toasts", 640, 330, `<div style="padding:16px;backgroun
 </div>`));
 
 // The cuts menu: every other cut can be compared with the one you're on.
-frames.push(shot("compare-cuts-menu-384", 384, 470, panel(head() + cutbar({ right: filterBtn }) + `<div class="list" style="opacity:.35">${day("Today", "")}${turnRow()}${mineRow()}</div>
+frames.push(shot("compare-cuts-menu-384", 384, 560, panel(head() + cutbar({ right: filterBtn }) + `<div class="list" style="opacity:.35">${day("Today", "")}${turnRow()}${mineRow()}</div>
   <div class="menu" style="position:absolute;left:8px;top:84px;width:330px">
     <div class="mlabel">Cuts</div>
     <div class="mi"><span class="ck">${I("check", 14)}</span>${I("cut")}<span>Main cut<span class="sub">You · now</span></span></div>
@@ -35,7 +35,7 @@ frames.push(shot("compare-cuts-menu-384", 384, 470, panel(head() + cutbar({ righ
     <div class="mi">${I("plus")}New cut from your edit</div>
     <div class="mi">${I("foldIn")}Fold in changes from a cut…</div>
     <div class="mnote">Agents work on the cut you're on.</div>
-  </div>`, 470)));
+  </div>`, 560)));
 
 // Fold in's preview: the same differences, one step from the stage.
 frames.push(shot("compare-fold-entry", 560, 300, `<div class="dialog" style="width:560px;height:300px">

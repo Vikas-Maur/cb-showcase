@@ -72,7 +72,7 @@ While comparing, these change:
 | Row or card `⋯` **Compare with your edit** | this version ↔ your edit now | |
 | Row or card `⋯` **Compare with…** | this version ↔ the version you click next, in any cut | Pick mode, §4.1 |
 | **Shift+click** (or **Shift+↑↓**) a second row | the two rows, older on the left | As today, but it opens Compare |
-| History's **⇆ Compare** button (cut bar), new | a landmark ↔ your edit now: *with the version you sent*, *with the last export*, *with the start of today*, *with another cut ›*, *with…* | §4.2. The one-click answer to "what changed since I sent it?" |
+| History's **⇆ Compare** button (cut bar), new | a landmark ↔ your edit now: *The version you sent*, *The last export*, *How it was this morning*, *Another cut ›*, *Pick a version…* | §4.2. The one-click answer to "what changed since I sent it?" |
 | A card **while playing** an older version: **⇆ Side by side**, next to Before | the version before it ↔ this version, at the same spot, still playing | Before (hold) stays as it is: a quick flip with no change of layout |
 | **Cuts menu:** **Compare** on another cut's row | that cut now ↔ the cut you're on now | §1.12 |
 | **Fold in:** **See them side by side** | the from-cut now ↔ the into-cut now | The panel's footer gets **Back to Fold in…**, which reopens the dialog with the ticks kept |
@@ -337,7 +337,7 @@ cut switch`. Without `--show`, `cb compare` prints words, as today (§5).
 - screen readers hear "Director opened a comparison: “Sent to client” with your edit. 7 changes. Esc to go back."
 
 **Never:** during a drag, over a dialog, while the person is typing in the editor, or without the chip and Esc to go
-back. An agent can't open Compare for a version the person can't see (another person's private cut).
+back. An agent can't open Compare on a version that hasn't reached this computer yet ("Not sent yet" on a teammate's side); `cb` says so instead.
 
 `cb` output, plain, is in §5.3.
 
@@ -380,7 +380,7 @@ back. An agent can't open Compare for a version the person can't see (another pe
 | Transport | "Play both" / "Pause" · "In step by shot" + "Both sides play the same shot together. A shot that's longer on one side waits for the other." |
 | Timeline | legend "added · removed · changed or moved" · seam "Removed “B-roll pier” here (3 s)" · tags "+", "←4 s", "2 s→", "new track", "•", "3" |
 | Panel | "← History" · "From “Sent to client” · yesterday at 4:10 pm / to your edit now" · "7 changes · 0:36" · "Then" / "Now" · "Restore your edit to “Sent to client”…" · "Back to Fold in…" · across cuts: "Only in Main cut: …", "Only in the 30s cut: …", "… is 6 s shorter in the 30s cut", "… ends at 0:05 here, 0:03 in the 30s cut", "Use the 30s cut's “Interview B” here", "Fold in changes from “30s Instagram cut”…" |
-| History | "Compare" (cut bar, cuts menu rows) · "⇆ Side by side" (card while playing) · "See them side by side" (Fold in) · "Compare with Main cut" (a teammate's cut) |
+| History | "Compare" (cut bar, cuts menu rows) · its menu: "Compare your edit with…", "The version you sent", "The last export", "How it was this morning", "Another cut", "Pick a version…" · "⇆ Side by side" (card while playing) · "See them side by side" (Fold in) · "Compare with Main cut" (a teammate's cut) |
 | Toasts | "You're comparing “Sent to client” with your edit." + "Done comparing" · "You're comparing two earlier versions." + "Back to my edit" · "Director opened a comparison." + "Esc to go back" · "Claude Code has a comparison ready: “30s Instagram cut” with Main cut." + "Open" · "Couldn't show “Sent to client” side by side here. Showing it as a flip." · "Back to your edit to export it." |
 | *Removed* | the in-panel Changes view's change map · "Changes since 12:20 pm" as a panel title (the range line replaces it) |
 
@@ -403,4 +403,378 @@ back. An agent can't open Compare for a version the person can't see (another pe
 
 ---
 
-*§2 to §6 follow in the next commit.*
+## 2. Finding a version in a long history
+
+Every change is a version, so a day's work is hundreds of rows. People don't remember rows; they remember
+**moments**: "the one I sent", "before Claude Code's captions", "this morning". v2 makes those moments visible on
+their own (**landmarks**), gives them pictures, makes the history searchable, and lets a row be peeked at without
+leaving your edit.
+
+![landmarks](after/history-landmarks-384.png) ![landmarks 300](after/history-landmarks-300.png)
+
+### 2.1 Landmarks, made automatically
+
+| Landmark | Made when | Row | Who sees it |
+|---|---|---|---|
+| **Exported** | An export finishes (Cardboard's Export) | Picture · `EXPORTED` 1080p for the client · You · 0:36 | Everyone: "Leo exported 1080p" |
+| **Sent** | A share link is made, a review link is sent, or a video is published from Cardboard | Picture · `SENT` Shared with Leo · You · Leo opened it at 6:41 pm | Everyone |
+| **Named** | Someone names a version (as today) | Picture · `NAMED` **Sent to client** · Named by You | Everyone |
+| **Agent turn** | An agent's turn ends (as today) | The agent's mark, its prompt in quotes, "Director · 12 changes" (unchanged) | Everyone |
+| **Start** | The first change of a session: the project opened, or the first change after an hour away | Picture · `START` How it was when you opened it · You | **Only you.** A teammate's mornings are noise to you |
+| **Before** | Just before a restore, a fold, an undo of a turn, or a Bring back | Picture · `BEFORE` Restoring the 11:02 am version · Kept for you | **Only the person who did it.** Teammates see the restore row itself, whose menu has *Go to just before this* |
+
+- **The tag and the title read as one phrase:** "Before restoring the 11:02 am version", "Exported 1080p for the
+  client", "Sent: shared with Leo". The tag is small capitals in its own colour: Exported green, Sent blue, Named and
+  Before amber, Start grey.
+- A row can be two landmarks (a named version that was exported). It shows the first in this order: Named, Sent,
+  Exported, Before, Start. The rest go in its meta line ("also exported").
+- "Only you see this" sits in the meta line of the personal ones, so nobody wonders where a teammate's went.
+- Below 340 px a landmark's title wraps to two lines rather than losing its words to the tag.
+- Agent turns keep the agent's mark instead of a picture, because who did it matters more there. They show their
+  picture in their card and when peeked.
+- **No setting, no "create checkpoint" button.** Naming a version stays the way to make your own landmark.
+
+### 2.2 Pictures, on landmarks only
+
+- **What:** the frame at the landmark's first change, or at 0:01 if it has none. A 44 × 25 px tile with the clip's
+  look; rounded like Cardboard's media tiles.
+- **When:** made the first time the row comes into view, then kept (§6). Never during playback or export.
+- **Fallback:** the landmark's own icon on a dark tile (export arrow, send, bookmark, sun, shield), shown at once,
+  and kept when the picture can't be made (footage offline, a version still arriving). Never a spinner, never a
+  black tile.
+- Ordinary rows get no picture: a 56 px row with a 44 px tile on every change would double the list's height and
+  make it look the same everywhere.
+
+### 2.3 Search
+
+![search](after/history-search-384.png) ![search 300](after/history-search-300.png) ![empty](after/history-search-empty-384.png)
+
+- **Where:** a field under the cut bar, always shown, placeholder **"Find a clip, a word, a person…"**. Ctrl+F while
+  History has focus; `/` as well.
+- **What it matches**, in this order of weight:
+  1. **clip names** ("Intro", "interview-b.mp4");
+  2. **title and caption text**, then and now ("in half");
+  3. **agents' requests** (the prompt);
+  4. **version names** and landmark words ("exported", "sent", "start");
+  5. **people:** You, Leo, Director, Claude Code;
+  6. **days:** "yesterday", "Monday", "Oct 30".
+  - Words match from their start, any order, case and accents ignored: "intr cap" finds "Add captions… the intro".
+- **Results:**
+  - **A clip first,** when the words name one: "“Intro”, the clip", its credits line ("Added by You on Oct 30 ·
+    trimmed by Director and You today") and **Only this clip**, which turns on the clip filter (DESIGN §6.1).
+  - Then **"9 versions"**, newest first, under day headers, as rows: the title with the match highlighted, and a
+    meta line that says **why it matched** ("“Intro” was 0:00–0:06 here", "Caption text · Leo", "Prompt · 4
+    changes").
+  - Older days fold after 20 results ("3 more").
+  - Results are ordinary rows: a click opens the card, hold peeks, `⋯` has every action, Shift+click compares.
+- **As you type:** from the second letter; the list updates within a frame of the last key (§6).
+- **Empty:** "No versions mention “drone at night”" · "Try a clip's name, words from a title or caption, an agent's
+  request, or a person." · "Searched Main cut. **Search every cut**" · **[Clear search]**.
+- **Clear:** the field's ✕, or Esc in the field. A second Esc closes History, as before.
+- **Search and filters combine:** a filter chip stays visible above the results, so a filtered search never passes
+  for the whole history.
+- **Across cuts:** "Search every cut" adds the cut's dot and name to each result's meta line. A click opens that
+  version as a teammate's cut does (viewing).
+
+### 2.4 Hold a row to peek
+
+![peek](after/editor-peek.png)
+*Holding the Exported row: the stage shows that version at the playhead's moment. Release, and your edit is back.*
+
+- **Press and hold a row** (300 ms, the pointer not moving) or its 👁 button on hover: the stage shows that version
+  at the playhead's moment, paused. **Release** to come back. A click shorter than 300 ms opens the card, as today.
+- **Keyboard:** hold **V** while the row has focus.
+- **While held** it is viewing, with every mark (DESIGN §4.2): the chip's second part reads `👁 Exported 1080p for
+  the client · holding`, the frame shows, and the row's time column says **Holding**. No toast, no announcement but
+  one: "Showing Exported 1080p for the client. Release to go back."
+- **Fast:** the version is fetched when the pointer has rested on a row for 150 ms, one at a time, so the hold
+  shows at once (§6). If it isn't ready in 300 ms, the row's picture (or a dark frame with its name) shows until it
+  is.
+- **Hint:** the row's tooltip, after a second of hovering, says "Click to open · hold to peek".
+
+### 2.5 Filters and folded days, with landmarks
+
+![filter](after/history-filter-landmarks-384.png)
+
+- **The filter menu** gains **Landmarks** ("Exports, sends, names, agent turns, each day's start"), second after All
+  versions. With it on, the list is the story of the project in a screenful.
+- **Folded days keep their landmarks visible** (DESIGN kept named versions and agent turns; v2 keeps every
+  landmark). The header counts both: "41 versions · 4 landmarks".
+- **Past days, open, read as a story:** their landmarks, and between two landmarks one line for the rest: "› 18
+  changes by You and Claude Code". A click opens that run in place. Today is never folded this way.
+
+### 2.6 Grouping, so the list reads like a story
+
+The rules of DESIGN §6.1 stay (a person's changes in a row form one group; agent turns are one row). v2 adds:
+- **A group never crosses a landmark.** "You · 6 changes" stops at an export, so "what I changed after exporting"
+  is its own row.
+- **A day reads top to bottom as a story:** Start → your changes → Director's turn → Exported → Sent.
+- **Restores, folds and Bring backs** sit right after their `BEFORE` landmark, so the pair reads "Before restoring
+  the 11:02 am version" → "Restored the 11:02 am version".
+
+---
+
+## 3. Rolling back, for someone who has never used version control
+
+There are four ways back, and today they sit in different menus with similar words. v2 puts them in **one place,
+side by side, each with what it will do**, so nobody restores a whole edit when they meant to fix one clip.
+
+![card](after/history-card-v2-384.png)
+
+### 3.1 One button, four choices: **Go back…**
+
+On any version that isn't the newest, the card's Restore… becomes **Go back…**. It opens the choices inside the
+card:
+
+![go back](after/history-goback-384.png) ![go back 300](after/history-goback-300.png)
+*After a click on a choice: at 384 px Bring back one clip is picked; at 300 px, Restore the whole edit. Nothing is picked when the chooser opens.*
+
+| Choice | Its line (what will happen) | Its button | After it |
+|---|---|---|---|
+| **Bring back one clip** | "Pick a clip. Only it goes back to how it was. Everything else stays as it is now." | **Choose a clip…** | §3.2 |
+| **Undo Director's turn** (agent turns only) | "Takes out only its 12 changes. The 23 made after stay." | **Undo Director's turn** | Toast "Took out Director's “Add captions…”. [Undo]" |
+| **Restore the whole edit** | "Your edit becomes this version. The 23 changes after it are undone. They stay in History." | **Restore the whole edit** | Toast "Restored your edit from 10:20 am. Later changes are in History. [Undo]" |
+| **Start a new cut from here** | "Your edit stays as it is. A new cut starts from this version, and you switch to it." | **Name the new cut…** | The name field, then the toast DESIGN §6.2 gives |
+
+- **The head says where to:** "Go back to 10:20 am, Director's turn" and "23 changes were made after it."
+- **Order:** the smallest change first. One clip, one turn, everything, then the one that changes nothing on this cut.
+- **Nothing is picked at first,** and the button reads **Choose one** (disabled) until something is. The exception
+  is a clip selected on the timeline: then **Bring back one clip** is picked, and its button reads **Bring back
+  “Intro” as it was**.
+- **The button always names the action**, as conflict cards do. No two choices share a button word.
+- The footer's quiet line: "Ctrl+Z undoes any of these."
+- `⋯` keeps its direct entries (Restore…, Undo this turn, New cut from this version…). They open this chooser with
+  that choice picked, so the consequence is always read before it happens.
+- **Words retired:** "Restore…" as the card's button (its confirmation text in DESIGN §6.2 is kept for **Restore the
+  whole edit**).
+
+### 3.2 Bring back one clip
+
+![bring back](after/bring-back-384.png) ![confirm](after/bring-back-confirm-384.png)
+
+**Choose a clip…** lists the clips that differ between that version and now, in three plain groups:
+
+| Group | Its rows | Button | What happens |
+|---|---|---|---|
+| **Changed since** | "“Intro”" · "Then 0:00–0:06 · now 0:00–0:05"; "Title “Summer launch”" · "Then “Summer sale”" | **Bring back** | The clip gets its old timing, text, look and settings. Its place in the edit stays if only its content changed |
+| **Deleted since** | "“B-roll pier”" · "Was 0:06–0:09 · deleted by You at 12:41 pm" | **Bring back** | It goes back where it was. If the rest moved up when it was deleted, the rest moves back ("Everything after it moves 3 s later"). If its place is now taken, it goes on a new track above, at the same time ("Its place is taken by “Drone shot”, so it goes on a new track above, at 0:06") |
+| **Not there yet at 10:20 am** | "“Drone shot”" · "Added by Claude Code at 1:02 pm" | **Take out** | "As it was" means not there. The button says so, and its line: "It wasn't in this version. Everything after it moves 4 s earlier." |
+
+- **"14 other clips are the same as now."** closes the list. Past 8 rows, a filter field appears at the top.
+- **A pick confirms in place** with where it goes and what moves, then **Bring back “B-roll pier”** / **Take out
+  “Drone shot”** and **Cancel**, plus **See it first**, which opens Compare at that clip (§1).
+- **After:** the toast "Brought back “B-roll pier” as it was at 10:20 am. [Undo]". History gets a row: "Brought back
+  “B-roll pier” from 10:20 am", after its `BEFORE` landmark.
+- **The other ways in:**
+  - the clip filter's card (*Only “Intro”*): "“Intro” then: 0:00–0:06, title “Summer launch”." with **Bring back
+    “Intro” as it was** and **Hold to see**;
+  - Compare's row detail (§1.5);
+  - the agent: `cb restore <version> --clip <name>` (§5.3).
+- **Conflicts:** if the clip changed again while the confirmation was open (an agent, a teammate), the confirmation
+  says "“Intro” just changed again. Bring back the 10:20 am one anyway?" and asks again.
+
+### 3.3 The words, side by side
+
+| The person wants | They press | It says before | It says after |
+|---|---|---|---|
+| One shot back as it was | Go back… → Bring back one clip | "Only it goes back to how it was." | "Brought back “Intro” as it was at 10:20 am." |
+| A deleted shot back | … → Bring back (Deleted since) | "It goes back where it was… Everything after it moves 3 s later." | "Brought back “B-roll pier” as it was at 10:20 am." |
+| An agent's work gone | Undo Director's turn | "Takes out only its 12 changes. The 23 made after stay." | "Took out Director's “Add captions…”." |
+| Everything back to then | Restore the whole edit | "Your edit becomes this version. The 23 changes after it are undone. They stay in History." | "Restored your edit from 10:20 am. Later changes are in History." |
+| Try another direction, keep this | Start a new cut from here | "Your edit stays as it is. A new cut starts from this version, and you switch to it." | "You're on “Old intro” now. Main cut is unchanged." |
+
+Every one has Undo in its toast and in Ctrl+Z.
+
+---
+
+## 4. Compare any two
+
+### 4.1 "Compare with…": pick mode
+
+![pick](after/compare-pick-384.png)
+
+- `⋯` → **Compare with…** on a row starts pick mode. The row gets a **⇆ From** pill. One line sits above the list:
+  "⇆ Comparing from **“Sent to client”**. Click a second version. `[✂ Main cut ⌄]` Esc".
+- **Every row** then shows **⇆ Compare** in its time column on hover and on focus. A click opens Compare (§1), with
+  the older on the left, or your cut on the right.
+- **Search, filters and folded days all work while picking.** Finding the second version is the same as finding
+  any version (§2).
+- **The cut button in the line** switches the list to another cut, only for picking, for Compare across cuts
+  (§1.12). The editor stays on yours.
+- **Esc,** or a click on the From row again, leaves pick mode. Shift+click stays the quick way for two rows on
+  screen.
+- **Keyboard:** Enter on the second row. Screen readers hear "Pick a second version to compare with “Sent to
+  client”".
+
+### 4.2 The Compare button: the questions people actually ask
+
+![menu](after/compare-menu-384.png)
+
+The cut bar gets **⇆ Compare** (an icon alone at 300 px). Its menu, **"Compare your edit with…"**:
+- **The version you sent:** the newest `SENT` landmark, or the newest named version if nothing was sent. Sub-line:
+  "Shared with Leo · yesterday at 6:30 pm";
+- **The last export:** "1080p for the client · 11:02 am";
+- **How it was this morning:** today's `START`, "When you opened it · 9:14 am";
+- **Another cut ›:** the cuts, as in the cuts menu, for §1.12;
+- **Pick a version…:** pick mode, with your edit as the right side.
+
+Each entry shows only when it exists, with its picture. If none exists (a new project), the button opens pick mode
+directly.
+
+---
+
+## 5. The agent's words
+
+The agent works through `cb`. Its output is plain, so the agent can repeat it to the person in their own words. Each
+line ends with the reference the agent passes back to `cb` (`main@41`). The agent never shows those references to the
+person, as DESIGN's word rules say. The person sees names, times and "your edit".
+
+`cb` runs as the person's agent, so it sees their personal landmarks (Start, Before) as well as the shared ones.
+
+### 5.1 `cb history --find <text>`
+
+```
+$ cb history --find intro
+The clip “Intro”: added by You on Oct 30, trimmed by Director today at 12:20 pm, trimmed by You at 12:41 pm.
+9 versions on Main cut mention “intro” (newest first):
+  today 12:41 pm       You          Trimmed “Intro”, now ends at 0:05                          main@88
+  today 12:20 pm       Director     “Tighten the intro and add a lower third” · 4 changes      main@81
+  today 11:02 am       Exported     1080p for the client · “Intro” was 0:00–0:06 here          main@74
+  yesterday 4:10 pm    Named        “Sent to client” · “Intro” was 0:00–0:06                   main@41
+  yesterday 2:48 pm    Leo          Changed caption to “a quick intro”                         main@37
+  … 4 more: cb history --find intro --all
+```
+
+Nothing found:
+```
+$ cb history --find "drone at night"
+No versions on Main cut mention “drone at night”.
+Try a clip's name, words from a title or caption, an agent's request, or a person. Other cuts: --all-cuts
+```
+
+### 5.2 `cb history --landmarks`
+
+```
+$ cb history --landmarks
+Landmarks on Main cut (newest first):
+  today 2:15 pm        Before       Restoring the 11:02 am version (only you see this)         main@92
+  today 11:02 am       Exported     1080p for the client · 0:36                                main@74
+  today 10:20 am       Director     “Add captions to the interview” · 12 changes               main@70
+  today 9:14 am        Start        How it was when you opened it (only you see this)          main@63
+  yesterday 6:30 pm    Sent         Shared with Leo · Leo opened it at 6:41 pm                 main@44
+  yesterday 4:10 pm    Named        “Sent to client”                                           main@41
+  yesterday 9:02 am    Start        How it was when you opened it (only you see this)          main@12
+Words that work in place of a reference: sent, exported, today, now, a version's name, a cut's name.
+```
+
+### 5.3 `cb restore <version> --clip <name>`, and `cb compare --show`
+
+```
+$ cb restore sent --clip Intro
+Brought back “Intro” as it was in “Sent to client” (yesterday at 4:10 pm): now 0:00–0:06, was 0:00–0:05.
+Nothing else changed. The user can undo it with Ctrl+Z; you can with: cb undo
+```
+```
+$ cb restore main@70 --clip "B-roll pier"
+Brought back “B-roll pier” (deleted by the user today at 12:41 pm) where it was: 0:05 on Track 1, between “Intro”
+and “Interview A”. Everything after it moved 3 s later. Nothing else changed.
+```
+```
+$ cb restore sent --clip "Drone shot"
+“Drone shot” wasn't in “Sent to client”, so bringing that version back means taking it out (0:12–0:16; everything
+after would move 4 s earlier). Nothing changed. To take it out: cb restore sent --clip "Drone shot" --remove
+```
+```
+$ cb restore sent --clip Interview
+Two clips match “Interview”: “Interview A” (0:05) and “Interview B” (0:16). Nothing changed. Name one.
+```
+```
+$ cb compare sent now --show
+Opened in the editor: “Sent to client” (yesterday at 4:10 pm) with the user's edit now. 7 changes:
+  0:00  Trimmed “Intro”, now ends at 0:05
+  0:01  Changed title “Summer sale” to “Summer launch”
+  0:03  Changed caption to “in half”
+  0:05  Removed “B-roll pier”
+  0:07  Removed caption “our new look”
+  0:12  Added “Drone shot”
+  0:16  Moved “Interview B” 4 s earlier
+The user can press Esc to go back to their edit.
+```
+```
+$ cb compare "30s Instagram cut" "Main cut" --show
+The user is busy editing, so the comparison didn't open. They have a note in the editor with Open.
+“30s Instagram cut” (now) with Main cut (now): 7 differences.
+  0:05  Only in Main cut: “Interview A”
+  …
+```
+```
+$ cb compare sent now --show
+The user is already comparing two versions. They have a note in the editor with Open; nothing was replaced.
+```
+
+`--show` exits 0 in all three cases (opened, offered, already busy). The first line says which, so the agent tells the
+person the truth ("I've put it on your screen" or "There's a note with Open in the editor").
+
+---
+
+## 6. Performance: what costs, and the rule for each
+
+Nothing here may slow down editing when it isn't in use. Every cost below is **lazy** (made only when needed),
+**cached** (made once), or **gated** (only when the computer can afford it), and most are all three. The targets are
+for the builders to measure on the Windows laptop against the current build, with before/after medians. None of them
+is a measured claim yet.
+
+| Part | What it costs | Rule |
+|---|---|---|
+| **The second player** (Side by side, Wipe) | A second render of the edit: decoding, GPU memory | **Gated and lazy.** It's made when Compare opens in a mode that needs it, never before. It renders at its display size, never larger. It draws nothing while paused except on a seek. It must say *ready* within 2 s, or Compare falls back to Flip (§1.10). It is kept 30 s after Done comparing for a quick return, then freed. Zero cost when not comparing |
+| **The left side's version** | Loading one version's document | **Cached and prefetched.** Fetched when the pointer rests 150 ms on See them, Compare or a pick row. The last 3 are kept |
+| **`ui.align` and `ui.changes`** | A diff of two versions | **Cached** per (left, right), as `shotDiff` is today. Computed off the UI thread. Across cuts that differ a lot, the list groups runs (§1.12) rather than drawing 300 rows |
+| **Timeline marks and the strip** | Laying out an overlay on the clips | **Lazy:** only clips in view. Re-laid on zoom and scroll, once per frame at most. While playing, only the playheads move, by transform. No work at all outside Compare |
+| **Play both in step** | Seeks at each shot start | Precomputed from `ui.align` when Compare opens. The left player seeks only at shot starts, never every frame |
+| **Pictures on landmarks** | Rendering a frame per landmark | **Lazy, cached and gated:** landmarks only, made when the row comes into view, one at a time, when the editor is idle. Never during playback or export. 88 × 50 px JPEG, kept on disk by (version, time). The icon shows at once while it's made |
+| **The search index** | Words from clip names, text, prompts, names and people, per version | **Built at save time,** a few words per version, in the same place as the per-version clip index (PLAN 0.8). Searching runs off the UI thread; results are a virtual list. Target for builders: results within a frame at 10,000 versions |
+| **Landmarks** | Marking a version | **Free to read:** a flag written when the version is saved (export done, link made, turn end, first change of a session, before a restore). No scan of history |
+| **Hold to peek** | Loading a version for the stage | **Prefetched** after 150 ms of hover, one at a time, cancelled when the pointer leaves. It shares the left-side cache |
+| **The agent's `--show`** | An idle check | **Event-driven:** pointer and key events already seen by the editor. No polling, no timers while nothing is waiting |
+
+**What must not regress:** with History closed and nothing compared, the editor does no extra work, and edits, playback
+and exports are as fast as today. PLAN's benchmarks run with Carton on and off to prove it, before and after.
+
+---
+
+## 7. Open questions for the user
+
+1. **Edit while comparing?** v2 makes Compare look-only, even when the right side is your edit. Done comparing keeps
+   the playhead on the spot, so fixing it is one key away. Editing live inside Compare, with the list updating as you
+   go, is possible later. Is look-only right for now?
+2. **Personal landmarks:** Start and Before are visible only to the person they belong to. Should a team see each
+   other's Before points, for "what did Leo's restore throw away?"
+3. **The agent opening Compare:** v2 opens it at once when the person is idle, and otherwise offers it as a note with
+   Open. Would the user rather it always offer, and never open by itself?
+4. **Pictures:** landmarks only, and agent turns keep their mark. Should agent turns get pictures too?
+5. **Sent:** what counts as "sent" beyond Cardboard's share and publish? For example, an export saved to a folder
+   named "client", or a file dragged out of the app. v2 only marks what Cardboard itself does.
+
+## 8. Mockups
+
+All in `after/`, made from `mockups/*.html` by `mockups/render.mjs`.
+
+| File | Shows |
+|---|---|
+| `compare-side-by-side.png` | §1: the default, Side by side, a change selected |
+| `compare-wipe.png`, `compare-flip.png` | §1.3: the other two modes (Flip with B held) |
+| `compare-play-both.png` | §1.4: Play both in step; the slate; the two playheads |
+| `compare-timeline-marks.png` | §1.6: every mark and the strip, close up |
+| `compare-edit-attempt.png`, `compare-toasts.png` | §1.8, §1.13: the line for an edit tried, and every Compare toast |
+| `compare-narrow.png`, `compare-drawer-hidden.png` | §1.9: 1100 px window; the drawer hidden |
+| `compare-flip-only.png` | §1.10: the fallback |
+| `compare-panel-384.png`, `compare-panel-300.png`, `compare-panel-added-384.png` | §1.5, §3.2: the change list; Bring back and Take out in a row's detail |
+| `compare-cuts.png`, `compare-cuts-menu-384.png`, `compare-fold-entry.png` | §1.12: across cuts, and its ways in |
+| `compare-agent.png` | §1.13: the agent opened it |
+| `history-landmarks-384.png`, `history-landmarks-300.png` | §2.1, §2.2, §2.5, §2.6: landmarks, pictures, a past day as a story |
+| `history-search-384.png`, `history-search-300.png`, `history-search-empty-384.png` | §2.3 |
+| `editor-peek.png` | §2.4 |
+| `history-filter-landmarks-384.png` | §2.5 |
+| `history-card-v2-384.png`, `history-goback-384.png`, `history-goback-300.png` | §3.1 |
+| `bring-back-384.png`, `bring-back-confirm-384.png` | §3.2 |
+| `compare-pick-384.png`, `compare-menu-384.png` | §4 |

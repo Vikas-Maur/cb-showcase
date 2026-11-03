@@ -1,0 +1,105 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../mockups/skin.css"><link rel="stylesheet" href="v2.css">
+<script src="../../mockups/icons.js"></script><script src="../../mockups/kit.js"></script><script src="../../mockups/story.js"></script><script src="../../mockups/editor.js"></script><script src="compare.js"></script></head><body><script>
+Object.assign(ICONS, {
+  export: '<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 13.5v5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-5"/>',
+  send: '<path d="M4 12 20 4l-4 16-4.5-6.5z"/><path d="M11.5 13.5 20 4"/>',
+  sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
+  shield: '<path d="M12 3.5 19 6v5.5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>',
+});
+// A landmark's picture: the frame at its first change (or 0:01). Fallback: its icon on a dark tile, never a spinner.
+const pic = (hue, title = "", miss = "", sm = false) => miss
+  ? `<span class="thumb" style="background:#1f1f1f;display:flex;align-items:center;justify-content:center;color:var(--fg3)">${I(miss, 13)}</span>`
+  : `<span class="thumb" style="${sm ? "width:32px;height:18px;" : ""}background:radial-gradient(120% 90% at 30% 20%,hsl(${hue} 38% 44%),hsl(${hue + 10} 35% 14%) 75%)">${title ? `<span style="position:absolute;left:3px;bottom:3px;font-size:6.5px;font-weight:700;color:#fff;background:#0009;padding:0 2px;border-radius:1px">${title}</span>` : ""}</span>`;
+const L = { exp: "Exported", sent: "Sent", safe: "Before", sess: "Start", name: "Named" };
+const lmRow = ({ k, p, title, meta, when, cls = "" }) => `
+  <div class="row lmrow ${cls}"><span class="av-wrap" style="margin-top:2px">${p}</span>
+    <div class="t">${k ? `<span class="lm ${k}">${L[k]}</span>` : ""}${title}</div><span class="when">${when}</span><div class="m">${meta}</div></div>`;
+const run = (t, open = false) => `<div class="row" style="grid-template-columns:44px 1fr auto;padding-top:4px;padding-bottom:4px"><span></span><div class="t" style="color:var(--fg3);font-size:12px">${I(open ? "caret" : "caretR", 10)} ${t}</div><span></span></div>`;
+const cmpBtn = `<button class="btn xs outline" title="Compare your edit with…" style="height:26px">${I("compare", 12)}Compare</button>`;
+const searchBox = (q = "", focus = false) => `<div class="search${focus ? " focus" : ""}">${I("search", 14, "dim")}${q ? `<span>${q}</span><span class="caret"></span><span style="flex:1"></span><button class="btn icon" style="width:20px;height:20px" title="Clear (Esc)">${I("x", 11)}</button>` : `<span class="ph">Find a clip, a word, a person…</span>`}</div>`;
+const bar = (right = filterBtn) => cutbar({ right: cmpBtn + right });
+
+// Today: every row (grouped as DESIGN 6.1); landmarks wear their picture and tag; a group never crosses a landmark.
+const todayRows = `
+  ${day("Today", "")}
+  ${turnRow()}
+  ${lmRow({ k: "safe", p: pic(0, "", "shield"), title: "Restoring the 11:02 am version", meta: `Kept for you<span class="dot"></span>only you see this`, when: "2:15 pm" })}
+  ${mineRow()}
+  ${lmRow({ k: "exp", p: pic(214, "Summer"), title: "1080p for the client", meta: `You<span class="dot"></span>0:36`, when: "11:02 am" })}
+  ${row({ w: "director", title: agentTitle("Add captions to the interview"), meta: `Director<span class="dot"></span>12 changes`, when: "10:20 am" })}
+  ${lmRow({ k: "sess", p: pic(200), title: "How it was when you opened it", meta: `You<span class="dot"></span>only you see this`, when: "9:14 am" })}`;
+// Yesterday, open: its landmarks, and the runs between them folded to one line each.
+const yesterdayRows = `
+  ${day("Yesterday", "41 versions · 4 landmarks")}
+  ${run("18 changes by You and Claude Code")}
+  ${lmRow({ k: "sent", p: pic(150, "Summer"), title: "Shared with Leo", meta: `You<span class="dot"></span>Leo opened it at 6:41 pm`, when: "6:30 pm" })}
+  ${lmRow({ k: "name", p: pic(214, "Summer"), title: "<b style='font-weight:600'>Sent to client</b>", meta: `Named by You`, when: "4:10 pm" })}
+  ${run("21 changes by You, Director and Leo")}
+  ${lmRow({ k: "sess", p: pic(205), title: "How it was when you opened it", meta: `You`, when: "9:02 am" })}`;
+const olderDays = day("Sat, Oct 31", "64 versions · 3 landmarks", true) + day("Fri, Oct 30", "12 versions · 1 landmark", true);
+const frames = [];
+frames.push(shot("history-landmarks-384", 384, 760, panel(head() + bar() + searchBox() + `<div class="list">${todayRows}${yesterdayRows}${olderDays}</div>`, 760)));
+frames.push(shot("history-landmarks-300", 300, 760, panel(head("history", true) + cutbar({ right: `<button class="btn icon" title="Compare your edit with…">${I("compare", 15)}</button>` + filterBtn }) + searchBox() + `<div class="list n300">${todayRows}${yesterdayRows}${olderDays}</div>`, 760)));
+
+// Search: "intro". The clip itself first (its credits, Only “Intro”), then versions, newest first, by day.
+const res = ({ t, m, when, cls = "" }) => `<div class="res ${cls}"><div class="t">${t}</div><span class="when">${when}</span><div class="m">${m}</div></div>`;
+const searchList = `
+  <div style="margin:0 12px 6px;padding:8px 10px;border-radius:8px;background:#ffffff08;display:flex;gap:10px;align-items:center">
+    <span class="kind v">${I("film")}</span><div style="flex:1;min-width:0"><div style="color:var(--fg1);font-weight:600">“<mark>Intro</mark>”, the clip</div><div class="hint" style="font-size:11.5px">Added by You on Oct 30 · trimmed by Director and You today</div></div>
+    <button class="btn xs sec">Only this clip</button></div>
+  <div class="resgroup">9 versions</div>
+  <div class="day" style="height:24px">${I("caret", 12)}<span>Today</span></div>
+  ${res({ t: `Trimmed “<mark>Intro</mark>”, now ends at 0:05`, m: `You`, when: "12:41 pm", cls: "hov" })}
+  ${res({ t: `<span class="q">Director's “Tighten the <mark>intro</mark> and add a lower third”</span>`, m: `Prompt<span class="dot"></span>4 changes`, when: "12:20 pm" })}
+  ${res({ t: `<span class="lm exp">Exported</span>1080p for the client`, m: `“<mark>Intro</mark>” was 0:00–0:06 here`, when: "11:02 am" })}
+  <div class="day" style="height:24px">${I("caret", 12)}<span>Yesterday</span></div>
+  ${res({ t: `<span class="lm name">Named</span><b style="font-weight:600">Sent to client</b>`, m: `“<mark>Intro</mark>” was 0:00–0:06, title “Summer sale”`, when: "4:10 pm" })}
+  ${res({ t: `Changed caption to “a quick <mark>intro</mark>”`, m: `Caption text<span class="dot"></span>Leo`, when: "2:48 pm" })}
+  ${res({ t: `Moved “<mark>Intro</mark> music” 1 s later`, m: `Clip name<span class="dot"></span>You`, when: "11:15 am" })}
+  <div class="day" style="height:24px">${I("caretR", 12)}<span>Fri, Oct 30</span><span class="sp"></span><span class="n">3 more</span></div>`;
+frames.push(shot("history-search-384", 384, 620, panel(head() + bar() + searchBox("intro", true) + `<div class="list">${searchList}</div>`, 620)));
+frames.push(shot("history-search-300", 300, 620, panel(head("history", true) + cutbar({ right: `<button class="btn icon">${I("compare", 15)}</button>` + filterBtn }) + searchBox("intro", true) + `<div class="list">${searchList}</div>`, 620)));
+frames.push(shot("history-search-empty-384", 384, 300, panel(head() + bar() + searchBox("drone at night", true) + `
+  <div style="padding:18px 20px;display:flex;flex-direction:column;gap:8px"><p style="margin:0;color:var(--fg1);font-weight:600">No versions mention “drone at night”</p>
+  <p class="hint" style="margin:0">Try a clip's name, words from a title or caption, an agent's request, or a person.</p>
+  <p class="hint" style="margin:0">Searched Main cut. <a class="link">Search every cut</a></p>
+  <div><button class="btn sm sec" style="margin-top:4px">Clear search</button></div></div>`, 300)));
+
+// Filter menu: Landmarks is one choice; folded days show how many they hold.
+frames.push(shot("history-filter-landmarks-384", 384, 470, panel(head() + bar() + searchBox() + `<div class="list" style="opacity:.35">${todayRows}</div>
+  <div class="menu" style="position:absolute;right:10px;top:84px;width:250px">
+    <div class="mlabel">Show</div>
+    <div class="mi"><span class="ck"></span>All versions</div>
+    <div class="mi hov"><span class="ck">${I("check", 14)}</span><span>Landmarks<span class="sub">Exports, sends, names, agent turns, each day's start</span></span></div>
+    <div class="mi"><span class="ck"></span>Named versions</div>
+    <div class="mi"><span class="ck"></span>Agent turns</div>
+    <div class="mi"><span class="ck"></span>Your changes</div>
+    <div class="msep"></div>
+    <div class="mi dis"><span class="ck"></span>Only “Interview B”<span class="r">select a clip</span></div>
+  </div>`, 470)));
+
+// Compare menu (cut bar): the one-click answers to "what changed since…"
+frames.push(shot("compare-menu-384", 384, 420, panel(head() + bar() + searchBox() + `<div class="list" style="opacity:.35">${todayRows}</div>
+  <div class="menu" style="position:absolute;right:46px;top:84px;width:300px">
+    <div class="mlabel">Compare your edit with…</div>
+    <div class="mi hov">${pic(150, "", "", true)}<span>The version you sent<span class="sub">Shared with Leo · yesterday at 6:30 pm</span></span></div>
+    <div class="mi">${pic(214, "", "", true)}<span>The last export<span class="sub">1080p for the client · 11:02 am</span></span></div>
+    <div class="mi">${pic(200, "", "", true)}<span>How it was this morning<span class="sub">When you opened it · 9:14 am</span></span></div>
+    <div class="msep"></div>
+    <div class="mi">${I("cut")}<span>Another cut</span><span class="r">${I("caretR", 12)}</span></div>
+    <div class="mi">${I("target")}<span>Pick a version…<span class="sub">Then click one in the list</span></span></div>
+  </div>`, 420)));
+
+// Pick mode: "Compare with…" on the Sent to client row; a line says what's happening; any row (any cut) is the second.
+const pickLine = `<div class="viewbar" style="margin:0 8px 8px;flex-direction:column;align-items:stretch;gap:4px"><div style="display:flex;align-items:center;gap:8px">${I("compare", 13)}<span class="sp">Comparing from <b style="font-weight:600;color:#fff">“Sent to client”</b></span><span class="kbd">Esc</span></div><div style="display:flex;align-items:center;gap:6px;padding-left:21px;color:#cfe0ffcc">Click a second version, in<button class="cutbtn" style="height:22px;font-size:12px;margin:0;padding:0 6px;color:#fff">${I("cut", 12)}Main cut${I("caret", 10)}</button>or any cut</div></div>`;
+frames.push(shot("compare-pick-384", 384, 560, panel(head() + bar() + searchBox() + pickLine + `<div class="list">
+  ${day("Today", "")}
+  ${turnRow({ cls: "hov", when: `<span style="display:inline-flex;gap:4px;align-items:center;color:var(--fg1)">${I("compare", 12)}Compare</span>` })}
+  ${mineRow()}
+  ${lmRow({ k: "exp", p: pic(214, "Summer"), title: "1080p for the client", meta: `You<span class="dot"></span>0:36`, when: "11:02 am" })}
+  ${day("Yesterday", "41 versions · 4 landmarks")}
+  ${lmRow({ k: "sent", p: pic(150, "Summer"), title: "Shared with Leo", meta: `You`, when: "6:30 pm" })}
+  ${lmRow({ k: "name", p: pic(214, "Summer"), title: "<b style='font-weight:600'>Sent to client</b>", meta: `<span class="pill view">${I("compare", 10)}From</span>Named by You`, when: "4:10 pm", cls: "viewing" })}
+  </div>`, 560)));
+build(frames.join(""));
+</script></body></html>

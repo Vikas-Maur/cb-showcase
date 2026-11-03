@@ -1,0 +1,62 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../mockups/skin.css"><link rel="stylesheet" href="v2.css">
+<script src="../../mockups/icons.js"></script><script src="../../mockups/kit.js"></script><script src="../../mockups/story.js"></script><script src="../../mockups/editor.js"></script><script src="compare.js"></script></head><body><script>
+Object.assign(ICONS, { shield: '<path d="M12 3.5 19 6v5.5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>' });
+const pic = (hue, title = "") => `<span class="thumb" style="background:radial-gradient(120% 90% at 30% 20%,hsl(${hue} 38% 44%),hsl(${hue + 10} 35% 14%) 75%)">${title ? `<span style="position:absolute;left:3px;bottom:3px;font-size:6.5px;font-weight:700;color:#fff;background:#0009;padding:0 2px;border-radius:1px">${title}</span>` : ""}</span>`;
+const lmRow = ({ k, kl, p, title, meta, when, cls = "" }) => `<div class="row lmrow ${cls}"><span class="av-wrap" style="margin-top:2px">${p}</span><div class="t">${k ? `<span class="lm ${k}">${kl}</span>` : ""}${title}</div><span class="when">${when}</span><div class="m">${meta}</div></div>`;
+const cmpBtn = `<button class="btn xs outline" style="height:26px">${I("compare", 12)}Compare</button>`;
+const bar = cutbar({ right: cmpBtn + filterBtn });
+const searchBox = `<div class="search">${I("search", 14, "dim")}<span class="ph">Find a clip, a word, a person…</span></div>`;
+// One choice: a radio, its name, and what will happen, in one line or two. The pick shows its specifics.
+const opt = (on, name, line, extra = "") => `<div style="display:grid;grid-template-columns:16px 1fr;column-gap:10px;padding:8px 8px;border-radius:7px;${on ? "background:#ffffff0d;box-shadow:inset 0 0 0 1px #ffffff1f" : ""}">
+  <span class="radio${on ? " on" : ""}" style="margin-top:1px"></span><div><div style="color:var(--fg1);font-weight:500;font-size:13px">${name}</div><div class="hint" style="font-size:12px;margin-top:2px">${line}</div>${extra}</div></div>`;
+// The "Go back…" chooser on Director's 10:20 am turn: four ways, each with its consequence; the button names the pick.
+const chooser = (pick = 0, w = 384) => `<div class="detail" style="padding:10px 8px 10px 10px">
+  <div style="font-weight:600;color:var(--fg1);margin:0 0 2px 2px">Go back to 10:20 am, Director's turn</div>
+  <div class="hint" style="margin:0 0 8px 2px;font-size:12px">23 changes were made after it.</div>
+  ${opt(pick === 0, "Bring back one clip", "Pick a clip. Only it goes back to how it was. Everything else stays as it is now.")}
+  ${opt(pick === 1, "Undo Director's turn", "Takes out only its 12 changes. The 23 made after stay.")}
+  ${opt(pick === 2, "Restore the whole edit", "Your edit becomes this version. The 23 changes after it are undone. They stay in History.")}
+  ${opt(pick === 3, "Start a new cut from here", "Your edit stays as it is. A new cut starts from this version, and you switch to it.")}
+  <div class="acts" style="margin-top:10px;padding-left:2px"><button class="btn sm pri">${["Choose a clip…", "Undo Director's turn", "Restore the whole edit", "Name the new cut…"][pick]}</button><button class="btn sm ghost">Cancel</button><span class="sp"></span><span class="kbd">Ctrl+Z undoes any of these</span></div></div>`;
+const dirSel = row({ w: "director", title: agentTitle("Add captions to the interview"), meta: `Director<span class="dot"></span>12 changes`, when: "10:20 am", cls: "sel" });
+const above = `${day("Today", "")}${turnRow()}${mineRow()}`;
+const frames = [];
+frames.push(shot("history-goback-384", 384, 730, panel(head() + bar + searchBox + `<div class="list">${above}${dirSel}${chooser(0)}</div>`, 730)));
+frames.push(shot("history-goback-300", 300, 760, panel(head("history", true) + cutbar({ right: `<button class="btn icon">${I("compare", 15)}</button>` + filterBtn }) + searchBox + `<div class="list">${above}${dirSel}${chooser(2, 300).replace("Ctrl+Z undoes any of these", "")}</div>`, 760)));
+// The card itself, before Go back… is pressed: Go back… replaces Restore… as the one rollback button.
+frames.push(shot("history-card-v2-384", 384, 420, panel(head() + bar + searchBox + `<div class="list">${day("Today", "")}${dirSel}
+  <div class="detail">${since(23)}
+    ${chg("0:25", "c", "add", "Added caption “we cut editing time”")}${chg("0:28", "c", "add", "Added caption “in half”")}
+    <div class="chg more-row"><span></span><span></span><span class="w">and 10 more</span></div>
+    <div class="acts"><button class="btn sm sec">${I("play", 12)}Play all</button><button class="btn sm ghost">${I("restore", 14)}Go back…</button><span class="sp"></span><button class="btn icon">${I("dots", 16)}</button></div></div></div>`, 420)));
+
+// Bring back one clip: the clips that differ, in three plain groups. The clip selected on the timeline comes first.
+const clipRow = (k, name, line, btn, hov = false) => `<div style="display:grid;grid-template-columns:18px 1fr auto;column-gap:8px;align-items:center;padding:6px 6px;margin:0 -6px;border-radius:6px;${hov ? "background:#ffffff0a" : ""}">
+  <span class="kind ${k}">${I({ v: "film", t: "text", c: "cc" }[k])}</span><div style="min-width:0"><div style="color:var(--fg1);font-size:12.5px">${name}</div><div class="hint" style="font-size:11.5px">${line}</div></div>${hov ? `<button class="btn xs sec">${btn}</button>` : `<span></span>`}</div>`;
+const picker = `<div class="detail">
+  <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><button class="btn icon" style="width:22px;height:22px;margin-left:-4px">${I("arrowLeft", 13)}</button><span style="font-weight:600;color:var(--fg1)">Bring back one clip</span></div>
+  <div class="hint" style="font-size:12px;margin-bottom:6px">As it was at 10:20 am. Only the clip you pick changes.</div>
+  <div class="subhead">Changed since · 3</div>
+  ${clipRow("v", "“Intro”", "Then 0:00–0:06 · now 0:00–0:05", "Bring back")}
+  ${clipRow("t", "Title “Summer launch”", "Then “Summer sale”", "Bring back")}
+  ${clipRow("c", "Caption “in half”", "Then “in a third”", "Bring back")}
+  <div class="subhead">Deleted since · 2</div>
+  ${clipRow("v", "“B-roll pier”", "Was 0:06–0:09 · deleted by You at 12:41 pm", "Bring back", true)}
+  ${clipRow("c", "Caption “our new look”", "Was 0:07–0:10", "Bring back")}
+  <div class="subhead">Not there yet at 10:20 am · 1</div>
+  ${clipRow("v", "“Drone shot”", "Added by Claude Code at 1:02 pm", "Take out")}
+  <div class="hint" style="font-size:11.5px;margin-top:6px">14 other clips are the same as now.</div></div>`;
+frames.push(shot("bring-back-384", 384, 700, panel(head() + bar + searchBox + `<div class="list">${day("Today", "")}${dirSel}${picker}</div>`, 700)));
+// The confirmation, in place: where it goes and what moves.
+frames.push(shot("bring-back-confirm-384", 384, 360, panel(head() + bar + searchBox + `<div class="list">${day("Today", "")}${dirSel}
+  <div class="detail"><div class="confirm" style="margin-top:0"><h4>Bring back “B-roll pier”?</h4>
+  <p>It goes back where it was, between “Intro” and “Interview A”, at 0:05. Everything after it moves 3 s later. Nothing else changes, and Ctrl+Z takes it back.</p>
+  <div style="display:flex;gap:6px;align-items:center"><button class="btn sm pri">${I("restore", 14)}Bring back “B-roll pier”</button><button class="btn sm ghost">Cancel</button><span style="flex:1"></span><a class="link" style="font-size:12px">See it first</a></div></div></div></div>`, 360)));
+
+// Hold a row to peek: the stage shows that version at the playhead's moment while the row is held. Nothing else moves.
+const peekRow = `<div class="row lmrow viewing"><span class="av-wrap" style="margin-top:2px">${pic(214, "Summer")}</span><div class="t"><span class="lm exp">Exported</span>1080p for the client</div><span class="when view">${I("eye", 12)}Holding</span><div class="m">You<span class="dot"></span>0:36</div></div>`;
+const peekPanel = panel(head() + bar + searchBox + `<div class="list">${day("Today", "")}${turnRow()}${mineRow()}${peekRow}${row({ w: "director", title: agentTitle("Add captions to the interview"), meta: `Director<span class="dot"></span>12 changes`, when: "10:20 am" })}</div>`, 770);
+frames.push(shot("editor-peek", 1522, 810, editor({ chip: cutChip({ viewing: "Exported 1080p for the client · holding" }), panelHtml: peekPanel, viewing: true, tl: { playhead: 4 },
+  stage: `<div class="framelabel" style="display:none"></div>` })));
+build(frames.join(""));
+</script></body></html>

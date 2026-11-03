@@ -32,4 +32,10 @@ product code changes here.
   - `qa/shots/`: the build beside each mockup;
   - `qa/rig-qa/`: the states it added to the capture rig.
 
+- **`v2/`:** the addendum after the QA: **Compare in the editor** (the stage takes both versions, the real timeline
+  shows the differences, across cuts too, and agents can open it), finding a version (landmarks, pictures, search,
+  hold to peek), rolling back for a newcomer (Go back…, Bring back one clip), and the agent's words.
+  - `v2/DESIGN-V2.md`: the design, with open questions;
+  - `v2/after/`: its mockups; `v2/mockups/`: their sources (they reuse `mockups/`).
+
 PNGs are reduced to a 256-colour palette to keep this folder small.
