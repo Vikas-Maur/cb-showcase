@@ -333,7 +333,8 @@ export interface MaterializerOptions {
  * - `ms`: from the ask to the answer; `budgetMs`: the wait it was given; `beforeMs`: the holder's look at carton.db
  *   before it asked (when it says).
  * - `queueMs`: from the ask until this answer's own look at the file (behind the materializer's other work); null
- *   when it never got that far (another print answered it first, or the wait ran out).
+ *   when it never got that far (another print answered it first, or the wait ran out). `lookMs`: that look (the read
+ *   of timeline.tsx that checks whether it shows the write already).
  * - `rewriteMs`: the rewrite it made itself (fold, pin, print, install), null when none.
  * - `by`: what answered it: its own rewrite, a print made for something else, its first look (`at once`), the end of
  *   the wait (`timer`), or the materializer closing.
@@ -352,6 +353,7 @@ export interface SlowShow {
   budgetMs: number;
   beforeMs?: number;
   queueMs: number | null;
+  lookMs: number | null;
   rewriteMs: number | null;
   by: "own rewrite" | "another print" | "at once" | "timer" | "closed";
   landing: boolean;
@@ -982,7 +984,7 @@ export class Materializer {
       let timer: unknown = null;
       // for the report: when it was asked, when its own look began, and its own rewrite's time
       const asked = this.clock.now();
-      let looked: number | null = null, rewriteMs: number | null = null, rewroteAt = 0;
+      let looked: number | null = null, lookMs: number | null = null, rewriteMs: number | null = null, rewroteAt = 0;
       const w: Waiting = {
         c,
         rewriting: false,
@@ -992,7 +994,7 @@ export class Materializer {
           resolve(s);
           const now = this.clock.now(), took = now - asked;
           // (answered by the print of its own rewrite, which hasn't returned yet: its time so far)
-          if (this.onSlowShow && took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
+          if (this.onSlowShow && took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, lookMs: lookMs ?? (looked === null ? null : now - looked), rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
         },
       };
       this.showing.add(w);
@@ -1003,7 +1005,9 @@ export class Materializer {
         .then(() => this.run(async () => {
           if (!this.showing.has(w)) return;
           looked = this.clock.now();
-          if (await this.holdsChange(c)) return w.done("shown", "at once");
+          const there = await this.holdsChange(c);
+          lookMs = this.clock.now() - looked;
+          if (there) return w.done("shown", "at once");
           const cut = this.engine.cut?.();
           if (c.cut !== undefined && cut !== undefined && c.cut !== cut) return w.done("elsewhere", "at once");
           // the rewrite this write is waiting for, coalescing on its timer: made now (a host write landing goes first)

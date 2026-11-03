@@ -1434,6 +1434,7 @@ test("apply-tail: a slow read-your-writes answer is reported with where its time
   assert.ok(r.ms >= 2000 && r.ms <= 2001, String(r.ms));
   assert.ok(r.queueMs !== null && r.queueMs < 100, `its look came at once (the fake clock's first timer, 20 ms, may pass first): what held it was the landing; ${r.queueMs}`);
   assert.equal(r.rewriteMs, null, "no rewrite of its own");
+  assert.equal(typeof r.lookMs, "number", "its own look at the file");
 
   // a slow rewrite of its own (the pin stalls 800 ms): answered by it, the time in rewriteMs and its task named
   const pin = s.engine.pin.bind(s.engine);
