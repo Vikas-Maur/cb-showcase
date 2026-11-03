@@ -601,6 +601,19 @@ test("review of fix/ux2-a #1, #2: overlapping loads: the row's mark and the chip
     await m.settle(40);
     const cLabel = ui.viewing().label;
     assert.deepEqual(reports.at(-1)?.viewing, { label: cLabel[0].toUpperCase() + cLabel.slice(1) }, "then its own label");
+    // Before of a version already named, landing from the cache first: "Before <its name>" at once, as the view model
+    // then says it
+    const base = c.base ?? all[all.findIndex((v) => v.id === c.id) - 1]?.ref;
+    ui.view = async (t) => { if (t?.kind === "before") await new Promise((r) => (answer = r)); return real(t); };
+    await act(async () => { done = m.page().view({ kind: "before", versionId: c.id, ref: base }); await sleep(40); });
+    await m.settle(40);
+    assert.equal(m.page().stageRef(), base, "how it was before C, on screen");
+    const early = reports.at(-1)?.viewing;
+    await act(async () => { answer(); await done; });
+    await m.settle(40);
+    assert.equal(ui.viewing().kind, "before");
+    assert.deepEqual(early, reports.at(-1)?.viewing, "the label it had at once is the view model's: " + JSON.stringify(early));
+    assert.deepEqual(marked(), [rowOf(c)], "C's row");
   } finally { await m.done(); }
 });
 

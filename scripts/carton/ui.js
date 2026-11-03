@@ -223,7 +223,12 @@ function connect(projectId, bridge) {
     const was = known.get(t.ref);
     // (a label said for this very ref and kind of view stays; asked as something else, it is that now)
     if (was?.label && was.kind === t.kind && was.versionId === t.versionId) return;
-    remember({ ref: t.ref, kind: t.kind, ...(t.versionId !== undefined ? { versionId: t.versionId } : {}), label: t.label ?? "", short: t.label ?? "" });
+    // how it was before a version already named: "Before <its name>", as the view model says it (Before's flip lands
+    // from the cache before the view model answers)
+    let label = t.label ?? "";
+    if (!label && t.kind === "before" && t.versionId !== undefined)
+      for (const k of known.values()) if (k.kind === "version" && k.versionId === t.versionId && k.label) label = `Before ${k.label.replace(/^(Your|The)\b/, (w) => w.toLowerCase())}`;
+    remember({ ref: t.ref, kind: t.kind, ...(t.versionId !== undefined ? { versionId: t.versionId } : {}), label, short: label });
   };
   r.ui.stageRef = () => stageRef;
   r.ui.stageView = () => {
