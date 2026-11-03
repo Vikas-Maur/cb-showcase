@@ -21,7 +21,7 @@ import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } fro
 import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
-import { FIND_FIELDS, FindIndex, dayWords, findWords, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
+import { FIND_FIELDS, FindIndex, dayWords, findWords, hayOf, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
 import { LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
 import { bringBack, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
@@ -1769,37 +1769,39 @@ class CartonImpl implements Carton {
     const want = new Set<FindField>(opts.fields?.length ? opts.fields : FIND_FIELDS);
     const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
     const now = opts.now ?? this.#opts.clock?.() ?? Date.now();
-    const names = new Map(this.#h.names());
-    // the version's landmark words ("exported", "sent", "start"…), DESIGN-V2 §2.3's fourth weight
-    const marks = new Map<number, LandmarkKind[]>();
-    for (const l of await this.landmarks({ cut, limit: 5000 })) {
-      const k = marks.get(l.ref.seq) ?? [];
-      if (!k.includes(l.kind)) k.push(l.kind);
-      marks.set(l.ref.seq, k);
+    // per query, once: the cut's version names by seq, its landmarks' words, and who and which day, by key
+    const names = new Map<number, string>();
+    for (const [node, n] of this.#h.names()) {
+      const at = node.lastIndexOf("@");
+      if (node.slice(0, at) === cut) names.set(Number(node.slice(at + 1)), n.name);
     }
+    const marks = await this.#landmarkKinds(cut);
     const markWords = new Map<string, Words>();
+    const markOf = (lm: readonly LandmarkKind[]): Words => {
+      const k = lm.join(" ");
+      let w = markWords.get(k);
+      if (!w) markWords.set(k, (w = findWords(k)));
+      return w;
+    };
     // who made it, told as log() tells it (the person behind a generic save), once per actor and change replica; a
-    // change made on this computer is also "you"
-    const told = new Map<string, { a: Actor | null; w: Words[] }>();
-    const whoOf = (c: ConfirmedChange) => {
-      const rid = c.id.slice(0, c.id.lastIndexOf("."));
-      const k = `${c.author ? actorKey(c.author) : ""}\u0000${rid}`;
-      let x = told.get(k);
+    // person's change made on this computer is also "you"
+    const told: ({ a: Actor | null; w: Words[]; hay: string } | undefined)[] = [];
+    const whoOf = (e: (typeof all)[number]) => {
+      let x = told[e.who];
       if (!x) {
+        const c = e.row, rid = c.id.slice(0, c.id.lastIndexOf("."));
         const a = this.#who(c.author, c.id);
-        // "you": a person's change made on this computer, as this handle's person or Cardboard's generic one
         const me = this.#actor();
         const mine = (this.#ownRids.has(rid) || rid === this.#rid) && !!c.author && (c.author.id === PERSON || (c.author.kind === me.kind && c.author.id === me.id));
         const w = [a?.name, a?.owner?.name, mine ? "You" : undefined].filter((n): n is string => !!n).map(findWords);
-        told.set(k, (x = { a, w }));
+        told[e.who] = x = { a, w, hay: hayOf(w) };
       }
       return x;
     };
-    const days = new Map<string, Words>();
-    const dayOf = (at: number) => {
-      const k = new Date(at).toDateString();
-      let w = days.get(k);
-      if (!w) days.set(k, (w = dayWords(at, now)));
+    const days = new Map<number, Words>();
+    const dayOf = (e: (typeof all)[number]) => {
+      let w = days.get(e.day);
+      if (!w) days.set(e.day, (w = dayWords(e.row.at, now)));
       return w;
     };
     const nameWords = new Map<string, Words>();
@@ -1808,33 +1810,39 @@ class CartonImpl implements Carton {
       if (!w) nameWords.set(n, (w = findWords(n)));
       return w;
     };
+    const needles = q.map((x) => " " + x);
+    const isTurn = (c: ConfirmedChange) => !!c.author && (c.author.kind === "agent" || c.author.kind === "subagent" || !!c.author.turn);
     type Cand = { field: FindField; w: Words; record?: PathKey; recordName?: string; span?: { start: number; end: number } };
     const matches: FindMatch[] = [];
     let total = 0;
+    const [wClip, wText, wPrompt, wName, wPerson, wDay] = FIND_FIELDS.map((f) => want.has(f));
     for (let i = all.length - 1; i >= 0; i--) {
       const e = all[i]!, c = e.row;
       if (before !== undefined && e.seq >= before) continue;
-      // what this version holds, by weight
+      // the fast test: every word starts a word somewhere in what this version holds (one string search per place)
+      const name = names.get(e.seq), lm = marks.get(e.seq);
+      const turn = name !== undefined && isTurn(c);
+      const nameHay = name !== undefined && (turn ? wPrompt : wName) ? wordsOf(name).hay : "";
+      const markHay = lm && wName ? markOf(lm).hay : "";
+      const staticHay = wClip || wText ? e.hay : "";
+      let ok = true;
+      for (const nd of needles) {
+        if (staticHay.includes(nd) || (nameHay && nameHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
+        ok = false;
+        break;
+      }
+      if (!ok) continue;
+      // (exact: every word is after a space in those strings, so `" " + word` is found where a word starts with it)
+      total++;
+      if (matches.length >= limit) continue;
+      // what it holds, by weight (only for a version shown)
       const cands: Cand[] = [];
       if (want.has("clip")) for (const cl of e.clips) for (const w of cl.names) cands.push({ field: "clip", w, record: cl.key, recordName: w.text, ...(cl.span ? { span: cl.span } : {}) });
       if (want.has("text")) for (const t of e.texts) cands.push({ field: "text", w: t.text, record: t.key, ...(t.name ? { recordName: t.name } : {}) });
-      const name = names.get(nodeId(cut, e.seq))?.name;
-      // a turn's version is named from its prompt (cardboard's nameTurn): that name is the request
-      const turn = !!c.author && (c.author.kind === "agent" || c.author.kind === "subagent" || !!c.author.turn);
-      if (name && want.has(turn ? "prompt" : "name")) cands.push({ field: turn ? "prompt" : "name", w: wordsOf(name) });
-      const lm = marks.get(e.seq);
-      if (lm && want.has("name")) {
-        const k = lm.join(" ");
-        let w = markWords.get(k);
-        if (!w) markWords.set(k, (w = findWords(k)));
-        cands.push({ field: "name", w });
-      }
-      if (want.has("person")) for (const w of whoOf(c).w) cands.push({ field: "person", w });
-      if (want.has("day")) cands.push({ field: "day", w: dayOf(c.at) });
-      // every word of the text starts a word somewhere in it
-      if (!q.every((x) => cands.some((cd) => cd.w.toks.some((t) => t.w.startsWith(x))))) continue;
-      total++;
-      if (matches.length >= limit) continue;
+      if (nameHay) cands.push({ field: turn ? "prompt" : "name", w: wordsOf(name!) });
+      if (markHay) cands.push({ field: "name", w: markOf(lm!) });
+      if (want.has("person")) for (const w of whoOf(e).w) cands.push({ field: "person", w });
+      if (want.has("day")) cands.push({ field: "day", w: dayOf(e) });
       const fields: FindField[] = [];
       // the best: the first (by weight) that holds the most of the words
       let best: Cand | undefined, bestHits: [number, number][] = [];
@@ -1850,7 +1858,7 @@ class CartonImpl implements Carton {
         ref: { branchId: cut, seq: e.seq, pending: [] },
         change: c.id,
         at: c.at,
-        author: whoOf(c).a,
+        author: whoOf(e).a,
         ...(name ? { name } : {}),
         field: best!.field,
         fields,
@@ -1865,11 +1873,31 @@ class CartonImpl implements Carton {
     }
     // "A clip first": the clips whose name holds every word, those still in the cut first, then the newest touched
     const clips = [...ix.clips]
-      .filter(([, v]) => v.names.some((n) => hitsIn(n, q, true)))
+      .filter(([, v]) => v.names.some((n) => needles.every((nd) => n.hay.includes(nd))))
       .sort((x, y) => Number(!!x[1].deleted) - Number(!!y[1].deleted) || y[1].seq - x[1].seq)
       .slice(0, 8)
       .map(([record, v]) => ({ record, name: v.names[0]!.text, cut, ...(v.deleted ? { deleted: true as const } : {}) }));
     return { clips: want.has("clip") ? clips : [], matches, total, versions };
+  }
+  /**
+   * The landmark kinds of a cut's versions, by seq, for Find: kept while the cut's rows, its names and this handle's
+   * marks are as they were (a mark by another process shows once a version is added, or a name given).
+   */
+  #kindsCache = new Map<string, { key: string; kinds: Map<number, LandmarkKind[]> }>();
+  #marks = 0;
+  async #landmarkKinds(cut: string): Promise<Map<number, LandmarkKind[]>> {
+    const log = this.#h.changes(cut);
+    const key = `${log.length}|${log[log.length - 1]?.id ?? ""}|${this.#h.names().length}|${this.#marks}|${this.#h.cuts().length}`;
+    const hit = this.#kindsCache.get(cut);
+    if (hit && hit.key === key) return hit.kinds;
+    const kinds = new Map<number, LandmarkKind[]>();
+    for (const l of await this.landmarks({ cut, limit: 5000 })) {
+      const k = kinds.get(l.ref.seq) ?? [];
+      if (!k.includes(l.kind)) k.push(l.kind);
+      kinds.set(l.ref.seq, k);
+    }
+    this.#kindsCache.set(cut, { key, kinds });
+    return kinds;
   }
   async landmarks(opts: LandmarkOptions = {}): Promise<Landmark[]> {
     const cut = opts.cut ?? this.#h.current;
@@ -1960,6 +1988,7 @@ class CartonImpl implements Carton {
     const by = opts.by ?? this.#actor();
     const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}) };
     await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, seq, kind, at], value: row }]);
+    this.#marks++;
     this.#emit({ type: "landmarks", branchId: cut });
     const r: StateRef = { branchId: cut, seq, pending: [] };
     return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, personal: kind === "start", local: true, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };

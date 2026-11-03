@@ -92,14 +92,27 @@ export const foldText = (s: string): string => s.normalize("NFD").replace(/\p{M}
 export interface Words {
   readonly text: string;
   readonly toks: readonly { readonly at: number; readonly len: number; readonly w: string }[];
+  /** Its folded words, each after a space: a word starts with `q` where `hay.includes(" " + q)`. */
+  readonly hay: string;
 }
 const WORD = /[\p{L}\p{N}]+/gu;
 export function findWords(s: string): Words {
   const text = s.replace(/\s+/g, " ").trim();
   const toks: { at: number; len: number; w: string }[] = [];
-  for (const m of text.matchAll(WORD)) toks.push({ at: m.index, len: m[0].length, w: foldText(m[0]) });
-  return { text, toks };
+  let hay = "";
+  for (const m of text.matchAll(WORD)) {
+    const w = foldText(m[0]);
+    toks.push({ at: m.index, len: m[0].length, w });
+    hay += " " + w;
+  }
+  return { text, toks, hay };
 }
+/** Words as one string to test a word's start with `includes(" " + q)`: each folded word after a space. */
+export const hayOf = (ws: readonly Words[]): string => {
+  let h = "";
+  for (const w of ws) h += w.hay;
+  return h;
+};
 /** The words of a query, folded. */
 export const queryWords = (q: string): string[] => [...foldText(q).matchAll(WORD)].map((m) => m[0]);
 /** The words of `w` each query word starts: [lo, hi) per word matched, or null when a query word matches none. */
@@ -116,6 +129,11 @@ export function hitsIn(w: Words, q: readonly string[], all = false): [number, nu
 interface Entry {
   seq: number;
   row: ConfirmedChange;
+  /** Every word of its clips' names and its texts, folded, each after a space: a word's start is `" " + word`. */
+  hay: string;
+  /** Who made it (an index into `FindIndex.whos`: actor and change replica, what `log()` tells them by) and its local day (yyyymmdd), for the query's caches. */
+  who: number;
+  day: number;
   /** The clips it touched, each by every name it had (before and after the version), and where it was after it. */
   clips: { key: PathKey; names: Words[]; span?: { start: number; end: number } }[];
   /** Text it set (a title's, a caption's), by record. */
@@ -147,6 +165,15 @@ export class FindIndex {
   readonly entries: Entry[] = [];
   /** Every clip the cut's versions touched, by its newest name (deleted: the name it had last): find's `clips`. */
   readonly clips = new Map<PathKey, { names: Words[]; seq: number; deleted?: true }>();
+  /** Who made each version, by index (`Entry.who`): actor and change replica. */
+  readonly #whoIx = new Map<string, number>();
+  /** A string's words, once per string (names and texts repeat over thousands of versions). */
+  readonly #wordsOf = new Map<string, Words>();
+  #words(s: string): Words {
+    let w = this.#wordsOf.get(s);
+    if (!w) this.#wordsOf.set(s, (w = findWords(s)));
+    return w;
+  }
 
   /** Index the rows saved since the last call; start again when the cut's log was rebuilt (a compaction, a reload). */
   update(src: FindSource): void {
@@ -174,7 +201,11 @@ export class FindIndex {
       const before = recs.map((r) => this.#read(doc, r.coll, r.id, r.spec, schema));
       if (c.ops.length) doc = E.apply(doc, c.ops, schema);
       if (!version) continue;
-      const entry: Entry = { seq: s, row: c, clips: [], texts: [] };
+      const d = new Date(c.at);
+      const wk = `${c.author ? `${c.author.kind}/${c.author.id}/${c.author.agentId ?? ""}` : ""}\u0000${c.id.slice(0, c.id.lastIndexOf("."))}`;
+      let who = this.#whoIx.get(wk);
+      if (who === undefined) this.#whoIx.set(wk, (who = this.#whoIx.size));
+      const entry: Entry = { seq: s, row: c, clips: [], texts: [], hay: "", who, day: d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate() };
       recs.forEach((r, i) => {
         const was = before[i]!, now = this.#read(doc, r.coll, r.id, r.spec, schema);
         const part = r.spec.nounOf?.((now.rec ?? was.rec)!) === null;
@@ -182,18 +213,21 @@ export class FindIndex {
           const names = [...new Set([now.name, was.name].filter((n): n is string => !!n))];
           const span = now.rec && tl && r.coll === tl.collection && typeof now.rec[tl.start] === "number" && typeof now.rec[tl.end] === "number" ? { start: now.rec[tl.start] as number, end: now.rec[tl.end] as number } : undefined;
           if (names.length) {
-            entry.clips.push({ key: r.key, names: names.map(findWords), ...(span ? { span } : {}) });
-            // the clip as the cut has it last: its name now, or the one it had when it was deleted
-            const had = this.clips.get(r.key)?.names ?? [];
-            const all = [...names.map(findWords), ...had.filter((w) => !names.includes(w.text))];
+            const ws = names.map((n) => this.#words(n));
+            entry.clips.push({ key: r.key, names: ws, ...(span ? { span } : {}) });
+            // the clip as the cut has it last: its name now, or the one it had when it was deleted, and every name it had
+            const was = this.clips.get(r.key);
+            const all = was ? (ws.every((w) => was.names.includes(w)) ? was.names : [...ws, ...was.names.filter((w) => !ws.includes(w))]) : ws;
+            if (was && all === was.names && all[0] !== ws[0]) all.sort((x, y) => Number(y === ws[0]) - Number(x === ws[0]));
             this.clips.set(r.key, { names: all, seq: s, ...(now.rec ? {} : { deleted: true as const }) });
           }
         }
         // the text it set: what the record holds after it that it didn't before
         const had = new Set(was.words);
         const name = now.name ?? was.name ?? "";
-        for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: findWords(w) });
+        for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: this.#words(w) });
       });
+      entry.hay = hayOf([...entry.clips.flatMap((x) => x.names), ...entry.texts.map((x) => x.text)]);
       this.entries.push(entry);
     }
     this.#doc = doc;
@@ -204,6 +238,8 @@ export class FindIndex {
   #reset(src: FindSource): void {
     this.entries.length = 0;
     this.clips.clear();
+    this.#whoIx.clear();
+    this.#wordsOf.clear();
     this.#log = src.log;
     this.#seq = 0;
     this.#last = null;
