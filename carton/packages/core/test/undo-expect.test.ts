@@ -151,3 +151,60 @@ test("History's TopCheck: shown the stack's newest entry before the step is plan
   assert.deepEqual(seen.splice(0), ["u.1"]);
   assert.deepEqual(await names(h, main), { a: "A", b: "b" });
 });
+
+test("PLAN 5.3: an edit still on its way to the store when the toast's Undo (or Redo) starts lands first, and is the one on top: StackMoved, both edits kept", async () => {
+  // review of fix/ux-size: the check must be made inside the Undo's own write, after the writes queued before it.
+  // The newer edit is held at its first store call (its refresh, before it plans anything); the Undo starts while it
+  // waits. A check made when the Undo is called (the model still has the action on top) would take back the newer edit.
+  const store = createMemoryStore();
+  let gate: Promise<void> | null = null;
+  let entered: () => void = () => {};
+  const held = new Proxy(store, {
+    get: (o, k) => {
+      const v = Reflect.get(o, k);
+      if (typeof v !== "function") return v;
+      if (k === "watch" || k === "close") return v.bind(o);
+      return async (...a: unknown[]) => {
+        if (gate) {
+          const g = gate;
+          gate = null;
+          entered();
+          await g;
+        }
+        return v.apply(o, a);
+      };
+    },
+  });
+  const hold = () => {
+    let release!: () => void;
+    gate = new Promise<void>((r) => (release = r));
+    const reached = new Promise<void>((r) => (entered = r));
+    return { reached, release };
+  };
+  const c = await Carton.open({ adapter, store: held, init: { doc: film(), cutName: "Main cut" }, actor: me });
+  try {
+    const action = idOf(await c.commit({ ops: [set("a", "A")] }));
+    let h = hold();
+    const newer = c.commit({ ops: [set("b", "B")] });
+    await h.reached;
+    const undo = c.undo(ME, { expect: action });
+    h.release();
+    assert.equal((await newer).status, "confirmed");
+    await assert.rejects(undo, moved, "the newer edit landed first: the toast's Undo would take it back, so it's refused");
+    assert.deepEqual(await names(c), { a: "A", b: "B" }, "both edits kept");
+
+    // redo: an edit on its way clears the redo stack before the toast's Redo runs
+    const undoOfNewer = idOf(await c.undo(ME));
+    assert.deepEqual(await names(c), { a: "A", b: "b" });
+    h = hold();
+    const another = c.commit({ ops: [set("a", "A2")] });
+    await h.reached;
+    const redo = c.redo(ME, { expect: undoOfNewer });
+    h.release();
+    assert.equal((await another).status, "confirmed");
+    await assert.rejects(redo, moved, "the edit that landed first cleared the redo: refused");
+    assert.deepEqual(await names(c), { a: "A2", b: "b" }, "nothing redone");
+  } finally {
+    await c.close();
+  }
+});
