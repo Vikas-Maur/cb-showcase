@@ -1609,7 +1609,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     }
     const ref = v?.ref ?? target.ref;
     if (!ref) throw failed();
-    if (v) return { ref, kind: "version", versionId: v.id, label: versionLabel(v, { ...ctx, start: true }), short: versionShort(v, ctx) };
+    // (a row given with its own words keeps them: a peek's "Exported 1080p for the client · holding", DESIGN-V2 §2.4)
+    if (v) return { ref, kind: "version", versionId: v.id, label: target.versionId !== undefined && target.label ? target.label : versionLabel(v, { ...ctx, start: true }), short: versionShort(v, ctx) };
     const label = target.label ?? "An earlier version";
     return { ref, kind: "version", label, short: label };
   };

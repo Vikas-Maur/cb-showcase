@@ -700,7 +700,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       if (v?.provisional) throw new Error("Available once it's sent");
       const ref = v?.ref ?? target.ref;
       if (!ref) throw new Error("Couldn't load this version. Try again.");
-      return setViewing({ ref, kind: "version", ...(v ? { versionId: v.id } : {}), label: v ? versionLabel(v, { ...labelCtx, start: true }) : (target.label ?? ref), short: v ? versionShort(v, labelCtx) : (target.label ?? ref) });
+      return setViewing({ ref, kind: "version", ...(v ? { versionId: v.id } : {}), label: v ? (target.versionId !== undefined && target.label ? target.label : versionLabel(v, { ...labelCtx, start: true })) : (target.label ?? ref), short: v ? versionShort(v, labelCtx) : (target.label ?? ref) });
     },
 
     // Carton UX v2 (N2's gallery and tests): find, landmarks, bring back one clip, landmark pictures

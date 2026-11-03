@@ -613,6 +613,7 @@ export const words = {
   dayVersionsMarks: (n: number, marks: number) => `${plural(n, "version", "versions")} · ${plural(marks, "landmark", "landmarks")}`,
   peekHint: "Click to open · hold to peek",
   holding: "Holding",
+  holdingLabel: (label: string) => `${label} · holding`,
   peekShowing: (label: string) => `Showing ${label}. Release to go back.`,
   compare: "Compare",
   compareYourEditWith: "Compare your edit with…",

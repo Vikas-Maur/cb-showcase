@@ -84,6 +84,13 @@ test("view model: find, landmarks, bring back one clip, its choices, align and t
     await ui.settled();
     await new Promise((r) => setTimeout(r, 20));
     assert.match(h.at("all", 0)!.summary, /^Brought back “Intro” from \d{1,2}:\d{2} [ap]m$/);
+    // a row viewed with its own words keeps them (a peek: "… · holding", QA v2 G19); without, its version's label
+    const older = h.at("all", 1)!;
+    await ui.view({ kind: "version", versionId: older.id, label: "Exported 1080p · holding" });
+    assert.equal(ui.viewing()?.label, "Exported 1080p · holding");
+    await ui.view({ kind: "version", versionId: older.id });
+    assert.notEqual(ui.viewing()?.label, "Exported 1080p · holding");
+    await ui.view(null);
     // two cuts: their differences, said as where a clip is
     const insta = await carton.fork("30s Instagram cut");
     await carton.commit({ cut: insta.id, ops: [{ op: "remove", path: ["items", "c"] }, set("b", "endTime", 8)], author: alice });

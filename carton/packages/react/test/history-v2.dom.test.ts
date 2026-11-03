@@ -379,7 +379,9 @@ test(name("hold a row to peek: viewing while held, Holding on the row, back on r
   assert.deepEqual(fetched, [sent.ref]);
   await pointer(r, "pointerdown");
   await wait(PEEK_HOLD_MS + 60);
-  assert.deepEqual(views[0], { kind: "version", versionId: sent.id });
+  // the chip says what is held, by its landmark (DESIGN-V2 §2.4; design QA v2 G19: it said the plain version label)
+  assert.deepEqual(views[0], { kind: "version", versionId: sent.id, label: "“Sent to client” · holding" });
+  await waitFor(() => ui.viewing()?.label === "“Sent to client” · holding", "the viewing's label");
   await waitFor(() => row(m.container, "Sent to client")!.hasAttribute("data-hold"), "Holding");
   assert.match(row(m.container, "Sent to client")!.textContent ?? "", /Holding/);
   await pointer(r, "pointerup");

@@ -827,6 +827,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // Hold a row to peek (DESIGN-V2 §2.4): viewing, while held, through viewing's own fast back. A version still on its
   // way, an empty one or your edit now (the cut's newest) has nothing to peek at.
   const peekable = useCallback((v: Version | undefined) => (v && !v.provisional && !v.empty && v.id !== hist.at("all", 0)?.id ? v : undefined), [hist]);
+  // a held row in words: its landmark as one phrase ("Exported 1080p for the client", "Before restoring the 11:02 am
+  // version", "“Sent to client”"), else its version's label (DESIGN-V2 §2.4: the chip says what is held)
+  const peekLabel = (v: Version) => {
+    const mk = marks.byVersion.get(v.id)?.[0];
+    const plain = versionLabel(v, { locale, actor: ui.actor.bind(ui) });
+    if (!mk || mk.kind === "turn") return plain;
+    const title = landmarkTitle(mk, words, v.name ?? plain, mk.kind === "before" && mk.after ? afterWords.get(mk.after) : undefined);
+    if (mk.kind === "named") return `“${title}”`;
+    if (mk.kind === "exported" || mk.kind === "before") {
+      const tag = words.landmarkTags[mk.kind];
+      return title === tag ? tag : `${tag} ${title[0]!.toLowerCase()}${title.slice(1)}`;
+    }
+    return title;
+  };
   const peek = usePeek({
     ui,
     versionOf: (el) => {
@@ -834,8 +848,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
       return pick ? undefined : peekable(versionOfRow(rowOf(key)));
     },
     ...(props.play?.prefetch ? { prefetch: props.play.prefetch } : {}),
-    // the one thing said while held (DESIGN-V2 §2.4)
-    announce: (v) => setSaid(words.peekShowing(versionLabel(v, { locale, actor: ui.actor.bind(ui) }))),
+    // the one thing said while held (DESIGN-V2 §2.4), and the chip's words: the row's landmark, "· holding"
+    announce: (v) => setSaid(words.peekShowing(peekLabel(v))),
+    labelOf: (v) => words.holdingLabel(peekLabel(v)),
   });
   useEffect(() => {
     if (!peek.holding) setSaid("");

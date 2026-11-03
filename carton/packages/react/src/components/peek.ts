@@ -26,6 +26,8 @@ export interface PeekOptions {
   prefetch?: (ref: string) => void;
   /** Said once a peek shows ("Showing … Release to go back."). */
   announce?: (v: Version) => void;
+  /** The chip's words while held ("Exported 1080p for the client · holding"), when the host has them. */
+  labelOf?: (v: Version) => string | undefined;
   clock?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
 }
 
@@ -53,7 +55,8 @@ export function usePeek(o: PeekOptions) {
     shown.current = v;
     setHolding(v.id);
     opts.current.announce?.(v);
-    void opts.current.ui.view({ kind: "version", versionId: v.id }).catch(() => {
+    const label = opts.current.labelOf?.(v);
+    void opts.current.ui.view({ kind: "version", versionId: v.id, ...(label ? { label } : {}) }).catch(() => {
       if (shown.current === v) {
         shown.current = null;
         setHolding(null);
