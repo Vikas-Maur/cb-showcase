@@ -706,6 +706,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     // Carton UX v2 (N2's gallery and tests): find, landmarks, bring back one clip, landmark pictures
     ...mockFind({
       all: () => all,
+      cuts: () => ui.cuts(),
       did: (id) => did.get(id) ?? [],
       between,
       head: headOf,
