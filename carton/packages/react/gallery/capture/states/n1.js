@@ -114,13 +114,14 @@ export function n1Bridge(api, sc) {
     compareDoc: (_p, ref) => Promise.resolve(ref == null || ref === sc.ui.cuts().find((c) => c.current)?.head ? doc(RIGHT) : doc(sc.n1?.from === "cut-ig" ? LEFT.filter((i) => i.id !== "item-pier") : LEFT)),
     togglePlay() { playing = !playing; tell(); },
     pause() { if (playing) { playing = false; tell(); } },
-    get playing() { return playing; },
     libraryAside(on) { document.documentElement.toggleAttribute("data-cap-lib-aside", !!on); },
     clock: () => t,
     timelineScale: () => ({ pps: PPS, tracks: TRACKS }),
     onTimeline(f) { subs.add(f); return () => subs.delete(f); },
     seek(x) { window.__cap.seekAt = x; t = x; tell(); },
   });
+  // a live getter (Object.assign would copy its value once: playing stayed false, found by the bench's verifier)
+  Object.defineProperty(api, "playing", { get: () => playing, configurable: true });
 }
 
 /**
