@@ -142,16 +142,18 @@ export function cutColor(cut) {
 }
 const upFirst = (s) => (typeof s === "string" && s ? s[0].toUpperCase() + s.slice(1) : s);
 /**
- * What the editor shows when it isn't your edit (PLAN 0.5's ui.viewing(): {ref, kind, label, short}, or null). Until
- * the view model has viewing(), what today's model knows: a teammate's cut switched to (read-only), or a version opened
- * read-only (preview()).
+ * What the editor shows when it isn't your edit (PLAN 0.5's ui.viewing(): {ref, kind, label, short}, or null), and
+ * what the view model can't know yet: a teammate's cut switched to (read-only: today's cuts menu switches to it). A
+ * view model without viewing(): a version opened read-only (preview()).
  */
 export function viewingOf(ui) {
-  if (typeof ui.viewing === "function") return ui.viewing() ?? null;
+  const v = typeof ui.viewing === "function" ? ui.viewing() : null;
+  if (v) return v;
   const current = ui.cuts().find((c) => c.current);
-  if (current?.readOnly) return { ref: current.head, kind: "cut", label: current.label, short: current.label };
+  if (current?.readOnly) return { ref: current.head, kind: "cut", cutId: current.id, label: current.label, short: current.label };
+  if (typeof ui.viewing === "function") return null;
   const p = ui.preview?.();
-  return p ? { ref: p.ref, kind: "version", label: upFirst(p.label), short: upFirst(p.label) } : null;
+  return p ? { ref: p.ref, kind: "version", label: p.label, short: p.label } : null;
 }
 // Your own cut: the current one, or while a teammate's cut is viewed, your Main cut (the one Back goes to).
 const homeCut = (cuts) => {
@@ -164,14 +166,18 @@ export function chipOf(ui) {
   const cut = homeCut(cuts);
   if (!cut) return null;
   const v = viewingOf(ui);
-  return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: v.label } : null };
+  // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
+  return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: upFirst(v.label) } : null };
 }
-/** Back to your edit (the chip's ✕): ui.view(null) when the view model has it, else what today's model does. */
+/**
+ * Back to your edit (the chip's ✕). A teammate's cut switched to: your own cut again. Anything else viewed: through
+ * openPreview(null), the path connect() wraps so the editor swaps back too (bridge.preview); PLAN 0.5 keeps it as
+ * view(null)'s alias, and it clears whatever is viewed.
+ */
 export function backToEdit(ui) {
-  if (typeof ui.view === "function") return ui.view(null);
   const cuts = ui.cuts(), current = cuts.find((c) => c.current), home = homeCut(cuts);
   if (current?.readOnly && home) return ui.switchCut(home.id);
-  if (ui.preview?.()) return ui.openPreview(null);
+  if (viewingOf(ui)) return ui.openPreview(null);
   return undefined;
 }
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
@@ -350,7 +356,7 @@ export class CartonBoundary extends Component {
       return h("div", { className: "carton-stage-snag", role: "alert" }, h("span", null, "Conflict cards and the preview banner hit a snag."), again);
     // a dialog (Share) keeps its frame, so Esc and its ✕ still close it
     if (this.props.onClose)
-      return h(Dialog, { title: this.props.title ?? words.titleBar.share, onClose: this.props.onClose }, h("div", { role: "alert", className: "carton-share-snag" }, h("p", null, "This hit a snag. Nothing you’ve made is lost."), again));
+      return h(Dialog, { title: this.props.title ?? words.share, onClose: this.props.onClose }, h("div", { role: "alert", className: "carton-share-snag" }, h("p", null, "This hit a snag. Nothing you’ve made is lost."), again));
     return h("div", { className: "flex flex-col items-start gap-2 p-4 text-sm text-muted-foreground", role: "alert" },
       h("p", null, "This panel hit a snag. Nothing you’ve made is lost."),
       again);
@@ -393,7 +399,7 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk }) {
             className: "relative flex h-[26px] shrink-0 cursor-pointer items-center gap-[6px] rounded-ui-md px-[8px] text-ui-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/30 " +
               (panel === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"),
           }, h(Icon, { name: PANELS[id].icon, size: 14 }), PANELS[id].label))),
-        narrowWindow && onShare ? h("button", { type: "button", "aria-label": words.titleBar.share, title: words.titleBar.share, "data-carton-share": "", onClick: onShare, className: headButton }, h(Icon, { name: "users", size: 16 })) : null,
+        narrowWindow && onShare ? h("button", { type: "button", "aria-label": words.share, title: words.share, "data-carton-share": "", onClick: onShare, className: headButton }, h(Icon, { name: "users", size: 16 })) : null,
         h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null), className: headButton },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
@@ -406,7 +412,7 @@ function ShareHost({ projectId, bridge, onClose }) {
   if (!Share) return null;
   const name = bridge.projectName ?? null;
   return h("div", { "data-carton-skin": "cardboard" },
-    h(CartonBoundary, { panel: "share", onClose, title: words.shareDialog.title(name) }, h(Share, { projectId, bridge, name, onClose })));
+    h(CartonBoundary, { panel: "share", onClose, title: (name ? words.shareTitle(name) : words.shareThisProject) }, h(Share, { projectId, bridge, name, onClose })));
 }
 
 /**
@@ -590,7 +596,7 @@ export function JoinDialog({ bridge, onClose }) {
   const Join = window.__cartonSyncUi?.Join;
   return h("div", { "data-carton-skin": "cardboard" },
     Join ? h(Join, { bridge, onOpened: onClose, onCancel: onClose })
-      : h(Dialog, { title: words.joinDialog.title, onClose, className: "carton-join-dialog" }, h("p", { className: "carton-error", role: "alert" }, words.failed)));
+      : h(Dialog, { title: words.joinTitle, onClose, className: "carton-join-dialog" }, h("p", { className: "carton-error", role: "alert" }, words.failed)));
 }
 
 /** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */

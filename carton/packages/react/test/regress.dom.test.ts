@@ -20,14 +20,16 @@ const name = (t: string) => `${t} [${runtime}]`;
 // made these tests fail from the day after it.
 const todayAt = (hour: number) => {
   const d = new Date();
-  d.setHours(hour, 0, 0, 0);
+  d.setHours(Math.floor(hour), Math.round((hour % 1) * 60), 0, 0);
   return d.getTime();
 };
 const ty = (el: Element) => parseFloat(((el as HTMLElement).style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "NaN");
 
 // Regress #2: a reader who picked a version, then scrolled away from it (into an older day), was pulled back to it when a
 // new version arrived: the active row's index and the rows' layout moved, and the list kept the active row in view.
-for (const [label, hour, grouped] of [["grouped by day, scrolled into an older day", 1, true], ["one day", 14, false]] as const)
+// (the mock's newest 80 minutes are the redesign's story, its other versions before them: at 2:20 am, yesterday starts
+// about 48 rows down)
+for (const [label, hour, grouped] of [["grouped by day, scrolled into an older day", 2 + 20 / 60, true], ["one day", 14, false]] as const)
   test(name(`regress #2: a new version keeps the reader's place after they picked a row and scrolled away (${label})`), async () => {
     const ui = createMockUi({ versions: 120, now: todayAt(hour) });
     const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));

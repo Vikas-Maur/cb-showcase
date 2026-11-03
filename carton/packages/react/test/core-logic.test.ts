@@ -107,10 +107,12 @@ test("when: just now, minutes, hours, yesterday, then dates", () => {
   assert.equal(when(now - 20_000, now, "en-GB"), "just now");
   assert.equal(when(now - 4 * 60_000, now, "en-GB"), "4 min ago");
   assert.equal(when(now - 2 * 3_600_000, now, "en-GB"), "2 h ago");
-  assert.match(when(new Date(2026, 9, 30, 14, 5).getTime(), now, "en-GB"), /^Yesterday 14:05$/);
-  assert.match(when(new Date(2026, 9, 27, 9, 0).getTime(), now, "en-GB"), /^Tue 09:00$/);
-  assert.equal(when(new Date(2026, 6, 3).getTime(), now, "en-GB"), "3 Jul");
-  assert.equal(when(new Date(2025, 6, 3).getTime(), now, "en-GB"), "3 Jul 2025");
+  // then the moment, always with am/pm (PLAN 0.9): never a bare H:MM beside a timecode
+  assert.equal(when(new Date(2026, 9, 31, 8, 5).getTime(), now, "en-GB"), "8:05 am");
+  assert.equal(when(new Date(2026, 9, 30, 14, 5).getTime(), now, "en-GB"), "yesterday at 2:05 pm");
+  assert.equal(when(new Date(2026, 9, 27, 9, 0).getTime(), now, "en-GB"), "27 Oct at 9:00 am");
+  assert.equal(when(new Date(2026, 6, 3).getTime(), now, "en-GB"), "3 Jul at 12:00 am");
+  assert.equal(when(new Date(2025, 6, 3).getTime(), now, "en-GB"), "3 Jul 2025 at 12:00 am");
 });
 
 test("windowRange renders the visible rows plus overscan, clamped", () => {
@@ -172,9 +174,10 @@ test("words: the §0.1 status words and plurals", () => {
 });
 
 test("mock history: 10k versions, filters, newest first, indexOf in O(log n)", () => {
-  const ui = createMockUi({ versions: 10_000, seed: 3 });
+  const ui = createMockUi({ versions: 10_000, seed: 3, provisional: true });
   const h = ui.history();
-  assert.equal(h.count("all"), 10_004);
+  // the generated versions, the start, the story's 12 and 2 not sent yet
+  assert.equal(h.count("all"), 10_015);
   const newest = h.at("all", 0)!;
   assert.equal(newest.provisional, true);
   assert.equal(h.indexOf("all", newest.id), 0);
@@ -187,6 +190,6 @@ test("mock history: 10k versions, filters, newest first, indexOf in O(log n)", (
   assert.equal(h.indexOf("named", t.id) >= -1, true);
   const r0 = h.revision();
   ui.addVersion({ author: people.bob });
-  assert.equal(h.count("all"), 10_005);
+  assert.equal(h.count("all"), 10_016);
   assert.ok(h.revision() > r0);
 });

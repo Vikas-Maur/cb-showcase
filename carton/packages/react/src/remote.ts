@@ -8,9 +8,12 @@
 // however long History is. Summaries are described only for the rows the renderer shows: it asks with "want".
 
 import { TopicHub } from "./hub.ts";
+import { itemFilter } from "./item-filter.ts";
 import type {
   Actor,
   CartonUi,
+  Change,
+  ClipVersions,
   Conflict,
   Cut,
   Ghost,
@@ -23,15 +26,18 @@ import type {
   Topic,
   UndoTurn,
   Version,
+  Viewing,
+  Working,
 } from "./model.ts";
 
 type SmallTopic = Exclude<Topic, "history">;
-const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview"];
+const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview", "viewing", "working"];
 
 /** Async methods the client may call on the served view model. */
 const METHODS = [
   "compare", "credits", "shotDiff", "planFold", "switchCut", "newCut", "renameCut", "fold",
   "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit", "conflictRef",
+  "view", "changes", "changesIn", "undoTurnOf", "clipVersions",
 ] as const;
 type Method = (typeof METHODS)[number];
 
@@ -48,7 +54,7 @@ export type ClientMessage =
   | { t: "want"; ids: string[] };
 
 const read = (ui: CartonUi, t: SmallTopic): unknown =>
-  t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : ui.preview();
+  t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : t === "viewing" ? ui.viewing() : t === "working" ? ui.working() : ui.preview();
 
 /** Every actor a value mentions, so the client can name subagents' agents. */
 function actorsIn(value: unknown, out: Set<string>, list: Actor[], ui: CartonUi, depth = 0) {
@@ -168,15 +174,20 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
   };
 }
 
+// The filters' rows (PLAN 0.4): a person's named versions (an agent turn is named after its prompt: a turn, not a
+// named version), and your own changes.
+const isNamed = (v: Version) => !!v.name && v.kind !== "turn";
+const isMine = (v: Version) => v.author.kind === "human" && !!v.author.isYou;
+
 /** The renderer side: a CartonUi that mirrors a served one. Send `{t:"hello"}` happens on creation. */
 export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; receive(m: ServerMessage): void; ready: Promise<void> } {
   const hub = new TopicHub<Topic>();
   const actors = new Map<string, Actor>();
-  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null };
+  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null, viewing: null, working: null };
   let me: Actor = { key: "human/unknown", kind: "human", name: "You", isYou: true };
   // Changed in place: memoized rows keep their objects, and the indexes are kept incrementally.
   let rows: Version[] = [];
-  let named: number[] = [], turns: number[] = [];
+  let named: number[] = [], turns: number[] = [], mine: number[] = [];
   const pos = new Map<string, number>();
   let revision = 0;
   let nextId = 1;
@@ -188,11 +199,13 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   const reindexFrom = (start: number) => {
     while (named.length && named[named.length - 1]! >= start) named.pop();
     while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    while (mine.length && mine[mine.length - 1]! >= start) mine.pop();
     for (let i = start; i < rows.length; i++) {
       const v = rows[i]!;
       pos.set(v.id, i);
-      if (v.name) named.push(i);
+      if (isNamed(v)) named.push(i);
       if (v.kind === "turn") turns.push(i);
+      if (isMine(v)) mine.push(i);
     }
     revision++;
   };
@@ -212,8 +225,11 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     });
   };
 
-  const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
+  // "Only “clip”" (PLAN 0.8): the served view model's per-version index, asked for once per clip and History change
+  const items = itemFilter({ ask: (item) => call<ClipVersions>("clipVersions", item), pos: (id) => pos.get(id), revision: () => revision, changed: () => hub.notify("history") });
+  const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
   const history: HistorySource = {
+    status: (f) => (typeof f === "object" ? items.status(f.item) : { loading: false }),
     all: () => rows,
     revision: () => revision,
     count: (f) => (f === "all" ? rows.length : view(f)!.length),
@@ -249,6 +265,20 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
       calls.set(id, { ok: ok as (v: unknown) => void, fail });
       send({ t: "call", id, method, args });
     });
+  // Changes between two versions are fixed once both are confirmed (`cut@seq`): kept per pair, like the server's
+  const changeCache = new Map<string, Promise<readonly Change[]>>();
+  const changes = (a: string, b: string): Promise<readonly Change[]> => {
+    const key = `${a}|${b}`;
+    const hit = changeCache.get(key);
+    if (hit) return hit;
+    const p = call<readonly Change[]>("changes", a, b);
+    if (/@\d+$/.test(a) && /@\d+$/.test(b)) {
+      changeCache.set(key, p);
+      if (changeCache.size > 16) changeCache.delete(changeCache.keys().next().value!);
+      p.catch(() => changeCache.delete(key));
+    }
+    return p;
+  };
   const learn = (list?: Actor[]) => {
     if (list) for (const a of list) actors.set(a.key, a);
   };
@@ -264,6 +294,8 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     undoTurn: () => topics.undo as UndoTurn | null,
     published: () => topics.published as Published | null,
     preview: () => topics.preview as Preview | null,
+    viewing: () => topics.viewing as Viewing | null,
+    working: () => topics.working as Working | null,
     me: () => me,
     actor: (k) => actors.get(k),
     compare: (a, b) => call("compare", a, b),
@@ -281,6 +313,11 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     publish: (id) => call("publish", id),
     openPreview: (r, l) => void call("openPreview", r, l),
     blockEdit: () => void call("blockEdit"),
+    view: (t) => call("view", t),
+    changes,
+    changesIn: (id) => call("changesIn", id),
+    undoTurnOf: (id) => call("undoTurnOf", id),
+    clipVersions: (item) => call("clipVersions", item),
   };
 
   const receive = (m: ServerMessage) => {
@@ -293,6 +330,8 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         pos.clear();
         named = [];
         turns = [];
+        mine = [];
+        items.clear();
         reindexFrom(0);
         if (m.can.renameCut) ui.renameCut = (id, n) => call("renameCut", id, n);
         else delete ui.renameCut;

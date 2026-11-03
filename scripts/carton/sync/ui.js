@@ -10,13 +10,14 @@
 //   and one button, Join and open, which joins and opens the project in its tab.
 // Both talk to the library worker's live services through the pages' bridge (carton:call liveStatus, liveShare,
 // liveInvite, liveJoin, liveHostInfo) and follow `{kind: "carton", topic: "live"}` events. Editors' words only (in
-// @carton/react's words.ts: shareDialog, joinDialog). Never "Carton", "host", "token" or a raw error (UI audit P1-8,
+// @carton/react's words.ts: Share and Join). Never "Carton", "host", "token" or a raw error (UI audit P1-8,
 // P2-8): the server is the "sharing server", a failure says what to do, at the field it is about (shareProblem).
 import { createElement as h, useEffect, useRef, useState } from "react";
 import { Button, Dialog, Icon, MenuButton, MenuItem, words, initials, actorColor } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
-const W = words.shareDialog, J = words.joinDialog;
+// "Share “Weekend reel”" (a project with no name known: "Share this project")
+export const shareTitle = (name) => (name ? words.shareTitle(name) : words.shareThisProject);
 // A text field in Cardboard's look (the skin's carton-field: Cardboard's own stylesheet has no invalid or focus border
 // for these: AUDIT R3), with its own inline message (never the browser's "Please fill out this field").
 function Field({ label, hint, error, id, ...props }) {
@@ -85,12 +86,16 @@ function useName() {
   const save = (v) => { try { globalThis.localStorage?.setItem("carton.name", v); } catch {} };
   return [name, setName, save];
 }
-const ChangeLink = ({ onClick }) => h("button", { type: "button", className: "carton-link", onClick }, W.change);
-function NameField({ id, name, setName, error, known, lead = "Teammates see you as " }) {
+const ChangeLink = ({ onClick }) => h("button", { type: "button", className: "carton-link", onClick }, words.change);
+// The sentence that says the name ("Teammates see you as Vikas.", Join's "You'll join as Leo."), the name in bold.
+const teammatesSee = (name) => `Teammates see you as ${name}.`;
+function NameField({ id, name, setName, error, known, line = teammatesSee }) {
   const [editing, setEditing] = useState(!known);
-  if (!editing && name.trim() && !error)
-    return h("p", { className: "carton-known" }, lead, h("span", { className: "carton-known-value" }, name.trim()), ". ", h(ChangeLink, { onClick: () => setEditing(true) }));
-  return h(Field, { id, label: W.name, hint: W.nameHint, error, value: name, autoComplete: "name", onChange: (e) => setName(e.target.value) });
+  if (!editing && name.trim() && !error) {
+    const said = line(name.trim()), at = said.lastIndexOf(name.trim());
+    return h("p", { className: "carton-known" }, said.slice(0, at), h("span", { className: "carton-known-value" }, name.trim()), said.slice(at + name.trim().length) + " ", h(ChangeLink, { onClick: () => setEditing(true) }));
+  }
+  return h(Field, { id, label: words.yourName, hint: words.yourNameHint, error, value: name, autoComplete: "name", onChange: (e) => setName(e.target.value) });
 }
 
 // A teammate as Live.view() sends one (sync/live.js peerActor): an actor with a text `key`, `id` and `name`, and text or
@@ -108,12 +113,14 @@ function shownPeers(sent) {
 }
 // "Editing captions" reads "here now · editing captions" after a dot; a name or an acronym keeps its capital.
 const lower = (s) => (typeof s === "string" && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+// "You're offline. Keep editing: …": the first sentence in bold, the rest as it is.
+const firstSentence = (line) => { const i = line.indexOf(". "); return i < 0 ? [line] : [h("strong", { key: "b" }, line.slice(0, i + 1)), line.slice(i + 1)]; };
 const avatar = (actor, name, here) => h("span", { className: "carton-avatar", "data-kind": actor.kind === "human" ? "human" : "agent", "data-here": here ? "" : undefined, style: { ["--carton-actor"]: actorColor(actor, () => undefined), width: 24, height: 24, fontSize: 9.5 } },
   h("span", { className: "carton-avatar-initials" }, initials(name)));
 function Person({ actor, name, sub, role, here, idle, you }) {
   return h("li", { className: "carton-share-person", "data-you": you ? "" : undefined, style: idle ? { opacity: 0.55 } : undefined },
     avatar(actor, name, here && !idle),
-    h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, you ? W.you : name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
+    h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, you ? words.you : name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
     role ? h("span", { className: "carton-share-role" }, role) : null);
 }
 
@@ -123,19 +130,19 @@ export function People({ st }) {
   const me = { key: "human/you", kind: "human", name: st.name ?? "" };
   const offline = isOffline(st);
   return h("section", { className: "carton-share-section" },
-    h("h3", { className: "carton-share-heading" }, W.people),
+    h("h3", { className: "carton-share-heading" }, words.people),
     h("ul", { className: "carton-share-people" },
-      h(Person, { key: "you", you: true, actor: me, name: st.name ?? W.you, sub: offline ? st.name : `${st.name} · ${W.hereNow}`, role: W.roles[st.role] ?? null, here: !offline }),
-      ...peers.map((p) => h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? W.idle : W.hereNowDoing(lower(p.activity)), here: true, idle: p.idle }))),
-    peers.length ? null : h("p", { className: "carton-share-none" }, W.nobodyElse));
+      h(Person, { key: "you", you: true, actor: me, name: st.name ?? words.you, sub: offline ? st.name : words.youHereNow(st.name), role: words.roles[st.role] ?? null, here: !offline }),
+      ...peers.map((p) => h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? words.hereNotEditing : p.activity ? `${words.hereNowLine} · ${lower(p.activity)}` : words.hereNowLine, here: true, idle: p.idle }))),
+    peers.length ? null : h("p", { className: "carton-share-none" }, words.nobodyElseHere));
 }
 
-const ROLES = [["editor", W.roles.editor], ["commenter", W.roles.commenter], ["viewer", W.roles.viewer]];
+const ROLES = [["editor", words.roles.editor], ["commenter", words.roles.commenter], ["viewer", words.roles.viewer]];
 // Who the link is for: Cardboard's own kind of picker (a menu, as its "16:9 ⌄" and model pickers), not an OS <select>.
 function RolePicker({ role, setRole }) {
   return h(MenuButton, {
-    label: W.whoCan,
-    ariaLabel: `${W.whoCan}: ${ROLES.find(([v]) => v === role)?.[1] ?? ROLES[0][1]}`,
+    label: words.whoCanDoWhat,
+    ariaLabel: `${words.whoCanDoWhat}: ${ROLES.find(([v]) => v === role)?.[1] ?? ROLES[0][1]}`,
     triggerClassName: "carton-share-role-pick",
     trigger: [h("span", { key: "r" }, ROLES.find(([v]) => v === role)?.[1] ?? ROLES[0][1]), h(Icon, { key: "c", name: "caretDown", size: 12 })],
     children: (close) => ROLES.map(([v, label]) => h(MenuItem, { key: v, checked: role === v, onSelect: () => { setRole(v); close(); } }, label)),
@@ -168,12 +175,12 @@ export function Invite({ projectId, bridge, offline }) {
     else requestAnimationFrame(() => field.current?.select());
   }, "invite");
   return h("section", { className: "carton-share-section carton-share-invite" },
-    h("h3", { className: "carton-share-heading" }, W.invite),
+    h("h3", { className: "carton-share-heading" }, words.invite),
     h("div", { className: "carton-share-invite-row" },
       h(RolePicker, { role, setRole: (r) => { setRole(r); setCopied(null); } }),
-      h("input", { ref: field, className: "carton-input carton-share-link", readOnly: true, value: link ?? "", placeholder: W.linkPlaceholder, "aria-label": W.inviteLink, onFocus: (e) => e.target.select() }),
-      h(Button, { icon: copied === role ? "check" : "link", onClick: () => copy(), busy, disabled: offline, description: offline ? W.inviteOffline : undefined }, copied === role ? W.copied : W.copyLink)),
-    h("p", { className: "carton-field-hint" }, offline ? W.inviteOffline : W.anyoneCan(role)),
+      h("input", { ref: field, className: "carton-input carton-share-link", readOnly: true, value: link ?? "", placeholder: words.copyLinkToMake, "aria-label": words.inviteLink, onFocus: (e) => e.target.select() }),
+      h(Button, { icon: copied === role ? "check" : "link", onClick: () => copy(), busy, disabled: offline, description: offline ? words.inviteWhenOnline : undefined }, copied === role ? words.copied : words.copyLink)),
+    h("p", { className: "carton-field-hint" }, offline ? words.inviteWhenOnline : words.anyoneCanJoinTo(role)),
     h(Problem, { error }));
 }
 
@@ -181,7 +188,7 @@ export function Invite({ projectId, bridge, offline }) {
 function StatusWord({ st }) {
   const offline = isOffline(st), sending = !offline && (st.status !== "up-to-date" || st.pending);
   const state = offline ? "offline" : sending ? "syncing" : "upToDate";
-  const text = offline ? W.status.offline : sending ? (st.pending ? W.status.sending(st.pending) : W.status.syncing) : W.status.upToDate;
+  const text = offline ? words.offline(0) : sending ? (st.pending ? words.sending(st.pending) : words.syncing) : words.upToDate;
   return h("span", { className: "carton-sync carton-share-status", role: "status", "aria-live": "polite", "data-state": state },
     h(Icon, { name: offline ? "cloudSlash" : sending ? "syncing" : "cloudCheck", size: 14 }), text);
 }
@@ -199,7 +206,7 @@ export function LiveStatus({ st }) {
     offline
       ? h("div", { className: "carton-share-offline", role: "status", title: st.problem?.detail ?? undefined },
           h(Icon, { name: "cloudSlash", size: 16 }),
-          h("p", null, h("strong", null, W.offlineLead), " ", W.offlineMore(st.pending ?? 0)))
+          h("p", null, ...firstSentence(st.pending ? words.offlineLine(st.pending) : words.offlineLineNone)))
       : null,
     problem
       ? h("div", { className: "carton-sync-problem", role: "alert", "data-code": problem.code, title: detailShown ? undefined : problem.detail ?? undefined },
@@ -259,15 +266,15 @@ export function ShareForm({ projectId, bridge, title, onClose, onShared }) {
     footer: [
       h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error, fields })),
       h(Button, { key: "c", variant: "secondary", size: "md", onClick: onClose }, words.cancel),
-      h(Button, { key: "s", variant: "primary", size: "md", busy, onClick: submit }, busy ? W.sharing : W.shareProject),
+      h(Button, { key: "s", variant: "primary", size: "md", busy, onClick: submit }, busy ? words.sharingNow : words.shareProject),
     ],
   },
     // Enter in any field shares, as the button does (a form of several fields has no implicit submit)
     h("form", { className: "carton-share-form", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); }, onKeyDown: (e) => { if (e.key === "Enter" && e.target?.tagName === "INPUT") { e.preventDefault(); submit(); } } },
-      h("p", { className: "carton-share-lead" }, W.lead),
+      h("p", { className: "carton-share-lead" }, `${words.shareLead} ${words.shareLeadMore}`),
       editHost || hostError
-        ? h(Field, { id: "carton-share-host", label: W.server, hint: W.serverHint, error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, autoComplete: "url", onChange: (e) => setHost(e.target.value), placeholder: W.serverPlaceholder })
-        : h("div", { className: "carton-field" }, h("span", { className: "carton-field-label" }, W.server), h("p", { className: "carton-known" }, h("span", { className: "carton-known-value" }, shownAddress(hostUrl)), " ", h(ChangeLink, { onClick: () => setEditHost(true) }))),
+        ? h(Field, { id: "carton-share-host", label: words.sharingServer, hint: words.sharingServerHint, error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, autoComplete: "url", onChange: (e) => setHost(e.target.value), placeholder: words.sharingServerPlaceholder })
+        : h("div", { className: "carton-field" }, h("span", { className: "carton-field-label" }, words.sharingServer), h("p", { className: "carton-known" }, h("span", { className: "carton-known-value" }, shownAddress(hostUrl)), " ", h(ChangeLink, { onClick: () => setEditHost(true) }))),
       askSecret ? h(Field, { id: "carton-share-secret", label: "Invite code", hint: "This server asks for one. Ask whoever runs it.", error: missing === "secret" ? "Enter the invite code." : fieldError(error, "secret"), value: secret, onChange: (e) => setSecret(e.target.value), type: "password", "data-carton-secret": "" }) : null,
       h(NameField, { id: "carton-share-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
 }
@@ -289,7 +296,7 @@ function useShareStatus(projectId, bridge) {
 export function ShareDialog({ projectId, bridge, name, onClose }) {
   useEffect(() => { injectCardboardSkin(document); }, []);
   const [st, refresh] = useShareStatus(projectId, bridge);
-  const title = W.title(name ?? null);
+  const title = shareTitle(name);
   if (!st) return h(Dialog, { title, onClose, className: "carton-share-dialog" }, h("div", { className: "carton-share-wait", "aria-busy": true }));
   if (!st.shared) return h(ShareForm, { key: "form", projectId, bridge, title, onClose, onShared: () => void refresh() });
   return h(Dialog, { key: "shared", title, onClose, className: "carton-share-dialog", aside: h(StatusWord, { st }) },
@@ -322,14 +329,14 @@ export function Join({ bridge, onOpened, onCancel }) {
   if (done) {
     const still = opening || busy;
     return h(Dialog, {
-      title: J.title, onClose: onCancel, className: "carton-join-dialog",
+      title: words.joinTitle, onClose: onCancel, className: "carton-join-dialog",
       footer: [
         h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error: openError })),
         h(Button, { key: "d", variant: "secondary", size: "md", onClick: onCancel, disabled: still }, "Done"),
-        bridge.openProject ? h(Button, { key: "o", variant: "primary", size: "md", busy: still, onClick: () => openIt(done) }, still ? J.opening : J.open) : null,
+        bridge.openProject ? h(Button, { key: "o", variant: "primary", size: "md", busy: still, onClick: () => openIt(done) }, still ? words.openingNow : words.openIt) : null,
       ],
     }, h("div", { className: "carton-join-done", role: "status" },
-      h("p", null, J.inLibrary(done.name)),
+      h("p", null, words.inYourLibrary(done.name)),
       h("p", { className: "carton-share-lead" }, "Its footage arrives while your teammate's computer sends it: video as preview copies.")));
   }
   const submit = () => {
@@ -339,17 +346,17 @@ export function Join({ bridge, onOpened, onCancel }) {
     if (!miss) join();
   };
   return h(Dialog, {
-    title: J.title, onClose: onCancel, className: "carton-join-dialog",
+    title: words.joinTitle, onClose: onCancel, className: "carton-join-dialog",
     footer: [
       h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error, fields: ["link", "name"] })),
       h(Button, { key: "c", variant: "secondary", size: "md", onClick: onCancel }, words.cancel),
-      h(Button, { key: "j", variant: "primary", size: "md", busy, onClick: submit }, busy ? J.joining : J.joinAndOpen),
+      h(Button, { key: "j", variant: "primary", size: "md", busy, onClick: submit }, busy ? words.joiningNow : words.joinAndOpen),
     ],
   },
     h("form", { className: "carton-share-form", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); }, onKeyDown: (e) => { if (e.key === "Enter" && e.target?.tagName === "INPUT") { e.preventDefault(); submit(); } } },
-      h("p", { className: "carton-share-lead" }, J.lead),
-      h(Field, { id: "carton-join-link", label: J.link, error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…" }),
-      h(NameField, { id: "carton-join-name", name, setName, known, lead: J.joinAs, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
+      h("p", { className: "carton-share-lead" }, words.joinLead),
+      h(Field, { id: "carton-join-link", label: words.inviteLink, error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…" }),
+      h(NameField, { id: "carton-join-name", name, setName, known, line: words.joinAs, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
 }
 
-window.__cartonSyncUi = { ShareDialog, LiveStatus, People, shareProblem, ShareForm, Join, Invite, Problem, hostAddress };
+window.__cartonSyncUi = { ShareDialog, LiveStatus, People, shareProblem, ShareForm, Join, Invite, Problem, hostAddress, shareTitle };

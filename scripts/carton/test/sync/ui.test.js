@@ -91,7 +91,7 @@ test("P2-8, P2-10: the Share form asks in editors' words, validates inline, and 
   assert.doesNotMatch(form, /required/);
   assert.doesNotMatch(form, /Carton host|admin token|Owner invite|Alice/);
   assert.doesNotMatch(form, /Invite code/, "the code is asked for only when the server wants one");
-  assert.match(form, /its originals stay on this computer/);
+  assert.match(form, /the originals stay on this computer/);
   const invite = render(React.createElement(ui.Invite, { projectId: "p", bridge, offline: false }));
   assert.doesNotMatch(invite, /<select/);
   assert.match(invite, /aria-haspopup="menu"/);
@@ -160,5 +160,5 @@ test("review finding 3: an Invite or Open failure shows under its button, whatev
 test("review finding 8: the Share form doesn't claim every original stays here: audio and stills go as they are", () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {}, onClose() {} }));
-  assert.match(form, /Teammates get preview copies of your video; its originals stay on this computer\. Audio and still images go as they are\./);
+  assert.match(form, /Teammates get preview copies of your video; the originals stay on this computer\. Audio and still images go as they are\./);
 });

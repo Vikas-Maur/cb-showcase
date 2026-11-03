@@ -234,18 +234,21 @@ test("PLAN 2.1: the chip's part of the report: your cut and what you're viewing,
   assert.deepEqual(T.chipOf(ui("cut-main", { ref: "main@3", label: "the version from 2:14 PM (Codex)" })).viewing, { label: "The version from 2:14 PM (Codex)" });
   // a teammate's cut: your Main cut in the chip, theirs viewed
   assert.deepEqual(T.chipOf(ui("cut-leo")), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
-  // the view model's viewing() (PLAN 0.5), when it has it
+  // the view model's viewing() (PLAN 0.5), when it has it; then preview() isn't read
   assert.deepEqual(T.chipOf(ui("cut-main", { ref: "x", label: "ignored" }, { viewing: () => ({ ref: "main@3", kind: "version", label: "Director's “Add captions…”", short: "12:20 · Director" }) })).viewing, { label: "Director's “Add captions…”" });
+  assert.equal(T.chipOf(ui("cut-main", { ref: "x", label: "ignored" }, { viewing: () => null })).viewing, null);
+  // a teammate's cut switched to (today's cuts menu) is viewing with viewing() too
+  assert.deepEqual(T.chipOf(ui("cut-leo", null, { viewing: () => null })), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
 });
 
-test("PLAN 2.1: the chip's ✕ goes back to your edit: view(null), else the preview closed, else your own cut again", opt, async () => {
+test("PLAN 2.1: the chip's ✕ goes back to your edit: the view closed (the editor swapped back with it), or your own cut again", opt, async () => {
   const calls = [];
-  const base = (current, preview) => ({ cuts: () => [{ id: "cut-main", label: "Main cut", kind: "main", current: current === "cut-main", readOnly: false }, { id: "cut-leo", label: "Leo's Main cut", kind: "main", current: current === "cut-leo", readOnly: true }], preview: () => preview, openPreview: (r) => calls.push(["openPreview", r]), switchCut: async (id) => calls.push(["switchCut", id]) });
-  await T.backToEdit({ ...base("cut-main", null), view: (v) => calls.push(["view", v]) });
-  await T.backToEdit(base("cut-main", { ref: "main@3", label: "x" }));
+  const base = (current, preview, o = {}) => ({ cuts: () => [{ id: "cut-main", label: "Main cut", kind: "main", current: current === "cut-main", readOnly: false }, { id: "cut-leo", label: "Leo's Main cut", kind: "main", current: current === "cut-leo", readOnly: true }], preview: () => preview, openPreview: (r) => calls.push(["openPreview", r]), switchCut: async (id) => calls.push(["switchCut", id]), view: (v) => calls.push(["view", v]), ...o });
+  await T.backToEdit(base("cut-main", null, { viewing: () => ({ ref: "main@3", kind: "before", label: "Before x", short: "x" }) }));
+  await T.backToEdit(base("cut-main", { ref: "main@3", label: "x" }, { viewing: undefined }));
   await T.backToEdit(base("cut-leo", null));
-  await T.backToEdit(base("cut-main", null));
-  assert.deepEqual(calls, [["view", null], ["openPreview", null], ["switchCut", "cut-main"]], "and nothing when there is nothing to go back from");
+  await T.backToEdit(base("cut-main", null, { viewing: () => null }));
+  assert.deepEqual(calls, [["openPreview", null], ["openPreview", null], ["switchCut", "cut-main"]], "through openPreview(null), which connect() wraps with the editor's swap; nothing when there is nothing to go back from");
 });
 
 

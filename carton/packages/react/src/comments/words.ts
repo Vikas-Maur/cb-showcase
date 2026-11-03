@@ -51,10 +51,10 @@ export const commentWords = {
     removed: "The clip this comment was on was removed.",
   },
   madeOn: (seq: number) => `On version ${seq}`,
-  pending: "Waiting to sync",
+  pending: "Not sent yet",
   pendingHint: "This comment reaches your teammates once you're online.",
   // the sharing status line
-  syncWaiting: (n: number) => `Comments waiting to sync: ${n}`,
+  syncWaiting: (n: number) => `Comments not sent yet: ${n}`,
   unsupported: "This server doesn't carry comments yet. They stay on this computer.",
   readOnly: "You can read comments here but not write them.",
   dismiss: "Dismiss",
@@ -62,6 +62,13 @@ export const commentWords = {
   marker: (n: number, at: string) => (n > 1 ? `${n} comments at ${at}` : `Comment at ${at}`),
   threadLabel: (who: string, at: string) => `${who}'s comment at ${at}`,
   actions: "Comment actions",
+  // The redesign (DESIGN §6.8, §8): the box says where the comment is pinned; times as the editor shows them (0:06)
+  placeholderAtPlayhead: (at: string) => `Add a comment at ${at}…`,
+  atPlayhead: (at: string) => `At the playhead · ${at}`,
+  wholeVideo: "Whole video",
+  changedSince: "That moment changed since.",
+  seeAsItWas: "See it as it was",
+  savedHere: "Saved here, sent when you're back",
 };
 
 export type CommentWords = typeof commentWords;
