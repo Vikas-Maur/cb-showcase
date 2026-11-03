@@ -159,7 +159,7 @@ S["stage-conflict-several"] = stage((ui) => { ui.setConflicts([CARDS.w6, CARDS.i
 S["stage-conflict-self"] = stage((ui) => { ui.setConflicts([CARDS.self]); return {}; });
 S["stage-conflict-both"] = stage((ui) => { ui.setConflicts([CARDS.both]); return {}; });
 S["stage-conflict-panel-open"] = () => ({ ...stage((ui) => { ui.setConflicts([CARDS.w6, CARDS.intro]); return {}; })(), panel: "history" });
-S["stage-toast-warning"] = stage(() => ({ notice: "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." }));
+S["stage-toast-warning"] = stage(() => ({ notice: "Your last change wasn't saved. Do it again, or reopen the project." }));
 S["stage-live-offline"] = stage(() => ({ live: shared({ status: "offline", pending: 3, label: "Offline" }) }));
 S["stage-live-syncing"] = stage(() => ({ live: shared({ status: "syncing", pending: 2, label: "Syncing" }) }));
 const media = (o) => stage(() => ({ live: shared({ role: "editor", name: "Bob Okafor" }), media: o }));
