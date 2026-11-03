@@ -409,11 +409,12 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-field){display:flex;flex-direction:column;gap:6px}
 :where(${S}) :where(.carton-field-label){font-size:13px;line-height:18px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-field .carton-input){flex:none;height:34px}
-:where(${S}) :where(.carton-field .carton-input[aria-invalid=true]){border-color:color-mix(in srgb, var(--cb-danger) 60%, transparent)}
 :where(${S}) :where(.carton-field .carton-input:focus-visible){border-color:#ffffff59;box-shadow:0 0 0 3px #ffffff14}
+:where(${S}) :where(.carton-field .carton-input[aria-invalid=true]){border-color:color-mix(in srgb, var(--cb-danger) 60%, transparent)}
+:where(${S}) :where(.carton-field .carton-input[aria-invalid=true]:focus-visible){box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-danger) 18%, transparent)}
 :where(${S}) :where(.carton-field-hint){font-size:12px;line-height:17px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-field-error){font-size:12px;line-height:17px;color:var(--cb-danger);text-wrap:pretty}
-:where(${S}) :where(.carton-known){display:flex;flex-wrap:wrap;align-items:baseline;gap:0 2px;font-size:13px;line-height:19px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-known){font-size:13px;line-height:19px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-known-value){color:var(--cb-fg-1);font-weight:500}
 :where(${S}) :where(.carton-link){padding:0;margin-left:4px;border:0;background:none;color:var(--cb-fg-1);font:inherit;text-decoration:underline;
   text-decoration-color:#ffffff4d;text-underline-offset:3px;cursor:pointer;border-radius:3px;outline:none}
@@ -421,8 +422,6 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-link:focus-visible){box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
 :where(${S}) :where(.carton-share-foot-note){min-width:0}
 :where(${S}) :where(.carton-share-wait){min-height:120px}
-:where(${S}) :where(.carton-share-status){height:24px;padding:0 4px;font-size:13px}
-:where(${S}) :where(.carton-share-status[data-state=upToDate]){color:#86efac}
 :where(${S}) :where(.carton-share-live){display:flex;flex-direction:column;gap:14px}
 :where(${S}) :where(.carton-share-offline){display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;font-size:13px;line-height:19px;color:var(--cb-fg-1);
   background:color-mix(in srgb, var(--cb-warn) 8%, transparent);border:1px solid color-mix(in srgb, var(--cb-warn) 28%, transparent)}
@@ -457,6 +456,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-sync[data-state=upToDate] .carton-icon){color:var(--cb-ok)}
 :where(${S}) :where(.carton-sync[data-state=offline]){color:#fcd77f}
 :where(${S}) :where(.carton-sync[data-state=offline] .carton-icon){color:var(--cb-warn)}
+/* the Share dialog's status by its title (after .carton-sync, which it narrows) */
+:where(${S}) :where(.carton-share-status){height:24px;padding:0 4px;font-size:13px}
+:where(${S}) :where(.carton-share-status[data-state=upToDate]){color:#86efac}
 @keyframes carton-spin{to{transform:rotate(360deg)}}
 :where(${S}) :where(.carton-published){display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 12px;border:1px solid #ffffff0f;border-radius:10px;background:var(--cb-card)}
 :where(${S}) :where(.carton-published-actions){display:flex;gap:6px;margin-left:auto}

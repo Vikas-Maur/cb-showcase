@@ -102,14 +102,15 @@ function __cbCartonCutChip({ panel }) {
       style: viewing ? { borderRadius: 0 } : void 0,
       children: [
         cut.dot ? n.jsx("span", { "aria-hidden": !0, "data-carton-cut-dot": "", style: { width: 8, height: 8, flex: "none", borderRadius: 999, background: cut.dot } }, "dot") : __cbCartonSvg("cut", "size-3.5 shrink-0"),
-        n.jsx("span", { style: clip(narrow ? 150 : 220), children: cut.name }, "name"),
+        // narrow and viewing: both parts must fit beside the tabs at 960 px, the label shortened first (DESIGN §9)
+        n.jsx("span", { style: clip(narrow ? (viewing ? 120 : 150) : 220), children: cut.name }, "name"),
         __cbCartonSvg("caret", "size-2.5 shrink-0 text-white/40", 2.4),
       ],
     }, "cut"),
     // no live region here: the editor's page announces viewing once (DESIGN §7), not this page too
     viewing ? n.jsxs("span", { "data-carton-viewing": "", title: viewing.label, className: "flex h-7 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: "rgba(138,180,255,0.11)", color: "#d6e4ff", boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
       __cbCartonSvg("eye", "size-3.5 shrink-0"),
-      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 120 : 240), children: [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
+      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
       n.jsx("button", { type: "button", "aria-label": back, title: back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: "carton-back" }), className: w(C, "size-[22px] justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
     ] }, "view") : null,
   ] });
