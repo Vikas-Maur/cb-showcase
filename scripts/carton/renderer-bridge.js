@@ -58,6 +58,8 @@ module.exports = String.raw`window.__carton = (() => {
     return p;
   };
   let own = null;
+  // Compare collapsed the Library (libraryAside): it opens it again on exit
+  let asideByUs = false;
   // the editor's own timeline saves, counted: one made after the fast step means head (read after it) is older than
   // what the person sees, and isn't adopted over it (their save's own events bring head)
   let saves = 0;
@@ -474,6 +476,89 @@ module.exports = String.raw`window.__carton = (() => {
     prefetch(projectId, ref) {
       if (!on || !store || !projectId || !fixedRef(ref)) return;
       checkout(projectId, ref).catch(() => {});
+    },
+    // Compare in the editor (UX v2, N1). hold(): your edit on the stage as it is, read-only (cartonPreview, so Cardboard's
+    // guard refuses every edit and the edit-attempt toast says why), without a checkout or a new timeline: nothing is
+    // decoded again. It keeps the editor's own timeline (own) as preview() does, so the way back is preview(null)'s fast
+    // step. From a preview of another version: your edit's timeline back at once, still read-only; one whose own is gone
+    // or a change came meanwhile (stale): head, read and adopted read-only. A newer preview() or hold() wins.
+    async hold(projectId) {
+      if (!on || !store) return;
+      const gen = ++previewGen;
+      const st0 = store.state();
+      if (st0.projectId !== projectId) return;
+      const HELD = { ref: null, held: true };
+      if (!st0.cartonPreview) {
+        await store.flush();
+        if (gen !== previewGen) return;
+        const st = store.state();
+        own = { project: projectId, base: st.cartonBase ?? null, timeline: { tracks: st.tracks, timelineItems: st.timelineItems, aspectRatio: st.aspectRatio, duration: duration(st.timelineItems ?? []) } };
+        store.raw({ cartonPreview: HELD });
+        return;
+      }
+      if (own && own.project === projectId && !stale) {
+        store.adopt({ ...own.timeline, cartonBase: own.base, cartonPreview: HELD });
+        return;
+      }
+      const doc = await call("head", { projectId });
+      if (gen !== previewGen) return;
+      const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
+      store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
+      store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: HELD });
+      own = { project: projectId, base: project.stateUpdatedAt ?? null, timeline: { ...t, duration: end } };
+      unanswered = null;
+      stale = false;
+    },
+    // Compare's second player: a version's timeline and the media it plays (the project's, and the version's own entries
+    // the project no longer has: a deleted title's text entry), through the same checkout cache as Before. Your edit
+    // (ref null): the editor's own timeline as hold() kept it, or as it is.
+    async compareDoc(projectId, ref) {
+      if (!on || !store) throw new Error("Carton isn't on for this project");
+      const st = store.state();
+      const projectMedia = store.projects?.getState().projects.find((p) => p.id === projectId)?.media ?? [];
+      if (ref == null) {
+        const t = own && own.project === projectId ? own.timeline : timelineOf(st);
+        return { tracks: t.tracks ?? [], timelineItems: t.timelineItems ?? [], aspectRatio: t.aspectRatio ?? "16:9", media: projectMedia };
+      }
+      // The version's own media entries win (a code graphic's source, a title's text as they were then: review #1),
+      // keeping the project's local file location for a file both have; the project's entries the version lacks after.
+      const project = store.deserialize(await checkout(projectId, ref)), t = timelineOf(project);
+      const now = new Map(projectMedia.map((m) => [m.id, m]));
+      const then = (project.media ?? []).map((m) => {
+        const p = now.get(m.id), src = p?.data?.src;
+        const file = m.data && "src" in m.data && m.data.type !== "code" && m.data.type !== "text";
+        return p && typeof src === "string" && file ? { ...m, data: { ...m.data, src } } : m;
+      });
+      const had = new Set(then.map((m) => m.id));
+      return { ...t, media: [...then, ...projectMedia.filter((m) => !had.has(m.id))] };
+    },
+    // Compare (DESIGN-V2 §1.1): the Library steps aside to give the stage its width, as when the person collapses it,
+    // and comes back on exit, unless the person had it collapsed already (then it stays as they left it)
+    libraryAside(aside) {
+      if (!on || !store) return;
+      const st = store.state();
+      if (aside) {
+        if (asideByUs || st.isLeftPanelCollapsed) return;
+        st.setLeftPanelCollapsed?.(true);
+        asideByUs = true;
+      } else if (asideByUs) {
+        asideByUs = false;
+        st.setLeftPanelCollapsed?.(false);
+      }
+    },
+    // Play both (Compare): the editor's own play and pause (Space's), and whether it plays
+    togglePlay() { if (on && store) store.state().toggleTimelinePlayback?.(); },
+    pause() { if (on && store && store.state().isPlaying) store.state().setIsPlaying?.(false); },
+    get playing() { return !!(on && store && store.state().isPlaying); },
+    // The playhead as the stage shows it (the playback clock while playing), and its moves: Compare's list follows it
+    clock() { return on && store ? playhead() : 0; },
+    // The timeline's scale (Compare's marks sit on Cardboard's own clips): pixels per second, as its zoom sets it, and a
+    // subscription to it (and to the timeline's tracks, which move the rows)
+    timelineScale() { return on && store ? { pps: store.state().pixelsPerSecond ?? null, tracks: store.state().tracks ?? null } : null; },
+    onTimeline(f) {
+      if (!on || !store?.subscribe) return () => {};
+      const off = store.subscribe((st, prev) => { if (st.pixelsPerSecond !== prev.pixelsPerSecond || st.tracks !== prev.tracks || st.playheadTime !== prev.playheadTime || st.isPlaying !== prev.isPlaying) f(st); });
+      return typeof off === "function" ? off : () => {};
     },
     // Your edit's length in seconds (the Changes view's "7 changes · 0:38"): the editor's own timeline, also while a
     // preview shows another one.

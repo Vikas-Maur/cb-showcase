@@ -395,6 +395,20 @@ if (mode === "--cli") {
     // Cardboard's div as it is. Always this component, whether Carton is on or not yet known, so the timeline is never
     // mounted again when main's answer comes.
     replace('c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})', 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})');
+    // Compare in the editor (UX v2, N1), unchanged text only: what editor-panel.js's second player and Compare's stage
+    // and timeline layers rely on, so a Cardboard that renamed or reshaped one fails here, not in the app. The preview
+    // engine's hook (YD) with its props and its own clock when not driven by the playback clock (Ee); its answer's canvas;
+    // the playback clock (hn), the aspect ratio's size (L2) and the editor store (U) in this bundle's imports; the stage's
+    // picture wrapper (Side by side moves it to the right half); the timeline's scroll area, tracks surface and track rows
+    // (the marks sit on the surface, at each clip's start × pixelsPerSecond on its track's row).
+    for (const anchor of [
+      "function YD(e){const{width:t,height:n,timelineItems:a,tracks:r,mediaItems:s,currentTime:i,isPlaying:l,masterVolume:d,enabled:u,",
+      "drivenByExternalClock:S=!1,", "Ee=l&&!S,", "return{diagnostics:A,getDecoderDiagnostics:pt,frameScheduler:O,canvasRef:M,isReady:Ke,",
+      "aI as hn,", "fW as L2,", "aD as U,", "du as Na,",
+      'children:[c.jsx("div",{className:"absolute inset-0 flex items-center justify-center",style:{transform:`translate(${w.x}px, ${w.y}px) scale(${w.scale})`,',
+      'className:"timeline-horizontal-scrollbar relative flex flex-1 flex-col overflow-x-auto overflow-y-hidden","data-timeline-scroll":!0',
+      '"data-timeline-canvas-surface":!0', '"data-track-id":r.id,', "pixelsPerSecond:L.pixelsPerSecond",
+    ]) replace(anchor, anchor);
     // Carton UX redesign PLAN 1.6 (DESIGN §9): Export (sZ: Ctrl+E, the title bar's Export, the menu) never exports a
     // version the person is viewing. While viewing, the bridge's beforeExport goes back to their edit first (the toast
     // "Back to your edit to export it.") and Export opens once the editor shows it, asked once (__again); if going back
