@@ -601,8 +601,9 @@ export const words = {
     const m = /^(Restored|Brought back|Folded in|Took out|Undid) (.+)$/.exec(after);
     if (!m) return null;
     const verb = ({ Restored: "Restoring", "Brought back": "Bringing back", "Folded in": "Folding in", "Took out": "Taking out", Undid: "Undoing" } as Record<string, string>)[m[1]!]!;
-    // (a bring-back's "from 10:20 am" is the landmark's own row's time: the clip is enough)
-    return `${verb} ${m[1] === "Brought back" ? m[2]!.replace(/ from .+$/, "") : m[2]}`;
+    // (a bring-back's "from 10:20 am" is the landmark's own row's time: the clip is enough. Cut after the clip's
+    // closing quote, never inside a name with " from " in it: "“View from the pier”", review of fix/ux2-qa #1)
+    return `${verb} ${m[1] === "Brought back" ? m[2]!.replace(/^(“[^”]*”|a clip) from .+$/, "$1") : m[2]}`;
   },
   keptForYou: "Kept for you",
   onlyYouSee: "only you see this",

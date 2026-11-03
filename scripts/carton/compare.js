@@ -69,7 +69,9 @@ export function endOf(ui, ref, now = Date.now(), found = null) {
     // version)" in the chip, twice in the range line, and in Fold in's button, which folds the cut as it is now (QA v2)
     if (v) {
       const when = clock(v.at, { now });
-      return { ...base, name: cutRef(cut), moment: true, label: `${cutRef(cut)} ${/^\d/.test(when) ? `at ${when}` : when}`, title: cut.label, detail: when };
+      // ("at 1:53 pm", "yesterday at 4:10 pm", "on Oct 30 at 4:10 pm")
+      const said = /^\d/.test(when) ? `at ${when}` : /^yesterday/.test(when) ? when : `on ${when}`;
+      return { ...base, name: cutRef(cut), moment: true, label: `${cutRef(cut)} ${said}`, title: cut.label, detail: when };
     }
     return { ...base, name: cutRef(cut), moment: true, label: `${cutRef(cut)} (${words.anEarlierVersion})`, title: cut.label, detail: words.anEarlierVersion };
   }
@@ -106,22 +108,29 @@ export function sidesOf(ui, from, to, now = Date.now(), found = null) {
  * doesn't list, read one each from their cut's History (`cutHistory`, the version at that seq), so a side says when it
  * is. Empty when the view model has no cutHistory, or a read fails: the side then says "an earlier version".
  */
-export async function versionsElsewhere(ui, refs) {
+export async function versionsElsewhere(ui, refs, need = elsewhereRefs(ui, refs)) {
   const found = new Map();
-  if (typeof ui.cutHistory !== "function") return found;
-  const cuts = ui.cuts?.() ?? [];
-  const all = ui.history?.().all?.() ?? [];
-  await Promise.all(refs.map(async (ref) => {
-    if (typeof ref !== "string" || !ref.includes("@") || cuts.some((c) => c.id === ref || c.head === ref) || all.some((v) => v.ref === ref)) return;
-    const cut = cuts.find((c) => branchOf(c.head) === branchOf(ref));
-    const n = Number(ref.slice(ref.indexOf("@") + 1));
-    if (!cut || cut.current || !Number.isInteger(n)) return;
+  await Promise.all(need.map(async ({ ref, cutId, seq }) => {
     try {
-      const v = (await ui.cutHistory(cut.id, { before: n + 1, limit: 1 }))?.versions?.find((x) => x.ref === ref);
+      const v = (await ui.cutHistory(cutId, { before: seq + 1, limit: 1 }))?.versions?.find((x) => x.ref === ref);
       if (v) found.set(ref, v);
     } catch {}
   }));
   return found;
+}
+/** Which of `refs` are versions of another cut that this cut's History doesn't list (none: nothing to read, no wait). */
+export function elsewhereRefs(ui, refs) {
+  if (typeof ui.cutHistory !== "function") return [];
+  const cuts = ui.cuts?.() ?? [];
+  const all = ui.history?.().all?.() ?? [];
+  const out = [];
+  for (const ref of refs) {
+    if (typeof ref !== "string" || !ref.includes("@") || cuts.some((c) => c.id === ref || c.head === ref) || all.some((v) => v.ref === ref)) continue;
+    const cut = cuts.find((c) => branchOf(c.head) === branchOf(ref));
+    const seq = Number(ref.slice(ref.indexOf("@") + 1));
+    if (cut && !cut.current && Number.isInteger(seq)) out.push({ ref, cutId: cut.id, seq });
+  }
+  return out;
 }
 
 /** The chip's and the stage region's words: "Comparing “Sent to client” with your edit". */
@@ -189,7 +198,10 @@ export function attachCompare(ui, o) {
   ui.compareFlipped = () => flipped;
   ui.openCompare = async (from, to, opts = {}) => {
     const mine = ++seq;
-    const found = await versionsElsewhere(ui, [from, to]);
+    // (only another cut's version waits for a read: a same-cut open stays synchronous up to set(), as before; a close
+    // or another open meanwhile wins, since closeCompare bumps seq first)
+    const need = elsewhereRefs(ui, [from, to]);
+    const found = need.length ? await versionsElsewhere(ui, [from, to], need) : new Map();
     if (mine !== seq) return;
     const sides = sidesOf(ui, from, to ?? null, Date.now(), found);
     if (!sides) throw new Error(words.compareFailed);
@@ -221,8 +233,10 @@ export function attachCompare(ui, o) {
     }
   };
   ui.closeCompare = async () => {
+    // (first: an open still reading another cut's version is cancelled by a close, review of fix/ux2-qa #3)
+    const mine = ++seq;
     if (!value) return;
-    const was = value, mine = ++seq, at = back?.at;
+    const was = value, at = back?.at;
     back = null;
     clearTimeout(spot);
     resetBoth();
@@ -856,7 +870,9 @@ export function CompareSide({ bridge, onFoldIn, onBackToFold }) {
   // across cuts, each cut's length, left first ("7 differences · 0:30 and 0:36", §1.12): the cuts differ in length
   const endOfDoc = (doc) => (doc?.timelineItems ?? []).reduce((m, x) => Math.max(m, Number(x?.endTime) || 0), 0);
   const leftLen = c.acrossCuts ? endOfDoc(data?.leftDoc) : 0;
-  const lengths = len > 0 ? (leftLen > 0 ? `${timecode(leftLen)} and ${timecode(len)}` : timecode(len)) : null;
+  // (the right side's own length when it isn't your edit: editLength is your edit's, even while another one shows)
+  const rightLen = c.acrossCuts && !c.right.you ? endOfDoc(data?.rightDoc) || len : len;
+  const lengths = rightLen > 0 ? (leftLen > 0 ? `${timecode(leftLen)} and ${timecode(rightLen)}` : timecode(rightLen)) : null;
   const count = countWord ? (lengths ? words.compareCountLength(countWord, lengths) : countWord) : null;
   const strong = (s) => h("b", null, s);
   const range = c.acrossCuts
@@ -1016,12 +1032,12 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
       if (waiting) { clearTimeout(waiting.timer); waiting = null; }
       // a side this computer doesn't have (a teammate's version not here yet): cb says so
       if (!sidesOf(ui, ask.from, ask.to)) return answer(ask, "refused", "not-here");
-      if (elsewhere()) return offer(ask, "viewing");
-      if (bridge.playing) return offer(ask, "playing");
-      if (modal()) return offer(ask, "busy");
+      if (elsewhere()) return void offer(ask, "viewing").catch(() => {});
+      if (bridge.playing) return void offer(ask, "playing").catch(() => {});
+      if (modal()) return void offer(ask, "busy").catch(() => {});
       if (idle()) return open(ask);
       // mid-edit: wait for idle up to 8 s, then offer
-      waiting = { ask, timer: setTimeout(() => { const w = waiting; waiting = null; if (w) offer(w.ask, "busy"); }, WAIT_MS) };
+      waiting = { ask, timer: setTimeout(() => { const w = waiting; waiting = null; if (w) void offer(w.ask, "busy").catch(() => {}); }, WAIT_MS) };
       const poll = setInterval(() => { if (!waiting) clearInterval(poll); else tryWaiting(); }, 250);
     });
     return () => {

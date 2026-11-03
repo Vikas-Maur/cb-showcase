@@ -119,3 +119,13 @@ test("N2c: another cut's next page is read when the last row on screen nears the
   // (a tall view: the first row 0, 70 rows in view, review of feat/ux2-n2c #3)
   assert.equal(needsMore(0 + 70, 100, 11901), true);
 });
+
+test("design QA v2: a Before landmark's title from the row after it, a clip's own name kept whole", () => {
+  assert.equal(words.safetyTitleOf("Restored the 11:02 am version"), "Restoring the 11:02 am version");
+  assert.equal(words.safetyTitleOf("Brought back “B-roll 3” from 12:20 pm"), "Bringing back “B-roll 3”");
+  // (" from " inside the name: cut after its closing quote only; review of fix/ux2-qa #1)
+  assert.equal(words.safetyTitleOf("Brought back “View from the pier” from 10:20 am"), "Bringing back “View from the pier”");
+  assert.equal(words.safetyTitleOf("Brought back a clip from an earlier version"), "Bringing back a clip");
+  assert.equal(words.safetyTitleOf("Folded in “30s cut”"), "Folding in “30s cut”");
+  assert.equal(words.safetyTitleOf("Trimmed “Intro”, now ends at 0:05"), null);
+});

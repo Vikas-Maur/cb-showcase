@@ -24,7 +24,7 @@ test.before(async () => {
   await esbuild.build({
     bundle: true, format: "cjs", logLevel: "warning", absWorkingDir: CARTON, nodePaths: [path.join(CARTON, "node_modules")],
     platform: "browser", target: "chrome140", outfile: path.join(OUT, "carton-ui.cjs"),
-    stdin: { contents: 'export * from "./ui.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
+    stdin: { contents: 'export * from "./ui.js";\nexport { endOf, elsewhereRefs } from "./compare.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
   const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
@@ -198,6 +198,14 @@ test("N1 §1.1: openCompare puts the sides the right way round and names them on
     await m.cmd("carton-history");
     await m.settle(60);
     assert.equal(m.list().querySelector(".carton-compare-n")?.textContent, `${ROWS.length} differences · 0:20 and 0:16`);
+    // an older version of your cut against another cut: the right side is that version (yours goes right), and its
+    // length is its own, not your edit's (review of fix/ux2-qa #2)
+    await m.open(m.older().ref, "cut-ig");
+    await m.settle(60);
+    c = m.page().comparing();
+    assert.equal(c.acrossCuts, true);
+    assert.equal(c.right.you, undefined);
+    assert.equal(m.list().querySelector(".carton-compare-n")?.textContent, `${ROWS.length} differences · 0:20 and 0:20`);
   } finally { await m.done(); }
 });
 
@@ -689,4 +697,17 @@ test("N1b review: Play both paused in a slate resumes where it was; a new compar
     await m.open("cut-ig");
     assert.equal(m.page().compareBoth(), null, "a new comparison starts with Play both off");
   } finally { await m.done(); }
+});
+
+test("design QA v2: another cut's older version, by its moment: today at, yesterday, on a day; nothing to read for this cut's own", opt, async () => {
+  const now = new Date(2026, 10, 3, 15, 0).getTime();
+  const ig = { id: "cut-ig", label: "30s Instagram cut", head: "ig@9", current: false, kind: "cut" };
+  const ui = { cuts: () => [{ id: "cut-main", label: "Main cut", head: "main@20", current: true, kind: "main" }, ig], history: () => ({ all: () => [{ id: "v19", ref: "main@19", at: now - 60_000 }] }), cutHistory: async () => ({ versions: [] }), actor: () => undefined };
+  const at = (ref, t) => U.endOf(ui, ref, now, new Map([[ref, { id: ref, ref, at: t }]])).label;
+  assert.match(at("ig@4", now - 3_600_000), /^“30s Instagram cut” at \d{1,2}:\d{2} [ap]m$/);
+  assert.match(at("ig@3", now - 86_400_000), /^“30s Instagram cut” yesterday at \d{1,2}:\d{2} [ap]m$/);
+  assert.match(at("ig@2", now - 5 * 86_400_000), /^“30s Instagram cut” on \w{3} \d{1,2} at \d{1,2}:\d{2} [ap]m$/);
+  // a version this cut's History lists, a cut's head, a cut id: nothing to read, so openCompare doesn't wait
+  assert.deepEqual(U.elsewhereRefs(ui, ["main@19", "ig@9", "cut-ig", null]), []);
+  assert.deepEqual(U.elsewhereRefs(ui, ["ig@4"]), [{ ref: "ig@4", cutId: "cut-ig", seq: 4 }]);
 });

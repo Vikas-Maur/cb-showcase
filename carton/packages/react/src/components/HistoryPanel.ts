@@ -841,7 +841,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
     if (mk.kind === "named") return `“${title}”`;
     if (mk.kind === "exported" || mk.kind === "before") {
       const tag = words.landmarkTags[mk.kind];
-      return title === tag ? tag : `${tag} ${title[0]!.toLowerCase()}${title.slice(1)}`;
+      // (a Before's title is one of History's own verbs, lowered after the tag; an export's is its own label, kept)
+      return title === tag ? tag : mk.kind === "before" ? `${tag} ${title[0]!.toLowerCase()}${title.slice(1)}` : `${tag} ${title}`;
     }
     return title;
   };
