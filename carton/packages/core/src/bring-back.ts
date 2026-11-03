@@ -35,6 +35,33 @@ export interface BroughtBack {
   of: NodeId;
 }
 
+/**
+ * One row of "Choose a clip…" (DESIGN-V2 §3.2): a clip that differs between a version and now. `then` and `now`: where
+ * it is (seconds) and its text, on each side it is on.
+ */
+export interface BringBackChoice {
+  record: PathKey;
+  name: string;
+  /** Its noun when not a clip ("title", "caption"). */
+  noun?: string;
+  then?: { start?: number; end?: number; text?: string; track?: string };
+  now?: { start?: number; end?: number; text?: string; track?: string };
+  /** Deleted since: who deleted it and when; not there then: who added it and when (the newest such version). */
+  by?: Actor | null;
+  at?: number;
+}
+/** The clips that differ between a version and now, in DESIGN-V2 §3.2's three groups, and how many are the same. */
+export interface BringBackChoices {
+  /** Changed since: on both sides, different. Bring back. */
+  changed: BringBackChoice[];
+  /** Deleted since: there then, gone now. Bring back. */
+  deleted: BringBackChoice[];
+  /** Not there yet then: added since. Take out (`remove: true`). */
+  added: BringBackChoice[];
+  /** "14 other clips are the same as now." */
+  same: number;
+}
+
 /** The clip wasn't in that version, and `remove` wasn't asked. Its message says so in the editor's words. */
 export class NotInVersion extends Error {
   readonly code = "NOT_IN_VERSION";

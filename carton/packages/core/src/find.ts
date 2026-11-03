@@ -1,13 +1,19 @@
-// Find (Carton UX v2, N0): search a cut's versions by text, over what people remember of them: a version's name, the
-// agent prompt a turn was named from, who made it, the clips it touched (by name, as they were then and after), and
-// the title and caption text it set. Outside the history bundle (scripts/size.mjs): History is never asked for more
+// Find (Carton UX v2, N0; DESIGN-V2 §2.3): search a cut's versions by text, over what people remember of them: the
+// clips it touched (by name, as they were then and after), the title and caption text it set, the agent request a turn
+// was named from, a version's name and landmark words, who made it, and the day. Every word of the text matches the
+// start of a word there, in any order, any case, accents ignored ("intr cap" finds "Add captions to the intro"). Outside the history bundle (scripts/size.mjs): History is never asked for more
 // than its log and states. The index is built lazily (the first `find`), walked forward once over the cut's rows and
 // kept per cut; a later `find` reads only the rows saved since. Nothing here runs on a save or an open.
 import type { Actor, ChangeId, PathKey, StateRef } from "./types.ts";
+import type { LandmarkKind } from "./landmarks.ts";
 
-/** What a match matched, best first: a version's own name, a turn's prompt, a clip's name, text it set, a person. */
-export type FindField = "name" | "prompt" | "clip" | "text" | "person";
-export const FIND_FIELDS: readonly FindField[] = ["name", "prompt", "clip", "text", "person"];
+/**
+ * What a match matched, by weight (DESIGN-V2 §2.3): a clip's name, title and caption text (then and now), an agent's
+ * request (the prompt its turn was named from), a version's name and its landmark words ("exported", "sent", "start"),
+ * a person, a day ("yesterday", "Monday", "Oct 30").
+ */
+export type FindField = "clip" | "text" | "prompt" | "name" | "person" | "day";
+export const FIND_FIELDS: readonly FindField[] = ["clip", "text", "prompt", "name", "person", "day"];
 
 export interface FindOptions {
   /** The cut to search (default: the current cut). */
@@ -18,6 +24,10 @@ export interface FindOptions {
   before?: number;
   /** Only these fields (default: all). */
   fields?: readonly FindField[];
+  /** Every cut ("Search every cut", `cb history --find … --all-cuts`): matches from all, newest first. */
+  allCuts?: boolean;
+  /** What "today" and "yesterday" mean (default: now). */
+  now?: number;
 }
 
 /** One version that matched. */
@@ -39,14 +49,24 @@ export interface FindMatch {
    * name or prompt itself, a clip's name, the text, the person's name. Never an id or a hash.
    */
   snippet: string;
-  /** Where the match is in `snippet` (UTF-16 offsets, [lo, hi)), for highlighting. */
+  /** Where the first word matched in `snippet` (UTF-16 offsets, [lo, hi)), for highlighting; `hits`: every word's. */
   hit: [number, number];
+  hits: [number, number][];
   /** A clip or text match: the record (`timelineItems/c1`) and its name ("Intro"). */
   record?: PathKey;
   recordName?: string;
+  /** A clip match: where the clip was after this version, in seconds ("“Intro” was 0:00–0:06 here"); absent: deleted. */
+  span?: { start: number; end: number };
+  /** The version's landmarks, if it is any (`LANDMARK_ORDER`'s order). */
+  landmarks?: LandmarkKind[];
 }
 
 export interface FindResult {
+  /**
+   * The clips the words name ("A clip first", DESIGN-V2 §2.3), as the cut has them now or had them last (a deleted
+   * one), best first: what "Only this clip" filters by.
+   */
+  clips: { record: PathKey; name: string; cut: string; deleted?: true }[];
   /** Newest first, at most `limit`. */
   matches: FindMatch[];
   /** How many versions matched in all (within `before`). */

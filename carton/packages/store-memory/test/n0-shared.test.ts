@@ -67,7 +67,7 @@ test("compare with a teammate's cut (a full-history import's tracking cut); find
     // find and landmarks over the teammate's cut
     assert.deepEqual((await b.find("opening", { cut: alt.id })).matches.map((m) => m.field), ["clip"]);
     assert.deepEqual((await b.find("client", { cut: alt.id })).matches.map((m) => m.field), ["name"]);
-    assert.deepEqual((await b.landmarks({ cut: alt.id, kinds: ["named"] })).map((l) => [l.label, l.team]), [["Sent to client", true]]);
+    assert.deepEqual((await b.landmarks({ cut: alt.id, kinds: ["named"] })).map((l) => [l.label, l.personal]), [["Sent to client", false]]);
   } finally {
     await b.close();
   }
@@ -108,7 +108,7 @@ test("bring back one clip on a shared cut: queued like any change; a teammate's 
     assert.ok(cards.some((c) => c.path.startsWith("items/b")), "a card for b: " + JSON.stringify(cards.map((c) => c.path)));
     assert.ok((await a.head()).ref.seq > at);
     // landmarks over the shared cut: the bring-backs made here have their safety points
-    const safety = (await a.landmarks({ kinds: ["safety"] })).map((l) => l.before);
+    const safety = (await a.landmarks({ kinds: ["before"] })).map((l) => l.before);
     assert.ok(safety.length >= 1 && safety.every((x) => x === "restore" || x === "bring-back"), JSON.stringify(safety));
   } finally {
     await a.close();

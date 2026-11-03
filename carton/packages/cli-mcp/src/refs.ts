@@ -44,12 +44,31 @@ export async function resolveVersion(carton: Carton, text: string): Promise<Stat
   const at = t.lastIndexOf("@");
   const cutText = at > 0 ? t.slice(0, at).replace(/^["']|["']$/g, "") : "";
   const seqText = at >= 0 ? t.slice(at + 1) : t;
-  if (!/^\d+$/.test(seqText)) throw new UsageError(`"${text}" isn't a version: use <cut>@<seq> (as \`cb history\` shows) or a header ref`);
+  if (!/^\d+$/.test(seqText)) {
+    // a cut's name (or id) alone is that cut's head (Carton UX v2: `cb compare "30s Instagram cut" main`)
+    if (at < 0) {
+      const cut = await resolveCut(carton, t.replace(/^["']|["']$/g, "")).catch(() => null);
+      if (cut) return (await carton.head(cut.id)).ref;
+    }
+    throw new UsageError(`"${text}" isn't a version: use <cut>@<seq> (as \`cb history\` shows), a cut's name, or a header ref`);
+  }
   const cut = await resolveCut(carton, cutText || undefined);
   const seq = Number(seqText);
   const head = await carton.head(cut.id);
   if (seq > head.ref.seq) throw new UsageError(`${cut.name}@${seq} doesn't exist yet (head is @${head.ref.seq})`);
   return { branchId: cut.id, seq };
+}
+
+/**
+ * A version as `resolveVersion` reads it, and the cut it names when it was a cut alone (its head, which moves: an
+ * editor shows it live) or `head`.
+ */
+export async function resolveRef(carton: Carton, text: string): Promise<{ ref: StateRef | string; cut?: CutRecord }> {
+  const t = text.trim().replace(/^["']|["']$/g, "");
+  const ref = await resolveVersion(carton, text);
+  if (t === "head" || t === "HEAD") return { ref, cut: (await carton.cuts()).find((c) => c.id === carton.cut)! };
+  if (!t.includes("@") && !/^\d+$/.test(t) && typeof ref !== "string") return { ref, cut: (await carton.cuts()).find((c) => c.id === ref.branchId)! };
+  return { ref };
 }
 
 /** How a version prints: `main@<seq>` on the main cut, else `<cut name>@<seq>`. */

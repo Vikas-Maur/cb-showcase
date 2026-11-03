@@ -83,7 +83,7 @@ test("find: names, prompts, clips by their names then and after, text set, peopl
     assert.equal(one.total, 3);
     assert.deepEqual((await c.find("intro", { before: 2 })).matches.map((m) => m.ref.seq), [1]);
     // an empty text builds the index and finds nothing
-    assert.deepEqual(await c.find("  "), { matches: [], total: 0, versions: 5 });
+    assert.deepEqual(await c.find("  "), { clips: [], matches: [], total: 0, versions: 5 });
     // new versions are found by the next call (the index grows by the rows since)
     await c.commit({ ops: [{ op: "insert", path: ["items", "c9"], value: { id: "c9", trackId: "v1", name: "Drone shot", start: 12, end: 14, mediaId: "m1" } }] });
     assert.deepEqual((await c.find("drone")).matches.map((m) => [m.ref.seq, m.field]), [[6, "clip"]]);
@@ -101,8 +101,8 @@ test("landmarks: recorded (exported, a session start once a day), named, turns, 
   let now = Date.UTC(2026, 10, 2, 9, 0);
   const c = await open(createMemoryStore(), () => now);
   try {
-    assert.ok(await c.mark("session", { once: "day" }));
-    assert.equal(await c.mark("session", { once: "day" }), null, "once a day");
+    assert.ok(await c.mark("start", { once: "day" }));
+    assert.equal(await c.mark("start", { once: "day" }), null, "once a day");
     now += 60_000;
     await c.commit({ ops: [set("items", "c1", "end", 4)] }); // @1
     const ex = await c.mark("exported", { label: "1080p" });
@@ -116,20 +116,20 @@ test("landmarks: recorded (exported, a session start once a day), named, turns, 
     await c.restoreClip(`${c.cut}@0`, "items/c1"); // @5: safety point @4
     const all = await c.landmarks();
     assert.deepEqual(all.map((l) => [l.kind, l.ref.seq, l.before ?? l.label ?? null]), [
-      ["safety", 4, "bring-back"],
-      ["safety", 3, "restore"],
+      ["before", 4, "bring-back"],
+      ["before", 3, "restore"],
       ["turn", 3, null],
       ["exported", 1, "1080p"],
       ["named", 1, "1080p for the client"],
-      ["session", 0, null],
+      ["start", 0, null],
     ]);
-    const kinds = Object.fromEntries(all.map((l) => [l.kind, l.team]));
-    assert.deepEqual(kinds, { safety: false, turn: true, exported: false, named: true, session: false });
-    assert.equal(all.find((l) => l.kind === "safety" && l.before === "restore")!.after, `${c.cut}@4`);
-    assert.deepEqual((await c.landmarks({ kinds: ["exported", "session"] })).map((l) => l.kind), ["exported", "session"]);
+    const kinds = Object.fromEntries(all.map((l) => [l.kind, [l.personal, l.local]]));
+    assert.deepEqual(kinds, { before: [true, true], turn: [false, false], exported: [false, true], named: [false, false], start: [true, true] });
+    assert.equal(all.find((l) => l.kind === "before" && l.before === "restore")!.after, `${c.cut}@4`);
+    assert.deepEqual((await c.landmarks({ kinds: ["exported", "start"] })).map((l) => l.kind), ["exported", "start"]);
     // a new day: another session start
     now += 86_400_000;
-    assert.ok(await c.mark("session", { once: "day" }));
+    assert.ok(await c.mark("start", { once: "day" }));
     // recorded ones are this machine's: they stay in the local ephemeral table
     const rows = await c.store.range("ephemeral", { prefix: ["landmark"] });
     assert.equal(rows.length, 3);

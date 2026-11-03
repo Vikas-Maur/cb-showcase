@@ -114,28 +114,38 @@ export interface ClipVersions {
 
 // ------------------------------------------------------------ Carton UX v2 (N0): find, landmarks, bring back, compare
 
-/** What a Find hit matched, best first: a version's name, a turn's prompt, a clip's name, text it set, a person. */
-export type FindField = "name" | "prompt" | "clip" | "text" | "person";
+/**
+ * What a Find hit matched, by weight (DESIGN-V2 §2.3): a clip's name, title or caption text, an agent's request, a
+ * version's name or landmark words, a person, a day.
+ */
+export type FindField = "clip" | "text" | "prompt" | "name" | "person" | "day";
 
 /** One version Find matched (`CartonUi.find`). */
 export interface FindHit {
-  /** History's row id (`Version.id`) and the version's ref. */
+  /** History's row id (`Version.id`; a version of another cut: its ref) and the version's ref. */
   readonly versionId: string;
   readonly ref: string;
+  /** The cut it is on (another cut's with "Search every cut"). */
+  readonly cutId: string;
   readonly at: number;
   readonly author: Actor;
-  /** The best thing it matched, and all of them. */
+  /** The best thing it matched, and all of them (the meta line says why: "Caption text · Leo", "Prompt · 4 changes"). */
   readonly field: FindField;
   readonly fields: readonly FindField[];
   /** A short piece of what matched (about 80 characters at most, `…` where cut), never an id. */
   readonly snippet: string;
-  /** Where the match is in `snippet` ([lo, hi), UTF-16), for the highlight. */
-  readonly hit: readonly [number, number];
-  /** A clip or text match: the clip's id on the timeline and its name ("Intro"). */
+  /** Where each word matched in `snippet` ([lo, hi), UTF-16), for the highlight. */
+  readonly hits: readonly (readonly [number, number])[];
+  /** A clip or text match: the clip's id on the timeline and its name ("Intro"), and where it was ("was 0:00–0:06 here"). */
   readonly itemId?: string;
   readonly clipName?: string;
+  readonly span?: { readonly start: number; readonly end: number };
+  /** Its landmarks, if it is any. */
+  readonly landmarks?: readonly LandmarkKind[];
 }
 export interface FindHits {
+  /** "A clip first": the clips the words name, best first ("“Intro”, the clip" with Only this clip). */
+  readonly clips: readonly { readonly itemId: string; readonly name: string; readonly cutId: string; readonly deleted?: boolean }[];
   /** Newest first. */
   readonly hits: readonly FindHit[];
   /** How many versions matched in all. */
@@ -144,8 +154,8 @@ export interface FindHits {
   readonly versions: number;
 }
 
-/** The versions people remember (core's `landmarks.ts`). */
-export type LandmarkKind = "exported" | "sent" | "shared" | "published" | "session" | "safety" | "turn" | "named";
+/** The versions people remember (core's `landmarks.ts`, DESIGN-V2 §2.1). */
+export type LandmarkKind = "exported" | "sent" | "named" | "turn" | "start" | "before";
 export interface Landmark {
   /** Stable key. */
   readonly id: string;
@@ -155,14 +165,52 @@ export interface Landmark {
   readonly ref: string;
   readonly at: number;
   readonly by: Actor | null;
-  /** Words given with it: an export's preset ("1080p"), whom it was sent to ("Leo"), a turn's prompt, a name. */
+  /** Words given with it: an export's preset ("1080p for the client"), whom it was sent to ("Leo"), a turn's prompt, a name. */
   readonly label?: string;
-  /** A safety point: what came right after it ("Before you restored 11:02 am"). */
+  /** A Before landmark: what came right after it ("Before restoring the 11:02 am version"), and that version's ref. */
   readonly before?: "restore" | "fold" | "undo-turn" | "bring-back";
-  /** Teammates have it too; false: yours, on this computer only. */
-  readonly team: boolean;
+  readonly after?: string;
+  /** Start and Before: only you see it ("Only you see this"). */
+  readonly personal: boolean;
+  /** Kept on this computer only (Exported and Sent, until the sync server carries them; Start and Before always). */
+  readonly local: boolean;
   /** Its picture's key (`landmarkPicture`), one per version. */
   readonly picture: string;
+}
+
+/** A row of "Choose a clip…" (DESIGN-V2 §3.2; core's BringBackChoice). Seconds; `text` a title's or caption's. */
+export interface BringBackChoice {
+  readonly itemId: string;
+  readonly name: string;
+  readonly noun?: string;
+  readonly then?: { readonly start?: number; readonly end?: number; readonly text?: string };
+  readonly now?: { readonly start?: number; readonly end?: number; readonly text?: string };
+  /** Deleted since: by whom and when; not there yet: who added it and when. */
+  readonly by?: Actor | null;
+  readonly at?: number;
+}
+export interface BringBackChoices {
+  readonly changed: readonly BringBackChoice[];
+  readonly deleted: readonly BringBackChoice[];
+  readonly added: readonly BringBackChoice[];
+  /** "14 other clips are the same as now." */
+  readonly same: number;
+}
+
+/**
+ * The clip-by-clip match between two versions, in one cut or across cuts (DESIGN-V2 §1.15 `ui.align`): one entry per
+ * clip on either side, matched by identity (cuts share ids from the cut they were made from). Seconds. It drives in
+ * step by shot, the strip, the jumps and the cut sentences.
+ */
+export interface AlignEntry {
+  readonly item: string;
+  readonly name?: string;
+  readonly aStart?: number;
+  readonly aEnd?: number;
+  readonly bStart?: number;
+  readonly bEnd?: number;
+  /** Its track (b's, else a's). */
+  readonly track?: string;
 }
 
 /** Bring back one clip's answer (`CartonUi.restoreClip`). */
@@ -176,12 +224,19 @@ export interface BringBack extends ActionResult {
 /**
  * An agent asked the editor to open Compare (`cb compare <a> [b] --show`). The worker sends it to the pages as a
  * `carton:event`: `{ kind: "carton", id: <projectId>, topic: "compare", compare: OpenCompare }`. N1's `openCompare`
- * takes it. A page shows each `request` once.
+ * takes it. A page shows each `request` once, and answers it with the worker's `compareAnswer({ projectId, request,
+ * status, why? })`: `opened`, `offered` (a note with Open: the person was busy, `why: "busy" | "viewing" | "playing"`),
+ * or `refused` (`why: "not-here"`: a side hasn't reached this computer). DESIGN-V2 §1.13, §5.3.
  */
 export interface OpenCompare {
-  /** Refs as History's (`Version.ref`): versions of any two cuts; a cut id is that cut's head (the current cut's: your edit now). */
+  /**
+   * The left and right sides (DESIGN-V2 §1.12: the cut you're on is on the right), refs as History's (`Version.ref`):
+   * versions of any two cuts; a cut id is that cut's head ("now"; the current cut's: your edit now).
+   */
   readonly from: string;
   readonly to: string;
+  /** "versions" (one cut) or "cuts" (two cuts: differences, "Only in …"). */
+  readonly between: "versions" | "cuts";
   /** Who asked, as core records it, and in words ("Director", "Claude Code"). */
   readonly by: { readonly kind: string; readonly id: string; readonly name?: string };
   readonly byName: string;
@@ -672,9 +727,11 @@ export interface CartonUi {
   working(): Working | null;
   /**
    * Every change from `a` to `b` (PLAN 0.1), in timeline order, as change rows: one per change as `countChanges`
-   * counts them, so `.length` is the count shown everywhere. Cached per (a, b). Plain data across `remote.ts`.
+   * counts them, so `.length` is the count shown everywhere. Cached per (a, b). Plain data across `remote.ts`. `a` and
+   * `b` may be on two cuts; `between: "cuts"` words them as differences (DESIGN-V2 §1.12: "Only in Main cut: “Drone
+   * shot”", "“Intro” ends at 0:05 here, 0:03 in “30s Instagram cut”"), `a` the left side.
    */
-  changes(a: string, b: string): Promise<readonly Change[]>;
+  changes(a: string, b: string, opts?: { between?: "versions" | "cuts" }): Promise<readonly Change[]>;
   /** What one History row did (a turn: all of it), with each change's author and time: the version card's rows. */
   changesIn(versionId: string): Promise<readonly Change[]>;
   /**
@@ -703,7 +760,7 @@ export interface CartonUi {
    * Find in the current cut's History: names, turn prompts, people, clips by name, title and caption text. Newest
    * first. An empty `text` warms the index and finds nothing (call it when the find box gets focus).
    */
-  find?(text: string, opts?: { limit?: number; before?: number; fields?: readonly FindField[] }): Promise<FindHits>;
+  find?(text: string, opts?: { limit?: number; before?: number; fields?: readonly FindField[]; allCuts?: boolean }): Promise<FindHits>;
   /** The current cut's landmarks, newest first. Topic "landmarks" says when to read them again. */
   landmarks?(opts?: { kinds?: readonly LandmarkKind[]; limit?: number }): Promise<readonly Landmark[]>;
   /**
@@ -712,6 +769,10 @@ export interface CartonUi {
    * with the words that say so).
    */
   restoreClip?(ref: string, itemId: string, opts?: { remove?: boolean }): Promise<BringBack>;
+  /** "Choose a clip…" (DESIGN-V2 §3.2): the clips that differ between version `ref` and your edit now. */
+  bringBackChoices?(ref: string): Promise<BringBackChoices>;
+  /** The clip-by-clip match between two versions, any two cuts (DESIGN-V2 §1.15). Cached per (a, b). */
+  align?(a: string, b: string): Promise<readonly AlignEntry[]>;
   /** A landmark's picture (`Landmark.picture`) as a `data:image/jpeg` URL, or null when none was made yet. */
   landmarkPicture?(key: string): Promise<string | null>;
   /** Keep a landmark's picture (a `data:image/jpeg` URL, at most 64 KB), made from the stage the first time it shows. */

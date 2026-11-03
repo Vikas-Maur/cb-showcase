@@ -22,8 +22,8 @@ import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOpt
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { FIND_FIELDS, FindIndex, findWords, foldText, hitIn, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult } from "./find.ts";
-import { LANDMARK_KINDS, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type SafetyBefore } from "./landmarks.ts";
-import { bringBack, recordName, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
+import { LANDMARK_KINDS, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
+import { bringBack, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -346,13 +346,14 @@ export interface Carton {
    */
   find(text: string, opts?: FindOptions): Promise<FindResult>;
   /**
-   * Landmarks (Carton UX v2): the versions people remember, newest first: exported, sent, shared, Published, each day's
-   * session start, safety points before a restore, a fold in, an undo of a turn or a bring-back, agent turns and named
-   * versions (`landmarks.ts`). A version can be several landmarks.
+   * Landmarks (Carton UX v2, DESIGN-V2 §2.1): the versions people remember, newest first: exported, sent (shared,
+   * sent for review, published), named, agent turns, start (how it was when the project was opened, or after an hour
+   * away) and before (a restore, a fold in, an undo of a turn or a bring-back) (`landmarks.ts`). Start and before are
+   * personal. A version can be several landmarks.
    */
   landmarks(opts?: LandmarkOptions): Promise<Landmark[]>;
   /**
-   * Record a landmark the history can't know by itself (exported, sent, shared, the session start), on this machine
+   * Record a landmark the history can't know by itself (exported, sent, start), on this machine
    * only (local `ephemeral` table, never exported or synced). Off the save path: one small store write. Null: `once:
    * "day"` found one today.
    */
@@ -366,6 +367,11 @@ export interface Carton {
    * as restore does.
    */
   restoreClip(ref: StateRef | string, record: PathKey | readonly string[], opts?: BringBackOptions): Promise<CommitResult & { brought: BroughtBack }>;
+  /**
+   * "Choose a clip…" (DESIGN-V2 §3.2): the clips (timeline records) that differ between `ref` and a cut's head now
+   * (default: the current cut), as Changed since, Deleted since and Not there yet, and how many are the same.
+   */
+  bringBackChoices(ref: StateRef | string, opts?: { cut?: string }): Promise<BringBackChoices>;
   /** Name a version ("Sent to client, Monday"). */
   /** Name a version; `author`: who named it (default: this handle's actor). */
   name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
@@ -1743,7 +1749,7 @@ class CartonImpl implements Carton {
     const all = ix.entries, before = opts.before;
     let versions = 0;
     for (const e of all) if (before === undefined || e.seq < before) versions++;
-    if (!q) return { matches: [], total: 0, versions };
+    if (!q) return { clips: [], matches: [], total: 0, versions };
     const want = new Set<FindField>(opts.fields?.length ? opts.fields : FIND_FIELDS);
     const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
     const names = new Map(this.#h.names());
@@ -1800,11 +1806,12 @@ class CartonImpl implements Carton {
         fields: hits.map((h) => h.field),
         snippet: sn.snippet,
         hit: sn.hit,
+        hits: [sn.hit],
         ...(best.record ? { record: best.record } : {}),
         ...(best.recordName ? { recordName: best.recordName } : {}),
       });
     }
-    return { matches, total, versions };
+    return { clips: [], matches, total, versions };
   }
   async landmarks(opts: LandmarkOptions = {}): Promise<Landmark[]> {
     const cut = opts.cut ?? this.#h.current;
@@ -1820,7 +1827,8 @@ class CartonImpl implements Carton {
     const add = (kind: LandmarkKind, seq: number, at: number, by: Actor | null, extra: Partial<Landmark> = {}, recorded = false) => {
       if (!want.has(kind) || seq >= before || seq < 0 || seq > log.length) return;
       const r = ref(seq);
-      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, at, by, recorded, team: kind === "named" || kind === "turn" || kind === "published", picture: pictureKey(r), ...extra });
+      const personal = kind === "start" || kind === "before";
+      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
     };
     // recorded by the app (mark): this machine's own, from the local ephemeral table
     if (RECORDED_KINDS.some((k) => want.has(k))) {
@@ -1850,20 +1858,20 @@ class CartonImpl implements Carton {
       const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`);
       if (!mine) continue;
       const pair = s > 1 && completedAt(log, s - 1);
-      const why: SafetyBefore | null = c.kind === "restore" ? (c.restoreRecord ? "bring-back" : "restore")
+      const why: BeforeWhat | null = c.kind === "restore" ? (c.restoreRecord ? "bring-back" : "restore")
         : c.mergeOf || pair ? "fold"
         : c.kind === "undo" && Array.isArray(c.reverts) && c.reverts.some((id) => !!this.#h.findChange(id)?.author?.turn) ? "undo-turn"
         : null;
-      if (why) add("safety", pair ? s - 2 : s - 1, c.at, this.#who(c.author, c.id), { before: why, after: nodeId(cut, s) });
+      if (why) add("before", pair ? s - 2 : s - 1, c.at, this.#who(c.author, c.id), { before: why, after: nodeId(cut, s) });
     }
-    // Published versions of this cut
-    if (want.has("published")) {
+    // a Published cut's version: sent (what the share link shows)
+    if (want.has("sent")) {
       for (const cutRec of this.#h.cuts()) {
         if (cutRec.kind !== "published" || !cutRec.forkOf) continue;
         const from = parseNode(this.#h.canon(cutRec.forkOf));
         if (from.branchId !== cut) continue;
         const first = this.#h.changes(cutRec.id)[0];
-        add("published", from.seq, first?.at ?? cutRec.at ?? log[from.seq - 1]?.at ?? 0, this.#who(first?.author ?? this.#h.maker(cutRec.id) ?? null, first?.id ?? null), { label: cutRec.name });
+        add("sent", from.seq, first?.at ?? cutRec.at ?? log[from.seq - 1]?.at ?? 0, this.#who(first?.author ?? this.#h.maker(cutRec.id) ?? null, first?.id ?? null), { label: cutRec.name });
       }
     }
     out.sort((a, b) => b.ref.seq - a.ref.seq || b.at - a.at);
@@ -1888,13 +1896,15 @@ class CartonImpl implements Carton {
     if (opts.once === "day") {
       const day = new Date(at).toDateString();
       for (const { value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] })) if (value?.kind === kind && new Date(value.at).toDateString() === day) return null;
+    } else if (opts.once === "version") {
+      for (const { value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut, seq] })) if (value?.kind === kind) return null;
     }
     const by = opts.by ?? this.#actor();
     const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}) };
     await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, seq, kind, at], value: row }]);
     this.#emit({ type: "landmarks", branchId: cut });
     const r: StateRef = { branchId: cut, seq, pending: [] };
-    return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, team: false, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };
+    return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, personal: kind === "start", local: true, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };
   }
   async restoreClip(ref: StateRef | string, record: PathKey | readonly string[], opts: BringBackOptions = {}): Promise<CommitResult & { brought: BroughtBack }> {
     const cut = opts.cut ?? this.#h.current;
@@ -1934,6 +1944,9 @@ class CartonImpl implements Carton {
       { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
     );
     return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+  }
+  async bringBackChoices(_ref: StateRef | string, _opts: { cut?: string } = {}): Promise<BringBackChoices> {
+    throw new Error("not implemented: bringBackChoices");
   }
   /** A retried bring-back answers from its first try: what it did, read again from the change it made. */
   async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string): Promise<BroughtBack> {
