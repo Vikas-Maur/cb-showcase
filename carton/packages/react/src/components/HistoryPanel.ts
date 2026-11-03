@@ -527,7 +527,14 @@ function EveryCutHits({ found, onOpen }: { found: EveryCut; onOpen: (hit: FindHi
             "button",
             { type: "button", className: "carton-find-every-row", title: words.compareAcrossCuts, onClick: () => onOpen(x) },
             h("span", { className: "carton-find-every-title" }, highlight(x.snippet, found.q)),
-            h("span", { className: "carton-find-every-meta" }, cut ? h(CutDot, { cut }) : null, [where, who, clock(x.at, { now, locale })].filter(Boolean).join(" · ")),
+            // (a long cut name gives way, never who or when: "“Director's cut: punch…” · Director · 1:39 pm")
+            h(
+              "span",
+              { className: "carton-find-every-meta" },
+              cut ? h(CutDot, { cut }) : null,
+              h("span", { className: "carton-find-every-cut" }, where),
+              h("span", { className: "carton-find-every-when" }, [who, clock(x.at, { now, locale })].filter(Boolean).map((t) => `· ${t}`).join(" ")),
+            ),
           ),
         );
       }),

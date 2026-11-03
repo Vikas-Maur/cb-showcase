@@ -40,7 +40,9 @@ export const historyV2Css = `
   color:var(--cb-fg-1);font:inherit;text-align:left;cursor:pointer}
 :where(${S}) :where(.carton-find-every-row:hover, .carton-find-every-row:focus-visible){background:#ffffff0a}
 :where(${S}) :where(.carton-find-every-title){font-size:13px;line-height:18px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-find-every-meta){display:flex;align-items:center;gap:5px;font-size:12px;line-height:16px;color:var(--cb-fg-3);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+:where(${S}) :where(.carton-find-every-meta){display:flex;align-items:center;gap:5px;font-size:12px;line-height:16px;color:var(--cb-fg-3);max-width:100%;min-width:0;white-space:pre}
+:where(${S}) :where(.carton-find-every-cut){min-width:0;overflow:hidden;text-overflow:ellipsis}
+:where(${S}) :where(.carton-find-every-when){flex:none}
 
 /* a narrow panel's landmark whose tag and title don't fit one line: two lines, its row 18 px taller (§2.1; QA v2 G9) */
 :where(${S}) :where(.carton-version[data-wrap]){grid-template-rows:36px 16px}
