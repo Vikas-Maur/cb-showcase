@@ -84,11 +84,6 @@ label.cb-field:has(.cb-input){grid-template-columns:90px 1fr}
 .cb-toast-x{background:none;border:0;color:var(--text-tertiary,#999);font-size:16px;cursor:pointer}
 .cb-link{font-family:var(--font-mono,"Geist Mono",ui-monospace,monospace);font-size:11px}
 .cb-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-.cb-watch-overlay{background:#000000a6}
-.cb-watch{width:min(1100px,calc(100% - 48px));max-height:calc(100% - 48px);overflow:auto;padding:16px;border-radius:12px;background:var(--surface-dialog,#1f1f1f);box-shadow:var(--shadow-surface-raised,0 16px 40px -12px #000000b3,0 0 0 1px #ffffff0a)}
-.cb-watch-preview{position:relative;aspect-ratio:16/9;max-height:42vh;margin:0 auto;background:#000;border-radius:8px;overflow:hidden}
-.cb-watch-preview img{width:100%;height:100%;object-fit:contain}
-.cb-watch-side{position:absolute;left:8px;top:8px;padding:2px 8px;border-radius:6px;background:#000000b3;font-size:11px}
 .cb-gate{display:flex;align-items:center;justify-content:center;height:100%;padding:24px}
 .cb-gate-card{width:min(420px,100%);padding:24px;border-radius:12px;background:var(--surface-dialog,#1f1f1f);box-shadow:var(--shadow-surface-raised,0 16px 40px -12px #000000b3,0 0 0 1px #ffffff0a)}
 .cb-gate-card h1{margin:0 0 8px;font-size:18px;font-weight:600}

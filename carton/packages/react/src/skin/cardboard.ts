@@ -19,18 +19,12 @@ export const baseCss = `
 :where(.carton-overlay){position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center}
 :where(.carton-dialog){max-height:calc(100% - 48px);display:flex;flex-direction:column}
 :where(.carton-dialog-body){overflow:auto;min-height:0}
-:where(.carton-strip-track){position:relative}
-:where(.carton-strip){display:flex;position:relative}
-:where(.carton-strip-col){position:relative;flex:none}
-:where(.carton-shot){position:absolute;top:0;bottom:0}
-:where(.carton-playhead){position:absolute;top:0;bottom:0;left:0;width:0;pointer-events:none;will-change:transform}
-:where(.carton-strip-scroll){overflow-x:auto;overflow-y:hidden}
 :where(.carton-ghost){position:absolute;left:0;top:0;will-change:transform}
 :where([data-carton-tip]){position:relative}
 :where(.carton-more) > :where(.carton-more-long){display:none}
 :where(.carton-more:hover) > :where(.carton-more-short){display:none}
 :where(.carton-more:hover) > :where(.carton-more-long){display:inline}
-:where(.carton-version, .carton-conflict-who, .carton-credit, .carton-compare-side dl, .carton-comment-head, .carton-comment-meta){-webkit-user-select:none;user-select:none}
+:where(.carton-version, .carton-conflict-who, .carton-credit, .carton-comment-head, .carton-comment-meta){-webkit-user-select:none;user-select:none}
 `;
 
 const S = '[data-carton-skin="cardboard"]';
@@ -79,7 +73,7 @@ export const cardboardSkin = `
 :where(${S}) :where(ul){list-style:none}
 :where(${S}) :where(fieldset){border:0;min-width:0}
 :where(${S}) :where(button){font:inherit;color:inherit}
-:where(${S}) :where(time, .carton-watch-clock, .carton-watch-summary, .carton-compare-diff){font-variant-numeric:tabular-nums}
+:where(${S}) :where(time){font-variant-numeric:tabular-nums}
 
 /* ---------------------------------------------------------------- buttons (Cardboard's shadcn button) */
 :where(${S}) :where(.carton-btn){display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;
@@ -566,24 +560,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-sidebar-history){display:flex;flex-direction:column;flex:1 1 0;min-height:0}
 :where(${S}) :where(.carton-sidebar-history > .carton-history){flex:1 1 0;height:auto}
 :where(${S}) :where(.carton-sidebar-cuts){flex:none;padding:8px 10px 0}
-:where(${S}) :where(.carton-sidebar-watch){display:flex;flex-direction:column;gap:10px;padding:8px 12px 12px}
-:where(${S}) :where(.carton-sidebar-watch > .carton-btn){align-self:flex-start}
 :where(${S}) :where(.carton-conflicts-count){font-size:12px;font-weight:500;color:var(--cb-warn)}
-:where(${S}) :where(.carton-compare-sides){display:grid;grid-template-columns:1fr 1fr;gap:6px}
-:where(${S}) :where(.carton-compare-side){padding:10px;border-radius:8px;background:var(--cb-sunken)}
-:where(${S}) :where(.carton-compare-label){margin-bottom:8px;font-size:12px;font-weight:600;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-facts){display:grid;grid-template-columns:auto 1fr;gap:5px 10px;font-size:12px;line-height:16px}
 :where(${S}) :where(.carton-facts dt){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-facts dd){color:var(--cb-fg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-compare-who){display:flex;align-items:center;gap:5px}
-:where(${S}) :where(.carton-compare-diff){display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-compare-diff)::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--cb-warn)}
-:where(${S}) :where(.carton-compare-diff[data-same])::before{background:var(--cb-ok)}
 /* the changes, in History's words (UI audit P2-5) */
-:where(${S}) :where(.carton-compare-changes){display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:8px;background:var(--cb-sunken)}
-:where(${S}) :where(.carton-compare-change){position:relative;padding-left:12px;font-size:12.5px;line-height:18px;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-compare-change)::before{content:"";position:absolute;left:2px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--cb-fg-3)}
-:where(${S}) :where(.carton-compare-more){align-self:flex-start;height:24px;margin-top:-4px;padding:0 8px;font-size:12px}
 
 /* ---------------------------------------------------------------- dialog (Fold in) */
 :where(${S}) :where(.carton-overlay){background:#000000a3;animation:carton-fade var(--cb-base) var(--cb-decel)}
@@ -756,52 +737,46 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-preview-banner .carton-badge, .carton-preview-banner > .carton-icon){flex:none}
 :where(${S}) :where(.carton-preview-blocked){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ---------------------------------------------------------------- WatchTheChanges */
-:where(${S}) :where(.carton-watch){display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--cb-panel);outline:none}
-:where(${S}) :where(.carton-watch-head){display:flex;align-items:flex-start;gap:10px}
-:where(${S}) :where(.carton-watch-titles){flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-:where(${S}) :where(.carton-watch-summary){font-size:12px;line-height:16px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-watch-head > .carton-btn){margin:-4px -4px 0 auto}
-:where(${S}) :where(.carton-watch-abrow){display:flex}
-:where(${S}) :where(.carton-watch-stage){aspect-ratio:16/9;max-height:320px;border-radius:8px;overflow:hidden;background:#0f0f0f}
-/* no picture of its own: one line saying where the picture is, not a 16:9 stand-in */
-:where(${S}) :where(.carton-watch-stage[data-note]){aspect-ratio:auto;max-height:none;background:none;overflow:visible}
-:where(${S}) :where(.carton-stage-note){display:flex;align-items:center;gap:8px;min-height:32px;padding:6px 10px;border-radius:8px;background:var(--cb-sunken);font-size:12px;line-height:16px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-stage-side){flex:none;padding:1px 6px;border-radius:4px;background:#ffffff0f;font-size:11px;font-weight:600;line-height:16px}
-:where(${S}) :where(.carton-stage-note[data-side=a] .carton-stage-side){color:#f4a3a3}
-:where(${S}) :where(.carton-stage-note[data-side=b] .carton-stage-side){color:#86efac}
-/* the controls wrap at a narrow width (300 px panel) instead of running out of it */
-:where(${S}) :where(.carton-watch-controls){display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-:where(${S}) :where(.carton-watch-where){display:inline-flex;align-items:baseline;gap:8px;margin-left:auto;white-space:nowrap}
-:where(${S}) :where(.carton-watch-count){font-size:12px;font-weight:500;color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-watch-clock){font-size:12px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-strips){display:grid;grid-template-columns:52px 1fr;gap:0 6px;padding:8px 0 2px;border-top:1px solid #ffffff0a}
-:where(${S}) :where(.carton-strip-labels){display:grid;grid-template-rows:40px 40px;row-gap:4px;font-size:11px;font-weight:500;color:var(--cb-fg-4)}
-:where(${S}) :where(.carton-strip-labels span){display:flex;align-items:center}
-:where(${S}) :where(.carton-strip-labels span[data-active]){color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-strip-scroll){scrollbar-width:thin;scrollbar-color:#ffffff1f transparent;padding-bottom:6px}
-:where(${S}) :where(.carton-strip-track){display:grid;grid-template-rows:40px 40px;row-gap:4px}
-:where(${S}) :where(.carton-strip){gap:0}
-:where(${S}) :where(.carton-strip-col){height:40px;border-right:2px solid var(--cb-panel);border-radius:5px;overflow:hidden;cursor:pointer}
-:where(${S}) :where(.carton-shot){--carton-shot-hue:0;border-right:1px solid #00000059;background-color:hsl(var(--carton-shot-hue) 26% 30%);background-size:cover;background-position:center}
-:where(${S}) :where(.carton-shot-label){position:absolute;left:5px;right:4px;top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10.5px;font-weight:500;color:#ffffffd9;text-shadow:0 1px 2px #00000080}
-:where(${S}) :where(.carton-strip-col[data-kind=same]){opacity:.62}
-:where(${S}) :where(.carton-strip-col[data-kind=same]:hover){opacity:.85}
-:where(${S}) :where(.carton-strip-col[data-tone])::after{content:"";position:absolute;inset:0;border-radius:5px;pointer-events:none}
-:where(${S}) :where(.carton-strip[data-side=a] .carton-strip-col[data-tone=changed])::after, :where(${S}) :where(.carton-strip-col[data-tone=removed])::after{
-  background:#e3787826;box-shadow:inset 0 0 0 1.5px #e37878}
-:where(${S}) :where(.carton-strip[data-side=b] .carton-strip-col[data-tone=changed])::after, :where(${S}) :where(.carton-strip-col[data-tone=added])::after{
-  background:#4ade8022;box-shadow:inset 0 0 0 1.5px #4ade80}
-:where(${S}) :where(.carton-strip-col[data-tone=empty]){background:repeating-linear-gradient(135deg, #ffffff08 0 6px, transparent 6px 12px);cursor:pointer}
-:where(${S}) :where(.carton-strip-col[data-tone=empty])::after{box-shadow:inset 0 0 0 1px #ffffff14}
-:where(${S}) :where(.carton-strip-empty){position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:500;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-strip-col[data-kind=fold]){display:flex;align-items:center;justify-content:center;padding:0;border:0;border-right:2px solid var(--cb-panel);
-  background:#ffffff08;color:var(--cb-fg-3);font-size:10.5px;font-weight:500;text-align:center;line-height:13px}
-:where(${S}) :where(.carton-strip-col[data-kind=fold]:hover){background:#ffffff12;color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-fold-chip){padding:0 6px}
-:where(${S}) :where(.carton-playhead){z-index:2}
-:where(${S}) :where(.carton-playhead)::before{content:"";position:absolute;top:-2px;bottom:-2px;left:-1px;width:2px;border-radius:1px;background:var(--cb-fg-1);box-shadow:0 0 0 1px #00000080}
-:where(${S}) :where(.carton-playhead)::after{content:"";position:absolute;top:-6px;left:-5px;border:5px solid transparent;border-top-color:var(--cb-fg-1)}
+/* ---------------------------------------------------------------- the Changes view, Play and Before (DESIGN §5, PLAN 4) */
+:where(${S}) :where(.carton-changes-view){display:flex;flex-direction:column;flex:1 1 0;min-height:0;height:100%;background:var(--cb-panel);outline:none}
+:where(${S}) :where(.carton-changes-nav){flex:none;display:flex;align-items:center;height:36px;padding:2px 10px 0 6px}
+:where(${S}) :where(.carton-changes-nav .carton-btn){height:28px;padding:0 10px 0 8px;font-size:12.5px;border-radius:7px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-changes-head){flex:none;padding:4px 14px 10px}
+:where(${S}) :where(.carton-changes-title){font-size:15px;line-height:20px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-changes-sub){margin-top:2px;font-size:12.5px;line-height:17px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-changes-body){flex:1 1 0;min-height:0;display:flex;flex-direction:column;overflow-y:auto;outline:none}
+:where(${S}) :where(.carton-changes-view[data-compact] .carton-changes-body){overflow:hidden}
+:where(${S}) :where(.carton-changes-mapbox){flex:none;padding:0 14px}
+:where(${S}) :where(.carton-changes-ends){display:flex;justify-content:space-between;margin:-4px 0 6px;font-size:11px;line-height:15px;color:var(--cb-fg-4);font-variant-numeric:tabular-nums}
+:where(${S}) :where(.carton-changes-list){flex:none;padding:0 14px 8px;outline:none}
+:where(${S}) :where(.carton-changes-view[data-compact] .carton-changes-list){flex:1 1 0;min-height:0;padding:0 8px 0 14px}
+/* a long list is virtual, its rows one height: a sentence gets two lines (the rare longer one is cut there) */
+:where(${S}) :where(.carton-changes-view[data-compact] .carton-change-words){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+:where(${S}) :where(.carton-changes-view[data-compact] .carton-change-who){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:where(${S}) :where(.carton-changes-error){padding:0 14px 8px}
+:where(${S}) :where(.carton-changes-failed){display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:4px 14px}
+:where(${S}) :where(.carton-changes-skeleton){display:flex;flex-direction:column;gap:14px;padding:6px 14px}
+:where(${S}) :where(.carton-changes-skeleton span){height:30px;border-radius:6px;background:linear-gradient(90deg,#ffffff08,#ffffff10,#ffffff08)}
+:where(${S}) :where(.carton-changes-transport){flex:none;display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--cb-line);background:var(--cb-panel)}
+:where(${S}) :where(.carton-changes-transport .carton-btn){height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
+:where(${S}) :where(.carton-changes-transport .carton-btn:has(> .carton-icon)){padding-left:8px}
+:where(${S}) :where(.carton-changes-spacer){flex:1}
+:where(${S}) :where(.carton-changes-confirm){flex:none;margin:8px 10px 10px;padding:10px;border-radius:8px;background:var(--cb-raised);box-shadow:inset 0 0 0 1px #ffffff10}
+:where(${S}) :where(.carton-changes-confirm-title){font-size:13px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-changes-confirm-body){margin-top:4px;font-size:12.5px;line-height:17px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-changes-confirm .carton-error){margin-top:6px}
+:where(${S}) :where(.carton-changes-confirm-acts){display:flex;gap:6px;margin-top:10px}
+:where(${S}) :where(.carton-changes-confirm-acts .carton-btn){height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
+/* Before: an outlined toggle; held or latched, blue (the viewing colour) */
+:where(${S}) :where(.carton-before){display:inline-flex;align-items:center;height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;box-shadow:inset 0 0 0 1px var(--cb-line-2);color:var(--cb-fg-2);font-size:12.5px;font-weight:500;cursor:pointer;touch-action:none;outline:none}
+:where(${S}) :where(.carton-before:hover){color:var(--cb-fg-1);background:#ffffff08}
+:where(${S}) :where(.carton-before[aria-pressed=true]){background:#8ab4ff24;color:#dce8ff;box-shadow:inset 0 0 0 1px #8ab4ff66}
+:where(${S}) :where(.carton-before:focus-visible){box-shadow:inset 0 0 0 1px var(--cb-line-2),0 0 0 3px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+/* Play all's spinner: only once a load has taken 300 ms */
+:where(${S}) :where(.carton-play-all){display:inline-flex;align-items:center;gap:6px}
+:where(${S}) :where(.carton-spinner){width:14px;height:14px;border-radius:50%;border:2px solid #ffffff2e;border-top-color:var(--cb-fg-1);opacity:0;animation:carton-spin .8s linear infinite,carton-show 0s linear .3s forwards}
+@keyframes carton-show{to{opacity:1}}
+@media (prefers-reduced-motion: reduce){ :where(${S}) :where(.carton-spinner){opacity:1} }
 
 /* the agent marks in History's rows: a round dark mark, Claude Code's burst in Claude's orange (after the avatar rules) */
 :where(${S}) :where(.carton-version-mark .carton-avatar[data-kind=agent], .carton-version-mark .carton-avatar[data-kind=subagent]){border-radius:50%;background:var(--cb-raised);color:var(--cb-fg-2);
@@ -813,8 +788,6 @@ export const cardboardSkin = `
 @media (prefers-reduced-motion: reduce){
   :where(${S}) *, :where(${S}) *::before, :where(${S}) *::after{animation:none!important;transition:none!important}
 }
-/* the sidebar is narrow: Compare's two sides one above the other (after the Compare rules above, so it wins) */
-:where(${S}) :where(.carton-sidebar .carton-compare-sides){grid-template-columns:1fr}
 /* a menu item's description, on its own line under the name (no tooltip over the next item) */
 :where(${S}) :where(.carton-menu-item[data-described]){height:auto;min-height:32px;padding-top:6px;padding-bottom:6px;align-items:flex-start}
 :where(${S}) :where(.carton-menu-item[data-described] .carton-menu-text){display:flex;flex-direction:column;gap:1px;white-space:normal}

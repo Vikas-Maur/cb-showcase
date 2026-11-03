@@ -37,6 +37,30 @@ module.exports = String.raw`window.__carton = (() => {
   // nothing (review of the UX data #3: the older version came back over "Back to my edit")
   let previewGen = 0;
   const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
+  // Play and Before (docs/carton-ux PLAN 4.3): holding Before flips the editor between two states at the same moment,
+  // so neither flip may wait on the worker.
+  // - checked: the versions checked out lately, by project and ref (a few; a confirmed version or a pin never changes),
+  //   filled by prefetch() when playing starts (Before's side) and by every preview of such a ref. A preview of one
+  //   then needs no round trip to the worker.
+  // - own: the editor's own timeline as it was when a preview opened (after its saves went). Back to current puts it
+  //   back at once, then reads head as before and adopts it only if it moved meanwhile and nothing of the person's is
+  //   unsaved. A change that came during the preview (stale) skips the first step: head is read and adopted, as before.
+  const checked = new Map(), CHECKED = 4;
+  const fixedRef = (ref) => typeof ref === "string" && /@\d+(?:~|\s|$)/.test(ref);
+  const checkout = (projectId, ref) => {
+    const key = projectId + "\n" + ref, hit = checked.get(key);
+    if (hit) { checked.delete(key); checked.set(key, hit); return hit; }
+    const p = call("checkout", { projectId, ref });
+    if (!fixedRef(ref)) return p;
+    checked.set(key, p);
+    p.catch(() => { if (checked.get(key) === p) checked.delete(key); });
+    while (checked.size > CHECKED) checked.delete(checked.keys().next().value);
+    return p;
+  };
+  let own = null;
+  // the editor's own timeline saves, counted: one made after the fast step means head (read after it) is older than
+  // what the person sees, and isn't adopted over it (their save's own events bring head)
+  let saves = 0;
   // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
   // playback clock while playing.
   const playhead = () => {
@@ -140,6 +164,7 @@ module.exports = String.raw`window.__carton = (() => {
       // version before both, where it clashed with the earlier save at head (a card of the person against themself).
       const after = unanswered && unanswered.id === doc.id && (st.cartonBase == null || unanswered.rev > st.cartonBase) ? unanswered.rev : undefined;
       sent = unanswered = { id: doc.id, rev: doc.stateUpdatedAt };
+      saves++;
       // the person's own edit: there is something to undo now, and nothing to redo (as the editor's own stacks); the
       // save's echo asks the worker again
       store.raw({ cartonCanUndo: true, cartonCanRedo: false });
@@ -336,7 +361,15 @@ module.exports = String.raw`window.__carton = (() => {
       if (!on || !store) return;
       const gen = ++previewGen;
       if (ref != null) await store.flush();
-      const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
+      // Back to current, at once: the editor's own timeline as the preview found it (see own, above)
+      const st0 = store.state(), mine = ref == null ? own : null;
+      if (ref == null) own = null;
+      const fast = !!mine && mine.project === projectId && st0.projectId === projectId && !!st0.cartonPreview && !stale;
+      if (fast) store.adopt({ ...mine.timeline, cartonBase: mine.base, cartonPreview: null });
+      const saves0 = saves;
+      if (ref != null && !st0.cartonPreview && st0.projectId === projectId)
+        own = { project: projectId, base: st0.cartonBase ?? null, timeline: { tracks: st0.tracks, timelineItems: st0.timelineItems, aspectRatio: st0.aspectRatio, duration: duration(st0.timelineItems ?? []) } };
+      const doc = await (ref == null ? call("head", { projectId, ref }) : checkout(projectId, ref));
       if (gen !== previewGen) return;
       const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
       // a place held for another project (the editor opened another one meanwhile) isn't this one's
@@ -344,13 +377,21 @@ module.exports = String.raw`window.__carton = (() => {
       if (ref == null) {
         const h = held;
         release();
-        // Back to current: the project record and the editor take head, with its base.
-        store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
-        store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+        // Back to current: the project record and the editor take head, with its base. After the fast step, only if
+        // head moved and the editor still shows exactly what the fast step put there: its base unchanged (an undo or
+        // redo, or a change from elsewhere, adopted meanwhile moves it: theirs is newer than this read), no save made
+        // since, nothing armed or in flight, no undo or redo stepping, and no preview opened again (review #1).
+        const now = store.state();
+        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && (now.cartonBase ?? null) === mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.() && saves === saves0 && stepping !== projectId);
+        if (moved) {
+          store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
+          store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+          unanswered = null;
+        }
         stale = false;
-        unanswered = null;
         // unmoved: told by the store's own moves when it says them, else by where the playhead is
-        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, end));
+        const shown = moved ? end : mine.timeline.duration;
+        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, shown));
       } else {
         store.adopt({ ...t, duration: end, cartonPreview: { ref } });
         const now = playhead();
@@ -359,7 +400,7 @@ module.exports = String.raw`window.__carton = (() => {
           held ??= { at: now, end, off: null, project: projectId };
           held.end = end;
           seekOwn(end);
-          // any other move of the playhead (a click on the ruler, WatchTheChanges, a comment's timecode, play) is
+          // any other move of the playhead (a click on the ruler, Play in History, a comment's timecode, play) is
           // the person's: their place is the one to keep (review #3: even one that ends where the preview put it)
           held.off ??= store.subscribe?.((st, prev) => {
             if (!seeking && (st.playheadTime !== prev.playheadTime || (st.isPlaying && !prev.isPlaying) || st.projectId !== prev.projectId)) release();
@@ -368,6 +409,19 @@ module.exports = String.raw`window.__carton = (() => {
       }
     },
     get stale() { return stale; },
+    // Play and Before (PLAN 4.3): check a version out now, so a preview of it later doesn't wait on the worker. A
+    // confirmed version or a pin only (they never change); nothing with Carton off.
+    prefetch(projectId, ref) {
+      if (!on || !store || !projectId || !fixedRef(ref)) return;
+      checkout(projectId, ref).catch(() => {});
+    },
+    // Your edit's length in seconds (the Changes view's "7 changes · 0:38"): the editor's own timeline, also while a
+    // preview shows another one.
+    editLength() {
+      if (!on || !store) return undefined;
+      const st = store.state();
+      return own && own.project === st.projectId ? own.timeline.duration : duration(st.timelineItems ?? []);
+    },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
     // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
     // with its refusal (Cardboard's words: an earlier version is shown, go back to edit) over the timeline (store.refuse is its guard,

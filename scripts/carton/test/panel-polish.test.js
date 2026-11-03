@@ -1050,3 +1050,47 @@ test("regress P3-3, PLAN 8.1: the panel's tabs are History and Comments, labelle
     await w.happyDOM.close();
   }
 });
+
+// Review of Workstream 4 (#7): Before's flip waited a worker round trip (view() labels the view first) before the
+// editor swapped. connect's view() now swaps the stage at once for a target that names its state, and for your edit,
+// while the worker labels it; a failure puts the stage back on what viewing() says; a state the worker settled on
+// otherwise (a newer view since) is shown.
+test("UX 4.3: view() swaps the stage at once for a named state or your edit; a failed load goes back; the worker's state wins", opt, async () => {
+  const calls = [];
+  let viewing = null, answer = null;
+  const view = (t) => new Promise((ok, no) => { calls.push(["view", t ? t.ref ?? t.kind : null]); answer = { ok: () => { viewing = t ? { ref: t.settle ?? t.ref } : null; ok(); }, no }; });
+  const preview = (ref) => (calls.push(["preview", ref]), Promise.resolve());
+  const v = T.viewAndSwap(view, () => viewing, preview);
+  // Before: the stage swaps before the worker answers
+  let done = v({ kind: "before", versionId: "v1", ref: "main@7" });
+  await Promise.resolve();
+  assert.deepEqual(calls, [["preview", "main@7"], ["view", "main@7"]], "swapped first");
+  answer.ok();
+  await done;
+  assert.deepEqual(calls.length, 2, "and once: the worker settled on it");
+  // back to your edit: at once too
+  calls.length = 0;
+  done = v(null);
+  await Promise.resolve();
+  assert.deepEqual(calls, [["preview", null], ["view", null]]);
+  answer.ok();
+  await done;
+  // the worker can't load it: the stage goes back to what viewing() says (your edit)
+  calls.length = 0;
+  done = v({ kind: "version", versionId: "v2", ref: "main@3" });
+  answer.no(new Error("Couldn't load this version. Try again."));
+  await assert.rejects(done);
+  assert.deepEqual(calls, [["preview", "main@3"], ["view", "main@3"], ["preview", null]]);
+  // the worker settled on another state: that one is shown
+  calls.length = 0;
+  done = v({ kind: "version", versionId: "v3", ref: "main@4", settle: "main@5" });
+  answer.ok();
+  await done;
+  assert.deepEqual(calls, [["preview", "main@4"], ["view", "main@4"], ["preview", "main@5"]]);
+  // a target with no state of its own (a conflict's side): as before, after the worker
+  calls.length = 0;
+  done = v({ kind: "conflict", conflictId: "c1", side: "theirs", settle: "pin:abc" });
+  answer.ok();
+  await done;
+  assert.deepEqual(calls, [["view", "conflict"], ["preview", "pin:abc"]]);
+});

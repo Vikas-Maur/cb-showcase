@@ -67,6 +67,10 @@ export interface VersionCardProps {
   playing?: PlayState | null;
   /** A change row's click: the editor's playhead there (on your edit). */
   onSeek?: (at: number) => void;
+  /** Before (Workstream 4's BeforeButton), after Play all / Pause: it shows itself while a play is on. */
+  before?: ReactNode;
+  /** The version it plays is loading (viewing an older one): a spinner after 300 ms (DESIGN §9). */
+  loading?: boolean;
   /** ⋯: the row's menu, anchored to the button. */
   onMenu?: (anchor: HTMLElement) => void;
   /** Esc in the card, or an action done: the card closes (focus back to the list). */
@@ -279,6 +283,8 @@ export function VersionCard(p: VersionCardProps) {
               : playing
                 ? h(Button, { icon: "pause", onClick: () => p.onPause?.() }, words.pause)
                 : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
+            p.loading ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
+            v.empty ? null : (p.before ?? null),
             p.readOnly
               ? null
               : p.newest

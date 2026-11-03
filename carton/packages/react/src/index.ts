@@ -1,6 +1,6 @@
 // @carton/react: headless hooks and unstyled components for Carton (PLAN §9, §10, §12, §13): History, Cuts, Fold
-// in, conflict cards, Compare, Credits, Undo turn, the published cut, live presence, the sync status words and Watch
-// the changes. `react` is a peer dependency and everything also runs under `preact/compat` (Cardboard's renderer
+// in, conflict cards, the Changes view with Play and Before, Credits, Undo turn, the published cut, live presence and
+// the sync status words. `react` is a peer dependency and everything also runs under `preact/compat` (Cardboard's renderer
 // gets a Preact root in our Windows build). The components read a small view model (`CartonUi`, model.ts):
 // `fromCarton()` builds it from a real Carton handle, and `@carton/react/mock` makes one for galleries and tests.
 // The look comes from a skin: `@carton/react/skin/cardboard` matches Cardboard. Owner: ui.
@@ -67,11 +67,12 @@ export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
 export { cardSentences, conflictWords, keptText, pickUndoneText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";
-export { CompareCard, type CompareCardProps } from "./components/CompareCard.ts";
 export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
-export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box } from "./components/WatchTheChanges.ts";
-export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
+export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_MAX_SPAN, PLAY_FLASH_MS, type PlayStep, type StepOptions, type SpanState, type Clock } from "./player.ts";
+// The Changes view, Play and Before (docs/carton-ux PLAN 4): in place of History's list, and for a version's card.
+export { ChangesView, longLabel, CHANGES_VIRTUAL_OVER, type ChangesViewProps } from "./components/ChangesView.ts";
+export { usePlayChanges, PlayAllButton, BeforeButton, playKeys, HOLD_MS, type PlayHost, type PlayTarget, type PlayOptions, type Playback, type PlayStatus, type BeforeControl } from "./components/Play.ts";
 export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, defaultClipKind, sideNoun, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
 export { itemFilter, type ItemFilter } from "./item-filter.ts";

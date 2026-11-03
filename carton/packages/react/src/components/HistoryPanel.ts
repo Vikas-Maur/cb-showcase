@@ -19,7 +19,8 @@ import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
-import { CompareCard } from "./CompareCard.ts";
+import { ChangesView } from "./ChangesView.ts";
+import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
 import { CutsMenu } from "./CutsMenu.ts";
 import { VersionCard, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
 
@@ -55,20 +56,28 @@ export interface HistoryPanelProps {
    */
   selectedClip?: () => { readonly id: string; readonly name: string } | null;
   /**
-   * The Changes view between two refs (Workstream 4): "See them" and "See the 4" on a card, "Compare with your edit" in
-   * a row's menu. Without it, "Compare with your edit" opens the Compare card (with `currentRef`), as before.
+   * Everything between two refs: "See them" and "See the 4" on a card, "Compare with your edit" in a row's menu,
+   * Shift+click or Shift+↑↓ on a second version. Default: the Changes view (Workstream 4) in place of the list; a host
+   * gives its own to show them elsewhere.
    */
   onCompare?: (a: string, b: string) => void;
-  /** Play (PLAN 4.2): the host's player plays a version's changes. Without it, Play moves the playhead to the change (and views an older version). */
+  /**
+   * Play a card's changes (PLAN 4.2). Default: Play (usePlayChanges) on `play`, the host's player: on the cut's newest
+   * version on your edit, on an older one viewing it first; the card's Before (hold, or B) shows how it was before it.
+   * A host that plays them itself gives `onPlay`, `onPause` and `playing`.
+   */
   onPlay?: (req: PlayRequest) => void;
   onPause?: () => void;
   /** What plays now (the host's player): its row in the open card is lit. */
   playing?: PlayState | null;
-  /** A change row's click: the editor's playhead there (on your edit). */
+  /** A change row's click: the editor's playhead there (on your edit). Default: `play.seek`. */
   onSeek?: (at: number) => void;
-  /** Deprecated (the Compare card, until the Changes view replaces it): its Play (WatchTheChanges). */
-  onWatch?: (a: string, b: string) => void;
-  /** Ref of the current state, for the Compare card when there is no `onCompare`. */
+  /**
+   * The host's player for Play and Before (DESIGN §5.3), the card's and the Changes view's: the editor's playhead
+   * (`onFrame`, `seek`), loading a version ahead (`prefetch`), your edit's length.
+   */
+  play?: PlayHost;
+  /** Ref of the current state. Deprecated: History finds your edit itself. */
   currentRef?: string;
   className?: string;
   /** Viewport height used before the list can measure itself. */
@@ -382,7 +391,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [naming, setNaming] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ key: string; x: number; y: number; bottom?: number } | null>(null);
   const [filterMenu, setFilterMenu] = useState<{ clip: { id: string; name: string } | null } | null>(null);
-  const [comparing, setComparing] = useState<string | null>(null);
+  // The Changes view in place of the list (DESIGN §5.4): from a version to your edit (null) or to another version
+  const [changesView, setChangesView] = useState<{ from: Version; to: Version | null } | null>(null);
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [folds, setFolds] = useState<ReadonlyMap<number, boolean>>(() => new Map());
   const [scrolled, setScrolled] = useState(false);
@@ -491,48 +501,112 @@ export function HistoryPanel(props: HistoryPanelProps) {
     setAutoPlay(null);
   }, []);
 
-  // Play: the host's player, or (until it has one) the playhead moved to the change, an older version viewed first.
-  const [ownPlaying, setOwnPlaying] = useState<PlayState | null>(null);
-  const onSeek = props.onSeek;
+  // ---------------------------------------------------------------- Play and Before (docs/carton-ux PLAN 4.2–4.3)
+  // A card's Play all and ▶ go to Play (usePlayChanges) on the host's player, unless the host plays them itself
+  // (`onPlay`): on the cut's newest version it plays on your edit, nothing viewed; on an older one it views it first.
+  // Before shows how it was before the card's changes (a run of changes: before its oldest) at the same moment. The card
+  // lights the row playing (`playing`); Play all again on the version paused in goes on from there.
+  const onSeek = props.onSeek ?? props.play?.seek;
+  // (`key`: the card it came from; a play belongs to its card)
+  const [playReq, setPlayReq] = useState<{ req: PlayRequest; key: string | null; base?: string; n: number } | null>(null);
+  const pv = playReq?.req.version;
+  const yourLength = playReq?.req.newest ? props.play?.length?.() : undefined;
+  const beforeRef = playReq?.base ?? pv?.base;
+  const cardPlay = usePlayChanges({
+    changes: playReq?.req.changes ?? null,
+    newer: !pv || playReq!.req.newest ? null : { kind: "version", versionId: pv.id, ref: pv.ref },
+    older: pv && beforeRef && !pv.empty ? { kind: "before", versionId: pv.id, ref: beforeRef } : null,
+    ...(yourLength && yourLength > 0 ? { length: yourLength } : {}),
+    ...(props.play ? { host: props.play } : {}),
+  });
+  const cardPlayRef = useRef(cardPlay);
+  cardPlayRef.current = cardPlay;
+  const playReqRef = useRef(playReq);
+  playReqRef.current = playReq;
+  const openKeyRef = useRef(openKey);
+  openKeyRef.current = openKey;
   const ownPlay = useCallback(
     (req: PlayRequest) => {
-      const first = req.only ?? req.changes.find((c) => c.at !== undefined) ?? req.changes[0];
-      setOwnPlaying({ versionId: req.version.id, key: first?.key ?? null });
-      const go = () => {
-        if (first?.at !== undefined) onSeek?.(Math.max(0, first.at - 1));
-      };
-      // the newest plays on your edit: back to it first if an older version is on the stage (review #5)
-      if (req.newest) {
-        if (ui.viewing()) ui.view(null).then(go, () => setOwnPlaying(null));
-        else go();
-      } else
-        ui.view({ kind: "version", versionId: req.version.id }).then(go, (e: unknown) => {
-          setOwnPlaying(null);
-          setFailed(e instanceof Error && e.message ? e.message : words.loadFailed);
-        });
+      const was = playReqRef.current, cp = cardPlayRef.current;
+      if (was && was.req.version.id === req.version.id && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
+      // a person's run of changes (a group row): Before is before its oldest version
+      const r = rowOf(openKeyRef.current);
+      const oldest = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : undefined;
+      setPlayReq((p) => ({ req, key: openKeyRef.current, ...(oldest?.base ? { base: oldest.base } : {}), n: (p?.n ?? 0) + 1 }));
     },
-    [ui, onSeek, words],
+    [rowOf, find],
   );
-  // (the interim Play holds nothing on the stage: back to your edit, or the card closed, it's over)
-  const viewingNow = !!viewing;
+  // a request plays once its rows are the player's (the render that set it)
   useEffect(() => {
-    if (!viewingNow) setOwnPlaying((p) => (p && p.versionId !== newestId ? null : p));
-  }, [viewingNow, newestId]);
+    if (!playReq) return;
+    const { req } = playReq;
+    if (req.only) cardPlayRef.current.playRow(req.changes.indexOf(req.only));
+    else cardPlayRef.current.playAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playReq?.n]);
+  // the card closed, or another one opened: its play is over, and Before lets go (review #2, #3)
   useEffect(() => {
-    if (!openKey) setOwnPlaying(null);
+    const r = playReqRef.current;
+    if (!r || r.key === openKey) return;
+    cardPlayRef.current.stop();
+    setPlayReq(null);
   }, [openKey]);
+  // a version that couldn't be loaded says so, in History's words (review #6)
+  useEffect(() => {
+    if (cardPlay.error) setFailed(cardPlay.error);
+  }, [cardPlay.error]);
+  const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
+  let litKey: string | null = null;
+  for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
+  const playOn = !!playReq && (cardPlay.status === "playing" || cardPlay.status === "loading");
+  const ownPlaying = useMemo<PlayState | null>(() => (playOn && pv ? { versionId: pv.id, key: litKey } : null), [playOn, pv, litKey]);
   const play = props.onPlay ?? ownPlay;
-  const pause = props.onPlay ? props.onPause : () => setOwnPlaying(null);
+  const pause = props.onPlay ? props.onPause : cardPlay.toggle;
   const playing = props.onPlay ? (props.playing ?? null) : ownPlaying;
   const onPlay = useCallback((req: PlayRequest) => {
     setAutoPlay(null);
     play(req);
   }, [play]);
+  // the card's Before, while a play is on (BeforeButton shows itself then)
+  const beforeBtn = props.onPlay ? null : h(BeforeButton, { play: cardPlay });
+  // B held while History has focus is Before (DESIGN §7), stopped here: the editor's own B never sees it
+  const onBeforeKey = (e: KeyboardEvent<HTMLElement>, up: boolean) => {
+    if ((e.key !== "b" && e.key !== "B") || e.ctrlKey || e.metaKey || e.altKey || !cardPlay.before.available) return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (up) cardPlay.before.release({ hold: true });
+    else if (!e.repeat) cardPlay.before.pressKey();
+  };
+  const sectionRef = useCallback((el: HTMLElement | null) => {
+    (panel as { current: HTMLElement | null }).current = el;
+    cardPlayRef.current.rootRef(el);
+  }, []);
+
+  // ---------------------------------------------------------------- the Changes view
+  const versionByRef = useCallback((ref: string) => {
+    const all = ui.history().all?.();
+    if (all) for (let k = all.length - 1; k >= 0; k--) if (all[k]!.ref === ref) return all[k];
+    return undefined;
+  }, [ui]);
+  const openChanges = useCallback(
+    (a: string, b: string) => {
+      const from = versionByRef(a);
+      if (!from) return;
+      const head = ui.cuts().find((c) => c.current)?.head;
+      cardPlayRef.current.stop();
+      setMenu(null);
+      setChangesView({ from, to: b === head ? null : (versionByRef(b) ?? null) });
+    },
+    [ui, versionByRef],
+  );
+  const compare = props.onCompare ?? openChanges;
 
   // The rows' handlers are one function each for the panel's life (memoized rows skip a new version: U6); what they
   // read as it is now comes through this ref.
-  const live_ = useRef({ onCompare: props.onCompare, activeKey, versionOfRow, rowOf });
-  live_.current = { onCompare: props.onCompare, activeKey, versionOfRow, rowOf };
+  const live_ = useRef({ onCompare: compare, activeKey, versionOfRow, rowOf });
+  live_.current = { onCompare: compare, activeKey, versionOfRow, rowOf };
   const onPick = useCallback((key: string, e: MouseEvent) => {
     const { onCompare, activeKey: from, versionOfRow: vOf, rowOf: rOf } = live_.current;
     // Shift+click a second version: the changes between the two (the Changes view, Workstream 4)
@@ -582,6 +656,17 @@ export function HistoryPanel(props: HistoryPanelProps) {
         return true;
       }
       if (i < 0 || !key) return false;
+      // Shift+↑↓: the Changes view between this version and the one above or below it (DESIGN §7)
+      if (e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const a = versionAt(i), step = e.key === "ArrowDown" ? 1 : -1, n = rows ? rows.length : count;
+        let b: Version | undefined;
+        for (let j = i + step; j >= 0 && j < n && !(b = versionAt(j)); j += step);
+        if (a && b && !a.provisional && !b.provisional) {
+          const [older, newer] = a.at <= b.at ? [a, b] : [b, a];
+          compare(older.ref, newer.ref);
+        }
+        return true;
+      }
       if (e.key === "ArrowRight") {
         if (r?.kind === "day") {
           if (r.collapsed) toggleDay(r.day);
@@ -617,7 +702,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       }
       return false;
     },
-    [rows, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause],
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare],
   );
   const onActivate = useCallback(
     (i: number) => {
@@ -709,7 +794,6 @@ export function HistoryPanel(props: HistoryPanelProps) {
       now: v.id === newestId && !live && !child,
       viewing: !!viewedId && (v.id === viewedId || (!!group && group.ids.includes(viewedId))),
       naming: naming === v.id,
-      compared: comparing === v.id,
       child,
       group: !!group,
       groupCount: group?.count,
@@ -736,11 +820,13 @@ export function HistoryPanel(props: HistoryPanelProps) {
         readOnly: theirCut,
         mode: cardMode,
         onMode: setCardMode,
-        // without the Changes view (Workstream 4), "See them" opens the Compare card, as the menu's Compare did
-        onCompare: props.onCompare ?? (props.currentRef ? () => setComparing(v.id) : undefined),
+        // "See them", "See the 4", a long list: the Changes view (Workstream 4), or the host's own
+        onCompare: compare,
         onPlay,
         onPause: pause,
         playing,
+        loading: playLoading === v.id,
+        before: beforeBtn,
         autoPlay: autoPlay === key,
         onSeek,
         onMenu: (el: HTMLElement) => onMenu(key, el),
@@ -783,18 +869,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
           menuVersion.empty
             ? null
             : h(MenuItem, { icon: "play", disabled: waiting, title: waiting ? words.availableOnceSent : undefined, onSelect: () => (closeMenu(), openCard(menu.key), setAutoPlay(menu.key)) }, words.playItsChanges),
-          props.onCompare || props.currentRef
-            ? h(MenuItem, {
-                icon: "layers",
-                disabled: waiting,
-                onSelect: () => {
-                  closeMenu();
-                  const b = head() ?? props.currentRef;
-                  if (props.onCompare && b) props.onCompare(menuVersion.ref, b);
-                  else setComparing(menuVersion.id);
-                },
-              }, words.compareWithYourEdit)
-            : null,
+          h(MenuItem, {
+            icon: "layers",
+            disabled: waiting,
+            onSelect: () => {
+              closeMenu();
+              const b = head() ?? props.currentRef;
+              if (b) compare(menuVersion.ref, b);
+            },
+          }, words.compareWithYourEdit),
           h(MenuSeparator, null),
           h(MenuItem, { icon: "bookmark", disabled: waiting, title: waiting ? words.availableOnceSent : undefined, onSelect: () => (closeMenu(), setNaming(menuVersion.id)) }, menuVersion.name && !promptOf(menuVersion) ? words.renameEllipsis : words.nameVersion),
           menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (closeMenu(), openCard(menu.key, "newCut")) }, words.newCutFromVersion),
@@ -855,16 +938,30 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const nothing = allCount === 0 || (filter === "all" && onlyStart);
   const empty = !status.loading && (count === 0 || (filter === "all" && onlyStart));
   const loading = status.loading && count === 0;
-  const compareVersion = comparing ? find(comparing) : undefined;
+  // ← History from the Changes view: back on the row it came from (a run of changes: its group's row)
+  const closeChanges = () => {
+    const from = changesView?.from;
+    setChangesView(null);
+    if (from) setActiveKey(follow(from.id) ?? from.id);
+    toList();
+  };
+  if (changesView)
+    return h(
+      "section",
+      { ref: sectionRef, className: cx("carton-history", props.className), "aria-label": words.history, "data-changes": "" },
+      h(ChangesView, { from: changesView.from, to: changesView.to, onBack: closeChanges, noRestore: theirCut, ...(props.play ? { host: props.play } : {}) }),
+    );
 
   return h(
     "section",
     {
-      ref: panel,
+      ref: sectionRef,
       className: cx("carton-history", props.className),
       "aria-label": words.history,
       "data-menu-open": menu ? "" : undefined,
       "data-scrolled": scrolled ? "" : undefined,
+      onKeyDown: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, false),
+      onKeyUp: (e: KeyboardEvent<HTMLElement>) => onBeforeKey(e, true),
     },
     h(
       "header",
@@ -965,19 +1062,6 @@ export function HistoryPanel(props: HistoryPanelProps) {
               : null,
           ),
     rowMenu,
-    compareVersion && props.currentRef && !props.onCompare
-      ? h(CompareCard, {
-          a: compareVersion.ref,
-          b: props.currentRef,
-          onWatch: props.onWatch,
-          ...(compareVersion.empty || theirCut ? {} : { onRestore: () => void ui.restore(compareVersion.ref).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed)) }),
-          onClose: () => {
-            setComparing(null);
-            toList();
-          },
-          className: "carton-history-compare",
-        })
-      : null,
   );
 }
 

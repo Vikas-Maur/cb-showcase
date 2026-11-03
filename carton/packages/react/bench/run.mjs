@@ -35,7 +35,7 @@ if (process.argv.includes("--cell")) {
       if (c.kind === "list") return b.list(c.n, c.full);
       if (c.kind === "live") return b.live(c.seconds, c.vps, c.burst);
       if (c.kind === "idle") return b.idle(c.seconds);
-      return b.play(c.shots, c.seconds);
+      return b.play(c.changes, c.seconds);
     }, cell);
     console.log(JSON.stringify({ ...cell, load1: load, uptime: spawnSync("uptime").stdout.toString().trim(), result, errors }));
   } finally {
@@ -52,7 +52,7 @@ if (only.includes("idle")) cells.push({ kind: "idle", seconds: 5 });
 if (only.includes("list"))
   for (const [n, full] of [[10_000, false], [100_000, false], [10_000, true]]) cells.push({ kind: "list", n, full });
 if (only.includes("live")) cells.push({ kind: "live", seconds: 8, vps: 10, burst: 5 });
-if (only.includes("play")) for (const shots of [26, 2000]) cells.push({ kind: "play", shots, seconds: 8 });
+if (only.includes("play")) for (const changes of [26, 2000]) cells.push({ kind: "play", changes, seconds: 8 });
 
 mkdirSync(dirname(out), { recursive: true });
 for (let r = 0; r < runs; r++)

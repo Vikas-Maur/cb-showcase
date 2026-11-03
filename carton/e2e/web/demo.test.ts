@@ -7,7 +7,7 @@
 //   5. Bob goes offline (the button), trims a clip and edits a caption; Alice trims the same clip end. Bob rejoins:
 //      the clean edit rebases silently, the clash is a conflict card; Bob picks his side, and Alice sees it.
 //   6. Real offline (the browser's network off): Bob's edit waits, then lands when the network is back.
-//   7. Watch the changes: Alice compares the first version with now and plays the changes.
+//   7. The Changes view: Alice compares the first version with her edit and plays the changes.
 //   8. Alice publishes; a viewer opens the watch page (the published version), and is told when newer edits exist.
 // A third test per host: comments (REQ-C3). Alice comments at a moment on a clip; Bob sees the marker and the thread
 // live and replies; a viewer reads them and has no box to write in; Alice moves the clip and the comment follows it;
@@ -285,16 +285,16 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await bobCtx.setOffline(false);
       await waitCaption(alice, "cap-3", "Written with no network", 20_000);
 
-      // 7. Watch the changes: the first version against now
-      await alice.locator('[aria-label="Actions for Started the cut"]').click();
-      await alice.getByRole("menuitem", { name: "Compare with current" }).click();
-      await alice.getByRole("button", { name: "Watch the changes" }).click();
-      await alice.getByTestId("watch").waitFor();
-      await alice.getByRole("button", { name: "Play changes" }).click();
+      // 7. The Changes view (docs/carton-ux PLAN 4.1): the first version against your edit, in place of History's list;
+      // Play all plays each change on her own edit (nothing is viewed, so no banner); Esc goes back to the list
+      await alice.locator('[aria-label="Actions for Project created"]').click();
+      await alice.getByRole("menuitem", { name: "Compare with your edit" }).click();
+      await alice.locator(".carton-changes-view").waitFor();
+      await alice.getByRole("button", { name: "Play all" }).click();
       await pause(1500);
-      await shot(alice, `${kind}-7-watch-alice`);
+      await shot(alice, `${kind}-7-changes-alice`);
       await alice.keyboard.press("Escape");
-      await alice.getByTestId("watch").waitFor({ state: "detached", timeout: 5000 });
+      await alice.locator(".carton-changes-view").waitFor({ state: "detached", timeout: 5000 });
       await alice.locator(".carton-preview-banner").waitFor({ state: "detached", timeout: 5000 });
 
       // 8. publish, open the watch page as a viewer, then newer edits

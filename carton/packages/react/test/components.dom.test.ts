@@ -4,7 +4,7 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   CartonProvider,
-  CompareCard,
+  ConflictList,
   CreditsPopover,
   CutsMenu,
   FoldInDialog,
@@ -15,7 +15,6 @@ import {
   PublishedStatus,
   SyncStatusWords,
   UndoTurnButton,
-  WatchTheChanges,
 } from "../src/index.ts";
 import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -273,21 +272,6 @@ test(name("fold in (PLAN 6.3): the pickers change the cuts; the nothing-to-fold 
   await m.unmount();
 });
 
-test(name("compare card: time, author, clips, length, and what changed (N changes · X s of Y s differ)"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  let watched: string[] | null = null;
-  const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@9", onWatch: (a: string, b: string) => (watched = [a, b]) })));
-  await flush();
-  const text = m.container.textContent ?? "";
-  assert.match(text, /\d+ changes? · \d+\.\d s of \d+\.\d s differ/);
-  assert.doesNotMatch(text, /shots? \//, "never shots (UI audit P2-5)");
-  assert.match(text, /clips/);
-  assert.match(text, /\d:\d\d\.\d/);
-  await click(byText(m.container, "button", "Play all"));
-  assert.deepEqual(watched, ["main@3", "main@9"]);
-  await m.unmount();
-});
-
 test(name("undo turn, published cut status and credits"), async () => {
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h(UndoTurnButton), h(PublishedStatus), h(CreditsPopover, { itemId: "item-broll" })));
@@ -327,43 +311,6 @@ test(name("ghost layer draws remote drags without rendering through React"), asy
   await act(() => ui.setGhosts([]));
   await waitFor(() => !$(m.container, ".carton-ghost"), "the ghost to go");
   assert.equal($(m.container, ".carton-ghost"), null);
-  await m.unmount();
-});
-
-test(name("watch the changes: aligned strips, change count, next, A/B toggle and a read-only preview"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const frames: [string, number][] = [];
-  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", onFrame: (s: string, t: number) => frames.push([s, t]) })));
-  await flush();
-  const root = $(m.container, ".carton-watch")!;
-  assert.match(root.textContent ?? "", /1 of 4/);
-  assert.equal($$(root, ".carton-strip").length, 2);
-  assert.ok($$(root, "[data-kind=fold]").length >= 2, "unchanged runs folded");
-  assert.ok($$(root, "[data-tone=removed]").length === 1 && $$(root, "[data-tone=added]").length === 1);
-  await click($(root, "[aria-label='Next']"));
-  assert.match(root.textContent ?? "", /2 of 4/);
-  const before = byText(root, "[role=radio]", "Before")!;
-  await click(before);
-  assert.equal(before.getAttribute("aria-checked"), "true");
-  assert.equal(ui.preview()?.ref, "main@3", "Before is shown as a read-only preview");
-  assert.ok(frames.length > 0 && frames.at(-1)![0] === "a");
-  await m.unmount();
-  assert.equal(ui.preview(), null, "closing Watch the changes closes the preview");
-});
-
-// ---------------------------------------------------------------- review round 1 (reviews/ui.md)
-
-test(name("R1-13: switching Watch the changes to the current side closes its preview"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const head = ui.cuts().find((c) => c.current)!.head;
-  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: head })));
-  await flush();
-  const root = $(m.container, ".carton-watch")!;
-  assert.equal(ui.preview(), null, "After is the current head: no preview");
-  await click(byText(root, "[role=radio]", "Before"));
-  assert.equal(ui.preview()?.ref, "main@3");
-  await click(byText(root, "[role=radio]", "After"));
-  assert.equal(ui.preview(), null, "back on the current side: the preview is closed");
   await m.unmount();
 });
 
