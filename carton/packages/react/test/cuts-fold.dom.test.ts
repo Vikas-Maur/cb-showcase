@@ -3,7 +3,7 @@
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, CutsMenu, FoldInDialog, TeammateCutActions, cancelQueuedSwitch, openCutsMenu, queuedSwitch, switchWhenDone } from "../src/index.ts";
+import { CartonProvider, CutsMenu, FoldInDialog, HistoryPanel, TeammateCutActions, cancelQueuedSwitch, openCutsMenu, queuedSwitch, switchWhenDone } from "../src/index.ts";
 import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
 
@@ -167,6 +167,22 @@ test(name("a teammate's cut (PLAN 6.2): View only in the menu, viewed with its w
   assert.equal(current(ui), "cut-main");
   assert.equal($(m.container, ".carton-cuts-viewing"), null);
   assert.equal($(m.container, ".carton-teammate-cut"), null);
+  await m.unmount();
+});
+
+test(name("a teammate's cut (PLAN 6.2): its versions in History offer no Restore; your own cut's do"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: ui.cuts()[0]!.head })));
+  const menuItems = async () => {
+    await click($(m.container, ".carton-version-more"));
+    const items = $$(m.container, "[role=menuitem]").map((e) => e.textContent ?? "");
+    await key(document.activeElement, "Escape");
+    return items;
+  };
+  assert.ok((await menuItems()).some((t) => t.startsWith("Restore")), "your own cut: Restore");
+  await act(() => ui.switchCut("cut-bob-main"));
+  await flush();
+  assert.ok(!(await menuItems()).some((t) => t.startsWith("Restore")), "Bob's cut: no Restore");
   await m.unmount();
 });
 
