@@ -57,8 +57,8 @@ test("deleted, its place taken now (no ripple): it goes on a new track just abov
     const d = (await c.head()).doc;
     const nt = r.brought.place!.track!;
     const tracks = [...(d.tracks as Rec[])].sort((x, y) => String(x["#pos"]).localeCompare(String(y["#pos"])));
-    assert.deepEqual(tracks.map((t) => t.id), ["t1", nt, "t2"], "just above its own track (after it in the order)");
-    assert.equal(tracks[1]!.name, "Video 1 2");
+    assert.deepEqual(tracks.map((t) => t.id), [nt, "t1", "t2"], "just above its own track (before it in the order: the first track is the top layer)");
+    assert.equal(tracks[0]!.name, "Video 1 2");
     assert.deepEqual(at(d).b, [nt, 5, 10]);
     assert.deepEqual(at(d).c, ["t1", 6, 11], "the clip in its place stays");
     // its place free: back on its own track

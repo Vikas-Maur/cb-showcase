@@ -215,7 +215,7 @@ const EPS = 0.05;
  *   added with one, taken out, moves the rest earlier (`ripple`; `intent`: that remap, for the commit). Otherwise
  *   nothing else moves (`ripple: null`).
  * - a clip never lands on top of another: if its place on its track is taken now, it goes on a new track made just
- *   above its own (after it in the track order), at the same time (`place`).
+ *   above its own (before it in the track order: the first track is the top layer), at the same time (`place`).
  */
 export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema: Schema, o: { remove: boolean; history?: BringBackHistory }): { doc: Doc; brought: Omit<BroughtBack, "of">; intent?: { kind: string; maps: RemapMaps } } {
   const spec = schema.collections[coll]!;
@@ -333,7 +333,8 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
       if (own) {
         const track = newId();
         const nm = typeof own.name === "string" && own.name ? { name: `${own.name} 2` } : {};
-        const pos = lanes.seq ? { [POS]: E.keyBetween((own[POS] as string | undefined) ?? null, (tracks[k + 1]?.[POS] as string | undefined) ?? null) } : {};
+        // above its own: before it in the track order (Cardboard: "the first track is the top layer")
+        const pos = lanes.seq ? { [POS]: E.keyBetween((tracks[k - 1]?.[POS] as string | undefined) ?? null, (own[POS] as string | undefined) ?? null) } : {};
         put(tl.lanes, { ...own, [lanes.key]: track, ...nm, ...pos });
         parts.push(E.pathKey([tl.lanes, track]));
         clip = { ...clip, [tl.lane]: track };

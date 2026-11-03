@@ -430,8 +430,8 @@ unchanged by it).
   of, record, name }`. Placement and the ripple: N0b, below.
 - `carton.bringBackChoices(ref, { cut? }) → { changed, deleted, added, same }`: "Choose a clip…"'s three groups.
 - **N0b (placement, the "changed again" check; added fields only).** A brought-back clip never lands on top of another
-  clip: if its place on its track is taken now, it goes on a new track made just above its own (after it in the track
-  order, named "<track> 2") at the same time; `brought.place` = `{ placed: "same" | "new-track", track?, takenBy? }`.
+  clip: if its place on its track is taken now, it goes on a new track made just above its own (before it in the track
+  order: Cardboard's first track is the top layer; named "<track> 2") at the same time; `brought.place` = `{ placed: "same" | "new-track", track?, takenBy? }`.
   DESIGN-V2 §3.2's ripple: a clip deleted with a ripple (the deleting change recorded or inferred a remap taking out a
   range that held it) comes back with the rest of its track moved back by that range (`later`); a clip added with one
   (a gap inserted where it starts), taken out, moves the rest `earlier`; the version records that remap as its intent,
