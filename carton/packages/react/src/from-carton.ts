@@ -1397,7 +1397,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (t.taken !== undefined && t.total !== undefined && t.total > t.taken) leftOut = t.total - t.taken;
     } else if (t?.kind === "restore") summary = `Restored ${restored(t.of)}`;
     else if (t?.kind === "undo-restore" || t?.kind === "redo-restore") summary = `${t.kind === "undo-restore" ? "Undid" : "Redid"} the restore of ${restored(t.of)}`;
-    else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${cutName(t.cut)}`;
+    else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${t.rest ? "the rest of " : ""}${cutName(t.cut)}`;
     else if (c.kind === "undo" && got?.undoes?.length) {
       // an agent turn taken out (undoTurnOf, `cb undo --turn`): named as the turn is
       const turn = turnOfChanges(got.undoes);
