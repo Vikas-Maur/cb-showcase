@@ -213,7 +213,12 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-panel-head.carton-cutbar){flex-direction:row;align-items:center;gap:6px;min-height:40px;padding:4px 10px 8px 12px}
 :where(${S}) :where(.carton-cutbar-gap){flex:1}
 :where(${S}) :where(.carton-cutbar .carton-cuts){flex:1 1 auto;min-width:0;flex-wrap:wrap;row-gap:6px}
-:where(${S}) :where(.carton-cutbar .carton-cuts-trigger){margin-left:-8px;font-size:13.5px;font-weight:600;border-radius:7px}
+/* the cut's name lines up with the rows' text: the menu's anchor steps left by the trigger's padding (on the trigger itself,
+   a negative margin inside the anchor's max-width took the 8 px from the name: "Leo's Main …") */
+:where(${S}) :where(.carton-cutbar .carton-cuts > .carton-menu-anchor){margin-left:-8px}
+/* the bar grows when the cuts menu adds its queued-switch line under the cut: the filter stays by the cut's name */
+:where(${S}) :where(.carton-cutbar .carton-filter-anchor){align-self:flex-start;margin-top:2px}
+:where(${S}) :where(.carton-cutbar .carton-cuts-trigger){font-size:13.5px;font-weight:600;border-radius:7px}
 :where(${S}) :where(.carton-cutbar .carton-cuts-trigger .carton-icon){color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-filter-btn){display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;border:0;border-radius:7px;background:transparent;
   color:var(--cb-fg-3);cursor:pointer;outline:none;transition:background-color var(--cb-fast),color var(--cb-fast)}

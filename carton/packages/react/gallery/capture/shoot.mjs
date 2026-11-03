@@ -46,7 +46,35 @@ async function watch(p) { await compare(p); await p.getByRole("button", { name: 
 const P = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "panel", perWidth: true, ...o });
 // Stage shots with the side panel closed: a window whose stage is 700 px wide (the panel's room goes to the stage).
 const T = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "stage", perWidth: false, viewport: o.panelOpen || o.perWidth ? undefined : { width: 290 + 700 + 380, height: 900 }, ...o });
-const SHOTS = [
+// The redesign's History (docs/carton-ux workstream 3): the after shots, one per mockup (after/history-*.png).
+const vrow = (p, text) => p.locator(".carton-version", { hasText: text }).first();
+async function foldOlder(p) {
+  for (let i = 0; i < 6; i++) {
+    const open = p.locator('.carton-day[aria-expanded="true"]').filter({ hasNotText: /^Today$/ });
+    if (!(await open.count())) break;
+    await open.first().click();
+    await p.waitForTimeout(120);
+  }
+}
+async function openCard(p, text) { await vrow(p, text).click(); await p.locator(".carton-card-version .carton-change, .carton-card-version .carton-card-confirm").first().waitFor(); await p.waitForTimeout(250); }
+async function uxMenu(p, text) { const r = vrow(p, text); await r.hover(); await r.locator(".carton-version-more").click(); await p.waitForTimeout(150); }
+const AFTER = [
+  P("after-history-default", "ux-history", "The story: Claude Code's turn Now, your six changes as one row, the Director's turn, Sent to client, a fold, a restore, Codex; older days folded.", foldOlder),
+  P("after-history-expanded", "ux-history", "after-history-default, then a click on Claude Code's turn (the newest): its card, with the first change hovered.", async (p) => { await foldOlder(p); await openCard(p, "Tighten the intro"); await p.locator(".carton-card-version .carton-change").first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
+  P("after-history-older", "ux-history", "A click on the Director's older turn: \"Your edit has 7 changes since this\", its map and rows, Play all, Restore….", async (p) => { await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-change").first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
+  P("after-history-restore", "ux-history", "⋯ on your six changes → Restore…: the confirmation in the card.", async (p) => { await foldOlder(p); await uxMenu(p, "Moved “Interview B” 2 s later"); await menuItem(p, "Restore…").click(); await p.locator(".carton-card-confirm").waitFor(); await p.waitForTimeout(250); }),
+  P("after-history-menu", "ux-history", "⋯ on the Director's turn: Play its changes, Compare with your edit, Name, New cut, Restore….", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "Play its changes").hover(); await p.waitForTimeout(120); }, { keepHover: true }),
+  P("after-history-filter", "ux-history", "The filter menu, with \"Interview B\" selected on the timeline (Only “Interview B”).", async (p) => { await foldOlder(p); await p.locator(".carton-filter-btn").click(); await p.waitForTimeout(150); await menuItem(p, "Agent turns").hover(); await p.waitForTimeout(120); }, { keepHover: true }),
+  P("after-history-clip", "ux-clip", "Filter → Only “Interview B”: the chip, the clip's credits, the versions that touched it.", async (p) => { await p.locator(".carton-filter-btn").click(); await p.waitForTimeout(150); await menuItem(p, "Only “Interview B”").click(); await p.waitForTimeout(400); }),
+  P("after-history-many", "ux-many", "430 versions over five days: the older days folded with their counts; scrolled a little, ↑ Newest docked at the bottom.", async (p) => { await p.locator(".carton-day", { hasText: "Yesterday" }).click(); await p.waitForTimeout(200); await scrollList(p, 900); }),
+  P("after-history-working", "ux-working", "The Director working (a turn holding the timeline): the live row on top with its line.", foldOlder),
+  P("after-history-offline", "ux-offline", "Offline: your three changes not sent yet, Leo's, the Director's.", null),
+  P("after-history-empty", "ux-empty", "Nothing of yours yet, only the project's start.", null),
+  P("after-history-loading", "ux-loading", "The worker hasn't answered yet: three grey rows.", null),
+  P("after-history-viewing", "ux-history", "The Director's card → Play all: viewing it (the row's \"Viewing ✕\").", async (p) => { await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-btn", { hasText: "Play all" }).click(); await p.waitForTimeout(300); }),
+  P("after-history-newcut", "ux-history", "⋯ on the Director's turn → New cut from this version…: the name field in the card.", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "New cut from this version").click(); await p.keyboard.type("30s Instagram cut"); await p.waitForTimeout(150); }),
+];
+const SHOTS = [...AFTER,
   // History
   P("history-none", "history-none", "A cut with no versions at all (mock with 0 versions).", null),
   P("history-start", "history-start", "Only the system row \"Started the cut\".", null),

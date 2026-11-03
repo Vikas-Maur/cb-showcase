@@ -239,6 +239,96 @@ S["ws6-teammate"] = () => {
   return { ui, panel: "history" };
 };
 
+// ------------------------------------------------------------------ the redesign's History (docs/carton-ux, workstream 3)
+// The mockups' story (after/history-*.png): Main cut today, a 0:38 edit, Claude Code's turn on top at 12:48 pm, your six
+// changes before it (one group row), the Director's turn, Sent to client, a fold, a restore, a Codex trim; yesterday
+// and Saturday folded; the project created on Oct 28. Built oldest first with the mock's addVersion (its own story
+// needs versions before it, which would land on today).
+const at = (day, hour, min = 0) => { const d = new Date(); d.setDate(d.getDate() + day); d.setHours(hour, min, 20, 0); return d.getTime(); };
+const chg = (key, clip, kind, text, s, e) => ({ key: `timelineItems/${key}`, itemId: key, clip, kind, text, ...(s !== undefined ? { at: s, end: e } : {}) });
+function older(ui, day, n, named = 0, from = 9) {
+  for (let i = 0; i < n; i++) {
+    const nm = i < named ? { name: ["Rough cut", "Before the color pass", "Fine cut"][i % 3] } : {};
+    ui.addVersion({ at: at(day, from, Math.floor((i * 480) / Math.max(1, n))), ...nm, ...(i % 4 === 1 ? { author: people.alice, kind: "edit" } : {}) });
+  }
+}
+function storyToday(ui, base = 12 * 60 + 48) {
+  const t = (ago) => { const d = new Date(); d.setHours(0, 0, 20, 0); return d.getTime() + (base - ago) * MIN; };
+  const add = (ago, o, list) => ui.addVersion({ at: t(ago), kind: "edit", ...o, ...(o.kind === "turn" ? { turn: { label: o.name, edits: list.length } } : {}) }, list);
+  add(77, { author: codex }, [chg("item-closeup", "video", "change", "Trimmed “Product close-up”, now ends at 0:16", 12, 16)]);
+  add(68, { author: people.alice, kind: "restore", summary: "Restored the 11:02 am version" }, [
+    chg("item-intro", "video", "change", "Trimmed “Intro”, now ends at 0:06", 0, 6), chg("item-summer", "title", "change", "Changed “Summer sale” to “Summer launch”", 2, 7),
+    chg("item-interview-a", "video", "change", "Moved “Interview A” 1 s earlier (now starts at 0:05)", 5, 12), chg("item-team", "title", "add", "Added title “Meet the team”", 26, 31), chg("item-outro", "video", "change", "Trimmed “Outro”, now ends at 0:38", 31, 38)]);
+  add(56, { author: people.alice, kind: "fold", summary: "Folded in “30s cut”", leftOut: 1 }, [chg("item-broll", "video", "change", "Trimmed “B-roll 3”, now ends at 0:31", 27, 31), chg("item-cta", "code", "change", "Moved “CTA” 1 s earlier (now starts at 0:33)", 33, 36)]);
+  add(43, { author: people.alice, name: "Sent to client" }, [chg("item-summer", "title", "change", "Changed “Summer sale” to “Summer launch”", 2, 7)]);
+  add(28, { author: people.director, kind: "turn", name: "Add captions to the interview" }, [
+    chg("item-interview-b", "video", "change", "Moved “Interview B” 2 s later", 6, 15), chg("item-cap-1", "caption", "change", "Changed caption to “we cut editing time”", 25, 27),
+    chg("item-cap-2", "caption", "change", "Changed caption to “in half”", 28, 29.5),
+    ...["meet the team", "built for speed", "one timeline", "every agent", "no lost work", "fold it in", "ship it", "made in Cardboard", "thanks for watching"].map((c, i) => chg(`item-cap-add-${i}`, "caption", "add", `Added caption “${c}”`, 6 + i * 3, 8 + i * 3))]);
+  add(18, { author: people.alice }, [{ key: "frameRate", clip: "project", kind: "change", text: "Changed the frame rate to 30 fps" }]);
+  add(15, { author: people.alice }, [chg("item-cap-1", "caption", "change", "Changed caption to “we cut editing time”", 25, 27)]);
+  add(13, { author: people.alice }, [chg("item-interview-b", "video", "change", "Moved “Interview B” 1 s later", 5, 14)]);
+  add(11, { author: people.alice }, [chg("item-cap-1", "caption", "change", "Made “we cut editing time” bigger (font size 48 → 56)", 25, 27)]);
+  add(9, { author: people.alice }, [chg("item-interview-b", "video", "change", "Trimmed “Interview B”, now ends at 0:15", 5, 15)]);
+  add(7, { author: people.alice }, [chg("item-interview-b", "video", "change", "Moved “Interview B” 2 s later", 6, 15)]);
+  add(0, { author: people.terminal, kind: "turn", name: "Tighten the intro and add a lower third" }, [
+    chg("item-intro", "video", "change", "Trimmed “Intro”, now ends at 0:05", 2, 5), chg("item-summer", "title", "change", "Moved “Summer launch” 1 s earlier", 5, 10),
+    chg("item-jane", "title", "add", "Added lower third “Jane Smith, Founder”", 12, 17), chg("item-broll", "video", "remove", "Removed “B-roll 3”", 22, 26)]);
+}
+// (the mock words a version from its last change, so the start has one, never shown: a start row has no card)
+const created = (ui, when) => ui.addVersion({ at: when, author: people.alice, kind: "edit", summary: "Project created", start: "created", changes: 0 }, [{ key: "start", text: "Project created", kind: "add", clip: "project" }]);
+const uxDone = (ui, o = {}) => { setCuts(ui, CUTS(newest(ui))); ui.setSync({ kind: "upToDate" }); ui.setConflicts([]); return { ui, panel: "history", clip: { id: "item-interview-b", name: "Interview B" }, ...o }; };
+const ux = (extra) => () => {
+  const ui = mock({ versions: 0 });
+  created(ui, at(-6, 10, 4));
+  older(ui, -3, 41);
+  older(ui, -1, 23, 2);
+  storyToday(ui);
+  extra?.(ui);
+  return uxDone(ui);
+};
+S["ux-history"] = ux();
+S["ux-working"] = ux((ui) => ui.setWorking("director"));
+S["ux-clip"] = () => {
+  const r = ux()();
+  // the clip's credits as the mockup has them (the mock's own are generic)
+  r.ui.credits = async () => ({ clip: "Interview B", lines: [{ what: "Added", author: people.alice, at: at(-4, 15, 55) }, { what: "Timing", author: people.director, at: at(-1, 16, 10) }, { what: "Timing", author: people.alice, at: at(0, 12, 41) }] });
+  return r;
+};
+S["ux-many"] = () => {
+  const ui = mock({ versions: 0 });
+  created(ui, at(-6, 10, 4));
+  older(ui, -5, 12, 0, 14);
+  older(ui, -4, 96, 1);
+  older(ui, -3, 204);
+  older(ui, -1, 118, 3);
+  const t = (h, m) => at(0, h, m);
+  for (let i = 0; i < 14; i++) ui.addVersion({ at: t(9, 20 + i * 2), author: people.alice, kind: "edit" }, i === 13 ? [chg("item-interview-a", "video", "change", "Trimmed “Interview A”, now ends at 0:11", 5, 11)] : undefined);
+  ui.addVersion({ at: t(10, 2), author: people.terminal, kind: "turn", turn: { label: "Make every caption two lines at most", edits: 38 } }, Array.from({ length: 38 }, (_, i) => chg(`item-cap-${i}`, "caption", "change", `Changed caption ${i + 1} to two lines`, i, i + 1)));
+  for (let i = 0; i < 9; i++) ui.addVersion({ at: t(10, 6 + i), author: people.alice, kind: "edit" }, i === 8 ? [chg("item-cap-x", "caption", "change", "Changed caption to “built for speed”", 20, 22)] : undefined);
+  return uxDone(ui);
+};
+S["ux-offline"] = () => {
+  const ui = mock({ versions: 0 });
+  created(ui, at(-2, 10, 4));
+  const t = (h, m) => at(0, h, m);
+  ui.addVersion({ at: t(12, 20), author: people.director, kind: "turn", turn: { label: "Add captions to the interview", edits: 12 }, name: "Add captions to the interview" }, Array.from({ length: 12 }, (_, i) => chg(`item-c${i}`, "caption", "add", `Added caption ${i + 1}`, 6 + i * 2, 8 + i * 2)));
+  ui.addVersion({ at: t(12, 52), author: leo, kind: "edit" }, [chg("item-music", "audio", "change", "Replaced the music with “Upbeat.wav”", 0, 38)]);
+  ui.addVersion({ at: t(12, 54), author: people.alice, kind: "edit", provisional: true, seq: null, ref: "main@pending-1" }, [chg("item-intro", "video", "change", "Trimmed “Intro”, now ends at 0:05", 0, 5)]);
+  ui.addVersion({ at: t(12, 56), author: people.alice, kind: "edit", provisional: true, seq: null, ref: "main@pending-2" }, [chg("item-interview-a", "video", "change", "Moved “Interview A” 1 s later", 6, 12)]);
+  ui.addVersion({ at: t(12, 58), author: people.alice, kind: "edit", provisional: true, seq: null, ref: "main@pending-3" }, [chg("item-outro", "video", "change", "Trimmed “Outro”, now ends at 0:36", 31, 36)]);
+  setCuts(ui, CUTS(ui.history().all().filter((v) => !v.provisional).at(-1).ref)); ui.setSync({ kind: "offline", waiting: 3 }); ui.setConflicts([]);
+  return { ui, panel: "history" };
+};
+S["ux-empty"] = () => {
+  const ui = mock({ versions: 0 });
+  created(ui, at(0, 9, 12));
+  setCuts(ui, CUTS(newest(ui)).slice(0, 1)); ui.setConflicts([]); ui.setSync({ kind: "local" });
+  return { ui, panel: "history" };
+};
+// Loading: the worker never answers (its first History hasn't come yet)
+S["ux-loading"] = () => ({ ...ux()(), stall: true });
+
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 
@@ -254,6 +344,7 @@ function makeBridge(sc) {
     call(name, [arg] = []) {
       calls.push(name);
       if (name === "ui" || name === "comments") {
+        if (sc.stall && name === "ui") return Promise.resolve(null);
         let s = servers.get(arg.client);
         if (!s) servers.set(arg.client, (s = name === "ui" ? serveUi(ui, (m) => emit({ client: arg.client, message: m })) : serveComments(comments, (m) => emit({ client: arg.client, message: m }))));
         s.receive(arg.message);
@@ -277,6 +368,8 @@ function makeBridge(sc) {
     seek(t) { window.__cap.seekAt = t; },
     playhead: () => 12.4,
     selection: () => null,
+    // the clip selected on the timeline, for History's "Only “clip”" (scenarios that set `clip`)
+    selectedClip: () => sc.clip ?? null,
     reveal(item) { window.__cap.revealed = item; },
     openProject: () => new Promise((r) => setTimeout(r, 100)),
   };
