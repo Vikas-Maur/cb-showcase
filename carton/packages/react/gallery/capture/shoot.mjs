@@ -80,7 +80,21 @@ const AFTER = [
 ];
 // workstreams 5 and 9 (toasts with Undo, Comments), beside after/toasts.png and comments-*.png
 const WS59 = ws59Shots({ P, T, menuItem, foldOlder, uxMenu, openCard, cutsMenu, tab });
-const SHOTS = [...AFTER, ...WS59,
+// Viewing without banners (docs/carton-ux workstream 1): beside after/editor-viewing.png, editor-edit-attempt.png,
+// editor-conflict-theirs.png, editor-other-cut.png, titlebar-viewing.png (history-viewing-*.png: after-history-viewing).
+const W = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "window", perWidth: false, ...o });
+async function playDirector(p) { await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-btn", { hasText: "Play all" }).click(); await p.waitForTimeout(400); }
+async function seeTheirs(p) { await p.locator(".carton-stack .carton-see, .carton-stack button", { hasText: "See it" }).nth(1).click(); await p.waitForTimeout(400); }
+const WS1 = [
+  W("ws1-editor-viewing", "ux-history", "History open; the Director's older turn → Play all: the chip, the stage's frame, the timeline's frame (clips muted) and the row's “Viewing ✕”, one label; nothing over the picture.", playDirector),
+  W("ws1-editor-before", "ux-history", "ws1-editor-viewing, then Before held on the card: how it was before the Director's turn, the same marks, the chip and the row saying Before.", async (p) => { await playDirector(p); const b = p.locator(".carton-card-version .carton-before"); const box = await b.boundingBox(); await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.down(); await p.waitForTimeout(400); }, { keepHover: true }),
+  W("ws1-editor-edit-attempt", "ux-history", "ws1-editor-viewing, then an edit tried (the bridge's blocked(), as Cardboard's refusal asks it): one line with Back to my edit and Esc; the frame pulses (shot mid-pulse).", async (p) => { await playDirector(p); await p.evaluate(() => window.__carton.blocked()); await p.waitForTimeout(150); }, { keepAnimations: true }),
+  W("ws1-editor-conflict-theirs", "ws1-conflict", "Panel closed; the “Interview B” card → See it on Claude Code's side: the frame's label tab names it (History's list isn't on screen).", seeTheirs),
+  W("ws1-editor-other-cut", "ws1-other-cut", "Panel closed, on 30s Instagram cut: the chip's dot, and the cut's name and dot in the timeline's toolbar beside the zoom.", null),
+  W("ws1-editor-comments-see", "ux-history", "Comments open, a version viewed without a row (as Comments' See it as it was views one): the frame's label tab.", async (p) => { await p.locator('[role=tab][aria-label="Comments"]').click(); await p.waitForTimeout(200); await p.evaluate(() => window.__cap.ui.view({ kind: "version", ref: "main@20", label: "Your edit from 11:02 am" })); await p.waitForTimeout(300); }),
+  { name: "ws1-titlebar-viewing", s: "ux-history", how: "The title bar while viewing the Director's turn: the chip's second part, 👁 label ✕.", target: "titlebar", steps: playDirector },
+];
+const SHOTS = [...AFTER, ...WS1, ...WS59,
   // Workstream 4: the Changes view, Play and Before (after/changes-384.png, changes-300.png, changes-playing-384.png, changes-none-384.png)
   P("changes", "changes-story", "History, ⋯ → Compare with your edit on the Director's “Add captions to the interview”: the Changes view in place of the list.", (p) => changes(p)),
   P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),
@@ -217,7 +231,8 @@ try {
         if (!shot.keepHover) await page.mouse.move(vp.width - 5, vp.height - 5);
         await page.waitForTimeout(150);
         const path = join(out, file);
-        if (shot.target === "window") await page.screenshot({ path, animations: "disabled" });
+        const animations = shot.keepAnimations ? "allow" : "disabled";
+        if (shot.target === "window") await page.screenshot({ path, animations });
         else if (shot.target === "dialog") await page.locator(".carton-dialog").screenshot({ path, animations: "disabled" });
         else if (shot.target === "titlebar") {
           const bar = await page.locator(".cap-titlebar").boundingBox();

@@ -25,6 +25,9 @@ export const baseCss = `
 :where(.carton-more:hover) > :where(.carton-more-short){display:none}
 :where(.carton-more:hover) > :where(.carton-more-long){display:inline}
 :where(.carton-version, .carton-conflict-who, .carton-credit, .carton-comment-head, .carton-comment-meta){-webkit-user-select:none;user-select:none}
+:where(.carton-sr){position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+:where(.carton-frame){position:absolute;inset:0;pointer-events:none}
+:where(.carton-frame-label){position:absolute;left:0;top:0;pointer-events:auto}
 `;
 
 const S = '[data-carton-skin="cardboard"]';
@@ -532,6 +535,10 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-toast[data-tone=warning] > .carton-icon){color:var(--cb-warn)}
 /* an undo's own toast ("Restore undone." [Redo]): the grey undo arrow, not the ✓ (after/toasts.png) */
 :where(${S}) :where(.carton-toast[data-icon=undo] > .carton-icon){color:var(--cb-fg-3)}
+/* an edit tried while viewing (PLAN 1.4): the eye, "You're looking at …", Back to my edit, and its key */
+:where(${S}) :where(.carton-toast[data-tone=viewing]){padding-right:10px;border-color:#8ab4ff33}
+:where(${S}) :where(.carton-toast[data-tone=viewing] > .carton-icon){color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-toast-key){flex:none;padding:0 5px;border-radius:4px;box-shadow:inset 0 0 0 1px #ffffff1f;color:var(--cb-fg-3);font-size:11px;line-height:18px}
 /* a shared project's status over the preview (scripts/carton/ui.js LiveChip): who is here, Offline / Syncing */
 :where(.carton-stage${S}) > :where(.carton-stage-live){position:absolute;left:12px;bottom:12px;pointer-events:none}
 :where(${S}) :where(.carton-live-chip){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 8px;border:1px solid #ffffff14;border-radius:999px;background:#1b1b1be6;
@@ -727,6 +734,23 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-credit-when){color:var(--cb-fg-3)}
 
 /* ---------------------------------------------------------------- read-only preview banner (Cardboard's recovery look) */
+/* Viewing (PLAN 1.1, DESIGN §4.2): 2 px of blue round the stage, nothing over the picture; the label tab on its top-left
+   corner only when History's list isn't on screen; one pulse when an edit is tried (PLAN 1.4). The mockups' values. */
+:where(${S}) :where(.carton-frame){box-shadow:inset 0 0 0 2px #8ab4ffb3;border-radius:2px}
+:where(${S}) :where(.carton-frame[data-pulse=a]){animation:carton-frame-pulse-a .7s ease-out}
+:where(${S}) :where(.carton-frame[data-pulse=b]){animation:carton-frame-pulse-b .7s ease-out}
+@keyframes carton-frame-pulse-a{0%,100%{box-shadow:inset 0 0 0 2px #8ab4ffb3}25%{box-shadow:inset 0 0 0 4px #8ab4ffcc}}
+@keyframes carton-frame-pulse-b{0%,100%{box-shadow:inset 0 0 0 2px #8ab4ffb3}25%{box-shadow:inset 0 0 0 4px #8ab4ffcc}}
+:where(${S}) :where(.carton-frame-label){display:inline-flex;align-items:center;gap:6px;max-width:calc(100% - 24px);height:22px;padding:0 3px 0 8px;border-radius:0 0 7px 0;
+  background:#8ab4ffd9;color:#0b1730;font-size:12px;font-weight:600;line-height:22px}
+:where(${S}) :where(.carton-frame-label > .carton-icon){flex:none}
+:where(${S}) :where(.carton-frame-text){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-frame-back){display:inline-flex;flex:none;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:4px;
+  background:none;color:#0b1730;cursor:pointer}
+:where(${S}) :where(.carton-frame-back:hover){background:#0b173024}
+:where(${S}) :where(.carton-frame-back:focus-visible){outline:2px solid #0b1730;outline-offset:-2px}
+/* the stage's notice moves below the label tab while both show */
+:where(.carton-stage${S}:has(> .carton-frame > .carton-frame-label)) > :where(.carton-stage-banner){top:34px}
 :where(${S}) :where(.carton-preview-banner){display:flex;flex-wrap:wrap;row-gap:6px;align-items:center;gap:8px;max-width:100%;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
   background:#17140de6;color:#fde68a;font-size:12px;font-weight:500}
 :where(${S}) :where(.carton-preview-banner > .carton-icon){color:#fcd34dcc}

@@ -67,7 +67,8 @@ export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
 export { cardSentences, conflictWords, keptText, pickUndoneText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";
-export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
+export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner, ViewingFrame, useEscapeBack } from "./components/status.ts";
+export type { ViewingFrameProps } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_MAX_SPAN, PLAY_FLASH_MS, type PlayStep, type StepOptions, type SpanState, type Clock } from "./player.ts";
 // The Changes view, Play and Before (docs/carton-ux PLAN 4): in place of History's list, and for a version's card.

@@ -75,7 +75,8 @@ module.exports = String.raw`window.__carton = (() => {
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
-  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3; PLAN 1.4 makes it the toast)
+  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3): its own note over the timeline,
+  // only when no Carton part of the page took the attempt (blocked(), below: the edit-attempt toast, PLAN 1.4).
   const PREVIEW = "You're looking at an earlier version. Go back to your edit (Esc) to change it.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
   // (laptop, final candidate P2-1: a project with no aspect ratio, which an undo right after a recovery made, crashed
@@ -85,6 +86,11 @@ module.exports = String.raw`window.__carton = (() => {
   const noticeSubs = new Set();
   // ... and what Ctrl+Z or redo took back or put again, when it was a restore or a fold (ui.js: its toast with Redo)
   const stepSubs = new Set();
+  // The page's Carton parts (scripts/carton/ui.js): what they show for an edit tried while viewing (blocked), and how
+  // they bring your edit back when the editor asks (back: Export opened while viewing). The newest one answers.
+  const blockedSubs = new Set(), backSubs = new Set();
+  // Export's way back to your edit, while one is under way: every Export asked meanwhile waits for the same one
+  let exportGuard = null;
   const notice = (text) => {
     console.info("[carton] " + text);
     for (const f of noticeSubs) try { f(text); } catch {}
@@ -93,6 +99,8 @@ module.exports = String.raw`window.__carton = (() => {
   // reached the worker) and nobody was told. Cardboard logs a failed save and goes on; now the person is told too, at
   // most every 20 s, and again after a save that landed.
   const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
+  // PLAN 1.6: Export asked while viewing, and your edit didn't come back (a version played again meanwhile, a failure)
+  const EXPORT_BACK_FAILED = "Export didn't open: your edit didn't come back. Press Esc, then try again.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
   // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
@@ -409,6 +417,50 @@ module.exports = String.raw`window.__carton = (() => {
       }
     },
     get stale() { return stale; },
+    // PLAN 1.4: Cardboard's own refusal of an edit (patch-carton: its xv, which every edit its guard refuses goes
+    // through: a drag, a trim, Delete, Ctrl+Z, the stage's text editor) asks here first while a Carton preview is shown.
+    // True when a Carton part of the page told the person (the edit-attempt toast and the frame's pulse): Cardboard's
+    // note then stays away. Nothing is written either way: the guard refused it before this is asked.
+    blocked() {
+      if (!on || !store?.state().cartonPreview) return false;
+      for (const f of [...blockedSubs].reverse()) {
+        try { if (f() === true) return true; } catch (e) { console.warn("[carton] the edit-attempt toast failed:", e?.message ?? e); }
+      }
+      return false;
+    },
+    onBlocked(f) { blockedSubs.add(f); return () => blockedSubs.delete(f); },
+    // PLAN 1.6 (DESIGN §9): Export never exports what is viewed. patch-carton's Export opens (the person's Export command,
+    // an agent's scripted export) ask here first: null to go on as before (nothing viewed, or Carton off); else a promise
+    // that resolves only once the editor shows your edit, after which Export opens, and rejects when it doesn't (Export
+    // then doesn't open, and the person is told). The page's Carton part goes back its own way (view(null), or a
+    // teammate's cut left for your own: a cut switch, which the editor adopts on its own a moment later) and says so;
+    // then the editor takes head here itself, so neither a switch not yet adopted nor a return superseded by a newer one
+    // (a second Export meanwhile: review of feat/ux-1-viewing #1, #2) counts as being back. One at a time: an Export asked
+    // while one is under way waits for that one.
+    beforeExport() {
+      if (!on || !store) return null;
+      if (exportGuard) return exportGuard;
+      const st = store.state(), projectId = st.projectId;
+      let back = null;
+      for (const f of [...backSubs].reverse()) {
+        try { back = f("export"); } catch { back = null; }
+        if (back) break;
+      }
+      if ((!back && !st.cartonPreview) || !projectId) return null;
+      const guard = (async () => {
+        if (back) await back;
+        // (a save still waiting goes first: taking head must never drop an edit)
+        if (!store.state().cartonPreview && store.armed()) await store.flush();
+        await this.preview(projectId, null);
+        const now = store.state();
+        if (now.cartonPreview || now.projectId !== projectId) throw new Error("still viewing");
+      })();
+      exportGuard = guard;
+      const done = () => { if (exportGuard === guard) exportGuard = null; };
+      guard.then(done, (e) => { done(); notice(EXPORT_BACK_FAILED); console.warn("[carton] Export didn't open: your edit didn't come back:", e?.message ?? e); });
+      return guard;
+    },
+    onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
     // Play and Before (PLAN 4.3): check a version out now, so a preview of it later doesn't wait on the worker. A
     // confirmed version or a pin only (they never change); nothing with Carton off.
     prefetch(projectId, ref) {
@@ -461,13 +513,15 @@ module.exports = String.raw`window.__carton = (() => {
       const name = text(it.name) ?? text(it.textContent) ?? text(it.captionText) ?? text(media?.data?.fileName) ?? text(media?.data?.content) ?? text(it.type) ?? "clip";
       return { id: it.id, name };
     },
-    // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
-    // editor doesn't show it (another project, or the clip isn't in this version).
-    reveal(itemId) {
+    // "On timeline" (a conflict card's): the clip selected and the playhead at its start. A conflict's See it brings
+    // the clip into view without selecting it ({select: false}): a selection would take viewing's first Esc (Cardboard's
+    // own Esc clears it first; PLAN 1.3). False when the editor doesn't show it (another project, or the clip isn't in
+    // this version).
+    reveal(itemId, opts) {
       if (!on || !store || !itemId) return false;
       const st = store.state(), it = (st.timelineItems ?? []).find((i) => i.id === itemId);
       if (!it) return false;
-      st.selectTimelineItem?.(itemId);
+      if (opts?.select !== false) st.selectTimelineItem?.(itemId);
       st.setPlaybackPosition?.(it.startTime);
       return true;
     },

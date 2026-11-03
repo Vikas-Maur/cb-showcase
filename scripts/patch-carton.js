@@ -346,6 +346,12 @@ if (mode === "--cli") {
     replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
     replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
     replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
+    // Carton UX redesign PLAN 1.4: an edit tried while viewing gets Carton's one line ("You're looking at …" with Back to
+    // my edit, and a pulse of the stage's frame) in place of Cardboard's note over the timeline. xv is where Cardboard
+    // raises that note for every edit its guard refuses (me(), and the store's own rejected writes), so every path it
+    // guards keeps its guard: this changes only what is said, and only in a Carton preview (cartonPreview is never set
+    // with Carton off). With no Carton part of the page to say it, Cardboard's note says it, in Carton's words above.
+    replace("function xv(){const t=ne.getState(),e=ure(t);", "function xv(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=ure(t);");
     replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
     // Laptop, final candidate P1-1: a save that fails in the page (its project couldn't be written out: there, media
     // entries with no dates) was only logged, and every edit was lost unseen. The bridge tells the person (a toast over
@@ -364,12 +370,29 @@ if (mode === "--cli") {
   // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.
   patch(indexFile, (replace) => {
     replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
+    // Carton UX redesign PLAN 1.6 (DESIGN §9): an agent's scripted export (export.start, which opens Export on the
+    // editor's timeline) never exports a version the person is viewing: back to their edit first (the bridge's
+    // beforeExport, null when nothing is viewed or Carton is off), then the export as before.
+    replace('"export.start":async e=>{const t=ks();if(t.isExporting)', '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=ks();if(t.isExporting)');
   });
   // Carton in the editor (EditorRoute-*.js, editor-panel.js, scripts/carton/ui.js): the History or Share panel, a
   // full-height column beside the agent's chat sidebar; and a layer over the stage (the preview's column) with the
-  // conflict cards' floating stack and the preview banner. With Carton off the editor's row and stage are Cardboard's.
+  // conflict cards' floating stack and viewing's frame (UX redesign PLAN 1.1, in place of the preview banner). With
+  // Carton off the editor's row and stage are Cardboard's.
   patch(editorFile, (replace, prepend) => {
     replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
+    // Carton UX redesign PLAN 1.5: the timeline's wrapper (EditorRoute's "editor-timeline" region, a display:contents
+    // div round aZ, the timeline) is editor-panel.js's __cbCartonTimeline, which renders the same div and, with Carton
+    // on, data-carton-viewing while viewing (the timeline's frame, its clips muted: ui.js TIMELINE_CSS) and
+    // data-carton-cut on a cut other than Main (its name and dot in the timeline's toolbar). With Carton off it renders
+    // Cardboard's div as it is. Always this component, whether Carton is on or not yet known, so the timeline is never
+    // mounted again when main's answer comes.
+    replace('c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})', 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})');
+    // Carton UX redesign PLAN 1.6 (DESIGN §9): Export (sZ: Ctrl+E, the title bar's Export, the menu) never exports a
+    // version the person is viewing. While viewing, the bridge's beforeExport goes back to their edit first (the toast
+    // "Back to your edit to export it.") and Export opens once the editor shows it, asked once (__again); if going back
+    // fails, Export doesn't open. Nothing viewed, or Carton off: null, and Export opens at once, as before.
+    replace("sZ=e=>{U.getState().setIsPlaying(!1),", "sZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>sZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),");
     // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
     // the editor's own snapshot stacks, which Carton's undo never pops. During a read-only preview neither applies
     // (Ctrl+Z already does nothing there), so both look unavailable (UI audit P3-12).
@@ -378,8 +401,8 @@ if (mode === "--cli") {
     // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened, from Enter on a selected
     // title and from a double-click on a title or caption, and dropped what was typed (opening it is no write, so
     // Cardboard's guard of its edits never saw it). Both ask the bridge first, which refuses only in a Carton preview,
-    // with Cardboard's own "Previewing an earlier version. Return to current to edit." Crop mode, the double-click's
-    // other branch, is refused by Cardboard's guard already.
+    // through Cardboard's own refusal (its guard, then xv: the edit-attempt toast, PLAN 1.4). Crop mode, the
+    // double-click's other branch, is refused by Cardboard's guard already.
     replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
     replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
     // Regress prod3 (baseline P3-9 family): in a read-only preview a selected title or caption still showed the stage's

@@ -14,6 +14,7 @@ import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi
 import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
 import stripSource from "../../../../../scripts/carton/strip-buttons.js";
 import { addWs59 } from "./ws59.js";
+import editorPanelSource from "../../../../../scripts/carton/editor-panel.js";
 
 const params = new URLSearchParams(location.search);
 const scenarioName = params.get("s") ?? "history-few";
@@ -332,18 +333,34 @@ S["ux-empty"] = () => {
 // Loading: the worker never answers (its first History hasn't come yet)
 S["ux-loading"] = () => ({ ...ux()(), stall: true });
 
+// ------------------------------------------------------------------ viewing without banners (docs/carton-ux, workstream 1)
+// The mockups' story again (after/editor-*.png): a conflict card on “Interview B” (you and Claude Code both moved it),
+// the panel closed; and the same story on 30s Instagram cut.
+S["ws1-conflict"] = () => {
+  const r = ux()();
+  r.ui.setConflicts([{ id: "c-ib", title: "'Interview B' timing", clip: "Interview B", item: "item-interview-b", canKeepBoth: false, provisional: "mine",
+    mine: { author: people.alice, summary: "starts at 0:18", at: Date.now() - 2 * MIN, what: "move" },
+    theirs: { author: people.terminal, summary: "starts at 0:20", at: Date.now() - 10_000, what: "move" } },
+  { id: "c-cap", title: "Caption text", clip: "we cut editing time", item: "item-cap-1", canKeepBoth: true, provisional: "mine",
+    mine: { author: people.alice, summary: "“we cut editing time”", at: Date.now() - 3 * MIN, what: "change" },
+    theirs: { author: people.terminal, summary: "“we halved editing time”", at: Date.now() - 20_000, what: "change" } }]);
+  return { ...r, panel: null };
+};
+S["ws1-other-cut"] = () => { const r = ux()(); setCuts(r.ui, WS6_CUTS(newest(r.ui), "cut-ig")); return { ...r, panel: null }; };
+
 addWs59(S, { ux, hist, stage, people, createMockComments }); // workstreams 5 and 9: toasts with Undo, Comments
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 
 // ------------------------------------------------------------------ the fake bridge (window.__carton in the app)
 function makeBridge(sc) {
-  const events = new Set(), commands = new Set(), notices = new Set(), servers = new Map();
+  const events = new Set(), commands = new Set(), notices = new Set(), servers = new Map(), blockedSubs = new Set(), backSubs = new Set();
   const emit = (ev) => queueMicrotask(() => { for (const f of [...events]) f(ev); });
   const comments = sc.comments ?? createMockComments({ seed: false });
   const calls = [];
   const api = {
     projectId: "proj-" + scenarioName,
+    on: true,
     calls,
     call(name, [arg] = []) {
       calls.push(name);
@@ -367,7 +384,8 @@ function makeBridge(sc) {
     onNotice(f) { notices.add(f); return () => notices.delete(f); },
     command(action) { for (const f of [...commands]) f({ action }); },
     notice(text) { for (const f of [...notices]) f(text); },
-    reportPanel(panel, live) { window.__cap.strip = { panel, live: live ?? null }; for (const f of stripSubs) f(window.__cap.strip); },
+    // the title bar's report, as main hands it to the strip (main-bridge.js panel): the cut chip's part too
+    reportPanel(panel, live, chip) { window.__cap.strip = { panel, live: live ?? null, ...(chip ?? {}) }; for (const f of stripSubs) f(window.__cap.strip); },
     preview(_projectId, ref) { window.__cap.previewRef = ref; for (const f of previewSubs) f(ref); return Promise.resolve(); },
     seek(t) { window.__cap.seekAt = t; },
     // Play and Before (Workstream 4): Before's side loaded ahead, and your edit's length (the story's 0:38)
@@ -377,7 +395,13 @@ function makeBridge(sc) {
     selection: () => null,
     // the clip selected on the timeline, for History's "Only “clip”" (scenarios that set `clip`)
     selectedClip: () => sc.clip ?? null,
-    reveal(item) { window.__cap.revealed = item; },
+    reveal(item, o) { window.__cap.revealed = item; if (o?.select !== false) window.__cap.selected = item; return true; },
+    // renderer-bridge.js's: an edit Cardboard's guard refused while viewing (the newest Carton part tells it), and
+    // Export asking to come back to your edit first
+    onBlocked(f) { blockedSubs.add(f); return () => blockedSubs.delete(f); },
+    blocked() { for (const f of [...blockedSubs].reverse()) if (f() === true) return true; return false; },
+    onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
+    beforeExport() { for (const f of [...backSubs].reverse()) { const r = f("export"); if (r) return Promise.resolve(r); } return null; },
     // a toast's Undo and Redo (renderer-bridge.js undoMade/redoMade): the worker's answer at once, with the step's own
     // version (the mock keeps no undo stack)
     undoMade: (made) => Promise.resolve({ status: "confirmed", made: { cut: made.cut, changes: [`undo-${made.changes[0]}`] } }),
@@ -404,7 +428,7 @@ if (scenario.name) localStorage.setItem("carton.name", scenario.name);
 // strip-buttons.js runs in Cardboard's tab-strip bundle: n is its JSX runtime, w joins classes, I sends a command, C is
 // the strip's button class (read from the pristine bundle at build time: __STRIP_BUTTON_CLASS__), c is React, G formats
 // a shortcut.
-const Strip = new Function("n", "w", "I", "C", "c", "G", stripSource + "\nreturn __cbCartonStrip;")(
+const [Strip, CutChip] = new Function("n", "w", "I", "C", "c", "G", stripSource + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(
   jsxRuntime,
   (...a) => a.filter(Boolean).join(" "),
   (cmd) => bridge.command(cmd.action),
@@ -427,6 +451,8 @@ function TitleBar({ strip }) {
     h("span", { className: "cap-tab" }, h("span", { className: "cap-tab-thumb" }), "Weekend reel", h("span", { className: "cap-tab-x" }, "✕")),
     h("span", { className: "cap-tab-plus" }, "+"),
     h("span", { className: "cap-flex" }),
+    // the cut chip before the aspect ratio, as patch-carton.js places it (PLAN 2.1), from the page's report
+    S_.cut ? h(CutChip, { panel: S_ }) : null,
     h("span", { className: "cap-ratio" }, "▭ 16:9 ⌄"),
     h(Strip, { panel: S_ }),
     h("button", { type: "button", className: __STRIP_BUTTON_CLASS__ + " group gap-1.5 px-[6px] text-white/45 hover:bg-white/[0.06] hover:text-white/80", "aria-label": "Report an issue (stand-in)" }, ico(["M12 8v5", "M12 16h.01", "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"])),
@@ -441,19 +467,29 @@ function Video() {
   useEffect(() => { previewSubs.add(setRef); return () => { previewSubs.delete(setRef); }; }, []);
   return h("div", { className: "cap-video", "data-previewing": ref ? "" : undefined }, h("span", { className: "cap-video-caption" }, "Summer launch"));
 }
+// editor-panel.js's timeline wrapper (PLAN 1.5), its real source run on this page's React (as the editor bundle runs
+// it: React as `o`, the JSX runtime as `c`): it marks the stand-in timeline below as it marks Cardboard's.
+let TimelineWrap = (p) => h("div", p);
+const timelineReady = new (Object.getPrototypeOf(async () => {}).constructor)("o", "c", "window", editorPanelSource + "\nreturn __cbCartonTimeline;")(React, jsxRuntime, window).then((T) => { TimelineWrap = T; }, (e) => console.error("the timeline wrapper:", e));
+// The stand-in timeline, in the structure TIMELINE_CSS reads in Cardboard's (EditorRoute aZ): a positioned root; the
+// toolbar (bg-[#141414] justify-between, three flex-1 groups, the right one justify-end with the zoom); the scroll area
+// (data-timeline-scroll) holding the tracks.
 function Timeline() {
   const tracks = [["Text 1", [[58, 66, "W6"]]], ["Mine", [[0, 25, "clip.mp4"]]], ["Agents", [[0, 8, "W1"], [8, 16, "W2"], [16, 24, "W3"], [24, 32, "W4"], [32, 40, "W5"]]]];
-  return h("div", { className: "cap-timeline" },
-    h("div", { className: "cap-tl-toolbar" },
-      h("span", { className: "cap-tl-time" }, "0:00 / 0:10"),
-      h("span", { className: "cap-flex" }),
-      h("span", { className: "cap-tl-play" }, "▶"),
-      h("span", { className: "cap-flex" }),
-      h("button", { type: "button", className: "cap-tl-btn", "aria-label": "Fullscreen" }, ico(["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"])),
-      h("button", { type: "button", className: "cap-tl-btn", "aria-label": "Hide timeline" }, ico(["M4 5h16v14H4z", "M4 14h16"]))),
-    h("div", { className: "cap-tl-ruler" }, ...[0, 2, 4, 6, 8, 10].map((s) => h("span", { key: s, style: { left: `calc(120px + ${s * 10}%)` } }, `${s}s`))),
-    ...tracks.map(([name, clips]) => h("div", { key: name, className: "cap-tl-track" }, h("span", { className: "cap-tl-name" }, name),
-      h("div", { className: "cap-tl-lane" }, ...clips.map(([a, b, n]) => h("span", { key: n, className: "cap-tl-clip", "data-kind": name, style: { left: `${a}%`, width: `${b - a}%` } }, n))))));
+  return h(TimelineWrap, { className: "contents", "data-analytics-region": "editor-timeline" },
+    h("div", { className: "cap-timeline relative" },
+      h("div", { className: "bg-timeline-track-bg" },
+        h("div", { className: "cap-tl-toolbar flex items-center justify-between bg-[#141414]" },
+          h("div", { className: "flex flex-1 items-center gap-2" }, h("span", { className: "cap-tl-time" }, "0:19 / 0:38")),
+          h("div", { className: "flex flex-1 items-center justify-center" }, h("span", { className: "cap-tl-play" }, "▶")),
+          h("div", { className: "flex flex-1 items-center justify-end gap-2" },
+            h("span", { className: "cap-tl-zoom" }, ico(["M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z", "M20 20l-4-4"], 14), h("span", { className: "cap-tl-zoom-bar" })),
+            h("button", { type: "button", className: "cap-tl-btn", "aria-label": "Fullscreen" }, ico(["M4 9V4h5", "M20 9V4h-5", "M4 15v5h5", "M20 15v5h-5"])),
+            h("button", { type: "button", className: "cap-tl-btn", "aria-label": "Hide timeline" }, ico(["M4 5h16v14H4z", "M4 14h16"])))),
+        h("div", { className: "relative overflow-hidden", "data-timeline-scroll": "" },
+          h("div", { className: "cap-tl-ruler" }, ...[0, 2, 4, 6, 8, 10].map((s) => h("span", { key: s, style: { left: `calc(120px + ${s * 10}%)` } }, `${s}s`))),
+          ...tracks.map(([name, clips]) => h("div", { key: name, className: "cap-tl-track" }, h("span", { className: "cap-tl-name" }, name),
+            h("div", { className: "cap-tl-lane" }, ...clips.map(([a, b, n]) => h("span", { key: n, className: "cap-tl-clip", "data-kind": name, style: { left: `${a}%`, width: `${b - a}%` } }, n)))))))));
 }
 function Chat() {
   return h("div", { className: "cap-chat" },
@@ -495,7 +531,7 @@ function Join() {
 }
 
 const App = scenario.chrome === "titlebar" ? TitleOnly : scenario.chrome === "join" ? Join : Editor;
-createRoot(document.getElementById("root")).render(h(App));
+void timelineReady.then(() => createRoot(document.getElementById("root")).render(h(App)));
 setTimeout(() => {
   if (scenario.panel) bridge.command(scenario.panel === "share" ? "carton-share" : "carton-history");
   if (scenario.notice) setTimeout(() => bridge.notice(scenario.notice), 50);
