@@ -76,7 +76,10 @@ export function endOf(ui, ref, now = Date.now()) {
 export function sidesOf(ui, from, to, now = Date.now()) {
   let a = endOf(ui, from, now), b = endOf(ui, to ?? null, now);
   if (!a || !b) return null;
-  const current = (ui.cuts?.() ?? []).find((c) => c.current);
+  // your own cut is the right side: the one you're on, or, while a teammate's cut is viewed, your own Main cut
+  const cuts = ui.cuts?.() ?? [];
+  const cur = cuts.find((c) => c.current);
+  const current = cur && !cur.readOnly ? cur : cuts.find((c) => !c.readOnly && c.kind === "main") ?? cuts.find((c) => !c.readOnly);
   const onCurrent = (e) => !!current && e.cutId === current.id;
   if (a.you || (onCurrent(a) && !onCurrent(b))) [a, b] = [b, a];
   else if (!b.you && a.cutId && a.cutId === b.cutId) {
@@ -163,7 +166,7 @@ export function attachCompare(ui, o) {
     const mode = opts.mode === "side" || opts.mode === "wipe" || opts.mode === "flip" ? opts.mode : pickedMode();
     selected = null;
     flipped = false;
-    set({ ...sides, mode, ...(opts.by ? { by: opts.by } : {}) });
+    set({ ...sides, mode, ...(opts.by ? { by: opts.by } : {}), ...(opts.back === "fold" ? { back: "fold" } : {}) });
     bridge.libraryAside?.(true);
     try {
       await showRight(sides.right);
@@ -171,6 +174,8 @@ export function attachCompare(ui, o) {
       if (mine !== seq) return;
       bridge.prefetch?.(projectId, sides.left.ref);
       if (Number.isFinite(opts.at)) bridge.seek?.(opts.at);
+      // "still playing" (a card's ⇆ Side by side): Play both once the alignment is here
+      if (opts.play) playWhenReady(mine);
     } catch (e) {
       if (mine === seq) {
         set(null);
@@ -295,6 +300,11 @@ export function attachCompare(ui, o) {
     both.raf = requestAnimationFrame(stepBoth);
   };
   ui.compareBoth = () => (both.on ? { T: both.T, length: playLength(both.sched), at: both.at } : null);
+  const playWhenReady = (mine) => {
+    const go = () => { if (mine === seq && value && !both.on) ui.comparePlayBoth(); };
+    if (data?.status === "ready") return go();
+    const off = ui.onCompare(() => { if (mine !== seq) return off(); if (data?.status === "ready" || data?.status === "error") { off(); if (data.status === "ready") go(); } });
+  };
   // The left player's time (editor-panel.js's second player): the story's while Play both runs
   ui.compareLeftClock = {
     active: () => both.on,
@@ -699,7 +709,7 @@ function useClipChoices(ui, c, selected) {
   return { choices: st.key === key ? st.map : null, raw: st.key === key ? st.raw : null, reload: load, can };
 }
 
-export function CompareSide({ bridge, onFoldIn }) {
+export function CompareSide({ bridge, onFoldIn, onBackToFold }) {
   const ui = useCartonUi();
   const c = useComparing(ui);
   const data = ui.compareData?.() ?? null;
@@ -765,7 +775,11 @@ export function CompareSide({ bridge, onFoldIn }) {
       setConfirm({ busy: false, failed: true });
     }
   };
-  const footer = confirm
+  // opened from Fold in's See them side by side: Back to Fold in… (the dialog again)
+  const backToFold = c.back === "fold" && typeof onBackToFold === "function"
+    ? h(Button, { variant: "ghost", icon: "arrowLeft", onClick: () => onBackToFold(c.left.cutId, c.right.cutId) }, words.backToFoldIn)
+    : null;
+  const footer = backToFold ?? (confirm
     ? h("div", { className: "carton-changes-confirm", role: "group", "aria-label": words.restoreQuestion(c.left.label) },
         h("p", { className: "carton-changes-confirm-title" }, words.restoreQuestion(c.left.label)),
         h("p", { className: "carton-changes-confirm-body" }, words.restoreBody(n ?? 0)),
@@ -777,7 +791,7 @@ export function CompareSide({ bridge, onFoldIn }) {
       ? h(Button, { variant: "ghost", icon: "restore", onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreEditTo(c.left.label))
       : canFold
         ? h(Button, { variant: "ghost", icon: "foldIn", onClick: () => onFoldIn(c.left.cutId, c.right.cutId) }, words.foldInFrom(c.left.label))
-        : null;
+        : null);
   return h(CompareList, {
     className: "carton-sidebar-compare",
     range,

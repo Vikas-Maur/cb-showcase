@@ -561,3 +561,55 @@ test("N1b §1.5: a picked row's detail: Then / Now, and Bring back with N0b's to
     assert.deepEqual(brought.at(-1), [ref, "drone", { remove: true, expect: "t-drone" }]);
   } finally { await m.done(); }
 });
+
+test("N1b §1.2, §1.11: a playing card's ⇆ Side by side (still playing), Fold in's See them side by side (Back to Fold in…), a teammate's cut's Compare with Main cut", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    // a card's Play on an older version, then ⇆ Side by side: the version before it with it, Play both running
+    const rows = [...m.side.querySelectorAll(".carton-version")];
+    await m.click(rows[3]);
+    const card = m.side.querySelector(".carton-card-version");
+    assert.ok(card, "its card");
+    const playAll = [...card.querySelectorAll("button")].find((b) => b.textContent === "Play all");
+    await m.click(playAll);
+    await m.settle(120);
+    const side = [...card.querySelectorAll("button")].find((b) => b.textContent === "Side by side");
+    assert.ok(side, "⇆ Side by side beside Before while its Play runs");
+    await m.click(side);
+    await m.settle(150);
+    const c = m.page().comparing();
+    assert.ok(c, "Compare opened");
+    assert.ok(m.page().compareBoth(), "still playing: Play both runs");
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null);
+    // Fold in → See them side by side: the dialog closes, Compare opens with Back to Fold in…
+    await m.click(m.side.querySelector(".carton-cuts-trigger"));
+    await m.click([...document.querySelectorAll(".carton-menu-item")].find((b) => /Fold in changes from a cut/.test(b.textContent)));
+    await m.settle(120);
+    const see = [...document.querySelectorAll(".carton-dialog button")].find((b) => b.textContent === "See them side by side");
+    assert.ok(see, "the dialog's See them side by side");
+    await m.click(see);
+    await m.settle(120);
+    assert.ok(m.page().comparing()?.acrossCuts, "the from-cut with the into-cut");
+    assert.ok(!document.querySelector(".carton-dialog"), "the dialog closed");
+    const back = [...m.list().querySelectorAll(".carton-compare-foot button")].find((b) => b.textContent === "Back to Fold in…");
+    assert.ok(back, "Back to Fold in…");
+    await m.click(back);
+    await m.settle(120);
+    assert.equal(m.page().comparing(), null);
+    assert.ok(document.querySelector(".carton-dialog"), "the dialog again");
+    await m.key("Escape", "keydown", document.querySelector(".carton-dialog"));
+    // a teammate's cut viewed: Compare with Main cut, theirs on the left, your Main cut on the right
+    await act(async () => { await m.ui.switchCut("cut-bob-main"); await sleep(30); });
+    await m.settle(80);
+    const cmp = [...m.side.querySelectorAll(".carton-teammate-cut button")].find((b) => /^Compare with /.test(b.textContent));
+    assert.ok(cmp, "the teammate cut's actions offer Compare");
+    assert.equal(cmp.textContent, "Compare with Main cut");
+    await m.click(cmp);
+    await m.settle(120);
+    const t = m.page().comparing();
+    assert.equal(t?.left.cutId, "cut-bob-main");
+    assert.equal(t?.right.cutId, "cut-main", "your own cut on the right");
+  } finally { await m.done(); }
+});

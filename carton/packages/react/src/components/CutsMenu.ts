@@ -429,6 +429,10 @@ export function TeammateCutActions(p: TeammateCutActionsProps) {
           )
         : null,
       h(Button, { variant: "ghost", icon: "plus", pressed: naming, onClick: () => (setError(null), setNaming((n) => !n)) }, words.newCutFromIt),
+      // Compare in the editor (DESIGN-V2 §1.11): their cut now with yours now
+      home && typeof ui.openCompare === "function"
+        ? h(Button, { variant: "ghost", icon: "compare", onClick: () => void ui.openCompare!(teammate.id, home.id).catch(fail) }, words.compareWithCut(isMainCut(home) ? home.label : `“${home.label}”`))
+        : null,
     ),
     naming
       ? h(InlineName, {
