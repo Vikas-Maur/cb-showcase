@@ -1,8 +1,6 @@
 // Every word the components show, in one place. They are the editor words the user chose for Carton (PLAN §0.1),
 // never git's. A host can pass its own copy (for another language) to <CartonProvider words>.
 
-import { duration, seconds } from "./format.ts";
-
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export const words = {
@@ -42,7 +40,6 @@ export const words = {
   create: "Create",
   restoreHint: "Restoring saves this version as a new version. Nothing is lost.",
   emptyVersionHint: "The history starts here, before the project was added. There's nothing to restore.",
-  compareWithCurrent: "Compare with current",
   nameVersion: "Name this version",
   nameVersionPlaceholder: "Sent to client, Monday",
   rename: "Rename",
@@ -118,28 +115,6 @@ export const words = {
   showAgain: "Show again",
   conflictsWaiting: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
 
-  // Compare card
-  compare: "Compare",
-  watchTheChanges: "Play all",
-  clips: (n: number) => plural(n, "clip", "clips"),
-  // Compare's clip count with the other kinds of item apart (laptop re-check P3-10): "1 clip, 6 titles"
-  clipsAnd: (clips: number, kinds: readonly { noun: string; n: number }[]) =>
-    [...(clips || !kinds.length ? [plural(clips, "clip", "clips")] : []), ...kinds.map((k) => plural(k.n, k.noun, `${k.noun}s`))].join(", "),
-  length: (s: number) => duration(s),
-  // The Compare card's summary (UI audit P2-5): changes and seconds, as WatchTheChanges counts them; never shots.
-  compareSummary: (changes: number | null, s: number, total: number) =>
-    changes === 0 || (changes == null && s <= 0) ? "No differences" : `${changes == null ? "" : `${plural(changes, "change", "changes")} · `}${seconds(s)} of ${seconds(total)} differ`,
-  compareChanges: "What changed",
-  compareMore: (n: number) => `Show ${n} more`,
-  compareLess: "Show fewer",
-  differ: (shots: number, s: number, total: number) =>
-    shots === 0 ? "No shots differ" : `${plural(shots, "shot", "shots")} / ${seconds(s)} of ${seconds(total)} differ`,
-  current: "Current",
-  factWhen: "When",
-  factWho: "Who",
-  factClips: "Clips",
-  factLength: "Length",
-
   // Credits
   creditsFor: (clip: string) => `Credits for ${clip}`,
   creditsEmpty: "No changes recorded for this clip yet.",
@@ -176,27 +151,9 @@ export const words = {
   upToDateHint: "Everyone on this cut sees the same edit.",
   offlineHint: "Keep editing. Your edits are saved here and sent when you're back online.",
 
-  // WatchTheChanges (§9; retired by the Changes view, PLAN 4.4)
+  // Play and Before (DESIGN §5.3): the transport's Before (hold) and Pause
   before: "Before",
-  after: "After",
-  playChanges: "Play changes",
   pause: "Pause",
-  unchangedShots: (n: number) => `${n} unchanged`,
-  removed: "Removed",
-  added: "Added",
-  changed: "Changed",
-  // The counter steps through the sections of the edit that differ, not the changes (laptop re-check P3-11: "2 changes ·
-  // Change 1 of 2" beside Compare's "3 changes"): one section can hold several changes, and a change can show nowhere.
-  changeOf: (i: number, n: number) => `${i} of ${n}`,
-  nextChange: "Next",
-  previousChange: "Previous",
-  noChanges: "No changes to watch. The two versions look the same.",
-  // What differs: changes, counted as Compare and History count them, and seconds; never shots.
-  watchSummary: (changes: number, s: number, total: number) =>
-    changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
-  // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
-  shownInPlayer: "On the stage",
-  noPicture: "Preview not available here",
 
   // Viewing (§9, R2-16; DESIGN §4.2): what the stage shows when it isn't your edit
   // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "You're looking at your edit from 12:41 pm".
@@ -363,6 +320,11 @@ export const words = {
   sameAs: (label: string) => `Your edit is the same as ${label}.`,
   restoreThisVersion: "Restore this version…",
   backToHistory: "History",
+  // Workstream 4 (the Changes view between two versions, neither your edit; the back button's tooltip; a retry)
+  noChangesBetween: (from: string, to: string) => `No changes from ${from} to ${to}`,
+  sameVersions: "The two versions are the same.",
+  backToHistoryKey: "Back to History (Esc)",
+  tryAgain: "Try again",
 
   // Viewing
   beforeOf: (label: string) => `Before ${label}`,

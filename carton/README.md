@@ -17,7 +17,7 @@ Carton uses editors' words in the app, the CLI and the docs. Agents think in git
 | **Fold in** | merge | "Fold into Main". Partial accept is "fold in some of it" |
 | **Conflict card** | merge conflict | Both edits kept; you pick |
 | **Published cut** | release tag | What the share link shows |
-| **Compare / Watch the changes** | diff | A change list, a timeline overlay, and a shot diff you can play |
+| **Changes** (Compare with your edit), **Play**, **Before** | diff | The changes between two versions in words, each one playable on the stage, and how it was before at the same moment (`cb compare` lists them) |
 | **Restore** | revert / checkout | Saved as a new version |
 | **Undo turn** | revert by author | Undo scoped to you and the agents acting for you |
 | **Credits** | blame | Who changed a clip, down to the subagent |

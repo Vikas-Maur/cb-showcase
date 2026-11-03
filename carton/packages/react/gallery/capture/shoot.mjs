@@ -36,9 +36,11 @@ const menuItem = (p, text) => p.locator(".carton-menu-item", { hasText: text }).
 const tab = (p, name) => p.locator(`[role=tab][aria-label="${name}"]`).click();
 async function cutsMenu(p) { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); }
 async function foldFromIg(p) { await cutsMenu(p); await menuItem(p, "Fold in changes from a cut…").click(); await p.locator(".carton-fold .carton-fold-box, .carton-fold .carton-fold-nothing").first().waitFor(); await p.waitForTimeout(150); }
-async function compare(p, text = "Rough cut") { await rowMenu(p, text); await menuItem(p, "Compare with current").click(); await p.locator(".carton-compare, .carton-history-compare").first().waitFor(); await p.waitForTimeout(250); }
 async function scrollList(p, y) { await p.locator(".carton-history-list").evaluate((e, y) => { e.scrollTop = Math.min(y, e.scrollHeight); e.dispatchEvent(new Event("scroll")); }, y); await p.waitForTimeout(300); }
-async function watch(p) { await compare(p); await p.getByRole("button", { name: "Watch the changes" }).click(); await p.locator(".carton-watch").waitFor(); await p.waitForTimeout(300); }
+// Workstream 4: the Changes view from a row's menu, Play all, Before held (a press with no release yet)
+async function changes(p, text = "Add captions to the interview") { await rowMenu(p, text); await menuItem(p, "Compare with your edit").click(); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }
+async function playAll(p, ms = 1300) { await p.locator(".carton-changes-view .carton-play-all .carton-btn").click(); await p.waitForTimeout(ms); }
+async function holdBefore(p) { const b = p.locator(".carton-changes-view .carton-before"); const box = await b.boundingBox(); await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.down(); await p.waitForTimeout(300); }
 
 // ------------------------------------------------------------------ the shots
 // target: panel (the side panel, full height), stage (the layer over the preview), window, titlebar, join (the dialog).
@@ -89,6 +91,12 @@ const WS1 = [
   { name: "ws1-titlebar-viewing", s: "ux-history", how: "The title bar while viewing the Director's turn: the chip's second part, 👁 label ✕.", target: "titlebar", steps: playDirector },
 ];
 const SHOTS = [...AFTER, ...WS1,
+  // Workstream 4: the Changes view, Play and Before (after/changes-384.png, changes-300.png, changes-playing-384.png, changes-none-384.png)
+  P("changes", "changes-story", "History, ⋯ → Compare with your edit on the Director's “Add captions to the interview”: the Changes view in place of the list.", (p) => changes(p)),
+  P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),
+  P("changes-before", "changes-story", "changes-playing, then Before pressed and held.", async (p) => { await changes(p); await playAll(p); await holdBefore(p); }, { keepHover: true }),
+  P("changes-none", "changes-story", "⋯ → Compare with your edit on the newest version (Claude Code's turn): no differences.", (p) => changes(p, "Tighten the intro and add a lower third")),
+  P("changes-two", "changes-story", "A click on “Sent to client”, then Shift+click on the Director's turn: the Changes view between two versions.", async (p) => { await row(p, "Sent to client").click(); await row(p, "Add captions to the interview").click({ modifiers: ["Shift"] }); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }),
   // History
   P("history-none", "history-none", "A cut with no versions at all (mock with 0 versions).", null),
   P("history-start", "history-start", "Only the system row \"Started the cut\".", null),
@@ -110,10 +118,6 @@ const SHOTS = [...AFTER, ...WS1,
   P("history-many-scrolled", "history-many", "history-many, list scrolled down 1500 px (the list's top edge once scrolled).", (p) => scrollList(p, 1500)),
   P("history-many-bottom", "history-many", "history-many, scrolled to the end: the older days, folded to their named versions and turns.", (p) => scrollList(p, 1e9)),
   P("history-many-day-open", "history-many", "history-many-bottom, then a click on the last folded day's header: it opens.", async (p) => { await scrollList(p, 1e9); await p.locator(".carton-day[data-collapsed]").last().click(); await p.waitForTimeout(250); await scrollList(p, 1e9); }),
-  P("history-compare", "history-few", "history-few, ⋯ → Compare with current on \"Rough cut\": the Compare card under the list.", (p) => compare(p)),
-  P("watch-initial", "history-few", "Compare card → Watch the changes: Watch in place in the panel (After side), before playing.", (p) => watch(p)),
-  P("watch-playing", "history-few", "watch-initial, then Next section and Play changes, shot 900 ms into playback.", async (p) => { await watch(p); await p.locator('[aria-label="Next section"]').click(); await p.locator(".carton-watch-play").click(); await p.waitForTimeout(900); }),
-  P("watch-before", "history-few", "watch-initial, then the Before side picked.", async (p) => { await watch(p); await p.locator(".carton-ab [role=radio]").first().click(); await p.waitForTimeout(200); }),
   // Cuts
   P("cuts-closed-long", "cuts-long", "Current cut with a long name (\"Director's cut: punchier open with the drone shot and the new music\"): the switcher cuts it off.", null),
   P("cuts-open-one", "cuts-one", "Only Main cut exists; the cut switcher opened.", (p) => cutsMenu(p)),
@@ -183,8 +187,6 @@ const SHOTS = [...AFTER, ...WS1,
   T("stage-media-unchecked", "stage-media-unchecked", "Clips that couldn't be checked.", null),
   // In context
   P("window-history", "history-few", "The whole window: History open beside the chat.", null, { target: "window" }),
-  P("window-watch", "history-few", "The whole window during Watch the changes (the stage shows the side read-only, with the banner).", (p) => watch(p), { target: "window" }),
-  P("window-watch-before", "history-few", "window-watch, then the Before side picked: the side opens read-only in the player, with a banner over the stage and one inside Watch.", async (p) => { await watch(p); await p.locator(".carton-ab [role=radio]").first().click(); await p.waitForTimeout(300); }, { target: "window" }),
   P("window-preview", "history-few", "The whole window after a double-click on the Codex checkpoint (a read-only preview from History).", async (p) => { await row(p, "tighten the interview pauses").dblclick(); await p.waitForTimeout(300); }, { target: "window" }),
   P("window-share", "share-peers", "The whole window with Share open (four teammates here).", null, { target: "window" }),
   // Title bar

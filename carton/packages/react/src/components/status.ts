@@ -191,8 +191,7 @@ export function useEscapeBack(p: { open: boolean; viewing: () => boolean; back: 
 }
 
 /**
- * Deprecated: `ViewingFrame` (UX redesign PLAN 1.1) replaces it in the app. Kept one release for WatchTheChanges and the
- * gallery. Shown while a preview is open (§9, R2-16), with the way back to editing: one click, or Esc (useEscapeBack).
+ * Deprecated: `ViewingFrame` (UX redesign PLAN 1.1) replaces it in the app. Kept one release for the gallery. Shown while a preview is open (§9, R2-16), with the way back to editing: one click, or Esc (useEscapeBack).
  */
 export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
   const preview = usePreview();

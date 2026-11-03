@@ -1,7 +1,7 @@
 // The editor page: Cardboard's layout in miniature. Top bar (project, Cuts, sync status words, presence, offline,
 // Undo turn, Publish, Invite to edit); the preview with the selected clip's inspector; the timeline; the History panel
 // on the right; conflict cards over the timeline. Everything Carton-specific is @carton/react's (History, Cuts, Fold
-// in, conflict cards, Credits, Undo turn, Published cut, Watch the changes, presence, sync words) on its `cardboard`
+// in, conflict cards, Credits, Undo turn, Published cut, the Changes view with Play, presence, sync words) on its `cardboard`
 // skin; this file only lays them out and connects the timeline's edits to Carton.
 
 import { shownProblem, syncProblemWords } from "./sync-problem.ts";
@@ -21,7 +21,6 @@ import {
   PublishedStatus,
   SyncStatusWords,
   UndoTurnButton,
-  WatchTheChanges,
   useCartonUi,
   useConflicts,
   useCurrentCut,
@@ -30,14 +29,14 @@ import {
   type CartonUiHandle,
   type CommentsUiHandle,
   type Cut,
-  type Side,
+  type PlayHost,
 } from "@carton/react";
 import { ITEMS, mediaOf, type SampleMedia } from "./demo-doc.ts";
 import type { Uploads } from "./upload.ts";
 import { clipOf, fieldOps } from "./edit.ts";
 import type { ImageCache } from "./images.ts";
 import type { LiveDoc } from "./live-doc.ts";
-import { Player, captionAt, videoAt } from "./player.ts";
+import { Player } from "./player.ts";
 import type { PresenceSender } from "./presence.ts";
 import type { Session } from "./session.ts";
 import { Timeline, formatTime } from "./timeline.ts";
@@ -99,7 +98,6 @@ export function App(p: AppProps) {
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const [watch, setWatch] = useState<{ a: string; b: string } | null>(null);
   const [fold, setFold] = useState<{ from: Cut; into: Cut } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [side, setSide] = useState<"history" | "comments">("history");
@@ -175,6 +173,19 @@ export function App(p: AppProps) {
 
   const clip = selected ? clipOf(doc, selected) : undefined;
   const length = useMemo(() => Math.max(0, ...((doc[ITEMS] ?? []) as Rec[]).map((r) => r.endTime as number)), [doc]);
+  const lengthRef = useRef(length);
+  lengthRef.current = length;
+  // Play and Before in History's Changes view (@carton/react): the preview's playhead follows Play (at most 10 times a
+  // second, always the last), a click on a change moves it, and the edit's length sets the change map's scale.
+  const play = useMemo<PlayHost>(() => {
+    let last = 0, at = 0, timer: ReturnType<typeof setTimeout> | null = null;
+    const go = () => ((timer = null), (last = performance.now()), setPlaying(false), setTime(at));
+    return {
+      onFrame: (t) => ((at = t), performance.now() - last >= 100 ? go() : (timer ??= setTimeout(go, 100))),
+      seek: (t) => (setPlaying(false), setTime(t)),
+      length: () => lengthRef.current,
+    };
+  }, []);
 
   return h(
     "div",
@@ -208,7 +219,7 @@ export function App(p: AppProps) {
         h(Conflicts),
         h(SideTabs, { side, setSide, comments: p.comments }),
         // both stay mounted: switching tabs keeps a comment or reply being written, and History's scroll
-        h("div", { className: "cb-side-pane", hidden: side !== "history" }, h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) })),
+        h("div", { className: "cb-side-pane", hidden: side !== "history" }, h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, play })),
         h("div", { className: "cb-side-pane", hidden: side !== "comments", "data-testid": "comments-pane" }, h(CommentsPanel, { className: "cb-comments", comments: p.comments, at: commentAt, onSeek: seekTo, selected: thread, onSelect: setThread })),
       ),
     ),
@@ -223,7 +234,6 @@ export function App(p: AppProps) {
       }),
     ),
     dropping ? h("div", { className: "cb-drop", "aria-hidden": true }, "Drop video to add it to the timeline") : null,
-    watch ? h(WatchDialog, { ...watch, carton: p.carton, media, images: p.images, onClose: () => setWatch(null) }) : null,
     fold ? h(FoldInDialog, { fromCutId: fold.from.id, intoCutId: fold.into.id, onClose: () => setFold(null) }) : null,
     error ? h(Toast, { text: error, onClose: () => setError(null) }) : null,
   );
@@ -475,61 +485,6 @@ function Conflicts() {
   const cards = useConflicts();
   if (!cards.length) return null;
   return h("div", { className: "cb-conflicts", "data-testid": "conflicts" }, h(ConflictList));
-}
-
-/** Watch the changes (§9): the shot diff with Play changes and the aligned A/B toggle; the preview draws each frame. */
-function WatchDialog(p: { a: string; b: string; carton: Carton; media: Record<string, SampleMedia>; images: ImageCache; onClose: () => void }) {
-  const [docs, setDocs] = useState<{ a: Doc; b: Doc } | null>(null);
-  useEffect(() => {
-    let live = true;
-    void Promise.all([p.carton.checkout(p.a), p.carton.checkout(p.b)]).then(([a, b]) => live && setDocs({ a, b }));
-    return () => {
-      live = false;
-    };
-  }, [p.a, p.b]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
-    addEventListener("keydown", onKey);
-    return () => removeEventListener("keydown", onKey);
-  }, [p.onClose]);
-  const img = useRef<HTMLImageElement>(null);
-  const label = useRef<HTMLDivElement>(null);
-  const side = useRef<HTMLSpanElement>(null);
-  // called every animation frame while playing: DOM writes only, no render
-  const onFrame = useCallback(
-    (s: Side, t: number) => {
-      if (!docs) return;
-      const d = s === "a" ? docs.a : docs.b;
-      const c = videoAt(d, t);
-      const m = c ? p.media[String(c.mediaItemId)] : undefined;
-      const url = m?.poster ? p.images.get(m.poster) : undefined;
-      if (img.current) {
-        if (url && img.current.src !== url) img.current.src = url;
-        img.current.style.visibility = url ? "visible" : "hidden";
-        img.current.style.opacity = String((c?.opacity as number) ?? 1);
-      }
-      if (label.current) label.current.textContent = String(captionAt(d, t)?.captionText ?? "");
-      if (side.current) side.current.textContent = `${s === "a" ? "Before" : "After"} · ${c ? String(c.name ?? c.id) : "—"} · ${formatTime(t)}`;
-    },
-    [docs, p.media, p.images],
-  );
-  return h(
-    "div",
-    { className: "carton-overlay cb-watch-overlay", "data-carton-skin": "cardboard" },
-    h(
-      "div",
-      { className: "cb-watch", "data-testid": "watch" },
-      docs
-        ? h(WatchTheChanges, {
-            a: p.a,
-            b: p.b,
-            onFrame,
-            onClose: p.onClose,
-            preview: h("div", { className: "cb-watch-preview" }, h("img", { ref: img, alt: "" }), h("div", { ref: label, className: "cb-player-caption" }), h("span", { ref: side, className: "cb-watch-side" })),
-          })
-        : h("p", { className: "cb-dim" }, "Loading both versions…"),
-    ),
-  );
 }
 
 function Toast({ text, onClose }: { text: string; onClose: () => void }) {

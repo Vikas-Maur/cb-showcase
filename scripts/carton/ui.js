@@ -16,7 +16,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
 import { injectCardboardSkin, injectStyles } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -72,22 +72,21 @@ function connect(projectId, bridge) {
   const openPreview = r.ui.openPreview.bind(r.ui);
   r.ui.openPreview = (ref, label) => { ++viewSeq; pending = null; openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
   // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
-  // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
-  // A conflict's side (its card's See it, PLAN 7.1) brings the card's clip into view: the playhead at its start in the
-  // side shown, the clip not selected, so the first Esc is viewing's, not Cardboard's deselect (PLAN 1.3).
+  // editor swaps (viewAndSwap, below). A conflict's side (its card's See it, PLAN 7.1) brings the card's clip into view:
+  // the playhead at its start in the side shown, the clip not selected, so the first Esc is viewing's, not Cardboard's
+  // deselect (PLAN 1.3). Each call is a turn (viewSeq): once a newer one is asked, an older one still loading never
+  // swaps the editor again.
   const view = r.ui.view.bind(r.ui);
   r.ui.view = async (target) => {
     const seq = ++viewSeq;
     pending = target ? { seq, target } : null;
+    const mine = () => seq === viewSeq;
     try {
-      await view(target);
+      await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? bridge.preview(projectId, ref) : Promise.resolve()))(target);
     } finally {
       if (pending?.seq === seq) pending = null;
     }
-    // a newer view or a return asked while this one loaded owns the stage
-    if (seq !== viewSeq) return;
-    await bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
-    if (target?.kind === "conflict" && r.ui.viewing()?.conflictId === target.conflictId) {
+    if (mine() && target?.kind === "conflict" && r.ui.viewing()?.conflictId === target.conflictId) {
       const item = r.ui.conflicts().find((c) => c.id === target.conflictId)?.item;
       if (item) bridge.reveal?.(item, { select: false });
     }
@@ -97,6 +96,35 @@ function connect(projectId, bridge) {
 }
 
 /**
+ * view() and the editor's swap. The worker labels a view and checks it loads; its viewing topic arrives before its
+ * answer, so the ref shown is the one it settled on. A target that names its state (Play's and Before's, a comment's
+ * "See it as it was": `ref`), and your edit (null), swap the stage at once, while the worker labels it: Before's flip
+ * waits on nothing but the bridge's cache, which Play filled ahead (docs/carton-ux PLAN 4.3; review #7: every flip
+ * waited a worker round trip first). If the worker can't load it, the stage goes back to what viewing() says; if it
+ * settled on another state (a newer view since: the view model and the bridge are both latest-wins), the stage shows
+ * that one.
+ */
+function viewAndSwap(view, viewing, preview) {
+  return async (target) => {
+    const early = target === null ? preview(null) : typeof target?.ref === "string" ? preview(target.ref) : null;
+    try {
+      await view(target);
+    } catch (e) {
+      if (early) {
+        await early.catch(() => {});
+        await preview(viewing()?.ref ?? null).catch(() => {});
+      }
+      throw e;
+    }
+    const settled = target ? (viewing()?.ref ?? null) : null;
+    if (early) {
+      await early;
+      if (settled === (target ? target.ref : null)) return;
+    }
+    return preview(settled);
+  };
+}
+
  * The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. The
  * edit-attempt toast (tone "viewing") has its action as the primary button and Esc, its key, in place of the ✕.
  */
@@ -297,40 +325,36 @@ function useFit(ref, preferred) {
  * History in the side panel: the cut it shows, with the cuts menu (switch, a switch that waits for an agent's turn, New
  * cut, Rename, "Fold in changes from a cut…", which opens Fold in: from a cut into a cut, all, some or none of it); on a
  * teammate's cut, what you can do with it (fold it into yours, or copy it as a new cut: UX redesign PLAN 6.2); then
- * the versions, Compare with current, and WatchTheChanges in their place.
+ * the versions, and the Changes view in their place (docs/carton-ux DESIGN §5.4: "Compare with your edit", Shift+click),
+ * with Play and Before (§5.3). It replaced the old Compare card and shot strips (PLAN 4.4): this page mounts neither.
  */
-function HistorySide({ bridge, cutsAsk = 0, onCutsAsked }) {
+function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const cuts = useCuts();
-  const [watch, setWatch] = useState(null);
   const [fold, setFold] = useState(null);
   const openFold = useCallback((from, into) => setFold({ from: from.id, into: into.id }), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
-  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus in it, from the list,
-  // not from Watch. The menu is History's own (in its cut bar), opened through Workstream 6's openCutsMenu (the newest
-  // mounted CutsMenu opens, or the next to mount within 2 s), so the chip's menu and History's are one menu. The request
-  // is the side panel's (CartonSide's), consumed there once the menu opened or that wait ran out (review of feat/ux-2-8
-  // #3: kept here, it outlived History closing, and reopening History opened the menu again).
+  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus in it, from the list.
+  // The menu is History's own (in its cut bar), opened through Workstream 6's openCutsMenu (the newest mounted
+  // CutsMenu opens, or the next to mount within 2 s), so the chip's menu and History's are one menu. The request is the
+  // side panel's (CartonSide's), consumed there once the menu opened or that wait ran out (review of feat/ux-2-8 #3:
+  // kept here, it outlived History closing, and reopening History opened the menu again). The Changes view, open in
+  // place of the list and its cut bar, goes back to the list first (its ← History): the cut bar's menu mounts again.
   const ui = useCartonUi();
   useEffect(() => {
     if (!cutsAsk) return undefined;
-    if (watch) { setWatch(null); return undefined; }
+    box.current?.querySelector(".carton-history[data-changes] .carton-changes-nav button")?.click();
     let live = true;
     openCutsMenu(ui, { within: 2000 }).then(() => { if (live) onCutsAsked?.(); });
     return () => { live = false; };
-  }, [cutsAsk, watch, onCutsAsked, ui]);
-  // Back from WatchTheChanges: focus goes to the version list, not to <body>.
-  const back = useCallback(() => {
-    setWatch(null);
-    requestAnimationFrame(() => box.current?.querySelector(".carton-history-list")?.focus({ preventScroll: true }));
-  }, []);
-  // The editor's own player shows the side being watched (the read-only preview Watch opens), so its playhead follows
-  // Watch's: real frames there, at most 10 seeks a second while it plays, and always the last one.
+  }, [cutsAsk, onCutsAsked, ui]);
+  // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: its playhead
+  // follows Play's, real frames there, at most 10 seeks a second while it plays, and always the last one.
   const seeker = useMemo(() => {
     let last = 0, timer = null, at = 0;
     const go = () => { timer = null; last = performance.now(); bridge.seek?.(at); };
     return {
-      onFrame: (_side, t) => {
+      onFrame: (t) => {
         at = t;
         if (performance.now() - last >= 100) go();
         else timer ??= setTimeout(go, 100);
@@ -338,24 +362,24 @@ function HistorySide({ bridge, cutsAsk = 0, onCutsAsked }) {
       stop: () => { clearTimeout(timer); timer = null; },
     };
   }, [bridge]);
-  const onFrame = seeker.onFrame;
-  useEffect(() => (watch ? seeker.stop : undefined), [watch, seeker]);
-  // (every hook above the Watch return: one render with fewer hooks than the last crashes React, review #2)
+  useEffect(() => seeker.stop, [seeker]);
   // History's cut bar holds Workstream 6's cuts menu (docs/carton-ux DESIGN §6.1) and, on a teammate's cut, its actions
   // under the bar: one element each, so History re-rendering for a new version never re-renders them
   const cutsMenu = useMemo(() => h(CutsMenu, { onFoldIn: openFold }), [openFold]);
   const teammateActions = useMemo(() => h(TeammateCutActions, { onFoldIn: openFold }), [openFold]);
   const selectedClip = useCallback(() => bridge.selectedClip?.() ?? null, [bridge]);
-  const seek = useCallback((t) => bridge.seek?.(t), [bridge]);
-  if (watch) {
-    // Esc leaves Watch (the innermost layer) and goes no further: the panel stays open.
-    return h("div", { className: "carton-sidebar-watch", onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); back(); } } },
-      h(Button, { variant: "ghost", icon: "arrowLeft", onClick: back, title: "Back to History (Esc)" }, words.history),
-      h(WatchTheChanges, { a: watch.a, b: watch.b, inPlayer: true, onFrame }));
-  }
+  // What Play needs of the editor (@carton/react's PlayHost): the playhead (followed while playing, set by a click on a
+  // change), Before's side checked out ahead so the flip doesn't wait (the bridge keeps it), and your edit's length.
+  // Play never selects a clip: Cardboard's own Esc clears a selection first and would swallow the person's Esc.
+  const play = useMemo(() => ({
+    onFrame: seeker.onFrame,
+    seek: (t) => { seeker.stop(); bridge.seek?.(t); },
+    prefetch: (ref) => bridge.prefetch?.(projectId, ref),
+    length: () => bridge.editLength?.(),
+  }), [seeker, bridge, projectId]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
     // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2)
-    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: seek, currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
+    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }
 
@@ -465,7 +489,7 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsA
         h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null), className: headButton },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge, cutsAsk, onCutsAsked })))));
+        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { projectId, bridge, cutsAsk, onCutsAsked })))));
 }
 
 /** The Share dialog over the editor (PLAN 8.1), inside its own boundary: a throw keeps the dialog's frame. */
@@ -795,4 +819,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, listMarks, timelineMarkOf, StageViewing, sidePanel };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, StageViewing, sidePanel };

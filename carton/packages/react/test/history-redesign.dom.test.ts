@@ -78,8 +78,8 @@ test(name("only the open card asks what changed: its own changes, and the count 
 
 test(name("a click, Enter or a double-click on a row never changes what the editor shows; Play on the newest plays on your edit"), async () => {
   const ui = story();
-  const sought: number[] = [];
-  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, onSeek: (t: number) => sought.push(t) })));
+  const sought: number[] = [], frames: number[] = [];
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, onSeek: (t: number) => sought.push(t), play: { onFrame: (t: number) => frames.push(t) } })));
   await flush();
   const dir = row(m.container, "Add captions to the interview")!;
   await click(dir);
@@ -92,7 +92,8 @@ test(name("a click, Enter or a double-click on a row never changes what the edit
   await waitFor(() => !!byText(m.container, ".carton-card-version button", "Play all") && !(byText(m.container, ".carton-card-version button", "Play all") as HTMLButtonElement).disabled, "Play all");
   await click(byText(m.container, ".carton-card-version button", "Play all"));
   assert.equal(ui.viewing(), null, "the newest plays on your edit (DESIGN §5.3)");
-  assert.deepEqual(sought, [1], "one second before its first change, at 0:02");
+  assert.equal(frames[0], 1, "the playhead goes to a second before its first change, at 0:02");
+  assert.deepEqual(sought, [], "Play moves the playhead through the player, not a seek");
   assert.ok($(m.container, ".carton-card-version .carton-change[data-playing]"), "its row is lit");
   assert.ok(byText(m.container, ".carton-card-version button", "Pause"));
   // a change row's click moves the playhead there, without playing
