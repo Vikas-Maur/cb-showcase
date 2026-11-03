@@ -433,6 +433,8 @@ export const words = {
   openingNow: "Opening…",
   inYourLibrary: (name: string) => `“${name}” is in your library now.`,
   openIt: "Open",
+  // the footage notice for one clip (clipsOfflineUntil is the plural's)
+  clipOfflineUntil: (name: string) => `${name} shows as Offline until it arrives. Nothing was removed.`,
 };
 
 export type Words = typeof words;

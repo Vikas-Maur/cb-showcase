@@ -872,7 +872,7 @@ with Carton off none of it runs at all.
   The Share dialog shows the status and who is in the project, with what they are doing. The title bar shows it too,
   with nothing open: a dot on the Share icon (amber offline, white
   while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
-  says "Offline: 3 edits waiting" while edits wait (a click opens Share). Someone with the project open but idle stays
+  says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
   listed, faded. In a narrow window the title bar keeps only the History icon (Share is in the History panel's head),
   with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
@@ -889,7 +889,9 @@ with Carton off none of it runs at all.
   Media Files", whose only way on is a red "Remove and Open" (which, live, would remove the clips for everyone). With
   Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
   is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
-  removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
+  removal; a notice over the preview says so in a title line ("2 clips are still on their way from your teammate"),
+  then which ones, by name ("“interview-b.mp4” and “broll-03.mp4” show as Offline until they arrive. Nothing was
+  removed."), and later that they have arrived. The dialog still
   appears for footage that was on this computer and is gone (moved, a drive unplugged). If the worker can't tell whose
   a clip is (it fails, or doesn't answer within 6 s), the clips go Offline too, never to the dialog, and the notice says
   to reopen the project to check again.

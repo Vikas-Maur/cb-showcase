@@ -310,6 +310,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-media-notice > .carton-icon){color:var(--cb-ok)}
 :where(${S}) :where(.carton-media-notice[data-waiting] > .carton-icon){color:var(--cb-warn)}
 :where(${S}) :where(.carton-media-notice-text){flex:1;min-width:0;text-wrap:pretty}
+/* PLAN 8.3: clips on their way, a title line then which ones */
+:where(${S}) :where(.carton-media-notice:has(.carton-media-notice-title)){align-items:flex-start;padding-top:9px;padding-bottom:9px}
+:where(${S}) :where(.carton-media-notice:has(.carton-media-notice-title) > .carton-icon){margin-top:2px}
+:where(${S}) :where(.carton-media-notice:has(.carton-media-notice-title) .carton-media-notice-text){color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-media-notice-title){display:block;font-weight:600;color:var(--cb-fg-1)}
 /* a short confirmation (Restore, Fold in, Keep …: scripts/carton/ui.js Toast), bottom centre of the stage */
 :where(.carton-stage${S}) > :where(.carton-stage-toast){position:absolute;left:12px;right:12px;bottom:52px;display:flex;justify-content:center;pointer-events:none}
 :where(${S}) :where(.carton-toast){display:flex;align-items:center;gap:8px;max-width:520px;min-height:40px;padding:4px 4px 4px 12px;border:1px solid #ffffff1a;border-radius:10px;

@@ -494,6 +494,8 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
  * Opening a shared project whose footage is a teammate's (UI audit P1-9; the editor patch in sync/patches/media.js
  * keeps Cardboard's "Missing Media Files" and its "Remove and Open" away from those clips): what happened, in words.
  * Clips not sent yet show as Offline; it checks every 15 s and says when they have arrived. Closed with its ✕ or Esc.
+ * Carton UX redesign PLAN 8.3: clips on their way say so in a title line, "2 clips are still on their way from Leo",
+ * then which ones, by name in quotes, and that nothing was removed (`from`: the teammate, when the notice is told).
  */
 function MediaNotice({ projectId, bridge }) {
   const [here, setHere] = useState(() => (window.__cartonMediaHere?.projectId === projectId ? window.__cartonMediaHere : null));
@@ -516,18 +518,21 @@ function MediaNotice({ projectId, bridge }) {
   }, [bridge, projectId, waiting, closed, arrived]);
   if (closed || !here || (!waiting.length && !here.playable)) return null;
   const names = waiting.slice(0, 2).map((w) => w.fileName).join(", ") + (waiting.length > 2 ? ` and ${waiting.length - 2} more` : "");
+  const quoted = waiting.length > 2 ? `${waiting.slice(0, 2).map((w) => `“${w.fileName}”`).join(", ")} and ${waiting.length - 2} more` : waiting.map((w) => `“${w.fileName}”`).join(" and ");
+  const onTheirWay = !here.unchecked && !arrived && waiting.length > 0;
+  const title = onTheirWay ? words.clipsOnTheirWay(waiting.length, typeof here.from === "string" && here.from ? here.from : "your teammate") : null;
   const text = here.unchecked
     ? `${waiting.length === 1 ? `${names} couldn't be checked, so it shows` : `${waiting.length} clips couldn't be checked (${names}), so they show`} as Offline. Nothing was removed. Close and reopen the project to check again.`
     : arrived
     ? "Your teammate's footage has arrived. Close and reopen the project to play it."
     : waiting.length === 1
-      ? `${names} hasn't arrived yet. It shows as Offline until your teammate's computer sends it. Nothing was removed.`
+      ? words.clipOfflineUntil(quoted)
       : waiting.length
-        ? `${waiting.length} clips haven't arrived yet (${names}). They show as Offline until your teammate's computer sends them. Nothing was removed.`
+        ? words.clipsOfflineUntil(quoted)
         : "This video plays from preview copies. Its originals stay on your teammate's computer.";
   return h("div", { className: "carton-media-notice", role: "status", "data-waiting": waiting.length && !arrived ? "" : undefined, onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); setClosed(true); } } },
     h(Icon, { name: waiting.length && !arrived ? "cloudSlash" : "cloudCheck", size: 14 }),
-    h("span", { className: "carton-media-notice-text" }, text),
+    h("span", { className: "carton-media-notice-text" }, title ? h("strong", { className: "carton-media-notice-title" }, title) : null, text),
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => setClosed(true) }));
 }
 
@@ -560,7 +565,8 @@ export function liveSummary(st) {
   const state = offline ? "offline" : st.status !== "up-to-date" || waiting ? "syncing" : "ok";
   return {
     state,
-    words: offline ? words.offline(waiting) : state === "syncing" ? words.syncing : words.upToDate,
+    // DESIGN §8: "Offline: 3 changes not sent yet", "Sending 2 changes" (PLAN 8.3)
+    words: offline ? words.offlineNotSent(waiting) : state === "syncing" ? (waiting ? words.sending(waiting) : words.syncing) : words.upToDate,
     here: hereWords(peers),
     people: peers.slice(0, 3).map((p) => ({ name: p.actor.name, initials: initials(p.actor.name), color: actorColor(p.actor), idle: !!p.idle })),
     more: Math.max(0, peers.length - 3),
@@ -576,7 +582,8 @@ function LiveChipView({ st, onOpen, peersToo = false }) {
   const peers = peersToo ? livePeers(st) : [];
   const offline = st.status === "offline" || st.status === "stopped";
   const waiting = st.pending ?? 0;
-  const status = offline ? words.offline(waiting) : st.status !== "up-to-date" && waiting ? words.syncing : null;
+  // PLAN 8.3: "Offline · 3 changes not sent yet", "Sending 2 changes"
+  const status = offline ? (waiting ? words.offlineChip(waiting) : words.offline(0)) : st.status !== "up-to-date" && waiting ? words.sending(waiting) : null;
   if (!status && !peers.length) return null;
   const here = hereWords(peers);
   return h("button", { type: "button", className: "carton-live-chip", "data-state": offline ? "offline" : status ? "syncing" : "ok", title: [status, here].filter(Boolean).join(" · ") + ". Open Share", "aria-label": [status, here].filter(Boolean).join(". ") + ". Open Share", onClick: onOpen },

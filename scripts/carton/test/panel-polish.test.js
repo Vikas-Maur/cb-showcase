@@ -113,18 +113,32 @@ test("P2-11: a shared project's status shows over the preview, not only in the S
   assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [] }), "", "up to date, nobody else: nothing");
   const off = chip({ shared: true, status: "offline", pending: 3, peers: [] });
   assert.match(off, /data-state="offline"/);
-  assert.match(off, />Offline: 3 edits waiting</);
+  assert.match(off, />Offline · 3 changes not sent yet</, "PLAN 8.3's words");
   // who is here shows in the title bar now (round 2): over the preview only while edits wait
   assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo()] }), "");
   const both = render(React.createElement(T.LiveChipView, { st: { shared: true, status: "up-to-date", pending: 0, peers: [leo(), { actor: null }] }, onOpen() {}, peersToo: true }));
   assert.match(both, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
 });
 
+test("PLAN 8.3: footage still on its way: a title line, then which clips by name, and that nothing was removed", opt, () => {
+  const notice = (waiting, extra = {}) => {
+    globalThis.window.__cartonMediaHere = { projectId: "p1", waiting, playable: 1, ...extra };
+    try { return render(React.createElement(T.MediaNotice, { projectId: "p1", bridge: { call: async () => ({}) } })); } finally { delete globalThis.window.__cartonMediaHere; }
+  };
+  const two = notice([{ mediaId: "m1", fileName: "interview-b.mp4" }, { mediaId: "m2", fileName: "broll-03.mp4" }], { from: "Leo" });
+  assert.match(two, /<strong class="carton-media-notice-title">2 clips are still on their way from Leo<\/strong>“interview-b\.mp4” and “broll-03\.mp4” show as Offline until they arrive\. Nothing was removed\./);
+  assert.match(notice([{ mediaId: "m1", fileName: "a.mov" }]), />1 clip is still on its way from your teammate<\/strong>“a\.mov” shows as Offline until it arrives\. Nothing was removed\./);
+  assert.match(notice(["a", "b", "c", "d"].map((n, i) => ({ mediaId: "m" + i, fileName: n + ".mp4" }))), /“a\.mp4”, “b\.mp4” and 2 more show as Offline/);
+  // the other states keep their one line
+  assert.doesNotMatch(notice([{ mediaId: "m1", fileName: "a.mov" }], { unchecked: true }), /carton-media-notice-title/);
+  assert.match(notice([]), /plays from preview copies/);
+});
+
 test("P2-11 (title bar): the strip's summary of a shared project: its state, its words, who is here", opt, () => {
   assert.equal(U.liveSummary({ shared: false }), null);
   const mia = { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia Chen" }, idle: true };
   const s = U.liveSummary({ shared: true, status: "offline", pending: 2, peers: [leo(), mia, { actor: { id: "x" } }] });
-  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 edits waiting", "Leo, Mia Chen are here", 0]);
+  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 changes not sent yet", "Leo, Mia Chen are here", 0]);
   assert.deepEqual(s.people.map((p) => [p.name, p.initials, p.idle, /^#[0-9a-f]{6}$/.test(p.color)]), [["Leo", "L", false, true], ["Mia Chen", "MC", true, true]]);
   assert.equal(U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: [] }).state, "ok");
   assert.equal(U.liveSummary({ shared: true, status: "syncing", pending: 1, peers: [] }).state, "syncing");
@@ -146,7 +160,7 @@ test("P2-11, P3-6: the title bar shows the sync dot and who is here; a narrow wi
   const live = U.liveSummary({ shared: true, status: "offline", pending: 3, peers: [leo()] });
   const wide = strip().html({ panel: null, live });
   assert.match(wide, /data-carton-strip="history"/);
-  assert.match(wide, /aria-label="Share · Offline: 3 edits waiting · Leo is here"/);
+  assert.match(wide, /aria-label="Share · Offline: 3 changes not sent yet · Leo is here"/);
   assert.match(wide, /data-carton-sync="offline"/);
   assert.match(wide, />L<\/span>/, "Leo's avatar");
   // as before for a project that isn't shared: the panel's name alone, no dot, no avatars
