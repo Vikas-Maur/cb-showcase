@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ws59Shots } from "./ws59-shots.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -75,7 +76,9 @@ const AFTER = [
   P("after-history-cuts-rename", "ws6-cuts", "The cuts menu in History's cut bar → Rename “Main cut”: the form inside the menu, across the bar.", async (p) => { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); await p.locator(".carton-menu-item", { hasText: "Rename" }).first().click(); await p.waitForTimeout(150); }),
   P("after-history-newcut", "ux-history", "⋯ on the Director's turn → New cut from this version…: the name field in the card.", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "New cut from this version").click(); await p.keyboard.type("30s Instagram cut"); await p.waitForTimeout(150); }),
 ];
-const SHOTS = [...AFTER,
+// workstreams 5 and 9 (toasts with Undo, Comments), beside after/toasts.png and comments-*.png
+const WS59 = ws59Shots({ P, T, menuItem, foldOlder, uxMenu, openCard, cutsMenu, tab });
+const SHOTS = [...AFTER, ...WS59,
   // History
   P("history-none", "history-none", "A cut with no versions at all (mock with 0 versions).", null),
   P("history-start", "history-start", "Only the system row \"Started the cut\".", null),

@@ -13,6 +13,7 @@ import { createMockUi, people } from "@carton/react/mock";
 import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi (the Share panel), as the app's bundle does
 import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
 import stripSource from "../../../../../scripts/carton/strip-buttons.js";
+import { addWs59 } from "./ws59.js";
 
 const params = new URLSearchParams(location.search);
 const scenarioName = params.get("s") ?? "history-few";
@@ -329,6 +330,7 @@ S["ux-empty"] = () => {
 // Loading: the worker never answers (its first History hasn't come yet)
 S["ux-loading"] = () => ({ ...ux()(), stall: true });
 
+addWs59(S, { ux, hist, stage, people, createMockComments }); // workstreams 5 and 9: toasts with Undo, Comments
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 
@@ -371,6 +373,10 @@ function makeBridge(sc) {
     // the clip selected on the timeline, for History's "Only “clip”" (scenarios that set `clip`)
     selectedClip: () => sc.clip ?? null,
     reveal(item) { window.__cap.revealed = item; },
+    // a toast's Undo and Redo (renderer-bridge.js undoMade/redoMade): the worker's answer at once, with the step's own
+    // version (the mock keeps no undo stack)
+    undoMade: (made) => Promise.resolve({ status: "confirmed", made: { cut: made.cut, changes: [`undo-${made.changes[0]}`] } }),
+    redoMade: (made) => Promise.resolve({ status: "confirmed", made: { cut: made.cut, changes: [`redo-${made.changes[0]}`] } }),
     openProject: () => new Promise((r) => setTimeout(r, 100)),
   };
   return api;
