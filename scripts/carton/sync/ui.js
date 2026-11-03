@@ -184,14 +184,15 @@ function RolePicker({ role, setRole }) {
   });
 }
 
-// The invite links made, by bridge, project and role: one invite on the server per role while the app runs (an hour at
-// most; an invite lasts days), not one per opening of the dialog. A failed one is made again when next asked.
+// The invite links made, by bridge, project, sharing server and role: one invite on the server per role while the app
+// runs (an hour at most; an invite lasts days), not one per opening of the dialog. A failed one is made again when next
+// asked.
 const madeLinks = new WeakMap();
 const LINK_MS = 3_600_000;
-function linkFor(bridge, projectId, role) {
+function linkFor(bridge, projectId, host, role) {
   let m = madeLinks.get(bridge);
   if (!m) madeLinks.set(bridge, (m = new Map()));
-  const k = projectId + "\n" + role, had = m.get(k);
+  const k = [projectId, host ?? "", role].join("\n"), had = m.get(k);
   if (had && Date.now() - had.at < LINK_MS) return had.p;
   const p = Promise.resolve().then(() => bridge.call("liveInvite", [{ projectId, role }])).then((r) => {
     if (typeof r?.link !== "string") throw new Error("no invite link");
@@ -208,7 +209,7 @@ function linkFor(bridge, projectId, role) {
  * is made again by Copy link, which says why if it fails again. Offline the server can't make one: Copy link is off and
  * says when it can.
  */
-export function Invite({ projectId, bridge, offline }) {
+export function Invite({ projectId, bridge, host, offline }) {
   const [role, setRole] = useState("editor"), [links, setLinks] = useState({}), [copied, setCopied] = useState(null);
   const field = useRef(null);
   const link = links[role] ?? null;
@@ -220,13 +221,13 @@ export function Invite({ projectId, bridge, offline }) {
   useEffect(() => {
     if (offline || link) return undefined;
     let live = true;
-    linkFor(bridge, projectId, role).then((l) => { if (live) setLinks((m) => ({ ...m, [role]: l })); }, () => {});
+    linkFor(bridge, projectId, host, role).then((l) => { if (live) setLinks((m) => ({ ...m, [role]: l })); }, () => {});
     return () => { live = false; };
-  }, [offline, link, role, projectId, bridge]);
+  }, [offline, link, role, projectId, host, bridge]);
   const [copy, busy, error] = useAction(async () => {
     let l = link;
     if (!l) {
-      l = await linkFor(bridge, projectId, role);
+      l = await linkFor(bridge, projectId, host, role);
       setLinks((m) => ({ ...m, [role]: l }));
     }
     // a clipboard that refuses (no focus) leaves the link selected in its field, to copy by hand
@@ -357,7 +358,7 @@ export function ShareDialog({ projectId, bridge, name, onClose }) {
   return h(Dialog, { key: "shared", title, onClose, className: "carton-share-dialog", aside: h(StatusWord, { st }) },
     h(LiveStatus, { st }),
     // Only the owner can invite (the server checks too)
-    st.role === "owner" ? h(Invite, { projectId, bridge, offline: isOffline(st) }) : null);
+    st.role === "owner" ? h(Invite, { projectId, bridge, host: st.host, offline: isOffline(st) }) : null);
 }
 
 /**
