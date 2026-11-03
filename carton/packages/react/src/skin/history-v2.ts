@@ -99,12 +99,16 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-compare-btn:focus-visible){outline:none;box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
 /* an icon alone at the panel's narrowest (§4.2) */
 @container (max-width: 316px){ :where(${S}) :where(.carton-compare-word){display:none} :where(${S}) :where(.carton-compare-btn){width:28px;padding:0;justify-content:center} }
-:where(${S}) :where(.carton-compare-menu){width:310px;max-width:calc(100vw - 24px)}
-/* a narrow panel: the menu spans the cut bar, as the cuts menu does; held to the button's right edge, its 310 px ran
-   out of a 300 px panel on the left, cutting off "Compare your edit with…" and every entry's first letters (design QA v2) */
-@container (max-width: 360px){ :where(${S}) :where(.carton-cutbar .carton-compare-anchor){position:static}
-  :where(${S}) :where(.carton-cutbar .carton-compare-anchor .carton-menu-pop){left:10px;right:10px}
-  :where(${S}) :where(.carton-cutbar .carton-compare-menu){width:auto;max-width:none} }
+:where(${S}) :where(.carton-compare-menu){width:280px;max-width:calc(100vw - 24px)}
+/* the cut bar's Compare menu spans the bar, as the cuts menu does (never past the panel's edge at 300 px) */
+:where(${S}) :where(.carton-cutbar .carton-compare-anchor){position:static}
+:where(${S}) :where(.carton-cutbar .carton-compare-anchor .carton-menu-pop){left:12px;right:10px}
+:where(${S}) :where(.carton-cutbar .carton-compare-menu){width:auto;max-width:none}
+/* the pick line's cut menu spans the line itself, never wider than the panel (300 px) */
+:where(${S}) :where(.carton-pick-line){position:relative}
+:where(${S}) :where(.carton-pick-line .carton-pick-cut){position:static}
+:where(${S}) :where(.carton-pick-line .carton-menu-pop){left:0;right:0;top:calc(100% + 4px)}
+:where(${S}) :where(.carton-pick-line .carton-compare-menu){width:auto;max-width:none}
 :where(${S}) :where(.carton-compare-entry){gap:10px}
 :where(${S}) :where(.carton-compare-entry .carton-landmark-tile){width:40px;height:23px}
 :where(${S}) :where(.carton-pick-line){display:flex;align-items:flex-start;gap:8px;margin:0 12px 8px;padding:8px 8px 8px 10px;border-radius:8px;
@@ -124,5 +128,18 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-history[data-picking] .carton-version-more){display:none}
 :where(${S}) :where(.carton-version[data-pick-from]){background:#8ab4ff0f;box-shadow:inset 2px 0 0 #8ab4ff}
 :where(${S}) :where(.carton-pick-from){margin-right:2px}
+/* Compare with… on another cut (N2c): its History to pick from */
+:where(${S}) :where(.carton-cut-picker){display:flex;flex-direction:column;flex:1 1 0;min-height:0}
+:where(${S}) :where(.carton-cut-picker-head){display:flex;flex-direction:column;gap:2px;margin:0 12px 6px}
+:where(${S}) :where(.carton-cut-picker-back){display:inline-flex;align-items:center;gap:5px;align-self:flex-start;height:24px;padding:0 6px 0 4px;margin-left:-4px;border:0;border-radius:5px;
+  background:none;font:inherit;font-size:12px;color:var(--cb-fg-2);cursor:pointer}
+:where(${S}) :where(.carton-cut-picker-back:hover){background:#ffffff10;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-cut-picker-title){margin:0!important;font-size:13px;line-height:18px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-cut-picker-loading){margin:8px 14px;font-size:12px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-cut-pick-row){cursor:pointer}
+:where(${S}) :where(.carton-cut-pick-row:hover .carton-cut-pick-go, .carton-cut-picker-list:focus-within .carton-cut-pick-row[aria-selected=true] .carton-cut-pick-go){display:inline-flex}
+:where(${S}) :where(.carton-cut-pick-row:hover .carton-version-when){display:none}
+:where(${S}) :where(.carton-cut-pick-row[data-now] .carton-version-title){grid-row:1 / span 2;align-self:center;font-weight:500}
+:where(${S}) :where(.carton-cut-pick-row[data-now] .carton-cut-pick-go){grid-row:1 / span 2;align-self:center}
 :where(${S}) :where(.carton-panel-head.carton-cutbar){container-type:inline-size}
 `;

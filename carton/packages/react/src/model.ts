@@ -178,6 +178,17 @@ export interface Landmark {
   readonly picture: string;
 }
 
+/** A page of another cut's History (`CartonUi.cutHistory`). */
+export interface CutHistoryPage {
+  readonly cutId: string;
+  /** Newest first. */
+  readonly versions: readonly Version[];
+  /** The next (older) page's cursor; absent: this page reaches the cut's start. */
+  readonly before?: number;
+  /** That cut's landmarks (the first page only). */
+  readonly landmarks?: readonly Landmark[];
+}
+
 /** A row of "Choose a clip…" (DESIGN-V2 §3.2; core's BringBackChoice). Seconds; `text` a title's or caption's. */
 export interface BringBackChoice {
   readonly itemId: string;
@@ -852,6 +863,12 @@ export interface CartonUi {
   restoreClip?(ref: string, itemId: string, opts?: { remove?: boolean; expect?: string }): Promise<BringBack>;
   /** "Choose a clip…" (DESIGN-V2 §3.2): the clips that differ between version `ref` and your edit now. */
   bringBackChoices?(ref: string): Promise<BringBackChoices>;
+  /**
+   * Another cut's History, a page at a time, newest first (Carton UX v2 N2c: "Compare with…" picks a version on any cut).
+   * Its versions are History's rows as the panel shows them (words, author, time); `before`: the next page's cursor
+   * (pass it back), absent at the cut's start; `landmarks` on the first page. Read only when asked: never kept.
+   */
+  cutHistory?(cutId: string, opts?: { before?: number; limit?: number }): Promise<CutHistoryPage>;
   /** The clip-by-clip match between two versions, any two cuts (DESIGN-V2 §1.15). Cached per (a, b). */
   align?(a: string, b: string): Promise<readonly AlignEntry[]>;
   /** A landmark's picture (`Landmark.picture`) as a `data:image/jpeg` URL, or null when none was made yet. */

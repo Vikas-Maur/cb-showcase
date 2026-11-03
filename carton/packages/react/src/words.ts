@@ -622,6 +622,13 @@ export const words = {
   leavePick: "Stop picking",
   compareThis: (label: string) => `Compare with ${label}`,
   thatCutNow: (cut: string) => `${cut} now`,
+  // Compare with… on another cut (N2c): that cut's History, to pick from
+  pickOnCut: (cut: string) => `Pick a version on ${cut}`,
+  backToCut: (cut: string) => `Back to ${cut}`,
+  cutAsItIsNow: (cut: string) => `${cut} as it is now`,
+  readingItsHistory: "Reading its History…",
+  cutHistoryFailed: "Couldn't read that cut's History. Try again.",
+  aVersionOn: (cut: string) => `A version on ${cut}…`,
   compareFailed: "Couldn't compare them. Try again.",
 
   // Share and Join, the dialogs' own words beside the ones above (Carton UX redesign PLAN 8.1, 8.2; scripts/carton/sync/ui.js)

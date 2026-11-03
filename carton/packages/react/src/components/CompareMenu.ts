@@ -37,9 +37,13 @@ export function openCompareVia(ui: CartonUi, fallback: (a: string, b: string) =>
   };
 }
 
-/** What pick mode compares from: a version, or your edit now (null: Pick a version… from the Compare menu). */
+/**
+ * What pick mode compares from: a version, or your edit now (null: Pick a version… from the Compare menu); and the cut
+ * whose History the list shows to pick from (N2c: another cut's, `CutPicker`), absent: yours.
+ */
 export interface Picking {
   readonly from: Version | null;
+  readonly cut?: Cut;
 }
 
 /** The newest landmark of these kinds (`landmarks` is newest first). */
@@ -140,9 +144,9 @@ export function CompareButton(p: { landmarks: readonly Landmark[]; today: number
               ...other.map((c) =>
                 h(
                   "button",
-                  { key: c.id, type: "button", role: "menuitem", tabIndex: -1, className: "carton-menu-item", onClick: () => go(c.id) },
+                  { key: c.id, type: "button", role: "menuitem", tabIndex: -1, className: "carton-menu-item", onClick: () => (setOpen(null), p.onPick({ from: null, cut: c })) },
                   h("span", { className: "carton-menu-icon" }, h(CutMark, { cut: c })),
-                  h("span", { className: "carton-menu-text" }, c.label),
+                  h("span", { className: "carton-menu-text" }, words.aVersionOn(c.label)),
                 ),
               ),
             ),
@@ -155,7 +159,7 @@ export function CompareButton(p: { landmarks: readonly Landmark[]; today: number
  * Pick mode's line above the list (DESIGN-V2 §4.1): what it compares from, "Click a second version", the other cuts
  * (for Compare across cuts: that cut now), and Esc.
  */
-export function PickLine(p: { pick: Picking; onCompare: CompareTo; onLeave: () => void }) {
+export function PickLine(p: { pick: Picking; onCompare: CompareTo; onLeave: () => void; onCut: (cut: Cut) => void }) {
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
@@ -215,13 +219,12 @@ export function PickLine(p: { pick: Picking; onCompare: CompareTo; onLeave: () =
                             className: "carton-menu-item",
                             onClick: () => {
                               setMenu(false);
-                              p.onLeave();
-                              // that cut now, with the version picked from (or your edit)
-                              void p.onCompare(c.id, from ? from.ref : null).catch(() => {});
+                              // that cut's History in place of the list, to pick from (its first row: as it is now)
+                              p.onCut(c);
                             },
                           },
                           h("span", { className: "carton-menu-icon" }, h(CutMark, { cut: c })),
-                          h("span", { className: "carton-menu-text" }, words.thatCutNow(c.label)),
+                          h("span", { className: "carton-menu-text" }, words.aVersionOn(c.label)),
                         ),
                       ),
                     ),

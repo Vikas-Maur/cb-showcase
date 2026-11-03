@@ -40,6 +40,8 @@ const METHODS = [
   "view", "changes", "changesIn", "undoTurnOf", "clipVersions",
   // Carton UX v2 (N0)
   "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture", "bringBackChoices", "align",
+  // Carton UX v2 (N2c): another cut's History, for Compare with… on any cut
+  "cutHistory",
 ] as const;
 type Method = (typeof METHODS)[number];
 
@@ -339,6 +341,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     landmarkPicture: (key) => call("landmarkPicture", key),
     saveLandmarkPicture: (key, jpeg) => call("saveLandmarkPicture", key, jpeg),
     bringBackChoices: (ref) => call("bringBackChoices", ref),
+    cutHistory: (cut, o) => call("cutHistory", cut, ...(o ? [o] : [])),
     align: (a, b) => call("align", a, b),
   };
 

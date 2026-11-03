@@ -2,11 +2,13 @@
 // capture rig and tests. Plain and in-memory, the shapes the real engine answers (`@carton/core` find.ts,
 // landmarks.ts, bring-back.ts, through the worker): never the engine's matching rules, only enough to show every state.
 
-import type { Actor, BringBack, BringBackChoices, Change, FindField, FindHit, FindHits, Landmark, Made, Version } from "./model.ts";
+import type { Actor, BringBack, BringBackChoices, Change, Cut, CutHistoryPage, FindField, FindHit, FindHits, Landmark, Made, Version } from "./model.ts";
 import { actorLabel } from "./actors.ts";
 
 export interface MockFindState {
   all(): readonly Version[];
+  /** The cuts (another cut's History, N2c). */
+  cuts(): readonly Cut[];
   /** What a version did (its card's rows), by id. */
   did(id: string): readonly Change[];
   /** Changes from a to b (the mock's `between`). */
@@ -97,7 +99,7 @@ export function mockFind(st: MockFindState) {
     return list.slice(0, o.limit ?? 200);
   };
 
-  const find = async (text: string, o: { limit?: number; fields?: readonly FindField[] } = {}): Promise<FindHits> => {
+  const find = async (text: string, o: { limit?: number; fields?: readonly FindField[]; allCuts?: boolean } = {}): Promise<FindHits> => {
     const tokens = fold(text).split(/\s+/).filter(Boolean);
     const all = st.all();
     if (!tokens.length) return { clips: [], hits: [], total: 0, versions: all.length };
@@ -143,6 +145,19 @@ export function mockFind(st: MockFindState) {
         ...(best.clipName ? { clipName: best.clipName } : {}),
       });
     }
+    // "Search every cut": the other cuts' versions too (the mock's made-up cut histories, their newest 200)
+    if (o.allCuts)
+      for (const c of st.cuts()) {
+        if (c.current) continue;
+        for (const v of (await cutHistory(c.id, { limit: 200 })).versions) {
+          const text = v.name ?? v.summary;
+          if (!tokens.every((t) => wordAt(text, t) >= 0)) continue;
+          total++;
+          if (hits.length >= (o.limit ?? 50)) continue;
+          const ranges = tokens.map((x) => [wordAt(text, x), x.length] as const).filter(([a]) => a >= 0).map(([a, n]) => [a, a + n] as const);
+          hits.push({ versionId: v.ref, ref: v.ref, cutId: c.id, at: v.at, author: v.author, field: v.name ? "name" : "clip", fields: [v.name ? "name" : "clip"], snippet: text, hits: ranges });
+        }
+      }
     return { clips: [...clips.values()].slice(0, 1), hits, total, versions: all.length };
   };
 
@@ -217,5 +232,22 @@ export function mockFind(st: MockFindState) {
     marking = on;
     st.notify("landmarks");
   };
-  return { find, landmarks, restoreClip, bringBackChoices, landmarkPicture, saveLandmarkPicture, mark, setLandmarks };
+  /** Another cut's History (N2c): made up for the gallery, 120 versions a cut, newest first, its head as `cuts()` says. */
+  const cutHistory = async (cutId: string, o: { before?: number; limit?: number } = {}): Promise<CutHistoryPage> => {
+    const c = st.cuts().find((x) => x.id === cutId);
+    if (!c) throw new Error("No such cut");
+    const [prefix, headSeq] = [c.head.split("@")[0]!, Number(c.head.split("@")[1] ?? 0)];
+    const top = Math.min(headSeq, (o.before ?? headSeq + 1) - 1);
+    const limit = o.limit ?? 100;
+    const SAYS = ["Trimmed “Interview A”, now ends at 0:11", "Moved “Logo sting” 1 s earlier", "Changed caption to “ship it”", "Cut “B-roll city” at 0:09", "Trimmed “Outro”, now ends at 0:30"];
+    const versions: Version[] = [];
+    for (let seq = top; seq >= 0 && versions.length < limit; seq--) {
+      const at = st.now - (headSeq - seq) * 7 * 60_000 - 30 * 60_000;
+      const author = seq % 3 === 0 ? (c.owner ?? st.me) : c.updatedBy ?? st.me;
+      versions.push({ id: `${cutId}:${seq}`, seq, ref: `${prefix}@${seq}`, at, author, kind: seq === 0 ? "edit" : "edit", summary: seq === 0 ? `Made this cut from Main cut` : SAYS[seq % SAYS.length]!, changes: 1, ...(seq === headSeq - 4 ? { name: "Sent to Leo" } : {}), ...(seq === 0 ? { start: "created" as const } : {}) });
+    }
+    const last = versions[versions.length - 1];
+    return { cutId, versions, ...(last && last.seq! > 0 && versions.length === limit ? { before: last.seq! } : {}) };
+  };
+  return { find, landmarks, restoreClip, bringBackChoices, cutHistory, landmarkPicture, saveLandmarkPicture, mark, setLandmarks };
 }

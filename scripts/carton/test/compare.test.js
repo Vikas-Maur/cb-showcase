@@ -444,12 +444,17 @@ test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare w
   try {
     await m.cmd("carton-history");
     const menuItems = () => [...document.querySelectorAll(".carton-menu-item")];
-    // ⇆ Compare → Another cut › → “30s Instagram cut”: that cut now with the cut you're on now
+    // ⇆ Compare → Another cut › → A version on “30s Instagram cut”… (N2c: that cut's History to pick from) → its first
+    // row, that cut as it is now: that cut now with the cut you're on now
     const btn = m.side.querySelector(".carton-compare-btn");
     assert.ok(btn, "History's ⇆ Compare button");
     await m.click(btn);
     await m.click(menuItems().find((b) => /Another cut/.test(b.textContent)));
-    await m.click(menuItems().find((b) => /30s Instagram cut/.test(b.textContent)));
+    await m.click(menuItems().find((b) => /A version on 30s Instagram cut/.test(b.textContent)));
+    await m.settle(120);
+    const now = m.side.querySelector(".carton-cut-pick-row[data-now]");
+    assert.ok(now, "that cut's History, “as it is now” first");
+    await m.click(now);
     await m.settle(80);
     assert.equal(m.page().comparing()?.left.cutId, "cut-ig", "Compare opened, across cuts");
     assert.ok(m.compare() && m.list(), "on the stage, and the list in the panel");
