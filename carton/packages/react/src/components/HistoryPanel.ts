@@ -459,7 +459,7 @@ function ClipCredits({ item, name, title }: { item: string; name: string; title?
       // the clip as the timeline names it (the engine's answer may be its id)
       h("span", null, title ?? `“${name || credits.value.clip}”`),
     ),
-    h("p", null, text),
+    h("p", { title: text }, text),
   );
 }
 

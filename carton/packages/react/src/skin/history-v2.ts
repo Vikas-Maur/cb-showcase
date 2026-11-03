@@ -22,6 +22,9 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-find-why ~ .carton-find-snippet, .carton-find-why ~ .carton-actor-name, .carton-find-why ~ .carton-more)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}
 :where(${S}) :where(.carton-find-clip){display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:8px 8px 8px 0;border-radius:8px;background:#ffffff08}
 :where(${S}) :where(.carton-find-clip .carton-clip-credits){flex:1;min-width:0;margin:0;padding:0 0 0 10px;background:none}
+/* its credits in two lines at most, the whole in the tooltip: at 300 px they ran to five and pushed the results below
+   the fold (design QA v2 G12) */
+:where(${S}) :where(.carton-find-clip .carton-clip-credits p){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 :where(${S}) :where(.carton-find-clip .carton-find-only){flex:none;height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
 :where(${S}) :where(.carton-find-empty){padding:28px 22px;text-align:center}
 :where(${S}) :where(.carton-find-empty-title){margin:0 0 6px;font-size:13px;font-weight:600;color:var(--cb-fg-1);text-wrap:balance}
