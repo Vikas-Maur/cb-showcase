@@ -1,0 +1,24 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="skin.css">
+<script src="icons.js"></script><script src="kit.js"></script><script src="editor.js"></script></head><body><script>
+const shareWith = (people, dot = "") => `<span class="tb-btn" style="position:relative;gap:5px">${I("users", 16)}${dot ? `<span style="position:absolute;top:4px;left:18px;width:7px;height:7px;border-radius:9px;background:${dot};box-shadow:0 0 0 2px #0b0b0b"></span>` : ""}<span style="display:flex">${people.map((p, i) => `<span class="av ${p} sm" style="${i ? "margin-left:-4px;" : ""}box-shadow:0 0 0 1.5px #0b0b0b">${{ leo: "L", mia: "M" }[p]}</span>`).join("")}</span></span>`;
+const crop = (name, html, w = 1522) => shot(name, 900, 40, `<div style="margin-left:${900 - w}px">${html}</div>`);
+const menuBelow = `<div style="position:absolute;right:452px;top:44px">${`<div class="menu" style="width:300px">
+  <div class="mlabel">Cuts</div>
+  <div class="mi"><span class="ck">${I("check")}</span><span style="flex:1">Main cut<span class="sub">You · now</span></span></div>
+  <div class="mi hov"><span class="ck"></span><span style="flex:1"><span style="display:flex;align-items:center;gap:6px"><span class="cutdot" style="background:#f59e0b"></span>30s Instagram cut</span><span class="sub">Director · 2 h ago</span></span></div>
+  <div class="mi"><span class="ck"></span><span style="flex:1"><span style="display:flex;align-items:center;gap:6px"><span class="cutdot" style="background:#22d3ee"></span>Client review</span><span class="sub">You · yesterday</span></span></div>
+  <div class="msep"></div><div class="mi">${I("plus")}New cut from your edit</div><div class="mi">${I("versions")}Open History</div>
+  <div class="msep"></div><div class="mnote">Agents work on the cut you're on.</div></div>`}</div>`;
+const frames = [
+  crop("titlebar-default", titlebar({ chip: cutChip() })),
+  crop("titlebar-viewing", titlebar({ chip: cutChip({ viewing: "Director's “Add captions…”" }), history: true })),
+  crop("titlebar-teammate-cut", titlebar({ chip: cutChip({ cut: "Main cut", viewing: "Leo's Main cut" }), history: true, share: shareWith(["leo"]) })),
+  crop("titlebar-other-cut", titlebar({ chip: cutChip({ cut: "30s Instagram cut", dot: "#f59e0b" }) })),
+  crop("titlebar-shared", titlebar({ chip: cutChip(), share: shareWith(["leo", "mia"]) })),
+  crop("titlebar-offline", titlebar({ chip: cutChip(), share: shareWith(["leo"], "#fbbd23") })),
+  shot("titlebar-cuts-menu", 900, 330, `<div style="margin-left:-622px;position:relative">${titlebar({ chip: cutChip().replace("tb-chip hov", "tb-chip hov") })}</div><div style="position:absolute;right:0;top:0;width:900px;height:330px">${menuBelow.replace("right:452px", "left:388px")}</div>`),
+  // narrow window (< 1180 px): the chip keeps the cut's name, cut short; Share opens from the History panel's header there
+  shot("titlebar-narrow", 700, 40, `<div style="margin-left:-260px">${titlebar({ w: 960, chip: `<span class="tb-chip" style="box-shadow:inset 0 0 0 1px #ffffff14;max-width:150px"><span class="cutdot" style="background:#f59e0b"></span><span style="overflow:hidden;text-overflow:ellipsis">30s Instagram cut</span>${I("caret", 11)}</span>`, tabs: "Weekend reel", share: " " })}</div>`),
+];
+build(frames.join(""));
+</script></body></html>

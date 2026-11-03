@@ -1,0 +1,23 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="skin.css">
+<script src="icons.js"></script><script src="kit.js"></script><script src="story.js"></script><script src="editor.js"></script></head><body><script>
+const LBL = "Director's “Add captions…”";
+const T = day("Today", "");
+const viewPanel = (before = false) => panel(head() + cutbar({ right: filterBtn }) + `<div class="list">` + T + turnRow() + mineRow() + dirRow({ when: viewingWhen, whenCls: "view", cls: "viewing" }) + olderCard(true, before) + `</div>`, 770);
+// The frame's own label: only when the History list isn't on screen (a conflict side, Comments, the drawer hidden).
+const frameLabel = (t) => `<div class="framelabel">${I("eye", 13)}<span>${t}</span><button class="b" title="Back to my edit (Esc)">${I("x", 12)}</button></div>`;
+const tried = `<div style="position:absolute;left:12px;right:12px;bottom:14px;display:flex;justify-content:center"><div class="toast" style="white-space:normal;max-width:100%">${I("eye", 16, "dim")}<span style="flex:1;min-width:0">You're looking at ${LBL}.</span><button class="btn xs pri" style="flex:none">Back to my edit</button><span class="kbd" style="flex:none">Esc</span></div></div>`;
+// Interview B, before Director's turn moved it 2 s later.
+const BEFORE = { "Product close-up": [12, 16], "Interview B": [16, 25], "B-roll 3": [25, 31] };
+const frames = [];
+// 1. Normal: History open on your edit; the newest turn's card open (Play all runs on your edit: nothing is viewed).
+frames.push(shot("editor-default", 1522, 810, editor({ chip: cutChip(), panelHtml: panel(head() + cutbar({ right: filterBtn }) + `<div class="list">${T}${today({ turn: { cls: "sel" }, after: detail() })}</div>`, 770) })));
+// 2. Viewing (Play all on Director's older turn): the chip, the frame, the row. Nothing over the picture.
+frames.push(shot("editor-viewing", 1522, 810, editor({ chip: cutChip({ viewing: LBL }), panelHtml: viewPanel(), viewing: true, tl: { playhead: 19 } })));
+// 3. Before held: the same moment, before the turn; Interview B back where it was.
+frames.push(shot("editor-before", 1522, 810, editor({ chip: cutChip({ viewing: "Before " + LBL }), panelHtml: viewPanel(true), viewing: true, tl: { playhead: 19, moved: BEFORE } })));
+// 4. An edit tried while viewing: one line, the frame pulses; nothing changed.
+frames.push(shot("editor-edit-attempt", 1522, 810, editor({ chip: cutChip({ viewing: LBL }), panelHtml: viewPanel(), viewing: true, stage: tried + `<div style="position:absolute;inset:0;box-shadow:inset 0 0 0 4px #8ab4ffcc;pointer-events:none"></div>`, tl: { playhead: 19 } })));
+// 5. Panel closed, on another cut: the title bar says which (a colour for every cut but Main), and so does the timeline.
+frames.push(shot("editor-other-cut", 1522, 810, editor({ chip: cutChip({ cut: "30s Instagram cut", dot: "#f59e0b" }), tl: { label: `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#ffffffb3;margin-right:6px"><span class="cutdot" style="background:#f59e0b"></span>30s Instagram cut</span>` } })));
+build(frames.join(""));
+</script></body></html>

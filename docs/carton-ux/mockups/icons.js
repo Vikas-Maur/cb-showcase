@@ -1,0 +1,58 @@
+// <i data-i="name"></i> → an inline SVG icon (thin, Phosphor-like, as Cardboard's). Agent marks: data-i="director" etc.
+const ICONS = {
+  cut: '<circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.4 20 17M8.2 16.6 20 7"/>',
+  caret: '<path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>',
+  caretR: '<path d="m9.5 6.5 5.5 5.5-5.5 5.5"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  play: '<path d="M7.5 5.5v13l11-6.5z" fill="currentColor"/>',
+  pause: '<path d="M8 5.5v13M16 5.5v13" stroke-width="3"/>',
+  prev: '<path d="M6.5 5.5v13M18 5.5l-9 6.5 9 6.5z" fill="currentColor"/>',
+  next: '<path d="M17.5 5.5v13M6 5.5l9 6.5-9 6.5z" fill="currentColor"/>',
+  restore: '<path d="M4.5 8.5V4M4.5 8.5H9"/><path d="M5 8.5A8 8 0 1 1 4 12"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  bookmark: '<path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/>',
+  bookmarkF: '<path d="M6.5 3.5h11v17l-5.5-4-5.5 4z" fill="currentColor"/>',
+  dots: '<circle cx="5.5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor"/>',
+  filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  fold: '<path d="M6 4v5a6 6 0 0 0 6 6h0a6 6 0 0 1 6 6"/><path d="M18 4v5a6 6 0 0 1-3 5.2"/><path d="m3.5 6.5 2.5-2.5 2.5 2.5M15.5 6.5 18 4l2.5 2.5"/>',
+  foldIn: '<path d="M7 4v4.5a5 5 0 0 0 5 5h0a5 5 0 0 0 5-5V4"/><path d="M12 13.5V21"/><path d="m9 18 3 3 3-3"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+  users: '<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5c1-3.1 3.3-4.7 6-4.7s5 1.6 6 4.7"/><path d="M15.2 5.8a3.3 3.3 0 0 1 0 6.1M17.4 14.9c1.6.6 2.9 2.1 3.6 4.6"/>',
+  link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  warning: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17.2v.1"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  arrowLeft: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  versions: '<path d="M12 3.8l8.2 4.2-8.2 4.2-8.2-4.2z"/><path d="M3.8 12.2l8.2 4.2 8.2-4.2"/><path d="M3.8 16.2l8.2 4.2 8.2-4.2"/>',
+  comment: '<path d="M4.5 5.5h15v10h-8l-4.5 3.5v-3.5H4.5z"/>',
+  cloudSlash: '<path d="M7 18.5h9.5a4 4 0 0 0 1.5-7.7A6 6 0 0 0 7.2 9 4.8 4.8 0 0 0 7 18.5z"/><path d="M4 4l16 16"/>',
+  cloudCheck: '<path d="M7 18.5h9.5a4 4 0 0 0 1.5-7.7A6 6 0 0 0 7.2 9 4.8 4.8 0 0 0 7 18.5z"/><path d="m9.5 13.5 2 2 3.5-3.5"/>',
+  sync: '<path d="M19.5 9A8 8 0 0 0 5.2 7.6M4.5 15a8 8 0 0 0 14.3 1.4"/><path d="M19.5 4.5V9H15M4.5 19.5V15H9"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  pencil: '<path d="M14.5 5.5l4 4L9 19H5v-4z"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/>',
+  arrowUp: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  film: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M7.5 5.5v13M16.5 5.5v13M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4"/>',
+  text: '<path d="M6 7V5.5h12V7M12 5.5v13M9.5 18.5h5"/>',
+  music: '<path d="M9 18.5V6l10-2v12.5"/><circle cx="6.5" cy="18.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/>',
+  cc: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M10.5 10.2a2.3 2.3 0 1 0 0 3.6M17 10.2a2.3 2.3 0 1 0 0 3.6"/>',
+  layers: '<path d="M12 4l8 4-8 4-8-4z"/><path d="m4 12 8 4 8-4"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.1"/>',
+  bug: '<rect x="7.5" y="7.5" width="9" height="12" rx="4.5"/><path d="M9.5 7.5a2.5 2.5 0 0 1 5 0M4 12h3.5M16.5 12H20M5 7l2.5 2M19 7l-2.5 2M5 18l2.5-2M19 18l-2.5-2"/>',
+  aspect: '<rect x="3.5" y="6.5" width="17" height="11" rx="1.5"/>',
+  panelR: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>',
+  hourglass: '<path d="M7 3.5h10M7 20.5h10M8 3.5c0 5 8 5 8 8.5s-8 3.5-8 8.5M16 3.5c0 5-8 5-8 8.5"/>',
+  // agents' own marks (simplified): Director = Cardboard's arc of bars; Claude Code = Claude's burst; Codex = a knot
+  director: '<g stroke-width="2.2"><path d="M4.5 9.5v5M8 7.5v8.5M12 7v10M16 7.5v8.5M19.5 9.5v5"/></g>',
+  claude: '<g stroke="#d97757" stroke-width="2.2"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18"/></g>',
+  codex: '<path d="M12 4.2a4 4 0 0 1 3.8 2.6 4 4 0 0 1 3.4 5.4 4 4 0 0 1-2.4 6.2 4 4 0 0 1-6.5 1.4 4 4 0 0 1-5.6-3.2A4 4 0 0 1 4 10.3a4 4 0 0 1 4.3-4.6A4 4 0 0 1 12 4.2z"/><path d="m9.5 10.5 2 1.5-2 1.5M13 14h2"/>',
+};
+function iconize(root = document) {
+for (const el of root.querySelectorAll("i[data-i]")) {
+  const n = el.dataset.i, s = el.dataset.s;
+  el.outerHTML = `<svg class="i ${el.className}" viewBox="0 0 24 24" aria-hidden="true"${s ? ` style="width:${s}px;height:${s}px"` : ""}>${ICONS[n] ?? ""}</svg>`;
+}
+}

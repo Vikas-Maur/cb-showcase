@@ -1,0 +1,65 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="skin.css">
+<script src="icons.js"></script><script src="kit.js"></script><script src="story.js"></script><script src="editor.js"></script></head><body><script>
+// A conflict card: the radios only pick; each side has its own "See it" (that, and only that, shows it on the stage).
+const side = (on, label, what, when, seeing = false, see = true) => `
+  <label style="display:grid;grid-template-columns:16px 1fr auto;gap:2px 10px;align-items:center;padding:8px 10px;border-radius:8px;${on ? "background:#ffffff0d;box-shadow:inset 0 0 0 1px #ffffff1f" : ""}">
+    <span class="radio${on ? " on" : ""}"></span>
+    <span style="color:var(--fg1);font-weight:500">${label} <span class="dim" style="font-weight:400;font-size:12px">· ${when}</span></span>
+    ${see ? (seeing ? `<button class="btn xs" style="background:#8ab4ff24;color:#dce8ff;box-shadow:inset 0 0 0 1px #8ab4ff66">${I("eye", 12)}Seeing it</button>` : `<button class="btn xs ghost">${I("eye", 12)}See it</button>`) : "<span></span>"}
+    <span></span><span style="color:var(--fg2);font-size:12.5px;grid-column:2/4">${what}</span>
+  </label>`;
+const conflict = ({ title, lead, sides, keep, note = "", count = "1/2", w = 352 }) => `
+  <div class="card" style="width:${w}px;padding:12px">
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      <span style="color:var(--warn);margin-top:1px">${I("warning", 16)}</span>
+      <div style="flex:1;min-width:0"><div style="color:var(--fg1);font-weight:600;line-height:18px">${title}</div><div class="muted" style="font-size:12.5px;line-height:17px;margin-top:2px">${lead}</div></div>
+      <button class="btn xs ghost" style="color:var(--fg3)">Not now</button>
+    </div>
+    ${note ? `<div class="hint" style="margin:8px 0 0 24px;display:flex;gap:6px;align-items:center">${av("claude", true, "live")}${note}</div>` : ""}
+    <div style="display:flex;flex-direction:column;gap:4px;margin:10px 0 10px">${sides}</div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <button class="btn sm pri">${keep}</button>
+      <button class="btn sm ghost" title="Show on timeline">${I("target", 14)}On timeline</button>
+      <span style="flex:1"></span>
+      ${count ? `<span class="dim" style="font-size:12px;display:inline-flex;align-items:center;gap:2px;white-space:nowrap">${count}<button class="btn icon" style="width:22px;height:22px">${I("caretR", 12)}</button></span>` : ""}
+    </div>
+  </div>`;
+const LEAD = "Pick the one to keep. Until you pick, yours is in the timeline.";
+const T1 = "“Interview B”: you and Claude Code both moved it";
+const cYours = conflict({ title: T1, lead: LEAD, sides: side(true, "Yours", "Moved it to start at 0:18", "2 min ago") + side(false, "Claude Code's", "Moved it to start at 0:20", "just now"), keep: "Keep yours" });
+const cTheirs = (seeing) => conflict({ title: T1, lead: LEAD, sides: side(false, "Yours", "Moved it to start at 0:18", "2 min ago") + side(true, "Claude Code's", "Moved it to start at 0:20", "just now", seeing), keep: "Keep Claude Code's" });
+const cSame = conflict({ title: "“Summer launch”: two of your changes disagree", lead: "You changed its text twice, from two places, at nearly the same time.", sides: side(true, "Your earlier change", "Changed it to “Summer launch”", "10:04 am") + side(false, "Your later change", "Changed it to “Summer sale”", "10:05 am"), keep: "Keep earlier", count: "" });
+const cBoth = conflict({ title: "“Tone.mp3”: you and Leo both replaced the music", lead: "Both can stay, on two tracks.", sides: side(false, "Yours", "Kept “Tone.mp3” from 0:00", "5 min ago") + side(false, "Leo's", "Replaced it with “Upbeat.wav”", "3 min ago") + side(true, "Both", "Leo's music on a new track under yours", "", false, false).replace(" <span class=\"dim\" style=\"font-weight:400;font-size:12px\">· </span>", ""), keep: "Keep both", count: "2/2" });
+const cTurn = conflict({ title: "“W6”: you and Claude Code both changed its size", lead: LEAD, note: "Claude Code is still working. Pick now, or when it's done.", sides: side(true, "Yours", "Made it smaller (font size 80)", "just now") + side(false, "Claude Code's", "Made it bigger (font size 120)", "just now"), keep: "Keep yours", count: "" });
+const pill = `<button class="card" style="display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:99px;color:var(--fg1);font-weight:500"><span style="color:var(--warn)">${I("warning", 14)}</span>2 conflicts to pick${I("caret", 12)}</button>`;
+const frameLabel = (t) => `<div class="framelabel">${I("eye", 13)}<span>${t}</span><button class="b" title="Back to my edit (Esc)">${I("x", 12)}</button></div>`;
+const at = (x, y, html, anchor = "br") => `<div style="position:absolute;${anchor.includes("b") ? "bottom" : "top"}:${y}px;${anchor.includes("r") ? "right" : "left"}:${x}px">${html}</div>`;
+// toasts: what happened, and the one useful next step
+const toast = (icon, text, act = "", cls = "ok") => `<div class="toast">${I(icon, 16, cls)}<span>${text}</span><span class="sp"></span>${act}<button class="btn icon" style="width:24px;height:24px">${I("x", 12)}</button></div>`;
+const U = `<button class="btn xs sec">Undo</button>`;
+const toasts = [
+  toast("check", "Restored your edit from 12:41 pm. Later changes are in History.", U),
+  toast("check", "Folded 2 changes from “30s cut” into Main cut.", U),
+  toast("check", "You're on “30s Instagram cut” now. Main cut is unchanged.", `<button class="btn xs sec">Switch back to Main cut</button>`),
+  toast("check", "Kept Claude Code's move of “Interview B”.", U),
+  toast("check", "Took out Claude Code's “Tighten the intro…” (4 changes).", U),
+  toast("undo", "Restore undone.", `<button class="btn xs sec">Redo</button>`, "dim"),
+  toast("warning", "Your last change wasn't saved. Do it again, or reopen the project.", "", "warn"),
+];
+const live = `<div style="display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:99px;background:#121212e6;box-shadow:0 0 0 1px #fbbd2333;color:#f3cf58;font-size:12.5px;font-weight:500">${I("cloudSlash", 14)}Offline · 3 changes not sent yet</div>`;
+const media = `<div class="card" style="width:340px;padding:10px 10px 10px 12px;display:flex;gap:10px;align-items:flex-start;font-size:12.5px;line-height:17px">${I("hourglass", 16, "muted")}<div style="flex:1"><div style="color:var(--fg1);font-weight:500">2 clips are still on their way from Leo</div><div class="muted">“interview-b.mp4” and “broll-03.mp4” show as Offline until they arrive. Nothing was removed.</div></div><button class="btn icon" style="width:24px;height:24px">${I("x", 12)}</button></div>`;
+const frames = [];
+frames.push(shot("conflict-card", 352, 0, cYours));
+frames.push(shot("conflict-card-theirs", 352, 0, cTheirs(false)));
+frames.push(shot("conflict-same-person", 352, 0, cSame));
+frames.push(shot("conflict-keep-both", 352, 0, cBoth));
+frames.push(shot("conflict-during-turn", 352, 0, cTurn));
+frames.push(shot("conflict-pill", 220, 40, pill));
+frames.push(shot("toasts", 760, 0, `<div style="display:flex;flex-direction:column;gap:12px;align-items:flex-start">${toasts.join("")}</div>`));
+frames.push(shot("stage-live-media", 360, 0, `<div style="display:flex;flex-direction:column;gap:12px">${media}${live}</div>`));
+// "See it" on Claude Code's side: viewing, with the frame's label (History isn't open) and the chip.
+frames.push(shot("editor-conflict-theirs", 1522, 810, editor({ chip: cutChip({ viewing: "Claude Code's “Interview B”" }), stage: frameLabel("Claude Code's move of “Interview B”") + at(16, 16, cTheirs(true).replace("width:352px", "width:340px")), viewing: true, tl: { playhead: 20, moved: { "Interview B": [20, 27], "B-roll 3": [27, 31] } } })));
+frames.push(shot("editor-conflict-pill", 1522, 810, editor({ stage: at(16, 16, pill), panelHtml: panel(head() + cutbar({ right: filterBtn }) + `<div class="list">${day("Today", "")}${today()}</div>`, 770) })));
+frames.push(shot("editor-toast-offline", 1522, 810, editor({ stage: at(0, 16, `<div style="width:${1522 - 366 - 384}px;display:flex;justify-content:center">${toasts[0]}</div>`) + at(14, 14, live, "bl") })));
+build(frames.join(""));
+</script></body></html>

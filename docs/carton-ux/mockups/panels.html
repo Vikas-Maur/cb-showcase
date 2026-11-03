@@ -1,0 +1,79 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="skin.css">
+<script src="icons.js"></script><script src="kit.js"></script><script src="story.js"></script></head><body><script>
+// ---- Cuts menu (from the panel's cut button, and the same menu from the title bar's cut chip) ----
+const cutItem = (on, name, by, when, extra = "", dot = "") => `<div class="mi${extra.includes("hov") ? " hov" : ""}"><span class="ck">${on ? I("check") : ""}</span><span style="min-width:0;flex:1"><span style="display:flex;align-items:center;gap:6px;overflow:hidden;white-space:nowrap">${dot ? `<span class="cutdot" style="background:${dot}"></span>` : ""}<span style="overflow:hidden;text-overflow:ellipsis">${name}</span></span><span class="sub">${by} · ${when}</span></span>${extra.replace("hov", "")}</div>`;
+const cutsMenu = (w = 300) => `<div class="menu" style="width:${w}px">
+  <div class="mlabel">Cuts</div>
+  ${cutItem(true, "Main cut", "You", "now")}
+  ${cutItem(false, "30s Instagram cut", "Director", "2 h ago", "hov", "#f59e0b")}
+  ${cutItem(false, "Client review — shorter version with alternate ending", "You", "yesterday", "", "#22d3ee")}
+  <div class="mlabel" style="margin-top:4px">From teammates</div>
+  ${cutItem(false, "Leo's Main cut", "Leo", "5 min ago", `<span class="r">${I("eye", 12)} View only</span>`, "#f0a35e")}
+  <div class="msep"></div>
+  <div class="mi">${I("plus")}New cut from your edit</div>
+  <div class="mi">${I("foldIn")}Fold in changes from a cut…</div>
+  <div class="mi">${I("pencil")}Rename “Main cut”</div>
+  <div class="msep"></div>
+  <div class="mnote">${I("info", 12)} Agents work on the cut you're on.</div>
+</div>`;
+const listBehind = `<div class="list" style="opacity:.55">${day("Today", "")}${today()}</div>`;
+// Switching while an agent works: the switch waits for the turn by default.
+const turnMenu = (w) => `<div class="menu" style="width:${w}px">
+  <div class="mlabel">Cuts</div>
+  ${cutItem(true, "Main cut", "Claude Code", "working now")}
+  <div class="mi hov" style="flex-direction:column;align-items:stretch;gap:6px"><span style="display:flex;align-items:center;gap:8px"><span class="ck"></span><span class="cutdot" style="background:#f59e0b"></span>30s Instagram cut</span>
+    <span class="hint" style="margin-left:22px">Claude Code is working on Main cut, and agents work on the cut you're on.</span>
+    <span style="display:flex;gap:6px;margin-left:22px"><button class="btn xs pri">Switch when it finishes</button><button class="btn xs sec">Switch now</button></span></div>
+  ${cutItem(false, "Client review", "You", "yesterday", "", "#22d3ee")}
+</div>`;
+const frames = [];
+for (const w of [384, 300]) {
+  frames.push(shot(`cuts-menu-turn-${w}`, w, 360, panel(head() + cutbar({ right: filterBtn }).replace('class="cutbtn"', 'class="cutbtn hov"') + listBehind + `<div style="position:absolute;left:8px;top:80px">${turnMenu(w - 16)}</div>`, 360)));
+  frames.push(shot(`cuts-menu-${w}`, w, 560, panel(head() + cutbar({ right: filterBtn }).replace('class="cutbtn"', 'class="cutbtn hov"') + listBehind + `<div style="position:absolute;left:8px;top:80px">${cutsMenu(w - 16)}</div>`, 560)));
+}
+// A teammate's cut, viewed: History shows its versions; what you can do with it is folding it in or copying it.
+const leoBar = "";
+const leoActions = `<div style="display:flex;gap:6px;padding:0 12px 10px"><button class="btn sm sec">${I("foldIn", 14)}Fold into Main cut…</button><button class="btn sm ghost">${I("plus", 14)}New cut from it</button></div>`;
+frames.push(shot("history-teammate-cut-384", 384, 470, panel(head() + cutbar({ cut: `<span class="cutdot" style="background:#f0a35e;margin-right:2px"></span>Leo's Main cut`, right: `<span class="pill view">${I("eye", 11)}Viewing<button class="btn icon" style="width:16px;height:16px;color:#bcd3ff" title="Back to my edit (Esc)">${I("x", 10)}</button></span>` }) + leoBar + leoActions + `<div class="list">${day("Today", "")}${row({ w: "leo", title: "Replaced the music with “Upbeat.wav”", meta: `Leo<span class="dot"></span>1 change`, when: "12:52 pm" })}${row({ w: "leoDirector", title: "<span class=q>“Add a title card at the end”</span>", meta: `Leo's Director<span class="dot"></span>3 changes`, when: "12:30 pm" })}${row({ w: "leo", title: "Trimmed “Outro”, now ends at 0:34", meta: `Leo<span class="dot"></span>5 changes`, when: "12:02 pm" })}</div>`, 470)));
+
+// ---- Changes view: "Compare with your edit" on 12:20, in place of the list ----
+const changes = (w, playingIx = -1, before = false) => {
+  const items = [
+    ["0:02", "v", "chg", "Trimmed “Intro”, now ends at 0:05", "Claude Code · 12:48 pm"],
+    ["0:05", "t", "chg", "Moved “Summer launch” 1 s earlier", "Claude Code · 12:48 pm"],
+    ["0:06", "v", "chg", "Moved “Interview B” 2 s later", "You · 12:41 pm"],
+    ["0:12", "t", "add", "Added lower third “Jane Smith, Founder”", "Claude Code · 12:48 pm"],
+    ["0:22", "v", "rem", "Removed “B-roll 3”", "Claude Code · 12:48 pm"],
+    ["0:25", "c", "chg", "Changed caption to “we cut editing time”", "You · 12:33 pm"],
+    ["—", "p", "chg", "Changed the frame rate to 30 fps", "You · 12:30 pm"],
+  ];
+  return panel(head() + `
+    <div style="display:flex;align-items:center;gap:6px;padding:2px 10px 0 6px;height:36px"><button class="btn sm ghost">${I("arrowLeft", 14)}History</button></div>
+    <div style="padding:4px 14px 10px">
+      <div style="color:var(--fg1);font-weight:600;font-size:15px">Changes since 12:20 pm</div>
+      <div class="muted" style="font-size:12.5px;margin-top:2px">From Director's “Add captions to the interview” to your edit now</div>
+    </div>
+    <div style="padding:0 14px">${map([[5, "chg", playingIx === 0], [13, "chg", playingIx === 1], [16, "chg", playingIx === 2], [31, "add", playingIx === 3], [58, "rem", playingIx === 4], [66, "chg", playingIx === 5]], playingIx >= 0 ? 15.6 : null)}
+      <div class="dim" style="display:flex;justify-content:space-between;font-size:11px;margin:-4px 0 6px"><span>0:00</span><span>7 changes · 0:38</span></div></div>
+    <div class="list" style="padding:0 14px">${items.map((c, i) => chg(c[0], c[1], c[2], c[3], c[4], i === playingIx ? "on" : i === 1 && playingIx < 0 ? "hov" : "", i === playingIx ? 45 : null)).join("")}</div>
+    <div class="transport">
+      <button class="btn sm sec">${playingIx >= 0 ? I("pause", 12) + "Pause" : I("play", 12) + "Play all"}</button>
+      ${playingIx >= 0 ? `<button class="toggle${before ? " on" : ""}" title="Hold to see how it was before (or press B)">Before</button>` : ""}
+      <span style="flex:1"></span>
+      <button class="btn sm ghost">${I("restore", 14)}Restore this version…</button>
+    </div>`, 640);
+};
+for (const w of [384, 300]) frames.push(shot(`changes-${w}`, w, 640, changes(w)));
+frames.push(shot("changes-playing-384", 384, 640, changes(384, 2)));
+frames.push(shot("changes-none-384", 384, 300, panel(head() + `<div style="display:flex;align-items:center;gap:6px;padding:2px 10px 0 6px;height:36px"><button class="btn sm ghost">${I("arrowLeft", 14)}History</button></div><div style="padding:4px 14px"><div style="color:var(--fg1);font-weight:600;font-size:15px">No changes since 12:20 pm</div><div class="muted" style="font-size:12.5px;margin-top:4px;line-height:17px">Your edit is the same as Director's “Add captions to the interview”.</div></div>`, 300)));
+
+// ---- Comments (light changes: no second heading, time in the editor's face, where a note sits now) ----
+const thread = (w, ini, name, time, body, extra = "") => `<div style="padding:10px 14px;border-bottom:1px solid var(--line)"><div style="display:flex;align-items:center;gap:8px">${av(w, true)}<span style="color:var(--fg1);font-weight:500">${name}</span><button class="pill" style="height:20px">${time}</button><span style="flex:1"></span><span class="dim" style="font-size:12px">${ini}</span></div><div style="margin:6px 0 0 24px;color:var(--fg2);line-height:18px">${body}</div>${extra}</div>`;
+for (const w of [384, 300]) frames.push(shot(`comments-${w}`, w, 520, panel(head("comments", w < 340) + `
+  <div style="padding:6px 12px 10px"><div class="input" style="height:auto;min-height:40px;align-items:flex-start;padding:10px"><span class="ph">Add a note at 0:13…</span></div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><span class="hint">At the playhead · 0:13</span><button class="btn xs sec" disabled>Comment</button></div></div>
+  ${thread("leo", "10 min ago", "Leo", "0:06", "Can we hold on the product shot a beat longer?", `<div style="margin:6px 0 0 24px;font-size:12px" class="dim">1 reply · <span class="link">Reply</span></div>`)}
+  ${thread("you", "1 h ago", "You", "0:22", "B-roll 3 feels out of place here.", `<div style="margin:6px 0 0 24px;display:flex;gap:6px;align-items:center;font-size:12px" class="muted">${I("info", 12)} That moment changed since. <span class="link">See it as it was</span></div>`)}
+  ${thread("mia", "yesterday", "Mia", "Whole video", "Love the pacing. Ship it.")}`, 520)));
+build(frames.join(""));
+</script></body></html>

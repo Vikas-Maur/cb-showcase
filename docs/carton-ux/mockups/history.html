@@ -1,0 +1,30 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="skin.css">
+<script src="icons.js"></script><script src="kit.js"></script><script src="story.js"></script></head><body><script>
+const P = (body, h) => panel(head() + body, h);
+const L = (inner) => `<div class="list">${inner}</div>`;
+const T = day("Today", "");
+const frames = [];
+for (const w of [384, 300]) {
+  frames.push(shot(`history-default-${w}`, w, 640, P(cutbar({ right: filterBtn }) + L(T + today() + older), 640)));
+  frames.push(shot(`history-expanded-${w}`, w, 640, P(cutbar({ right: filterBtn }) + L(T + today({ turn: { cls: "sel" }, after: detail() })), 640)));
+  frames.push(shot(`history-older-${w}`, w, 640, P(cutbar({ right: filterBtn }) + L(T + today({ dir: { cls: "sel" }, dirAfter: olderDetail })), 640)));
+  frames.push(shot(`history-restore-${w}`, w, 560, P(cutbar({ right: filterBtn }) + L(T + turnRow() + mineRow({ cls: "sel" }) + restoreConfirm), 560)));
+  // Viewing (Play on Director's turn): the row says so, with its ✕; no bar across the panel.
+  frames.push(shot(`history-viewing-${w}`, w, 560, P(cutbar({ right: filterBtn }) + L(T + turnRow() + mineRow() + dirRow({ when: viewingWhen, whenCls: "view", cls: "viewing" }) + olderCard(true)), 560)));
+  frames.push(shot(`history-empty-${w}`, w, 360, P(cutbar() + L(empty), 360)));
+}
+frames.push(shot("history-working-384", 384, 420, P(cutbar({ right: filterBtn }) + L(T + working + today({ top: turnRow({ when: "12:48 pm", whenCls: "" }) })), 420)));
+frames.push(shot("history-menu-384", 384, 460, P(cutbar({ right: filterBtn }) + L(T + today({ dir: { cls: "sel", more: true } })) + menu.replace("top:162px", "top:228px"), 460)));
+frames.push(shot("history-newcut-384", 384, 420, P(cutbar({ right: filterBtn }) + L(T + turnRow() + mineRow() + dirRow({ cls: "sel" }) + newCut), 420)));
+frames.push(shot("history-many-384", 384, 520, P(cutbar({ right: filterBtn }) + L(many), 520)));
+const filterMenu = `<div class="menu" style="position:absolute;right:10px;top:76px;width:230px"><div class="mlabel">Show</div>
+  <div class="mi"><span class="ck">${I("check")}</span>All versions</div><div class="mi"><span class="ck"></span>Named versions</div><div class="mi hov"><span class="ck"></span>Agent turns</div><div class="mi"><span class="ck"></span>Your changes</div>
+  <div class="msep"></div><div class="mi"><span class="ck"></span><span>Only “Interview B”<span class="sub">The clip selected on the timeline</span></span></div></div>`;
+frames.push(shot("history-filter-384", 384, 420, P(cutbar({ right: `<button class="btn icon" style="background:#ffffff12;color:var(--fg1)">${I("filter", 16)}</button>` }) + L(T + today()) + filterMenu, 420)));
+// One clip's history: its credits on top, then only the versions that touched it; the filter shows as a chip.
+const credits = `<div style="margin:0 12px 8px;padding:8px 10px;border-radius:8px;background:#ffffff08;font-size:12px;line-height:17px;color:var(--fg2)"><div style="display:flex;align-items:center;gap:6px;color:var(--fg1);font-weight:500;margin-bottom:2px"><span class="kind v">${I("film")}</span>“Interview B”</div>Added by You on Oct 30 · trimmed by Director · moved by You at 12:41 pm</div>`;
+frames.push(shot("history-clip-384", 384, 420, P(cutbar({ right: `<button class="btn icon" style="background:#ffffff12;color:var(--fg1)">${I("filter", 16)}</button>` }) + filterChip(`Only “Interview B”`) + credits + L(T + mineRow() + day("Yesterday", "2 versions", false) + row({ w: "director", title: "Trimmed “Interview B”, now ends at 0:27", meta: `Director<span class="dot"></span>1 change`, when: "4:10 pm" }) + row({ w: "you", title: "Added “Interview B”", meta: `You<span class="dot"></span>1 change`, when: "3:55 pm" })), 420)));
+frames.push(shot("history-offline-384", 384, 300, P(cutbar({ right: filterBtn }) + L(T + row({ w: "you", title: "Trimmed “Outro”, now ends at 0:36", meta: `You<span class="dot"></span>3 changes${I("caretR", 10)}<span class="pill wait" style="margin-left:4px">${I("cloudSlash", 11)}Not sent yet</span>`, when: "Now", whenCls: "now" }) + row({ w: "leo", title: "Replaced the music with “Upbeat.wav”", meta: `Leo<span class="dot"></span>1 change`, when: "12:52 pm" }) + dirRow()), 300)));
+frames.push(shot("history-loading-384", 384, 260, P(cutbar({ right: filterBtn }) + L([1, 2, 3].map(() => `<div style="display:grid;grid-template-columns:22px 1fr;gap:8px;padding:10px 16px"><span class="av sys" style="background:#ffffff0a;box-shadow:none"></span><div><div style="height:10px;width:70%;border-radius:4px;background:#ffffff0f;margin:3px 0 8px"></div><div style="height:8px;width:40%;border-radius:4px;background:#ffffff0a"></div></div></div>`).join("")), 260)));
+build(frames.join(""));
+</script></body></html>
