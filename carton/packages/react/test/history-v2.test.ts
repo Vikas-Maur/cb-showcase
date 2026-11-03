@@ -2,7 +2,8 @@
 // never crosses a landmark and folded days that keep them, the search's highlight, and the Compare seam's fallback.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clipChoices } from "../src/components/GoBack.ts";
+import { bringBackLine, clipChoices, type ClipChoice } from "../src/components/GoBack.ts";
+import { remoteUi, serveUi } from "../src/remote.ts";
 import { indexLandmarks, landmarkTitle } from "../src/components/LandmarkRow.ts";
 import { openCompareVia } from "../src/components/CompareMenu.ts";
 import { groupHistory } from "../src/history-groups.ts";
@@ -78,4 +79,33 @@ test("openCompareVia: the editor's Compare when the host has it; else the fallba
   ui.openCompare = async (a, b) => void opened.push([a, b]);
   await openCompareVia(ui, () => assert.fail("the fallback"))("cut-ig", null);
   assert.deepEqual(opened, [["cut-ig", null]]);
+});
+
+test("N0b: Bring back's confirmation says where the clip goes and what else moves (DESIGN-V2 §3.2)", () => {
+  const base: ClipChoice = { itemId: "broll", name: "B-roll pier", clip: "video", how: "deleted", then: [6, 9], text: "" };
+  assert.equal(bringBackLine({ ...base, place: { placed: "same" }, ripple: { direction: "later", by: 3, at: 6, moved: 4 } }, "10:20 am", words), "It goes back where it was, at 0:06. Everything after it moves 3 s later. Ctrl+Z takes it back.");
+  assert.equal(
+    bringBackLine({ ...base, place: { placed: "new-track", trackId: "v1-2", takenBy: [{ itemId: "drone", name: "Drone shot" }] }, ripple: null }, "10:20 am", words),
+    "Its place is taken by “Drone shot”, so it goes on a new track above, at 0:06. Nothing else moves. Ctrl+Z takes it back.",
+  );
+  assert.equal(bringBackLine({ ...base, how: "changed", now: [0, 5], then: [0, 6], place: { placed: "same" }, ripple: null }, "10:20 am", words), "It goes back to how it was at 10:20 am: its timing, text, look and settings. Nothing else moves. Ctrl+Z takes it back.");
+  assert.equal(bringBackLine({ ...base, how: "added", then: undefined, now: [12, 16], ripple: { direction: "earlier", by: 4, at: 12, moved: 2 } } as ClipChoice, "10:20 am", words), "It wasn't in this version, so it comes out of your edit. Everything after it moves 4 s earlier. Ctrl+Z puts it back.");
+  // an engine that doesn't preview (no ripple): nothing said of what moves
+  assert.equal(bringBackLine(base, "10:20 am", words), "It goes back where it was, at 0:06. Ctrl+Z takes it back.");
+  assert.equal(words.restMovesLater(1.5), "Everything after it moves 1.5 s later.");
+});
+
+test("N0b: a refusal crosses the worker bridge with its code and the new token (ChangedSince)", async () => {
+  const ui = createMockUi({ versions: 4 });
+  ui.restoreClip = async () => {
+    throw Object.assign(new Error("“Intro” just changed again. Nothing was brought back."), { code: "CHANGED_SINCE", token: "t2" });
+  };
+  let client: ReturnType<typeof remoteUi> | null = null;
+  const server = serveUi(ui, (m) => queueMicrotask(() => client!.receive(m)));
+  client = remoteUi((m) => queueMicrotask(() => server.receive(m)));
+  await client.ready;
+  const e = (await client.ui.restoreClip!("main@1", "item-intro", { expect: "t1" }).catch((x: unknown) => x)) as Error & { code?: string; token?: string };
+  assert.equal(e.message, "“Intro” just changed again. Nothing was brought back.");
+  assert.deepEqual([e.code, e.token], ["CHANGED_SINCE", "t2"]);
+  server.close();
 });

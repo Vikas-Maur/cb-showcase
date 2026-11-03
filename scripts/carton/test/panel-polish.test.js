@@ -395,7 +395,10 @@ test("P2-11 (title bar): the strip's summary of a shared project: its state, its
   assert.equal(U.liveSummary({ shared: false }), null);
   const mia = { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia Chen" }, idle: true };
   const s = U.liveSummary({ shared: true, status: "offline", pending: 2, peers: [leo(), mia, { actor: { id: "x" } }] });
-  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 changes not sent yet", "Leo, Mia Chen are here", 0]);
+  // (people by their first names, as everywhere else: C's firstName; an agent by its product name)
+  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 changes not sent yet", "Leo, Mia are here", 0]);
+  const agent = U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: [{ actor: { key: "agent/claude-code", kind: "agent", id: "cc", name: "Claude Code" } }] });
+  assert.equal(agent.here, "Claude Code is here");
   assert.deepEqual(s.people.map((p) => [p.name, p.initials, p.idle, /^#[0-9a-f]{6}$/.test(p.color)]), [["Leo", "L", false, true], ["Mia Chen", "MC", true, true]]);
   assert.equal(U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: [] }).state, "ok");
   assert.equal(U.liveSummary({ shared: true, status: "syncing", pending: 1, peers: [] }).state, "syncing");
