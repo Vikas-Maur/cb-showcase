@@ -75,6 +75,8 @@ const shapes = {
   bookmarkFill: [h("path", { d: "M6.5 3.5h11v17l-5.5-4-5.5 4z", fill: "currentColor" })],
   // A fold's mark: two lines coming into one
   foldIn: [P("M7 4v4.5a5 5 0 0 0 5 5h0a5 5 0 0 0 5-5V4"), P("M12 13.5V21"), P("M9 18l3 3 3-3")],
+  // Footage still on its way (the stage's notice), apart from Offline's cloud (design QA G23)
+  hourglass: [P("M6.5 3.5h11M6.5 20.5h11"), P("M7.5 3.5v2.2a4.5 4.5 0 0 0 1.6 3.4L12 12l2.9-2.9a4.5 4.5 0 0 0 1.6-3.4V3.5"), P("M7.5 20.5v-2.2a4.5 4.5 0 0 1 1.6-3.4L12 12l2.9 2.9a4.5 4.5 0 0 1 1.6 3.4v2.2")],
 } satisfies Record<string, unknown[]>;
 
 export type IconName = keyof typeof shapes;

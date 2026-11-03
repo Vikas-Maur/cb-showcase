@@ -15,8 +15,8 @@
 // carton-cuts / carton-back, which main routes to that tab's page as carton:command; the page reports again what is
 // open and which cut it is on, which comes back here.
 // The report: `panel` ("history", "comments" or null), `live` (a shared project's summary, or null), `share` (the Share
-// dialog is open), `cut` ({name, dot}: dot is a CSS colour for any cut but Main, null for Main), `viewing` ({label}, or
-// null). An older report is a bare panel name: no chip then.
+// dialog is open), `cut` ({name, dot}: dot is a CSS colour for any cut but Main, null for Main), `viewing` ({label,
+// loading}: loading while the version is slow to come, its label "Loading …" then, or null). An older report is a bare panel name: no chip then.
 module.exports = String.raw`
 const __cbCartonStripIcons = {
   // a stack of versions, not the clock the chat's own "chat history" button uses beside it (UI audit P2-14)
@@ -27,6 +27,8 @@ const __cbCartonStripIcons = {
   caret: ["M7 10l5 5 5-5"],
   eye: ["M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z", "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"],
   x: ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
+  // the eye's while a version is still loading (design QA G1)
+  spin: ["M20.5 12a8.5 8.5 0 1 1-8.5-8.5"],
 };
 const __cbCartonSvg = (id, className, strokeWidth = 1.75) => n.jsx("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": !0, className, children: __cbCartonStripIcons[id].map((d, i) => n.jsx("path", { d }, i)) }, id);
 // A shared project's status beside the icons (UI audit P2-11): a dot on the icon (amber offline, white while edits are
@@ -108,9 +110,9 @@ function __cbCartonCutChip({ panel }) {
       ],
     }, "cut"),
     // no live region here: the editor's page announces viewing once (DESIGN §7), not this page too
-    viewing ? n.jsxs("span", { "data-carton-viewing": "", title: viewing.label, className: "flex h-7 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: "rgba(138,180,255,0.11)", color: "#d6e4ff", boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
-      __cbCartonSvg("eye", "size-3.5 shrink-0"),
-      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
+    viewing ? n.jsxs("span", { "data-carton-viewing": "", "data-loading": viewing.loading ? "" : void 0, title: viewing.label, className: "flex h-7 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: "rgba(138,180,255,0.11)", color: "#d6e4ff", boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
+      viewing.loading ? __cbCartonSvg("spin", "size-3.5 shrink-0 animate-spin") : __cbCartonSvg("eye", "size-3.5 shrink-0"),
+      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [viewing.loading ? null : n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
       n.jsx("button", { type: "button", "aria-label": back, title: back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: "carton-back" }), className: w(C, "size-[22px] justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
     ] }, "view") : null,
   ] });

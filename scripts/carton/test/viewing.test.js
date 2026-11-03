@@ -446,3 +446,96 @@ test("PLAN 1.3, 7.1: a conflict's See it views its side through ui.view, the cli
     assert.equal(m.tab()?.querySelector(".carton-frame-text")?.textContent, "Claude Code's move of “Interview B”");
   } finally { await m.done(); }
 });
+
+// Design QA G1: the marks follow what the stage shows, never what it was asked. A version that can't be shown takes
+// everything back to your edit (the view model's viewing too), and Play says so in its card; one slow to come is
+// "Loading …" in the chip after 300 ms, with no frame and no row mark until it is on screen.
+test("design QA G1: a version the editor can't show: back to your edit, no mark anywhere, Play's error in its card", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const reports = [];
+  m.bridge.reportPanel = (_panel, _live, extra) => reports.push(extra);
+  m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref != null) throw new Error("checkout failed"); };
+  try {
+    await m.cmd("carton-history");
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    await m.click(older);
+    await m.click([...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent)));
+    await m.settle(80);
+    assert.ok(m.did.previews.some((r) => r != null), "the editor was asked to show it");
+    assert.equal(m.did.previews.at(-1), null, "and then your edit");
+    assert.equal(m.ui.viewing(), null, "the view model's viewing went too");
+    assert.equal(m.page().stageRef(), null, "the stage: your edit");
+    assert.equal(m.page().stageLoading(), null, "nothing loading");
+    assert.ok(!m.frame(), "no frame");
+    assert.equal(m.did.marks.at(-1)?.viewing, false, "no timeline frame (data-carton-viewing)");
+    assert.equal(m.side.querySelectorAll(".carton-version[data-viewing]").length, 0, "no row says Viewing");
+    assert.equal(reports.at(-1)?.viewing ?? null, null, "the chip has no viewing part");
+    // G20: Play's error is in its card, not at the panel's top
+    assert.equal(m.side.querySelector(".carton-card-version .carton-card-error")?.textContent, "Couldn't load this version. Try again.");
+    assert.ok(!m.side.querySelector(".carton-history-error"), "nothing at the panel's top");
+  } finally { await m.done(); }
+});
+
+test("design QA G1: a version slow to come: nothing marked at first, 'Loading …' in the chip after 300 ms, the marks once it shows", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const reports = [];
+  m.bridge.reportPanel = (_panel, _live, extra) => reports.push(extra);
+  let release = null;
+  m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref != null) await new Promise((r) => (release = r)); };
+  try {
+    await m.cmd("carton-history");
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    const olderId = older.id;
+    await m.click(older);
+    await m.click([...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent)));
+    await m.settle(60);
+    assert.ok(release, "the version is loading");
+    assert.ok(m.ui.viewing(), "the view model has labelled it");
+    assert.equal(m.page().stageRef(), null, "the stage still shows your edit");
+    assert.ok(!m.frame(), "so no frame");
+    assert.equal(m.side.querySelectorAll(".carton-version[data-viewing]").length, 0, "no row says Viewing yet");
+    assert.equal(reports.at(-1)?.viewing ?? null, null, "under 300 ms: nothing in the chip");
+    await m.settle(320);
+    const label = m.ui.viewing().label;
+    assert.deepEqual(reports.at(-1)?.viewing, { label: "Loading " + label.replace(/^Your\b/, "your"), loading: true }, "past 300 ms: Loading, with the spinner");
+    assert.ok(!m.frame(), "still no frame");
+    await act(async () => { release(); await sleep(30); });
+    await m.settle(40);
+    assert.ok(m.page().stageRef(), "on screen now");
+    assert.equal(m.page().stageLoading(), null);
+    assert.ok(m.frame(), "the frame");
+    assert.deepEqual([...m.side.querySelectorAll(".carton-version[data-viewing]")].map((r) => r.id), [olderId], "its row");
+    assert.deepEqual(reports.at(-1)?.viewing, { label: label[0].toUpperCase() + label.slice(1) }, "the chip names it");
+    // Esc from its open card: stops viewing first, and the card stays (G2); the next Esc closes the card
+    const card = m.side.querySelector(".carton-card-version");
+    await act(async () => { card.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(30); });
+    await m.settle(40);
+    assert.equal(m.ui.viewing(), null, "Esc: back to your edit");
+    assert.ok(!m.frame());
+    assert.ok(m.side.querySelector(".carton-card-version"), "the card stays open");
+    await act(async () => { m.side.querySelector(".carton-card-version").dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(30); });
+    await m.settle(40);
+    assert.ok(!m.side.querySelector(".carton-card-version"), "the next Esc closes the card");
+    assert.ok(m.side.querySelector(".carton-sidebar"), "and leaves the panel open");
+  } finally { await m.done(); }
+});
+
+test("design QA G1: viewAndSwap's last swap failing takes the view back to your edit, unless a newer view was asked", opt, async () => {
+  const run = async (latest) => {
+    let viewing = null;
+    const calls = [];
+    const view = async (t) => { calls.push(["view", t?.kind ?? null]); viewing = t ? { ref: "r-old", kind: t.kind } : null; };
+    const preview = async (ref) => { calls.push(["preview", ref]); if (ref === "r-old") throw new Error("checkout failed"); };
+    await assert.rejects(U.__forTests.viewAndSwap(view, () => viewing, preview, () => latest)({ kind: "version", versionId: "v1" }), /checkout failed/);
+    return { calls, viewing };
+  };
+  const mine = await run(true);
+  assert.deepEqual(mine.calls, [["view", "version"], ["preview", "r-old"], ["view", null], ["preview", null]], "back to your edit, then the failure");
+  assert.equal(mine.viewing, null);
+  const superseded = await run(false);
+  assert.deepEqual(superseded.calls, [["view", "version"], ["preview", "r-old"]], "a newer view: left alone");
+});

@@ -532,6 +532,8 @@ export const words = {
   openIt: "Open",
   // the footage notice for one clip (clipsOfflineUntil is the plural's)
   clipOfflineUntil: (name: string) => `${name} shows as Offline until it arrives. Nothing was removed.`,
+  // the title bar's chip while a version is slow to come (design QA G1): "Loading Director's “Add captions…”"
+  loadingView: (label: string) => `Loading ${label}`,
 };
 
 export type Words = typeof words;
