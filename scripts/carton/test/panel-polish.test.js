@@ -248,9 +248,10 @@ test("PLAN 2.1: the chip's part of the report: your cut and what you're viewing,
   assert.deepEqual(T.chipOf(ui("cut-main", { ref: "main@3", label: "the version from 2:14 PM (Codex)" })).viewing, { label: "The version from 2:14 PM (Codex)" });
   // a teammate's cut: your Main cut in the chip, theirs viewed
   assert.deepEqual(T.chipOf(ui("cut-leo")), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
-  // the view model's viewing() (PLAN 0.5), when it has it; then preview() isn't read
+  // the view model's viewing() (PLAN 0.5) first; a preview the model keeps only in preview() still shows (review #1)
   assert.deepEqual(T.chipOf(ui("cut-main", { ref: "x", label: "ignored" }, { viewing: () => ({ ref: "main@3", kind: "version", label: "Director's “Add captions…”", short: "12:20 · Director" }) })).viewing, { label: "Director's “Add captions…”" });
-  assert.equal(T.chipOf(ui("cut-main", { ref: "x", label: "ignored" }, { viewing: () => null })).viewing, null);
+  assert.deepEqual(T.chipOf(ui("cut-main", { ref: "main@3", label: "the version from 12:41 pm" }, { viewing: () => null })).viewing, { label: "The version from 12:41 pm" });
+  assert.equal(T.chipOf(ui("cut-main", null, { viewing: () => null })).viewing, null);
   // a teammate's cut switched to (today's cuts menu) is viewing with viewing() too
   assert.deepEqual(T.chipOf(ui("cut-leo", null, { viewing: () => null })), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
 });
@@ -601,6 +602,51 @@ test("PLAN 8.2: joined but not opened: the dialog says it's in the library, and 
     const open = [...el.querySelectorAll("button")].find((b) => b.textContent === "Open");
     await React.act(async () => { open.click(); await new Promise((r) => setTimeout(r, 20)); });
     assert.deepEqual([opened, closed], [["p-fx"], [1]], "Open opened it, and the dialog closed");
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage });
+    await w.happyDOM.close();
+  }
+});
+
+// Review of feat/ux-2-8 #4, #5: Enter again while Join and open is busy starts no second join; Cancel while it is
+// answered leaves the project in the library and opens nothing.
+test("PLAN 8.2: one join at a time from every way in, and a Join cancelled meanwhile opens nothing", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    let answer = null;
+    const joins = [], opened = [], closed = [];
+    const bridge = { onEvent: () => () => {}, call: (m, a) => { joins.push(a[0].link); return new Promise((r) => { answer = r; }); }, openProject: async (id) => { opened.push(id); } };
+    const el = w.document.createElement("div");
+    w.document.body.appendChild(el);
+    root = client.createRoot(el);
+    await React.act(async () => { root.render(React.createElement(U.JoinDialog, { bridge, onClose: () => closed.push(1) })); });
+    const link = el.querySelector("#carton-join-link");
+    await React.act(async () => {
+      link.focus();
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+      for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+    });
+    const enter = () => React.act(async () => { link.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 5)); });
+    await enter();
+    await enter();
+    const go = [...el.querySelectorAll("button")].find((b) => /Join and open|Joining/.test(b.textContent));
+    await React.act(async () => { go.click(); link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 5)); });
+    assert.equal(joins.length, 1, "Enter, Enter, the button and the form: one join");
+    // Cancel while it is answered
+    const cancel = [...el.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
+    await React.act(async () => { cancel.click(); });
+    await React.act(async () => { answer({ projectId: "p-fx", name: "FX ui" }); await new Promise((r) => setTimeout(r, 20)); });
+    assert.deepEqual(closed, [1], "the dialog closed");
+    assert.deepEqual(opened, [], "and the late answer opened nothing");
   } finally {
     if (root) await React.act(async () => root.unmount());
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;

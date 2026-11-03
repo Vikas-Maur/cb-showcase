@@ -143,15 +143,15 @@ export function cutColor(cut) {
 const upFirst = (s) => (typeof s === "string" && s ? s[0].toUpperCase() + s.slice(1) : s);
 /**
  * What the editor shows when it isn't your edit (PLAN 0.5's ui.viewing(): {ref, kind, label, short}, or null), and
- * what the view model can't know yet: a teammate's cut switched to (read-only: today's cuts menu switches to it). A
- * view model without viewing(): a version opened read-only (preview()).
+ * what the view model doesn't say there yet: a teammate's cut switched to (read-only: today's cuts menu switches to
+ * it), and a version opened read-only through openPreview(), which the real view model (from-carton.ts) still keeps in
+ * preview() only (review of feat/ux-2-8 #1: with viewing() there but null, the chip lost its label and its ✕).
  */
 export function viewingOf(ui) {
   const v = typeof ui.viewing === "function" ? ui.viewing() : null;
   if (v) return v;
   const current = ui.cuts().find((c) => c.current);
   if (current?.readOnly) return { ref: current.head, kind: "cut", cutId: current.id, label: current.label, short: current.label };
-  if (typeof ui.viewing === "function") return null;
   const p = ui.preview?.();
   return p ? { ref: p.ref, kind: "version", label: p.label, short: p.label } : null;
 }
@@ -244,7 +244,7 @@ function useFit(ref, preferred) {
  * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
  * Fold in: all, some or none of it), then the versions, Compare with current, and "Watch the changes" in their place.
  */
-function HistorySide({ bridge, cutsAsk = 0 }) {
+function HistorySide({ bridge, cutsAsk = 0, onCutsAsked }) {
   const cuts = useCuts();
   const [watch, setWatch] = useState(null);
   const [fold, setFold] = useState(null);
@@ -252,18 +252,19 @@ function HistorySide({ bridge, cutsAsk = 0 }) {
   const box = useRef(null);
   // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus on its first item
   // (MenuList's own focus), from the list, not from Watch. The menu is the cuts button's own (the one with the class
-  // carton-cuts-trigger, CutsMenu's), opened as a click opens it, so the chip's menu and History's are one menu.
-  const asked = useRef(0);
+  // carton-cuts-trigger, CutsMenu's), opened as a click opens it, so the chip's menu and History's are one menu. The
+  // request is the side panel's (CartonSide's), consumed there once the menu opens (review of feat/ux-2-8 #3: kept
+  // here, it outlived History closing, and reopening History opened the menu again).
   useEffect(() => {
-    if (!cutsAsk || asked.current === cutsAsk) return undefined;
+    if (!cutsAsk) return undefined;
     if (watch) { setWatch(null); return undefined; }
-    asked.current = cutsAsk;
     const id = requestAnimationFrame(() => {
       const t = box.current?.querySelector(".carton-cuts-trigger, .carton-sidebar-cuts [aria-haspopup=menu]");
       if (t && t.getAttribute("aria-expanded") !== "true") t.click();
+      onCutsAsked?.();
     });
     return () => cancelAnimationFrame(id);
-  }, [cutsAsk, watch]);
+  }, [cutsAsk, watch, onCutsAsked]);
   // Back from Watch the changes: focus goes to the version list, not to <body>.
   const back = useCallback(() => {
     setWatch(null);
@@ -363,7 +364,7 @@ export class CartonBoundary extends Component {
   }
 }
 
-function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk }) {
+function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsAsked }) {
   const ref = useRef(null);
   const [preferred, onResize] = useWidth();
   const fit = useFit(ref, preferred);
@@ -403,7 +404,7 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk }) {
         h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null), className: headButton },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge, cutsAsk })))));
+        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge, cutsAsk, onCutsAsked })))));
 }
 
 /** The Share dialog over the editor (PLAN 8.1), inside its own boundary: a throw keeps the dialog's frame. */
@@ -423,15 +424,21 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   const [panel, setPanelState] = useState(null);
   const [share, setShare] = useState(false);
-  // the chip asked for the cuts menu: a count, so each click asks again
+  // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
   const [cutsAsk, setCutsAsk] = useState(0);
+  const cutsAsked = useCallback(() => setCutsAsk(0), []);
   const setPanel = useCallback((p) => setPanelState(p), []);
+  // Share is a modal dialog: while it is open the editor's shortcut for History is its, not the page's behind it
+  // (review of feat/ux-2-8 #2: History opened behind it and took the focus, and Esc then closed History, not Share).
+  const shareOpen = useRef(false);
+  shareOpen.current = share;
   // Ctrl+Shift+H (Cmd+Shift+H on a Mac) opens and closes History (UI audit P3-7): H is free in Cardboard's keymap,
   // and Shift with Ctrl/Cmd pairs it with Cardboard's own Ctrl+Shift+B ("Report an issue"). Only the editor's page
   // listens (this panel lives there), and only for that exact chord.
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || (e.code !== "KeyH" && e.key !== "H" && e.key !== "h")) return;
+      if (shareOpen.current) return;
       e.preventDefault();
       e.stopPropagation();
       setPanelState((p) => (p === "history" ? null : "history"));
@@ -442,7 +449,8 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   // The title bar: its icons (the same icon again closes what it opened), the cut chip and its ✕.
   useEffect(() => bridge.onCommand?.((ev) => {
     const a = ev?.action;
-    if (a === "carton-history") setPanelState((p) => (p === "history" ? null : "history"));
+    // the title bar is outside the Share dialog: its History icon closes Share and opens History
+    if (a === "carton-history") { setShare(false); setPanelState((p) => (p === "history" ? null : "history")); }
     else if (a === "carton-share") setShare((o) => !o);
     else if (a === "carton-cuts") { setShare(false); setPanelState("history"); setCutsAsk((n) => n + 1); }
     else if (a === "carton-back") void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
@@ -483,10 +491,12 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     return () => { for (const off of offs) off(); };
   }, [conn, ready, send]);
   useEffect(() => () => sidePanel.set(null), []);
+  // History closed before the menu opened: the request goes with it
+  useEffect(() => { if (!panel) setCutsAsk(0); }, [panel]);
   const closeShare = useCallback(() => setShare(false), []);
   if (!panel && !share) return null;
   return h(CartonProvider, { ui: conn.ui },
-    panel ? h(Sidebar, { panel, setPanel, projectId, bridge, onShare: () => setShare(true), cutsAsk }) : null,
+    panel ? h(Sidebar, { panel, setPanel, projectId, bridge, onShare: () => setShare(true), cutsAsk, onCutsAsked: cutsAsked }) : null,
     share ? h(ShareHost, { projectId, bridge, onClose: closeShare }) : null);
 });
 

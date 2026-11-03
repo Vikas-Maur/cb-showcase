@@ -120,6 +120,36 @@ test("PLAN 2.1: a cut switch reaches the title bar from the cuts message itself,
   } finally { await m.done(); }
 });
 
+// Review of feat/ux-2-8 #1: the real view model (from-carton.ts over real Carton on store-memory) has viewing() but
+// keeps a version opened through openPreview() in preview() only: the chip still shows it, and its ✕ closes it.
+test("PLAN 2.1, real view model: a version opened read-only shows in the chip, and its ✕ brings your edit back", opt, async () => {
+  const src = (...p) => pathToFileURL(path.join(CARTON, "packages", ...p)).href;
+  const { Carton, POS, defineSchema, timeAlgebra } = await import(src("core", "src", "index.ts"));
+  const { createMemoryStore } = await import(src("store-memory", "src", "index.ts"));
+  const { fromCarton } = await import(src("react", "src", "from-carton.ts"));
+  const T = require(path.join(OUT, "carton-ui.cjs")).__forTests;
+  const TL = { collection: "items", lanes: "tracks", lane: "trackId", start: "startTime", end: "endTime", source: "trimStart", sourceEnd: "trimEnd", speed: "playbackSpeed" };
+  const schema = defineSchema({ collections: { tracks: { seq: true }, items: { parent: { field: "trackId", collection: "tracks" }, groups: [{ name: "time", fields: ["startTime", "endTime", "trimStart", "trimEnd", "playbackSpeed"], algebra: timeAlgebra(TL) }] } }, timeline: TL, label: (c, r) => String(r?.name ?? r?.id ?? c) });
+  const adapter = { name: "test", schema, schemaVersion: 1, fromHost: (x) => x, toHost: (x) => x };
+  const me = { kind: "human", id: "alice", name: "Alice" };
+  const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: { name: "Film", tracks: [{ id: "t1", [POS]: "V" }], items: [{ id: "a", trackId: "t1", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5, name: "A" }] }, cutName: "Main cut" }, actor: me });
+  const h = fromCarton(carton, { me });
+  try {
+    await h.ready;
+    await carton.commit({ ops: [{ op: "set", path: ["items", "a", "name"], value: "Intro" }] });
+    await h.settled();
+    const ui = h.ui ?? h;
+    assert.deepEqual(T.chipOf(ui), { cut: { name: "Main cut", dot: null }, viewing: null });
+    const ref = ui.history().all().at(0).ref;
+    ui.openPreview(ref, "the version from 12:41 pm");
+    assert.equal(typeof ui.viewing, "function", "the real model has viewing()");
+    assert.deepEqual(T.chipOf(ui).viewing, { label: "The version from 12:41 pm" }, "the chip says what is shown");
+    await T.backToEdit(ui);
+    assert.equal(ui.preview(), null, "the ✕ closed it");
+    assert.equal(T.chipOf(ui).viewing, null);
+  } finally { h.dispose(); await carton.close?.(); }
+});
+
 test("PLAN 2.1: while a version is viewed the chip has its label, and its ✕ (carton-back) brings your edit back", opt, async () => {
   const m = await mount();
   try {
@@ -161,6 +191,39 @@ test("PLAN 2.2 (version 1): the chip opens History with its cuts menu open, focu
     const ig = [...m.container.querySelectorAll(".carton-menu-pop [role=menuitemradio], .carton-menu-pop [role=menuitem], .carton-menu-pop button")].find((b) => /30s Instagram cut/.test(b.textContent));
     await act(async () => { ig.click(); await sleep(20); });
     assert.equal(last(m).cut.name, "30s Instagram cut");
+  } finally { await m.done(); }
+});
+
+// Review of feat/ux-2-8 #3: the chip's request is spent once its menu opens, whatever happens to History after.
+test("PLAN 2.2: the chip's menu request is spent: History reopened from its icon opens without the menu", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-cuts", 60);
+    assert.ok(m.container.querySelector(".carton-menu-pop"), "the chip opened the menu");
+    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(10); });
+    await m.cmd("carton-history");
+    assert.equal(m.container.querySelector(".carton-sidebar"), null, "History closed");
+    await m.cmd("carton-history", 60);
+    assert.ok(m.container.querySelector(".carton-sidebar"), "History open again");
+    assert.equal(m.container.querySelector(".carton-menu-pop"), null, "without the cuts menu");
+  } finally { await m.done(); }
+});
+
+// Review of feat/ux-2-8 #2: Share is modal; the editor's History shortcut doesn't open History behind it.
+test("PLAN 8.1: with Share open, Ctrl+Shift+H leaves it be; the title bar's History icon closes Share and opens History", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-share");
+    const dialog = m.container.querySelector("[role=dialog]");
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "H", code: "KeyH", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); await sleep(20); });
+    assert.equal(m.container.querySelector(".carton-sidebar"), null, "no History behind the dialog");
+    assert.equal(document.activeElement, dialog, "focus stays in the dialog");
+    await act(async () => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(10); });
+    assert.equal(m.container.querySelector("[role=dialog]"), null, "Esc closes Share");
+    await m.cmd("carton-share");
+    await m.cmd("carton-history");
+    assert.equal(m.container.querySelector("[role=dialog]"), null, "the History icon closed Share");
+    assert.ok(m.container.querySelector(".carton-sidebar"), "and opened History");
   } finally { await m.done(); }
 });
 

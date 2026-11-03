@@ -66,12 +66,17 @@ export function shareProblem(raw, where = "share") {
   return r(words.failed);
 }
 
+// One run at a time (review of feat/ux-2-8 #4: Enter in a field submitted again while the button showed busy): the guard
+// is synchronous, so the button, the form and the keyboard can't start a second run before the first renders busy.
 function useAction(fn, where) {
   const [busy, setBusy] = useState(false), [error, setError] = useState(null);
+  const running = useRef(false);
   const run = async (...a) => {
+    if (running.current) return null;
+    running.current = true;
     setBusy(true);
     setError(null);
-    try { return await fn(...a); } catch (e) { setError(shareProblem(errText(e), where)); return null; } finally { setBusy(false); }
+    try { return await fn(...a); } catch (e) { setError(shareProblem(errText(e), where)); return null; } finally { running.current = false; setBusy(false); }
   };
   return [run, busy, error, setError];
 }
@@ -311,8 +316,13 @@ export function ShareDialog({ projectId, bridge, name, onClose }) {
  * dialog says the project is in the library, with Open to try again. Shown by the Dashboard's host (sync/patches/ui.js),
  * which stays mounted while the library's view changes under it (final re-check N1).
  */
-export function Join({ bridge, onOpened, onCancel }) {
+export function Join({ bridge, onOpened, onCancel: cancel }) {
   const [link, setLink] = useState(""), [done, setDone] = useState(null), [missing, setMissing] = useState(null);
+  // Cancel (or the dialog going away) while the join is answered: the project still comes into the library, but nothing
+  // opens it afterwards (review of feat/ux-2-8 #5: a dismissed Join opened a tab when its answer came).
+  const dismissed = useRef(false);
+  useEffect(() => () => { dismissed.current = true; }, []);
+  const onCancel = () => { dismissed.current = true; cancel?.(); };
   const [name, setName, saveName] = useName();
   const [known] = useState(() => !!name.trim());
   const [openIt, opening, openError] = useAction(async (d) => {
@@ -323,6 +333,7 @@ export function Join({ bridge, onOpened, onCancel }) {
   const [join, busy, error, setError] = useAction(async () => {
     saveName(name.trim());
     const d = await bridge.call("liveJoin", [{ link: link.trim(), name: name.trim() }]);
+    if (dismissed.current) return;
     setDone(d);
     await openIt(d);
   }, "join");
