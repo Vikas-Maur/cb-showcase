@@ -94,6 +94,53 @@ test("fold plan: what an earlier partial fold left out says when (Left out on â€
   ui.dispose();
 });
 
+test("fold plan (review P1): an older plan still running when another pair is planned never feeds the fold", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const a = await carton.fork("A");
+  const b = await carton.fork("B");
+  // A folded in with b left out: A's rest is b's rename
+  await carton.commit({ cut: a.id, ops: [set("a", "name", "A1"), set("b", "name", "B1")] });
+  await ui.refresh();
+  await ui.planFold(a.id, main);
+  assert.equal((await ui.fold(a.id, main, { leaveOut: ["items/b"], choices: {} })).ok, true);
+  await carton.commit({ cut: b.id, ops: [set("c", "name", "C1")] });
+  await ui.refresh();
+  // The dialog's From goes from A to B while A's plan is still reading what was left out (slowed here)
+  const leftOut = carton.leftOut.bind(carton);
+  let release!: () => void;
+  const slow = new Promise<void>((r) => (release = r));
+  (carton as { leftOut: typeof carton.leftOut }).leftOut = async (from, o) => {
+    const list = await leftOut(from, o);
+    if (from === a.id) await slow;
+    return list;
+  };
+  const planA = ui.planFold(a.id, main);
+  const planB = await ui.planFold(b.id, main);
+  assert.deepEqual(planB.changes.map((c) => c.summary.length > 0), [true], "B: its one change");
+  release();
+  await planA; // finishes last
+  assert.equal((await ui.fold(b.id, main, { leaveOut: [], choices: {} })).ok, true);
+  const head = (await carton.head(main)).doc;
+  assert.deepEqual((head.items as Rec[]).map((i) => i.name), ["A1", "B", "C1"], "B's change only: A's left-out rename stays out");
+  ui.dispose();
+});
+
+test("queued switch (review P2): checked in the view model, a switch made since wins (onlyFrom)", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const x = await carton.fork("X");
+  const y = await carton.fork("Y");
+  await ui.refresh();
+  // the page still thinks it's on Main; the handle was switched to Y meanwhile (by hand, or `cb cut switch`)
+  await carton.switchTo(y.id);
+  await ui.switchCut(x.id, { onlyFrom: main });
+  assert.equal(carton.cut, y.id, "the queued switch to X didn't override Y");
+  await ui.switchCut(x.id, { onlyFrom: y.id });
+  assert.equal(carton.cut, x.id, "from the cut it was queued on, it switches");
+  ui.dispose();
+});
+
 test("cut colours and names in sentences: a teammate's cut its owner's colour; Main cut bare, any other in quotes", () => {
   const leo = { key: "human/leo", kind: "human" as const, name: "Leo", color: "#f0a35e" };
   const colors = cutColors(

@@ -130,7 +130,15 @@ export function subscribeQueuedSwitch(ui: CartonUi, fn: () => void): () => void 
   return () => void q.subs.delete(fn);
 }
 
-/** Drop the queued switch, if any. */
+/** Forget why the last queued switch failed (the menu's next action says its own). */
+export function dismissQueuedSwitchError(ui: CartonUi): void {
+  const q = queues.get(ui);
+  if (!q || q.error === null) return;
+  q.error = null;
+  tell(q);
+}
+
+/** Drop the queued switch, if any. Every switch this page makes by hand calls it first. */
 export function cancelQueuedSwitch(ui: CartonUi): void {
   const q = queues.get(ui);
   if (!q || (!q.pending && !q.error)) return;
@@ -158,7 +166,9 @@ export async function switchWhenDone(ui: CartonUi, cutId: string): Promise<void>
     q.off = null;
     q.pending = null;
     tell(q);
-    ui.switchCut(cutId).catch((e: unknown) => {
+    // the cut may have changed where this page hasn't heard yet: the view model checks it where it's known (onlyFrom)
+    if (currentId(ui) !== from) return;
+    ui.switchCut(cutId, from !== undefined ? { onlyFrom: from } : undefined).catch((e: unknown) => {
       // "" when the app gave no words: the menu says its own
       q.error = e instanceof Error ? e.message : "";
       tell(q);

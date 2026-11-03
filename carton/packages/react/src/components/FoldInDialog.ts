@@ -110,10 +110,30 @@ export function FoldInDialog(p: FoldInDialogProps) {
   };
   const choices = choicesFor(plan);
   const unpicked = plan ? plan.conflicts.filter((c) => !choices[c.id]) : [];
-  // Counted as History will count the fold (one rule: a change per record, a split one): the rows taken, and each
-  // conflict picked the other cut's way (keeping this cut's own changes nothing). The list counts every change in it.
-  const listed = total + (plan?.conflicts.length ?? 0);
-  const coming = total - left.size + (plan ? plan.conflicts.filter((c) => choices[c.id] && choices[c.id] !== "mine").length : 0);
+  // Counted as History will count the fold (one rule: a change per record, a split one): the records of the rows taken,
+  // and of each conflict picked the other cut's way (keeping this cut's own changes nothing), once each: two cards on
+  // one clip, or a card and a row of the same clip, are one change. A record left out brings its cards' picks in with
+  // it no more. The list counts the records it shows.
+  const { listed, coming } = ((): { listed: number; coming: number } => {
+    if (!plan) return { listed: 0, coming: 0 };
+    const rowOf = (c: FoldChange) => (c.id.startsWith("left:") ? c.id.slice(c.id.indexOf(":", 5) + 1) : c.id);
+    const rows = plan.changes.map(rowOf);
+    // a card's record: a row's that holds its path, else its record path's first two parts (`timelineItems/c1`)
+    const cardOf = (c: Conflict) => {
+      const path = c.path ?? c.id;
+      const r = rows.find((k) => path === k || path.startsWith(k + "/"));
+      if (r) return r;
+      const parts = path.split("/");
+      return parts.length > 1 ? parts.slice(0, 2).join("/") : path;
+    };
+    const out = new Set(plan.changes.filter((c) => left.has(c.id)).map(rowOf));
+    const taken = new Set(plan.changes.filter((c) => !left.has(c.id)).map(rowOf));
+    for (const c of plan.conflicts) {
+      const k = cardOf(c);
+      if (choices[c.id] && choices[c.id] !== "mine" && !out.has(k)) taken.add(k);
+    }
+    return { listed: new Set([...rows, ...plan.conflicts.map(cardOf)]).size, coming: taken.size };
+  })();
 
   // A change an earlier partial fold left out comes with that fold's other left-out changes (UI audit P1-4): they
   // fold in, or stay left out, together

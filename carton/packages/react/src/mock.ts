@@ -585,7 +585,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       return p;
     },
 
-    async switchCut(id) {
+    async switchCut(id, o) {
+      if (o?.onlyFrom !== undefined && cuts.find((c) => c.current)?.id !== o.onlyFrom) return;
       cuts = cuts.map((c) => (c.current !== (c.id === id) ? { ...c, current: c.id === id } : c));
       hub.notify("cuts");
     },

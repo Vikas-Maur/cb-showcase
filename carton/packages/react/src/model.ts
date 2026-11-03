@@ -517,7 +517,12 @@ export interface CartonUi {
   shotDiff(a: string, b: string): Promise<ShotDiff>;
   planFold(fromCutId: string, intoCutId: string, opts?: { allCards?: boolean }): Promise<FoldPlan>;
 
-  switchCut(cutId: string): Promise<void>;
+  /**
+   * Switch to a cut. `onlyFrom`: only if the cut you're on is still that one (a switch queued behind an agent's turn,
+   * cuts.ts switchWhenDone): checked where the cut is known (the worker), so a switch made meanwhile, by hand or by `cb
+   * cut switch`, wins; it resolves without switching then.
+   */
+  switchCut(cutId: string, opts?: { onlyFrom?: string }): Promise<void>;
   newCut(name: string, fromRef: string): Promise<Cut>;
   /** Absent when the engine can't rename cuts yet: the Cuts menu then doesn't offer it. */
   renameCut?(cutId: string, name: string): Promise<void>;

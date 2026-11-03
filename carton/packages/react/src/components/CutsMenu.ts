@@ -8,9 +8,9 @@
 // Before (AUDIT §7, 4/10): bare names, a "Fold “X” in here" line per cut beside "Fold into Main cut", a 12 px lock for a
 // teammate's cut, nothing on agents, and a menu wider than a 300 px panel.
 
-import { createElement as h, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { actorLabel } from "../actors.ts";
-import { briefWhen, cancelQueuedSwitch, cutColor, cutRef, homeCut, isMainCut, queuedSwitch, queuedSwitchError, registerCutsMenu, rememberHome, subscribeQueuedSwitch, switchWhenDone, type QueuedSwitch } from "../cuts.ts";
+import { briefWhen, cancelQueuedSwitch, cutColor, cutRef, dismissQueuedSwitchError, homeCut, isMainCut, queuedSwitch, queuedSwitchError, registerCutsMenu, rememberHome, subscribeQueuedSwitch, switchWhenDone, type QueuedSwitch } from "../cuts.ts";
 import { useCartonUi, useCuts, useLocale, useNow, useShownCuts, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { CartonUi, Cut, Working } from "../model.ts";
@@ -45,18 +45,12 @@ const info = h(
 
 /** The switch queued behind an agent's turn, read where it shows (one store per view model, cuts.ts). */
 function useQueuedSwitch(ui: CartonUi): QueuedSwitch | null {
-  return useSyncExternalStore(
-    (fn) => subscribeQueuedSwitch(ui, fn),
-    () => queuedSwitch(ui),
-    () => queuedSwitch(ui),
-  );
+  const subscribe = useCallback((fn: () => void) => subscribeQueuedSwitch(ui, fn), [ui]);
+  return useSyncExternalStore(subscribe, () => queuedSwitch(ui), () => queuedSwitch(ui));
 }
 function useQueuedSwitchError(ui: CartonUi): string | null {
-  return useSyncExternalStore(
-    (fn) => subscribeQueuedSwitch(ui, fn),
-    () => queuedSwitchError(ui),
-    () => queuedSwitchError(ui),
-  );
+  const subscribe = useCallback((fn: () => void) => subscribeQueuedSwitch(ui, fn), [ui]);
+  return useSyncExternalStore(subscribe, () => queuedSwitchError(ui), () => queuedSwitchError(ui));
 }
 
 /** A teammate's cut on screen (DESIGN §6.3): the cut being viewed, or the read-only cut switched to. */
@@ -69,6 +63,7 @@ export function useTeammateCut(): Cut | undefined {
 /** Back from a teammate's cut to your own: out of viewing, or back to the cut you came from. */
 function leaveTeammateCut(ui: CartonUi): Promise<void> {
   if (ui.viewing()?.kind === "cut") return ui.view(null);
+  cancelQueuedSwitch(ui);
   const home = homeCut(ui);
   return home && !home.current ? ui.switchCut(home.id) : Promise.resolve();
 }
@@ -88,6 +83,7 @@ export function CutsMenu(p: CutsMenuProps) {
   const [error, setError] = useState<string | null>(null);
   const attempt = (run: () => Promise<unknown>, after?: () => void) => {
     setError(null);
+    dismissQueuedSwitchError(ui);
     run().then(
       () => after?.(),
       (e: unknown) => setError(e instanceof Error && e.message ? e.message : words.failed),
@@ -200,6 +196,8 @@ function CutsMenuBody(p: BodyProps) {
         onSave: (name) =>
           p.attempt(() => {
             const from = p.fromRef ?? homeCut(ui)?.head;
+            // a new cut is a switch made by hand: a switch queued behind a turn is dropped
+            if (from) cancelQueuedSwitch(ui);
             return from ? ui.newCut(name, from) : Promise.reject(new Error(words.failed));
           }, done),
         onCancel: () => p.setMode("menu"),
@@ -270,7 +268,7 @@ function CutsMenuBody(p: BodyProps) {
       c.readOnly ? h("span", { className: "carton-cut-view" }, h(Icon, { name: "eye", size: 12 }), words.viewOnly) : null,
     );
     if (!isOpen) return h("div", { key: c.id, className: "carton-cut-row" }, button);
-    return h("div", { key: c.id, className: "carton-cut-row", "data-open": "" }, button, h(TurnPane, { cut: c, current, turn, queued, onSwitch: () => switchTo(c), onClose: p.close }));
+    return h("div", { key: c.id, className: "carton-cut-row", "data-open": "" }, button, h(TurnPane, { cut: c, current, turn, queued, onSwitch: () => switchTo(c), onClose: p.close, attempt: p.attempt }));
   };
 
   // One entry however many cuts (K3): the dialog has From and Into. Into your own cut; from the teammate's cut on screen,
@@ -335,7 +333,7 @@ function CutsMenuBody(p: BodyProps) {
 }
 
 /** A cut opened in place while an agent works (DESIGN §6.3, after/cuts-menu-turn-384.png). */
-function TurnPane(p: { cut: Cut; current: Cut | undefined; turn: Working | null; queued: QueuedSwitch | null; onSwitch: () => void; onClose: () => void }) {
+function TurnPane(p: { cut: Cut; current: Cut | undefined; turn: Working | null; queued: QueuedSwitch | null; onSwitch: () => void; onClose: () => void; attempt: (run: () => Promise<unknown>) => void }) {
   const ui = useCartonUi();
   const words = useWords();
   const first = useRef<HTMLButtonElement>(null);
@@ -366,7 +364,8 @@ function TurnPane(p: { cut: Cut; current: Cut | undefined; turn: Working | null;
                 const home = homeCut(ui);
                 if (home) rememberHome(ui, home.id);
               }
-              void switchWhenDone(ui, p.cut.id);
+              // queued, or (the turn ended while the pane was open) a switch now, whose failure says so
+              p.attempt(() => switchWhenDone(ui, p.cut.id));
             }, first),
             choice("now", false, words.switchNow, p.onSwitch),
           ],
@@ -426,6 +425,7 @@ export function TeammateCutActions(p: TeammateCutActionsProps) {
           onSave: (name) => {
             setError(null);
             const head = ui.cuts().find((c) => c.id === teammate.id)?.head ?? teammate.head;
+            cancelQueuedSwitch(ui);
             ui.newCut(name, head).then(() => setNaming(false), fail);
           },
           onCancel: () => setNaming(false),
