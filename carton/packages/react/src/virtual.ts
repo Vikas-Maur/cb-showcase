@@ -203,6 +203,14 @@ export function VirtualList(p: VirtualListProps) {
   }, [p.count, p.newestFirst, p.rowHeight, tops]);
 
   useLayoutEffect(recompute, [recompute]);
+  // A list that goes away was scrolled no more: the host's "scrolled" said so until its next scroll, so a list put back
+  // at its top (History while a search loads, design QA v2) kept "↑ Newest" over rows that were already the newest
+  useEffect(
+    () => () => {
+      if (scrolled.current) onScrolledChange.current?.(false);
+    },
+    [],
+  );
 
   // "↑ Newest": back to the top (the host keeps a ref to call it)
   useEffect(() => {

@@ -1,5 +1,5 @@
 // The design QA of Carton UX v2 (docs/carton-ux/v2/qa/QA-V2.md): History states N2's shots (states/n2.shots.mjs) don't
-// reach. Search clearing, each Go back… choice, the clip confirmations ("changed again" too), the toast, a past day's
+// reach. Search clearing, each Go back… choice, the clip confirmations, the toast, a past day's
 // runs, Another cut, and the editor around them.
 export function shots({ P, T, W, menuItem, foldOlder, uxMenu }) {
   const ED = { width: 1522, height: 810 };
@@ -38,12 +38,6 @@ export function shots({ P, T, W, menuItem, foldOlder, uxMenu }) {
     await p.keyboard.type(text, { delay: 30 });
     await p.waitForTimeout(500);
   };
-  // your edit moves on while the confirmation is open: a teammate trims "Intro" again
-  const trimIntroAgain = (p) =>
-    p.evaluate(() => {
-      const ui = window.__cap.ui;
-      ui.addVersion({ author: { id: "leo", kind: "human", name: "Leo Park" }, kind: "edit" }, [{ itemId: "item-intro", kind: "change", clip: "video", text: "Trimmed “Intro”, now ends at 0:04", at: 0, end: 4 }]);
-    });
   return [
     // search
     P("qa2-search-cleared", "n2-history", "\"intro\" typed, then the field's ✕: the whole history again, the field empty and focused.", async (p) => { await foldOlder(p); await search(p, "intro"); await p.locator(".carton-search-x").click(); await p.waitForTimeout(400); }),
@@ -65,7 +59,6 @@ export function shots({ P, T, W, menuItem, foldOlder, uxMenu }) {
     P("qa2-goback-restore-row", "n2-noclip", "⋯ on your six changes → Restore…: Go back… with Restore the whole edit picked.", async (p) => { await foldOlder(p); await uxMenu(p, "Moved “Interview B” 2 s later"); await menuItem(p, "Restore…").click(); await p.locator(".carton-goback").waitFor(); await p.waitForTimeout(250); }),
     // Bring back one clip
     P("qa2-bringback-changed", "n2-noclip", "Choose a clip… → Bring back on “Intro” (changed since): its confirmation.", async (p) => { await clips(p); await pickClip(p, "Intro"); }),
-    P("qa2-bringback-again", "n2-noclip", "qa2-bringback-changed, then a teammate trims “Intro” again before the click: \"“Intro” just changed again…\".", async (p) => { await clips(p); await pickClip(p, "Intro"); await trimIntroAgain(p); await p.waitForTimeout(400); await p.locator(".carton-bringback-confirm .carton-btn[data-variant=primary]").click(); await p.waitForTimeout(400); }),
     P("qa2-bringback-done", "n2-noclip", "Bring back “B-roll 3” confirmed: the panel after it (the card, the new row).", async (p) => { await clips(p); await pickClip(p, "B-roll 3"); await p.locator(".carton-bringback-confirm .carton-btn[data-variant=primary]").click(); await p.waitForTimeout(600); }),
     T("qa2-bringback-toast", "n2-noclip", "Bring back “B-roll 3” confirmed: the toast with Undo, on the stage.", async (p) => { await clips(p); await pickClip(p, "B-roll 3"); await p.locator(".carton-bringback-confirm .carton-btn[data-variant=primary]").click(); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(250); }, { panelOpen: true }),
     T("qa2-takeout-toast", "n2-noclip", "Take out “Jane Smith, Founder” confirmed: its toast.", async (p) => { await clips(p); await pickClip(p, "Jane Smith"); await p.locator(".carton-bringback-confirm .carton-btn[data-variant=primary]").click(); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(250); }, { panelOpen: true }),

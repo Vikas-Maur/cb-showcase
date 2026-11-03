@@ -219,6 +219,30 @@ test(name("search: nothing found says what to try and where it searched, with Cl
   await m.unmount();
 });
 
+test(name("search from a scrolled list: the results start at the top, with no ↑ Newest over them; nor once cleared (design QA v2)"), async () => {
+  const ui = createMockUi({ versions: 300, seed: 5, now: noon48(), landmarks: true });
+  const m = await render(wrap(ui, h("div", { style: { height: "500px" } }, h(HistoryPanel, { initialHeight: 500 }))));
+  await flush();
+  const list = $(m.container, ".carton-history-list")!;
+  list.scrollTop = 1500;
+  await act(async () => {
+    list.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  await flush();
+  assert.ok($(m.container, ".carton-newest-btn"), "scrolled: ↑ Newest");
+  await type($(m.container, ".carton-search-input"), "intro");
+  await wait(FIND_DEBOUNCE_MS + 40);
+  await waitFor(() => !!$(m.container, ".carton-find-count"), "the results");
+  assert.equal($(m.container, ".carton-history-list")!.scrollTop, 0, "the results from their top");
+  assert.equal($(m.container, ".carton-newest"), null, "no ↑ Newest over the newest results");
+  await click($(m.container, ".carton-search-x"));
+  await waitFor(() => !$(m.container, ".carton-find-count"), "History again");
+  await flush();
+  assert.equal($(m.container, ".carton-history-list")!.scrollTop > 0, !!$(m.container, ".carton-newest"), "↑ Newest only when the list is scrolled");
+  await m.unmount();
+});
+
 // ------------------------------------------------------------------ landmarks (§2.1, §2.5, §2.6)
 
 test(name("landmarks: tagged rows with a picture tile; the Landmarks filter lists only them"), async () => {

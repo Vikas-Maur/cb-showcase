@@ -1545,6 +1545,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (t.taken !== undefined) changes = t.taken;
       if (t.taken !== undefined && t.total !== undefined && t.total > t.taken) leftOut = t.total - t.taken;
     } else if (t?.kind === "restore") summary = `Restored ${restored(t.of)}`;
+    else if (t?.kind === "bring-back") {
+      // Bring back one clip (DESIGN-V2 §3.2): "Brought back “B-roll pier” from 10:20 am", as its toast says it; a clip
+      // that wasn't there then comes out ("Took out “Drone shot”"). Without this the row read as a plain change ("Added
+      // “B-roll pier”"), and a bring-back couldn't be told from an edit (design QA v2)
+      const x = t.of ? versionAt(t.of) : undefined;
+      const from = x?.name ? `“${x.name}”` : x ? at(x.at) : "an earlier version";
+      const clip = t.name ? `“${t.name}”` : "a clip";
+      summary = list.length > 0 && list.every((r) => r.kind === "remove") ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
+    }
     else if (t?.kind === "undo-restore" || t?.kind === "redo-restore") summary = `${t.kind === "undo-restore" ? "Undid" : "Redid"} the restore of ${restored(t.of)}`;
     else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${t.rest ? "the rest of " : ""}${cutName(t.cut)}`;
     else if (c.kind === "undo" && got?.undoes?.length) {

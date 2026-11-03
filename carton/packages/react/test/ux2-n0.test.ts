@@ -77,6 +77,13 @@ test("view model: find, landmarks, bring back one clip, its choices, align and t
     assert.equal(r.clipName, "Intro");
     assert.ok(r.made?.changes.length === 1);
     assert.equal((await carton.head()).doc.items && ((await carton.head()).doc.items as Rec[]).find((x) => x.id === "a")!.endTime, 5);
+    // its row says what it was, as its toast does: "Brought back “Intro” from 10:20 am", not the plain change (QA v2)
+    await ui.settled();
+    const h = ui.history();
+    h.at("all", 0);
+    await ui.settled();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.match(h.at("all", 0)!.summary, /^Brought back “Intro” from \d{1,2}:\d{2} [ap]m$/);
     // two cuts: their differences, said as where a clip is
     const insta = await carton.fork("30s Instagram cut");
     await carton.commit({ cut: insta.id, ops: [{ op: "remove", path: ["items", "c"] }, set("b", "endTime", 8)], author: alice });
