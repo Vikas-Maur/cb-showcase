@@ -134,30 +134,60 @@ test(name("narrow subscriptions: ghosts and presence never touch History; a sync
   await m.unmount();
 });
 
-test(name("cuts menu: lists cuts (Bob's read-only), new cut from here, rename"), async () => {
+test(name("cuts menu (PLAN 6.1): who and when per cut, a dot but on Main, teammates' cuts View only, new cut from your edit, one Fold entry"), async () => {
   const ui = createMockUi({ versions: 10 });
   let folded: string | null = null;
   const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: (from: { label: string }, into: { label: string }) => (folded = `${from.label}→${into.label}`) })));
   const trigger = $(m.container, ".carton-menu-trigger")!;
   assert.match(trigger.textContent ?? "", /Main cut/);
+  assert.equal($(trigger, ".carton-cut-dot"), null, "Main cut has no dot");
   await click(trigger);
-  // a read-only cut says why on a second line under its name (no tooltip)
-  const items = $$(m.container, "[role=menuitemradio]").map((e) => e.textContent);
-  assert.ok(items.some((t) => t?.startsWith("Bob's Main cut")));
-  assert.ok(items.includes("30s Instagram cut"));
-  await click(byText(m.container, "[role=menuitem]", "New cut from here"));
+  const item = (re: RegExp) => $$(m.container, "[role=menuitemradio]").find((e) => re.test(e.textContent ?? ""))!;
+  assert.equal(item(/^Main cut/).getAttribute("aria-checked"), "true");
+  assert.match(item(/^Main cut/).textContent ?? "", /You · /, "who changed it last, and when");
+  assert.match(item(/^30s Instagram cut/).textContent ?? "", /Director · 2 h ago/);
+  assert.ok($(item(/^30s Instagram cut/), ".carton-cut-dot"), "every other cut has its dot");
+  // teammates' cuts under their own label, View only
+  const labels = $$(m.container, ".carton-menu-label").map((e) => e.textContent);
+  assert.deepEqual(labels, ["Cuts", "From teammates"]);
+  assert.match(item(/^Bob's Main cut/).textContent ?? "", /View only/);
+  assert.ok(byText(m.container, ".carton-cuts-note", "Agents work on the cut you're on."));
+  await click(byText(m.container, "[role=menuitem]", "New cut from your edit"));
   await type($(m.container, "input.carton-input"), "Teaser");
   await act(() => ($(m.container, "form") as HTMLFormElement).requestSubmit());
   await flush();
   assert.equal(ui.cuts().find((c) => c.current)?.name, "Teaser");
   assert.match($(m.container, ".carton-menu-trigger")!.textContent ?? "", /Teaser/);
+  assert.ok($(m.container, ".carton-menu-trigger .carton-cut-dot"), "a new cut gets its dot at once");
   await click($(m.container, ".carton-menu-trigger"));
-  await click(byText(m.container, "[role=menuitem]", "Fold into Main cut"));
-  assert.equal(folded, "Teaser→Main cut");
+  // into the cut you're on, from the cut changed most recently
+  await click(byText(m.container, "[role=menuitem]", "Fold in changes from a cut…"));
+  assert.equal(folded, "Main cut→Teaser");
   await m.unmount();
 });
 
-test(name("fold in: leave a change out, pick on the card, then fold in N of M"), async () => {
+test(name("cuts menu (PLAN 6.1): one Fold entry however many cuts; scrolls past 8, a search past 12"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: () => {} })));
+  const foldEntries = () => $$(m.container, "[role=menuitem]").filter((e) => /^Fold/.test(e.textContent ?? "")).length;
+  await click($(m.container, ".carton-menu-trigger"));
+  assert.equal(foldEntries(), 1, `${ui.cuts().length} cuts, one Fold entry`);
+  assert.equal($(m.container, ".carton-cuts-scroll"), null, "5 cuts: no scrolling");
+  await key(document.activeElement, "Escape");
+  for (let i = 0; i < 9; i++) await act(async () => void (await ui.newCut(`Cut ${i}`, "main@1")));
+  await click($(m.container, ".carton-menu-trigger"));
+  assert.equal(foldEntries(), 1, `${ui.cuts().length} cuts, still one Fold entry`);
+  assert.ok($(m.container, ".carton-cuts-scroll"), "past 8 cuts the list scrolls");
+  const find = $(m.container, "input.carton-cuts-find");
+  assert.ok(find, "past 12 cuts, a search field");
+  await type(find, "instagram");
+  assert.deepEqual($$(m.container, "[role=menuitemradio]").map((e) => e.querySelector(".carton-cut-name")?.textContent), ["30s Instagram cut"]);
+  await key(find, "ArrowDown");
+  assert.equal(document.activeElement, $(m.container, "[role=menuitemradio]"), "the arrows go from the field into the list");
+  await m.unmount();
+});
+
+test(name("fold in (PLAN 6.3): from/into, the line, change rows, a lock, leave one out, pick inline, then Fold in N changes"), async () => {
   const ui = createMockUi({ versions: 10 });
   let call: unknown = null;
   const real = ui.fold.bind(ui);
@@ -165,22 +195,68 @@ test(name("fold in: leave a change out, pick on the card, then fold in N of M"),
   const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
   await flush();
   const dialog = $(m.container, "[role=dialog]")!;
-  assert.match(dialog.textContent ?? "", /Fold “30s Instagram cut” into “Main cut”/);
-  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1)!;
-  assert.equal(go().textContent, "Fold in");
-  assert.ok((go() as HTMLButtonElement).disabled, "can't fold before picking on the card");
-  const boxes = $$(dialog, "input[type=checkbox]");
-  assert.equal(boxes.length, 6);
-  await click(boxes[1]);
-  assert.equal(go().textContent, "Fold in 5 of 6");
-  assert.match(dialog.textContent ?? "", /You can fold in the rest later/);
-  // In a fold each choice names whose edit and which cut, so "mine" is never ambiguous.
-  assert.ok(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
-  assert.ok($$(dialog, ".carton-conflict-where").some((e) => e.textContent === "30s Instagram cut"));
-  await click(byText(dialog, "button", "Keep yours (Main cut)"));
-  assert.equal((go() as HTMLButtonElement).disabled, false);
+  assert.equal($(dialog, ".carton-dialog-title")!.textContent, "Fold in changes");
+  assert.deepEqual($$(dialog, ".carton-fold-cut").map((e) => e.getAttribute("aria-label")), ["From: 30s Instagram cut", "into: Main cut, you're on it"]);
+  assert.match($(dialog, ".carton-fold-lead")!.textContent ?? "", /^Main cut gets what changed on “30s Instagram cut” since it was made from Main cut at \d+:\d\d [ap]m\.$/);
+  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1)! as HTMLButtonElement;
+  assert.equal(go().textContent, "Fold in 4 changes");
+  assert.ok(go().disabled, "can't fold before picking");
+  assert.equal($(dialog, ".carton-fold-later")!.textContent, "Pick one for “Interview B”", "the button says why it waits");
+  // a row: time in the edit, the kind of clip, the sentence, who
+  const rows = $$(dialog, ".carton-fold-change");
+  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-time")?.textContent), ["0:00", "0:03", "0:12", "—"]);
+  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-chip")?.getAttribute("data-clip")), ["video", "title", "video", "project"]);
+  assert.match(rows[0]!.textContent ?? "", /Director · 2 h ago/);
+  // a project setting can't be left out: a lock, and the line says why
+  assert.equal($$(dialog, "input[type=checkbox]").length, 3);
+  assert.ok($(rows[3]!, ".carton-fold-lock"));
+  assert.match(rows[3]!.textContent ?? "", /Can't be left out: it's a setting for the whole project/);
+  assert.equal(byText(dialog, "button", "Select none")?.className, "carton-fold-select");
+  await click($(rows[1]!, "input[type=checkbox]"));
+  assert.equal(go().textContent, "Fold in 3 changes");
+  assert.ok(byText(dialog, "button", "Select all"), "one link: Select all once one is out");
+  // the conflict inline: both cuts' versions, as a radio group that names each cut
+  const sides = $$(dialog, ".carton-fold-pick [role=radio]");
+  assert.deepEqual(sides.map((e) => e.textContent), ["Main cut's: starts at 0:18· You", "30s Instagram cut's: starts at 0:20· Director"]);
+  assert.equal($(dialog, ".carton-fold-pick-title")!.textContent, "Both cuts moved “Interview B”. Pick one:");
+  await click(sides[0]);
+  assert.equal(go().disabled, false);
+  assert.equal($(dialog, ".carton-fold-later")!.textContent, "1 change is left out. It stays on “30s Instagram cut”, and you can fold it in later.");
   await click(go());
-  assert.deepEqual(call, { leaveOut: ["items/interview-a"], choices: { "items/intro/#time": "mine" } });
+  assert.deepEqual(call, { leaveOut: ["items/summer"], choices: { "timelineItems/item-interview-b/#time": "mine" } });
+  await m.unmount();
+});
+
+test(name("fold in (PLAN 6.3): the pickers change the cuts; the nothing-to-fold and the rest states"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const asked: string[] = [];
+  const planFold = ui.planFold.bind(ui);
+  ui.planFold = async (f, i, o) => {
+    asked.push(`${f}>${i}`);
+    const p = await planFold(f, i, o);
+    if (f === "cut-dir") return { ...p, changes: [], conflicts: [], warnings: [] };
+    if (f === "cut-offline") return { ...p, conflicts: [], warnings: [], changes: [{ ...p.changes[2]!, leftOut: "fold-17", leftOutAt: new Date(2026, 9, 30, 16, 10).getTime() }] };
+    return p;
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = () => $(m.container, "[role=dialog]")!;
+  // From: every cut but the one it goes into (a teammate's too); Into: only your own cuts
+  await click($(dialog(), ".carton-fold-cut"));
+  assert.deepEqual($$(dialog(), "[role=menuitemradio] .carton-cut-name").map((e) => e.textContent), ["30s Instagram cut", "Director's cut: punchier open", ui.cuts()[3]!.label, "Bob's Main cut"]);
+  await click($$(dialog(), "[role=menuitemradio]")[1]);
+  await flush();
+  assert.equal(asked.at(-1), "cut-dir>cut-main");
+  assert.equal($(dialog(), ".carton-fold-nothing")!.textContent, "Main cut already has everything from “Director's cut: punchier open”.");
+  assert.deepEqual($$(dialog(), ".carton-dialog-foot button").map((b) => b.textContent), ["Close"]);
+  await click($(dialog(), ".carton-fold-cut"));
+  await click($$(dialog(), "[role=menuitemradio]")[2]);
+  await flush();
+  assert.equal($(dialog(), ".carton-fold-lead")!.textContent, "1 change was left out when you folded this cut in on Oct 30. It can come in now.");
+  assert.match($(dialog(), ".carton-fold-change")!.textContent ?? "", /Left out on Oct 30/);
+  assert.equal($$(dialog(), ".carton-dialog-foot button").at(-1)!.textContent, "Fold in the rest");
+  await click($$(dialog(), ".carton-fold-cut")[1]);
+  assert.deepEqual($$(dialog(), "[role=menuitemradio] .carton-cut-name").map((e) => e.textContent), ["Main cut", "30s Instagram cut", "Director's cut: punchier open"], "never into a teammate's cut");
   await m.unmount();
 });
 
@@ -362,8 +438,8 @@ test(name("R1-18: the Cuts menu offers Rename only when the engine can rename"),
   delete (ui as { renameCut?: unknown }).renameCut;
   const m = await render(wrap(ui, h(CutsMenu, {})));
   await click($(m.container, ".carton-menu-trigger"));
-  assert.equal(byText(m.container, "[role=menuitem]", "Rename cut"), null);
-  assert.ok(byText(m.container, "[role=menuitem]", "New cut from here"));
+  assert.equal(byText(m.container, "[role=menuitem]", "Rename “Main cut”"), null);
+  assert.ok(byText(m.container, "[role=menuitem]", "New cut from your edit"));
   await m.unmount();
 });
 
@@ -374,7 +450,7 @@ test(name("R1-18: a failed switch says so next to the menu"), async () => {
   };
   const m = await render(wrap(ui, h(CutsMenu, {})));
   await click($(m.container, ".carton-menu-trigger"));
-  await click(byText(m.container, "[role=menuitemradio]", "30s Instagram cut"));
+  await click(byText(m.container, "[role=menuitemradio]", /^30s Instagram cut/));
   assert.match($(m.container, "[role=alert]")?.textContent ?? "", /isn't available offline/);
   await m.unmount();
 });
@@ -397,11 +473,11 @@ test(name("R2-5: when a fold comes back with new cards, the dialog shows the pla
   const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
   await flush();
   const dialog = $(m.container, "[role=dialog]")!;
-  await click(byText(dialog, "button", "Keep yours (Main cut)"));
+  await click(byText(dialog, "[role=radio]", /^Main cut's: /));
   await click($$(dialog, ".carton-dialog-foot button").at(-1));
   await flush();
   assert.match(dialog.textContent ?? "", /Something changed since you looked/);
-  assert.ok(byText(dialog, ".carton-card-title", "'Logo' name"), "the new card is there to pick on");
+  assert.ok(byText(dialog, ".carton-fold-pick-title", "Both cuts changed 'Logo' name. Pick one:"), "the new card is there to pick on");
   assert.equal(($$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement).disabled, true, "can't fold until it's picked");
   await m.unmount();
 });
@@ -423,14 +499,14 @@ test(name("R3-1: a card that comes back after a fold has no pick: it must be pic
   const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
   await flush();
   const dialog = $(m.container, "[role=dialog]")!;
-  await click(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
+  await click(byText(dialog, "[role=radio]", /^30s Instagram cut's: /));
   const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
   assert.equal(go().disabled, false);
   await click(go());
   await flush();
   assert.match(dialog.textContent ?? "", /Moved it to start at 0:03\.0/, "the card as it is now");
   assert.equal(go().disabled, true, "its old pick is gone: Fold in waits for a new one");
-  assert.equal($$(dialog, ".carton-conflict [aria-pressed=true]").length, 0);
+  assert.equal($$(dialog, ".carton-fold-pick [aria-checked=true]").length, 0);
   await m.unmount();
 });
 
@@ -453,17 +529,18 @@ test(name("R4-1: a card that changed while the plan reloaded loses its pick too,
   const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
   await flush();
   const dialog = $(m.container, "[role=dialog]")!;
-  const cardEl = (title: string) => $$(dialog, ".carton-conflict").find((e) => e.textContent?.includes(title))!;
-  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
-  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  const cardEl = (title: string) => $$(dialog, ".carton-fold-pick").find((e) => e.textContent?.includes(title))!;
+  const theirs = (title: string) => byText(cardEl(title), "[role=radio]", /^30s Instagram cut's: /);
+  await click(theirs("Card A"));
+  await click(theirs("Card B"));
   const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
   assert.equal(go().disabled, false);
   await click(go());
   await flush();
   assert.match(cardEl("Card B").textContent ?? "", /B2/);
-  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  await click(theirs("Card A"));
   assert.equal(go().disabled, true, "B changed during the reload: its old pick doesn't count");
-  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  await click(theirs("Card B"));
   assert.equal(go().disabled, false);
   await m.unmount();
 });
@@ -508,7 +585,7 @@ test(name("U6/U7: versions arriving and ghosts moving re-render only History; av
   await m.unmount();
 });
 
-test(name("F-5: Fold into Main hands the host the cuts as they are now, not the heads the menu last showed"), async () => {
+test(name("F-5: Fold in hands the host the cuts as they are now, not the heads the menu last showed"), async () => {
   const ui = createMockUi({ versions: 10 });
   await act(() => ui.switchCut("cut-ig"));
   let got: { from: string; into: string } | null = null;
@@ -516,7 +593,8 @@ test(name("F-5: Fold into Main hands the host the cuts as they are now, not the 
   await act(() => void ui.addVersion({ author: people.bob })); // moves the current cut's head; the menu doesn't re-render
   await flush();
   await click($(m.container, ".carton-menu-trigger"));
-  await click(byText(m.container, "[role=menuitem]", "Fold into Main cut"));
-  assert.equal(got!.from, ui.cuts().find((c) => c.id === "cut-ig")!.head, "the source's head as it is now");
+  await click(byText(m.container, "[role=menuitem]", "Fold in changes from a cut…"));
+  assert.equal(got!.into, ui.cuts().find((c) => c.id === "cut-ig")!.head, "the cut you're on, its head as it is now");
+  assert.equal(got!.from, ui.cuts().find((c) => c.id === "cut-main")!.head);
   await m.unmount();
 });

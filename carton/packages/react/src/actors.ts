@@ -69,6 +69,17 @@ export function actorDetail(a: Actor, byKey?: (key: string) => Actor | undefined
   return d === label ? undefined : d;
 }
 
+/**
+ * Which agent an actor is, for its own mark (PLAN 3.1, DESIGN §6.1: the Director, Claude Code and Codex each have one,
+ * never one sparkle for all): told by its product name. A subagent is its agent's name. Null for a person, the system
+ * or any other agent.
+ */
+export function agentOf(a: Actor): "director" | "claude" | "codex" | null {
+  if (a.kind !== "agent" && a.kind !== "subagent") return null;
+  const n = typeof a.name === "string" ? a.name : "";
+  return /claude/i.test(n) ? "claude" : /codex/i.test(n) ? "codex" : /director/i.test(n) ? "director" : null;
+}
+
 /** The chain from the person down to this actor: [Alice, Director, Explore]. */
 export function actorChain(a: Actor, byKey: (key: string) => Actor | undefined): Actor[] {
   const out: Actor[] = [a];

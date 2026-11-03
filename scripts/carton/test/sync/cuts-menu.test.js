@@ -136,7 +136,7 @@ test("#2: a split saved by the editor reads as a split in History", t, async () 
     const row = await S.until(() => panel.history().length > before && panel.history().at(-1), 20_000, "the split's version in the panel");
     await panel.want([row.id]);
     const said = await S.until(() => panel.history().find((v) => v.id === row.id)?.summary, 20_000, "the split's version in words");
-    assert.equal(said, "Split 'clip.mp4' at 1.0 s", "History says it was split: " + JSON.stringify(panel.history().at(-1)));
+    assert.equal(said, "Split “clip.mp4” at 0:01", "History says it was split (the editor's words, UX redesign 0.2): " + JSON.stringify(panel.history().at(-1)));
   } finally {
     await pc.stopWorker();
   }
@@ -167,7 +167,7 @@ test("#3: a fold with its split left out counts the split as one change in the F
     // the Fold dialog: two changes, the split one of them
     const plan = await panel.call("planFold", alt.id, main.id);
     assert.equal(plan.changes.length, 2, "two rows: " + JSON.stringify(plan.changes.map((c) => c.summary)));
-    const split = plan.changes.find((c) => /^Split 'clip\.mp4'/.test(c.summary));
+    const split = plan.changes.find((c) => /^Split “clip\.mp4”/.test(c.summary));
     assert.ok(split, "the split is one row: " + JSON.stringify(plan.changes.map((c) => c.summary)));
     assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] }), { ok: true });
 
@@ -175,8 +175,10 @@ test("#3: a fold with its split left out counts the split as one change in the F
     await panel.call("switchCut", main.id);
     const row = await S.until(() => panel.cuts().find((c) => c.current)?.id === main.id && panel.history().at(-1)?.kind === "fold" && panel.history().at(-1), 20_000, "the fold's row on Main");
     await panel.want([row.id]);
-    const said = await S.until(() => panel.history().find((v) => v.id === row.id)?.summary, 20_000, "the fold's row in words");
-    assert.equal(said, "Folded 'Alt cut' into 'Main cut': 1 of 2 changes");
+    const said = await S.until(() => { const v = panel.history().find((x) => x.id === row.id); return v?.summary && v; }, 20_000, "the fold's row in words");
+    // the UX redesign's words (PLAN 0.2): the row says what it was, and "1 of 2 changes" is its counts
+    assert.equal(said.summary, "Folded in “Alt cut”");
+    assert.deepEqual([said.changes, said.leftOut], [1, 1], "1 of 2 changes: " + JSON.stringify(said));
     // cb history: one change left out
     const h = pc.cb(["history", "Demo", "--cut", main.id, "--limit", "1"]);
     assert.equal(h.code, 0, h.out + h.err);

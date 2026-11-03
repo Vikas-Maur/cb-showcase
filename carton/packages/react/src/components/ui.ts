@@ -14,7 +14,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { actorColor, actorDetail, actorLabel, initials } from "../actors.ts";
+import { actorColor, actorDetail, actorLabel, agentOf, initials } from "../actors.ts";
 import { useCartonUi, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Actor } from "../model.ts";
@@ -63,9 +63,15 @@ export function Button(p: ButtonProps) {
   );
 }
 
-/** Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15). */
-const agentMark = (name: string | undefined): IconName =>
-  /claude/i.test(name ?? "") ? "burst" : /codex/i.test(name ?? "") ? "hexagon" : /director/i.test(name ?? "") ? "clapper" : "sparkle";
+/**
+ * Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15, PLAN 3.1): the Director an
+ * arc of bars (Cardboard's), Claude Code a burst, Codex a knot; any other agent the sparkle.
+ */
+const MARKS: Record<"director" | "claude" | "codex", IconName> = { director: "bars", claude: "burst", codex: "knot" };
+const agentMark = (a: Actor): IconName => {
+  const k = agentOf(a);
+  return k ? MARKS[k] : "sparkle";
+};
 
 /**
  * An actor's avatar. `named`: its name is shown beside it (History rows, cards, Credits), so the avatar is decoration:
@@ -87,11 +93,13 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
       ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.isYou ? words.you : actor.name)))
       : actor.kind === "subagent" && !named
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
-        : h(Icon, { name: agentMark(actor.name), size: Math.round(size * 0.62) });
+        : h(Icon, { name: agentMark(actor), size: Math.round(size * 0.62) });
   // Beside a name, a subagent is its agent ("Director"): the agent's look too.
+  // data-agent: which agent's mark it is (a skin colours Claude Code's burst as Claude's own: History's rows, PLAN 3.1)
+  const agent = agentOf(actor) ?? undefined;
   return named
-    ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, style, "aria-hidden": true }, glyph)
-    : h("span", { className: "carton-avatar", "data-kind": actor.kind, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
+    ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, "data-agent": agent, style, "aria-hidden": true }, glyph)
+    : h("span", { className: "carton-avatar", "data-kind": actor.kind, "data-agent": agent, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
 }
 
 /**
@@ -284,6 +292,10 @@ export interface MenuButtonProps {
   /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
   ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
+  /** Filled with a function that opens the menu (focus goes into it): a host can open it from elsewhere (the cuts menu). */
+  openRef?: { current: (() => void) | null };
+  /** A class on the menu itself. */
+  menuClassName?: string;
 }
 
 /** A button that opens a menu below it. */
@@ -304,6 +316,7 @@ export function MenuButton(p: MenuButtonProps) {
     setOpen(false);
     btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
+  if (p.openRef) p.openRef.current = () => setOpen(true);
   return h(
     "div",
     { className: "carton-menu-anchor", "data-align": p.align ?? "start" },
@@ -328,7 +341,7 @@ export function MenuButton(p: MenuButtonProps) {
       },
       p.trigger,
     ),
-    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current] }, p.children(close))) : null,
+    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current], className: p.menuClassName }, p.children(close))) : null,
   );
 }
 

@@ -89,7 +89,7 @@ test(name("P1-4: Fold in offers what a partial fold left out, together; leaving 
   await waitFor(() => $$(m.container, ".carton-fold-change").length === 2, "the two changes left out");
   assert.doesNotMatch(m.container.textContent ?? "", /Nothing to fold in/);
   const rows = $$(m.container, ".carton-fold-change");
-  for (const r of rows) assert.match(r.textContent ?? "", /Left out earlier/);
+  for (const r of rows) assert.match(r.textContent ?? "", /Left out on /);
   // they fold in together: unticking one unticks both, and the dialog promises the rest later
   await click($(rows[0]!, "input[type=checkbox]"));
   await flush();
@@ -97,7 +97,7 @@ test(name("P1-4: Fold in offers what a partial fold left out, together; leaving 
   await click($($$(m.container, ".carton-fold-change")[1]!, "input[type=checkbox]"));
   await flush();
   assert.deepEqual($$(m.container, ".carton-fold-change input[type=checkbox]").map((c) => (c as HTMLInputElement).checked), [true, true]);
-  await click(byText(m.container, "button", /^Fold in$/));
+  await click(byText(m.container, "button", /^Fold in the rest$/));
   await waitFor(() => done === 1, "folded");
   const head = (await carton.head(main)).doc;
   assert.deepEqual(["a", "b", "c"].map((id) => (head.items as Rec[]).find((i) => i.id === id)!.name), ["A1", "B1", "C1"]);

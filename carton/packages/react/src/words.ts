@@ -229,6 +229,8 @@ export const words = {
   viewOnly: "View only",
   cutWho: (who: string, when: string) => `${who} · ${when}`,
   now: "now",
+  // A moment in a short list (the cuts menu, the Fold dialog's rows): "now", "4 min ago", "2 h ago", "11:02 am", "yesterday", "Oct 30"
+  yesterdayShort: "yesterday",
   workingNow: "working now",
   newCutFromYourEdit: "New cut from your edit",
   foldInFromCut: "Fold in changes from a cut…",
@@ -238,6 +240,17 @@ export const words = {
   workingOnCut: (agent: string, cut: string) => `${agent} is working on ${cut}, and agents work on the cut you're on.`,
   switchWhenDone: "Switch when it finishes",
   switchNow: "Switch now",
+  // A switch waiting for an agent's turn to end (PLAN 6.1): said under the cut bar until it runs, with a way out
+  switchQueued: (cut: string, agent: string) => `Switches to ${cut} when ${agent} finishes.`,
+  switchQueuedRow: (agent: string) => `Switches when ${agent} finishes`,
+  dontSwitch: "Don't switch",
+  // More than 12 cuts: a search field at the top of the menu
+  findCut: "Find a cut",
+  noCutMatches: "No cut has that name.",
+  // A teammate's cut, viewed (DESIGN §6.3): what you can do with it, above its History
+  foldIntoCut: (cut: string) => `Fold into ${cut}…`,
+  newCutFromIt: "New cut from it",
+  teammateCut: (label: string) => `You're looking at ${label}. You can fold it in or copy it as a new cut; it stays as its owner left it.`,
 
   // History head and filter
   comments: "Comments",
@@ -277,6 +290,7 @@ export const words = {
   historyEmptyTitle: "Your edit's history starts here",
   historyEmptyBody: "Every change, yours or an agent's, is saved as a version. Look back at any of them, play what changed, or restore one. Nothing is lost.",
   cutStarted: (cut: string, when: string) => `${cut} · started ${when}`,
+  todayAt: (time: string) => `today at ${time}`,
 
   // Version card
   changesSince: (n: number) => `Your edit has ${plural(n, "change", "changes")} since this`,
@@ -290,6 +304,34 @@ export const words = {
   undoThisTurnHint: (n: number) => `Takes out only ${n === 1 ? "this change" : `these ${n} changes`}. Later changes stay.`,
   changesIn: (label: string) => `Changes in ${label}`,
   noPosition: "—",
+  // A change row's kind chip, for screen readers ("Title, added"): the chip itself is colour and a corner mark
+  clipKinds: { video: "Video", title: "Title", caption: "Caption", audio: "Audio", image: "Image", code: "Code graphic", project: "Project" } as Record<"video" | "title" | "caption" | "audio" | "image" | "code" | "project", string>,
+  changeKinds: { add: "added", remove: "removed", change: "changed" } as Record<"add" | "remove" | "change", string>,
+  changeChip: (clip: string, kind: string) => `${clip}, ${kind}`,
+  // A change's who and when, under its sentence when a list mixes authors: "Claude Code · 12:48 pm"
+  changeWho: (who: string, when: string) => (who ? `${who} · ${when}` : when),
+  // An older version whose state your edit still has: no "N changes since"
+  sameSinceThis: "Your edit is the same as this version",
+  // A card's list of changes that is long: the rest in the Changes view
+  seeAll: (n: number) => `See all ${n}`,
+  showLess: "Show fewer",
+  loadingChanges: "Reading what changed",
+  noChangesInVersion: "Nothing in the edit changed.",
+  // An action that failed, in its card, with the reason in its tooltip (DESIGN §6.1 Errors)
+  undoTurnFailed: "Couldn't undo this turn. Try again.",
+  newCutFailed: "Couldn't make the cut. Try again.",
+  // The live row of an agent working: its mark ringed in green, for screen readers
+  agentWorking: (agent: string) => `${agent} is working`,
+  // The credits of the clip History is filtered to (PLAN 0.8, 9.2): "Added by You on Oct 30 · trimmed by Director"
+  creditVerb: { Added: "added", Timing: "retimed", Text: "text changed", Color: "color changed", Volume: "volume changed", Name: "renamed" } as Record<string, string>,
+  creditPart: (verb: string, who: string, when: string) => `${verb} by ${who}${when ? ` ${when}` : ""}`,
+  creditOn: (day: string) => `on ${day}`,
+  creditAt: (time: string) => `at ${time}`,
+  // Group rows (DESIGN §6.1): the chevron that lists a person's run of changes, one by one
+  groupClose: (n: number) => `Hide these ${plural(n, "change", "changes")}`,
+  // History list's live region and keys
+  historyKeys: "Enter opens a version, Space plays it, F2 names it",
+  cardRegion: (label: string) => `Changes in ${label}`,
 
   // Row menu
   playItsChanges: "Play its changes",
@@ -431,6 +473,18 @@ export const words = {
   foldUndoLine: "Ctrl+Z takes the whole fold back.",
   foldInN: (n: number) => `Fold in ${plural(n, "change", "changes")}`,
   alreadyHas: (into: string, from: string) => `${into} already has everything from “${from}”.`,
+  // The dialog's line with names as cutRef() gives them (Main cut bare, any other cut in curly quotes): the one made from
+  // the other, or neither (PLAN 6.3)
+  foldLine: (into: string, from: string, parent: string, when: string) => `${into} gets what changed on ${from} since it was made from ${parent} ${when}.`,
+  // A moment after a noun ("made from Main cut at 12:20 pm"), from clock()'s "12:20 pm", "yesterday at 4:10 pm", "Oct 30 at 4:10 pm"
+  atMoment: (clock: string, day: "today" | "yesterday" | "other") => (day === "today" ? `at ${clock}` : day === "yesterday" ? clock : `on ${clock}`),
+  foldLinePlain: (into: string, from: string) => `${into} gets what changed on ${from}.`,
+  // Only what an earlier partial fold left out is left to fold (DESIGN §6.4, after/fold-rest.png)
+  foldRestLine: (n: number, day: string) => `${plural(n, "change was", "changes were")} left out when you folded this cut in on ${day}. ${n === 1 ? "It" : "They"} can come in now.`,
+  foldRestLinePlain: (n: number) => `${plural(n, "change was", "changes were")} left out when you folded this cut in. ${n === 1 ? "It" : "They"} can come in now.`,
+  // A conflict's sides in the dialog: "Main cut's: starts at 0:18" · who
+  cutsSide: (cut: string, what: string) => `${cut}'s: ${what}`,
+  bothCutsChanged: (title: string) => `Both cuts changed ${title}. Pick one:`,
 
   // Toasts (DESIGN §6.7)
   undo: "Undo",

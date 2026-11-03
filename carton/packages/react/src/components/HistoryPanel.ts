@@ -4,7 +4,7 @@
 
 import { createElement as h, memo, useCallback, useId, useMemo, useRef, useState, type MouseEvent } from "react";
 import { exactTime, versionLabel, when } from "../format.ts";
-import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useWords } from "../hooks.ts";
+import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { HistoryFilter, Version } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
@@ -300,6 +300,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const expanded = expandedAt >= 0 ? { index: expandedAt, extra: expandedV!.details!.length * VERSION_DETAIL_HEIGHT + DETAILS_PAD } : null;
   const menuVersion = menu ? find(menu.id) : undefined;
   const waiting = !!menuVersion?.provisional;
+  // A teammate's cut on screen (UX redesign PLAN 6.2): it stays as its owner left it, so its versions offer no Restore
+  // (fold it in or copy it as a new cut instead, above the list). Read so a head moving doesn't re-render the list.
+  const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
   const compareVersion = comparing ? find(comparing) : undefined;
   const filters = useMemo(() => (["all", "named", "turns"] as const).map((f) => ({ f, label: words.historyFilters[f] })), [words]);
   const empty = filter === "named" ? words.historyEmptyNamed : filter === "turns" ? words.historyEmptyTurns : words.historyEmpty;
@@ -410,8 +413,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
           h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
           menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
           menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
-          h(MenuSeparator, null),
-          h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
+          theirCut ? null : h(MenuSeparator, null),
+          theirCut ? null : h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
         )
       : null,
     compareVersion && props.currentRef
@@ -419,7 +422,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           a: compareVersion.ref,
           b: props.currentRef,
           onWatch: props.onWatch,
-          ...(compareVersion.empty ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
+          ...(compareVersion.empty || theirCut ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
           onClose: () => {
             setComparing(null);
             toList();
