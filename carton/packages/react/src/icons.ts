@@ -48,6 +48,30 @@ const shapes = {
   dot: [C(12, 12, 3, true)],
   arrowLeft: [P("M19 12H5.5"), P("M11 6.5L5.5 12l5.5 5.5")],
   users: [C(9, 8.8, 3.3), P("M3 19.5c1-3.1 3.3-4.7 6-4.7s5 1.6 6 4.7"), P("M15.2 5.8a3.3 3.3 0 0 1 0 6.1"), P("M17.4 14.9c1.6.6 2.9 2.1 3.6 4.6")],
+
+  // ---- the redesign's History and change rows (docs/carton-ux DESIGN §5.1, §6.1)
+  // Agents' own marks in History's rows (PLAN 3.1), simplified and drawn in the set's weight: the Director an arc of
+  // bars (Cardboard's own mark), Codex a knot. Claude Code keeps the burst above.
+  bars: [P("M4.5 9.5v5M8 7.5v8.5M12 7v10M16 7.5v8.5M19.5 9.5v5")],
+  knot: [P("M12 4.2a4 4 0 0 1 3.8 2.6 4 4 0 0 1 3.4 5.4 4 4 0 0 1-2.4 6.2 4 4 0 0 1-6.5 1.4 4 4 0 0 1-5.6-3.2A4 4 0 0 1 4 10.3a4 4 0 0 1 4.3-4.6A4 4 0 0 1 12 4.2z"), P("M9.5 10.5l2 1.5-2 1.5M13 14h2")],
+  // The kinds of clip a change row shows (Cardboard's timeline: video, title, caption, audio, image, code, project)
+  film: [h("rect", { x: 3.5, y: 5.5, width: 17, height: 13, rx: 2 }), P("M7.5 5.5v13M16.5 5.5v13M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4")],
+  text: [P("M6 7V5.5h12V7M12 5.5v13M9.5 18.5h5")],
+  cc: [h("rect", { x: 3.5, y: 5.5, width: 17, height: 13, rx: 2 }), P("M10.5 10.2a2.3 2.3 0 1 0 0 3.6M17 10.2a2.3 2.3 0 1 0 0 3.6")],
+  music: [P("M9 18.5V6l10-2v12.5"), C(6.5, 18.5, 2.5), C(16.5, 16.5, 2.5)],
+  image: [h("rect", { x: 3.5, y: 4.5, width: 17, height: 15, rx: 2 }), C(9, 9.5, 1.8), P("M20.5 15.5l-5-5-9 9")],
+  code: [P("M8.5 8L4.5 12l4 4M15.5 8l4 4-4 4")],
+  layers: [P("M12 4l8 4-8 4-8-4z"), P("M4 12l8 4 8-4")],
+  // History's cut bar, its filter, and the list's "↑ Newest"
+  filter: [P("M4 6h16M7 12h10M10 18h4")],
+  arrowUp: [P("M12 19V5"), P("M6 11l6-6 6 6")],
+  // Undo this turn (a turn's own changes taken out), apart from Restore's arrow round a clock
+  undo: [P("M9 14L4 9l5-5"), P("M4 9h10.5a5.5 5.5 0 0 1 0 11H11")],
+  restoreArc: [P("M4.5 8.5V4M4.5 8.5H9"), P("M5 8.5A8 8 0 1 1 4 12")],
+  // A named version's mark: the bookmark, filled
+  bookmarkFill: [h("path", { d: "M6.5 3.5h11v17l-5.5-4-5.5 4z", fill: "currentColor" })],
+  // A fold's mark: two lines coming into one
+  foldIn: [P("M7 4v4.5a5 5 0 0 0 5 5h0a5 5 0 0 0 5-5V4"), P("M12 13.5V21"), P("M9 18l3 3 3-3")],
 } satisfies Record<string, unknown[]>;
 
 export type IconName = keyof typeof shapes;
