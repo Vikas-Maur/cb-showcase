@@ -42,7 +42,7 @@ export type HistoryRow =
       readonly author: Actor;
       /** How many changes: the sum of its versions' `changes` once all are known, else how many versions. */
       readonly count: number;
-      /** Its versions are listed under it (`child` rows). */
+      /** Its older versions are listed under it (`child` rows; its newest is its own row). */
       readonly open: boolean;
       readonly now?: true;
     }
@@ -155,7 +155,8 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
       const key = `group:${versions[m]!.id}`;
       const open = !!opts.open?.(key);
       rows.push(flag({ kind: "group", key, id: v.id, index: n - 1 - k, ids, author: v.author, count: known ? sum : ids.length, open }));
-      if (open) for (let q = k; q >= m; q--) rows.push({ kind: "version", key: versions[q]!.id, id: versions[q]!.id, index: n - 1 - q, child: true });
+      // (from the second: the group's own row shows its newest's sentence, so it isn't listed twice: design QA G10)
+      if (open) for (let q = k - 1; q >= m; q--) rows.push({ kind: "version", key: versions[q]!.id, id: versions[q]!.id, index: n - 1 - q, child: true });
       k = m;
     }
     if (hidden) rows[at] = { ...(rows[at] as Extract<HistoryRow, { kind: "day" }>), hidden };

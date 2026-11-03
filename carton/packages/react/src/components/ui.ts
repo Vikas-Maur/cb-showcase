@@ -161,7 +161,8 @@ export function tipIfCut(e: { currentTarget: EventTarget | null }) {
   const el = e.currentTarget as HTMLElement | null;
   if (!el) return;
   const text = el.textContent ?? "";
-  if (el.scrollWidth > el.clientWidth + 1) {
+  // (cut off at its end, or its last part on a line of its own that isn't shown: a row title's place, design QA G14)
+  if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
     if (el.title !== text) el.title = text;
   } else if (el.title) el.removeAttribute("title");
 }

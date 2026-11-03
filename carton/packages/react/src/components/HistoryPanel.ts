@@ -10,11 +10,11 @@
 // A click or Enter on a row opens its card and never changes what the editor shows: only Play does (DESIGN §4.2).
 // A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
-import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Actor, CartonUi, HistoryFilter, Version, Working } from "../model.ts";
+import type { Actor, CartonUi, HistoryFilter, Version, Viewing, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
@@ -22,9 +22,10 @@ import { actorLabel } from "../actors.ts";
 import { clipCredits, type ClipCreditsView } from "../credits.ts";
 import { CLIP_ICON } from "./ChangeRow.ts";
 import { ChangesView } from "./ChangesView.ts";
+import { sentenceTail } from "./ChangeRow.ts";
 import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
 import { CutsMenu } from "./CutsMenu.ts";
-import { VersionCard, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
+import { VersionCard, stopViewing, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
 
 /** A version's row (DESIGN §6.1: 56 px). */
 export const VERSION_ROW_HEIGHT = 56;
@@ -137,6 +138,8 @@ interface RowProps {
   naming: boolean;
   /** One of an open group's versions, listed under it. */
   child?: boolean;
+  /** Shown in a folded day (a named version, a turn): set in under the header, quieter (design QA G31). */
+  folded?: boolean;
   /** A person's run of changes (a group row): its versions' total changes, and whether its versions are listed. */
   group?: boolean;
   groupCount?: number;
@@ -146,6 +149,17 @@ interface RowProps {
   onName: (id: string, name: string | null) => void;
   onGroup: (key: string) => void;
   onBack: () => void;
+}
+
+/**
+ * A row's title, cut off at the panel's width with the whole of it on hover (P2-16). A sentence that ends in its place
+ * in the edit ("Trimmed “Product close-up”, now ends at 0:05") is cut before that place, never inside its timecode:
+ * the place goes onto a line of its own, which isn't shown, when the whole doesn't fit (design QA G14).
+ */
+function titleOf(title: string, sentence: boolean): ReactNode {
+  const t = sentence ? sentenceTail(title) : null;
+  if (!t?.tail) return h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, title);
+  return h("span", { className: "carton-version-title", "data-tail": "", onMouseEnter: tipIfCut }, h("span", { className: "carton-version-head" }, t.head), h("span", { className: "carton-version-tail" }, t.tail));
 }
 
 // memo: a row re-renders only when its own version object or its own state changes. A new version arriving above it,
@@ -172,6 +186,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
             tabIndex: -1,
             "aria-label": words.backToMyEditKey,
             "data-carton-tip": words.backToMyEditKey,
+            "data-carton-tip-end": "",
             onClick: (e: MouseEvent) => {
               e.stopPropagation();
               p.onBack();
@@ -204,6 +219,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-compared": p.compared ? "" : undefined,
       "data-group": p.group ? "" : undefined,
       "data-child": p.child ? "" : undefined,
+      "data-folded": p.folded ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
@@ -228,7 +244,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           Fragment,
           null,
           // cut off at the panel's width: the whole text on hover (P2-16)
-          h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, title),
+          titleOf(title, !prompt && !named),
           when,
           p.child
             ? null
@@ -276,7 +292,10 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   );
 });
 
-/** History's start, one row (PLAN 0.4): "Project created · Oct 28", or "History starts here" for an imported project. No menu, no card. */
+/**
+ * History's start, one row (PLAN 0.4): "Project created", or "History starts here" for an imported project. No menu, no
+ * card. It is always under its own day's header, so it doesn't say the date again (design QA G16).
+ */
 const StartRow = memo(function StartRow({ row, domId, active }: { row: Extract<HistoryRow, { kind: "start" }>; domId: string; active: boolean }) {
   const words = useWords();
   const locale = useLocale();
@@ -284,7 +303,7 @@ const StartRow = memo(function StartRow({ row, domId, active }: { row: Extract<H
     "div",
     { id: domId, role: "option", "aria-selected": active, className: "carton-version carton-start", style: { height: VERSION_ROW_HEIGHT }, "data-start": "", "data-active": active ? "" : undefined },
     h("span", { className: "carton-version-mark carton-mark-sign", "data-sign": "start", "aria-hidden": true }, h(Icon, { name: "flag", size: 12 })),
-    h("span", { className: "carton-version-title" }, words.startOn(row.imported ? words.historyStartsHere : words.projectCreated, shortDate(row.at, locale))),
+    h("span", { className: "carton-version-title" }, row.imported ? words.historyStartsHere : words.projectCreated),
     h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(row.at).toISOString(), short: clockOfDay(row.at, locale), more: exactTime(row.at, locale) }),
   );
 });
@@ -392,6 +411,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // so a head moving doesn't re-render the list.
   const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
   const viewing = useViewing();
+  const stageRef = useStageRef(ui);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [cardMode, setCardMode] = useState<CardMode>(null);
@@ -561,10 +581,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
     cardPlayRef.current.stop();
     setPlayReq(null);
   }, [openKey]);
-  // a version that couldn't be loaded says so, in History's words (review #6)
-  useEffect(() => {
-    if (cardPlay.error) setFailed(cardPlay.error);
-  }, [cardPlay.error]);
+  // a version that couldn't be loaded says so, in History's words (review #6), in its card (design QA G20)
+  const playError = playReq ? cardPlay.error : null;
   const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
   let litKey: string | null = null;
   for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
@@ -655,14 +673,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const back = useCallback(() => void ui.view(null).catch(() => {}), [ui]);
 
   // Keyboard (DESIGN §7): Enter / → open a row's card, a day or a group, ← closes it; Space plays (or pauses) the
-  // version's changes; F2 names it; Esc closes the card first (then the host's: stop viewing, close the panel).
+  // version's changes; F2 names it. Esc: stop viewing → close the card → close the panel (the host's), one at a time:
+  // viewing is the layer inside the card, so from an open card the first Esc is the one the toast and the chip's ✕
+  // promise, back to your edit, and the card stays (design QA G2).
   const onKey = useCallback(
     (e: KeyboardEvent<HTMLDivElement>, i: number): boolean => {
       const r = rows ? rows[i] : undefined;
       const key = i >= 0 ? keyAt(i) : null;
       if (e.key === "Escape") {
         if (!openKey) return false;
-        closeCard();
+        if (!stopViewing(ui)) closeCard();
         return true;
       }
       if (i < 0 || !key) return false;
@@ -712,7 +732,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       }
       return false;
     },
-    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare],
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, ui],
   );
   const onActivate = useCallback(
     (i: number) => {
@@ -779,7 +799,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
     },
     [rows],
   );
-  const viewedId = viewing && (viewing.kind === "version" || viewing.kind === "before") ? (viewing.versionId ?? null) : null;
+  // the row of what the editor shows: never a version still loading, nor one that failed to (design QA G1, review #1)
+  const shown = stageRef === undefined ? viewing : stageRef === null ? null : viewing?.ref === stageRef ? viewing : ((ui as StageUi).stageView?.() ?? null);
+  const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
 
   const renderRow = (i: number): ReactNode => {
     const r = rows?.[i];
@@ -805,6 +827,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       viewing: !!viewedId && (v.id === viewedId || (!!group && group.ids.includes(viewedId))),
       naming: naming === v.id,
       child,
+      folded: !!dayOf && dayOf[i]! >= 0 && !!(rows![dayOf[i]!] as DayHistoryRow).collapsed,
       group: !!group,
       groupCount: group?.count,
       groupOpen: group?.open,
@@ -836,6 +859,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         onPause: pause,
         playing,
         loading: playLoading === v.id,
+        playError: playReq?.key === key ? playError : null,
         before: beforeBtn,
         autoPlay: autoPlay === key,
         onSeek,
@@ -995,6 +1019,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
                 "aria-expanded": !!filterMenu,
                 "data-active": filter !== "all" || filterMenu ? "" : undefined,
                 "data-carton-tip": filterMenu ? undefined : words.show,
+                "data-carton-tip-end": "",
                 onClick: openFilter,
               },
               h(Icon, { name: "filter", size: 16 }),
@@ -1073,6 +1098,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
           ),
     rowMenu,
   );
+}
+
+/**
+ * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, stageView, onStage): the ref the editor
+ * shows (null: your edit), or undefined without a stage of the host's. A row reads "Viewing" only for what is on screen,
+ * never while your edit is still there as a version loads, nor for a newer version still loading over an older one, nor
+ * after one failed to load (design QA G1, review of fix/ux2-a #1). Without a host stage: the view model's viewing alone.
+ */
+type StageUi = CartonUi & { stageRef?: () => string | null; stageView?: () => Viewing | null; onStage?: (f: () => void) => () => void };
+const noStage = () => () => {};
+function useStageRef(ui: StageUi): string | null | undefined {
+  const subscribe = useCallback((f: () => void) => ui.onStage?.(f) ?? noStage(), [ui]);
+  const get = () => (typeof ui.stageRef === "function" ? ui.stageRef() : undefined);
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** The row a key went to when a person's run of changes grew (a group's key is its newest version's), or null. */
