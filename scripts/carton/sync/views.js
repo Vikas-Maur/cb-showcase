@@ -161,6 +161,10 @@ export class View {
       // The cut: the one the save was committed on, as the Materializer reports it (its stored result's: also for a
       // save it resumes after a restart, and a retry core answered by id with its first attempt's, reviews H8 r2 #2 and
       // r3 #2). A result stored without one (an older build's) goes by the cut its change is on.
+      // perf/apply-tail: a cb write that waited 500 ms or more for timeline.tsx to show it, and where that time went
+      // (the holder's look at carton.db, the queue, its rewrite, what answered it, the longest tasks meanwhile): into the
+      // worker's output, which the app's activity log keeps (main's __cbPipeWorker). Timings and task names only.
+      onSlowShow: (s) => console.warn("[carton] a cb write waited " + s.ms + " ms for timeline.tsx (" + s.answer + "): " + JSON.stringify(s)),
       onCards: (c) => {
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
         (async () => {
@@ -190,7 +194,7 @@ export class View {
       onCb: (caller) => mz.onCb(caller),
       onHeadChange: (cause) => mz.onHeadChange(cause),
       // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
-      showChange: (c, ms) => mz.showChange(c, ms),
+      showChange: (c, ms, o) => mz.showChange(c, ms, o),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),

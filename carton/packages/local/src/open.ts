@@ -298,13 +298,14 @@ export class CartonHolderEngine implements HolderEngine {
     const mz = this.materializer;
     if (!mz?.showChange) return null;
     // one deadline: the look at carton.db comes out of the wait, not on top of it (review #4)
-    const end = Date.now() + waitMs;
+    const t0 = Date.now(), end = t0 + waitMs;
     if (this.follower) {
       let timer: NodeJS.Timeout | null = null;
       await Promise.race([this.follower.check(), new Promise<void>((r) => { timer = setTimeout(r, waitMs); timer.unref?.(); })]);
       if (timer) clearTimeout(timer);
     }
-    return mz.showChange(target, Math.max(0, end - Date.now()));
+    // (how long that look took goes with a slow answer's report: perf/apply-tail)
+    return mz.showChange(target, Math.max(0, end - Date.now()), { beforeMs: Date.now() - t0 });
   }
 
   /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow } from "../src/node/materializer.ts";
+import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow, type MaterializerOptions } from "../src/node/materializer.ts";
 import { jsonTimelineCodec } from "../src/codec.ts";
 import { findRev } from "../src/header.ts";
 import { FakeClock, FakeEngine, plainHost } from "./helpers/fake-engine.ts";
@@ -17,14 +17,14 @@ type Item = { id: string; [k: string]: unknown };
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
 const clip = (id: string, s: number, e: number, extra: Record<string, unknown> = {}): Item => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, ...extra });
 
-async function setup(t: test.TestContext, items: Item[], opts: { start?: boolean } = {}) {
+async function setup(t: test.TestContext, items: Item[], opts: { start?: boolean; mz?: Partial<MaterializerOptions> } = {}) {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
   const project = { id: "p1", name: "Demo", stateUpdatedAt: 1, timelineItems: items };
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
   const engine = new FakeEngine({ name: "Demo", timelineItems: items });
   const clock = new FakeClock();
-  const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock });
+  const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock, ...opts.mz });
   t.after(() => mz.close());
   t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 1 })).ref);
@@ -1398,4 +1398,64 @@ test("apply-ryw review #2: an offline terminal's pending edit shows in the file 
   s.mz.onHeadChange("local");
   assert.equal(await s.mz.showChange({ id: "term.1", author: terminal }, 2000), "shown");
   assert.equal(s.find(s.read().items, "a").name, "typed offline");
+});
+
+// perf/apply-tail: on the laptop about 4 % of Carton-on round trips gained exactly the 2 s read-your-writes wait, which no
+// Linux run reproduced. An answer that took 500 ms or more is reported with where its time went, so a run in the app
+// names the cause: the holder's look at carton.db, the wait for the materializer's queue, its own rewrite, what
+// answered it, what held rewrites back, and the longest tasks meanwhile. A prompt answer reports nothing.
+test("apply-tail: a slow read-your-writes answer is reported with where its time went; a prompt one isn't", async (t) => {
+  const reports: import("../src/node/materializer.ts").SlowShow[] = [];
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { onSlowShow: (r) => reports.push(r) } });
+  // prompt: the coalesced rewrite is made at once
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "prompt"), "agent.1");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000, { beforeMs: 3 }), "shown");
+  assert.deepEqual(reports, [], "nothing for a prompt answer");
+
+  // a host write still landing holds the rewrite back until the wait ends: the wait's end answers it
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "under a landing save"), "agent.2");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000, { beforeMs: 7 });
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  land();
+  await s.tick(100);
+  assert.equal(reports.length, 1);
+  const r = reports[0]!;
+  assert.equal(r.change, "agent.2");
+  assert.equal(r.answer, "later");
+  assert.equal(r.by, "timer");
+  assert.equal(r.landing, true, "a host write was landing");
+  assert.equal(r.budgetMs, 2000);
+  assert.equal(r.beforeMs, 7);
+  assert.ok(r.ms >= 2000 && r.ms <= 2001, String(r.ms));
+  assert.ok(r.queueMs !== null && r.queueMs < 100, `its look came at once (the fake clock's first timer, 20 ms, may pass first): what held it was the landing; ${r.queueMs}`);
+  assert.equal(r.rewriteMs, null, "no rewrite of its own");
+
+  // a slow rewrite of its own (the pin stalls 800 ms): answered by it, the time in rewriteMs and its task named
+  const pin = s.engine.pin.bind(s.engine);
+  let release!: () => void, pinned!: () => void;
+  const reached = new Promise<void>((r) => (pinned = r));
+  s.engine.pin = async (o) => { pinned(); await new Promise<void>((r) => (release = r)); return pin(o); };
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "slow print"), "agent.3");
+  s.mz.onHeadChange("local");
+  const slow = s.mz.showChange({ id: "agent.3", seq: s.engine.headSeq }, 2000);
+  await reached;
+  s.clock.t += 800;
+  release();
+  assert.equal(await slow, "shown");
+  s.engine.pin = pin;
+  assert.equal(reports.length, 2);
+  const q = reports[1]!;
+  assert.equal(q.change, "agent.3");
+  assert.equal(q.by, "own rewrite");
+  assert.equal(q.rewriteMs, 800);
+  assert.equal(q.ms, 800);
+  assert.equal(q.landing, false);
+  assert.ok(q.tasks.length >= 1 && q.tasks[0]!.ms === 800, JSON.stringify(q.tasks));
+  assert.match(q.tasks[0]!.task, /holdsChange|showing/, "the task that ran: the answer's own look and rewrite");
+  assert.ok(q.tasks.every((x) => x.task.length <= 120));
 });

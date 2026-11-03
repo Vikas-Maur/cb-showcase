@@ -416,7 +416,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `toast` | An error or warning toast | `kind`, `msg`, `detail` |
 | `error` | An uncaught error in a page; with Carton, also one its side panel or stage layer caught (the editor stays: the panel says so), and a teammate's presence the Share panel skipped | `msg`, `src`, `rejection`, `panel` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
-| `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks | `msg` |
+| `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks, and with Carton a `[carton] a cb write waited … ms for timeline.tsx` line for each `cb` write the app took 500 ms or more to show (where the time went: the look at the history, the wait behind the app's other work and its longest tasks, the rewrite, what answered it) | `msg` |
 | `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |
 | `process.gone` | A GPU, utility or page process died | `type`, `reason`, `exitCode` |
 | `canvas.restored` | The GPU gave the timeline's canvases back blank and they were redrawn | `what` (`ruler`, `tracks`) |
@@ -726,7 +726,9 @@ run below.
    freeze or not (read-your-writes): `cb source apply`, MCP's `apply_timeline` and the Carton writes (`cb undo`, `cb
    fold`, `cb restore`…) ask the app to show it and wait for that print, at most 2 s, and the result says how it went
    (`timeline` in JSON: `shown`, or why not, with a line in the text: held for an agent's turn, or "will show this in a
-   moment"). During a freeze only the writer's own change goes in, never the person's edits made meanwhile. Before, the
+   moment"). A wait of 500 ms or more is noted in the activity log with where the time went (on the laptop about 4 %
+   of agents' round trips with Carton on took 2 s or 4 s longer, which no Linux run reproduced: the note names the
+   cause in the app). During a freeze only the writer's own change goes in, never the person's edits made meanwhile. Before, the
    app noticed a `cb` commit at its next look at the history (it looks every 250 ms) and rewrote the file a moment
    later, so a read right after `cb` answered could miss the write; in a real turn on the laptop the agent read the old
    value and told the user the file showed its turn's start. A `cb` you type in a terminal holds the file as a
@@ -803,7 +805,7 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
    `for /d %A in ("%CARDBOARD_HOME%\accounts\*") do set LIB=%A` (`%%A` in a .cmd file). With the app closed:
    `node scripts/carton/writers.js setup "%CB%" "%LIB%" bench-media\<a clip>.mp4`, then
    `node scripts/carton/writers.js run "%CB%" "%LIB%" --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
-   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Each failed apply prints why after the table (`failed: W2 edit 41 apply, exit 1: <its message>`); `--out` keeps them in `failures`. Off, some writers can lose their last edit. On, none may, once
+   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Each failed apply prints why after the table (`failed: W2 edit 41 apply, exit 1: <its message>`); `--out` keeps them in `failures`, and every edit in `samples`: its print's and apply's own times (`print`, `apply`) and how the apply's write showed in the app's `timeline.tsx` (`timeline`: `later` when it took longer than `cb`'s 2 s wait). Off, some writers can lose their last edit. On, none may, once
    history is in.
 3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
    "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,

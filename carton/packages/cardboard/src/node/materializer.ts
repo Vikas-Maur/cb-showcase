@@ -95,6 +95,12 @@ export interface ShowTarget {
  * failed and is tried again), and it shows once that is done.
  */
 export type Showing = "shown" | "held" | "elsewhere" | "later";
+/** A write waiting to show (`showChange`): `rewriting` while its own rewrite runs, `done` its answer and what gave it. */
+interface Waiting {
+  c: ShowTarget;
+  rewriting: boolean;
+  done: (s: Showing, by: SlowShow["by"]) => void;
+}
 
 /** A row of local metadata (`MaterializerEngine.putMeta`). */
 export interface MetaRow {
@@ -311,6 +317,44 @@ export interface MaterializerOptions {
    * agent's does. Without it, only hooked agents' changes there.
    */
   group?: string;
+  /**
+   * A read-your-writes answer (`showChange`) that took `slowShowMs` (default 500) or longer, and where the time went
+   * (`SlowShow`): the app logs it. Nothing for a prompt one, nothing without it.
+   */
+  onSlowShow?: (s: SlowShow) => void;
+  slowShowMs?: number;
+}
+
+/**
+ * Where a slow read-your-writes answer's time went (perf/apply-tail). On the laptop, Carton on, about 4 % of agents'
+ * print-and-apply round trips took the run's normal time plus 2 s or plus 4 s, which no Linux run reproduced (0 of
+ * 1,928): `cb` waits at most 2 s for the app's timeline.tsx to show its write, and this says what that wait was spent
+ * on, in the app, so a run there names the cause. Times in ms; never file contents, never anything typed.
+ * - `ms`: from the ask to the answer; `budgetMs`: the wait it was given; `beforeMs`: the holder's look at carton.db
+ *   before it asked (when it says).
+ * - `queueMs`: from the ask until this answer's own look at the file (behind the materializer's other work); null
+ *   when it never got that far (another print answered it first, or the wait ran out).
+ * - `rewriteMs`: the rewrite it made itself (fold, pin, print, install), null when none.
+ * - `by`: what answered it: its own rewrite, a print made for something else, its first look (`at once`), the end of
+ *   the wait (`timer`), or the materializer closing.
+ * - `landing`, `retrying`, `frozen`: whether a host write was landing, a failed rewrite was waiting to be tried again,
+ *   or the file was frozen, when it was answered.
+ * - `tasks`: the materializer's longest tasks while it waited (20 ms or more, at most 4, longest first): the first
+ *   line of each one's source and how long it ran.
+ */
+export interface SlowShow {
+  change: string;
+  answer: Showing;
+  ms: number;
+  budgetMs: number;
+  beforeMs?: number;
+  queueMs: number | null;
+  rewriteMs: number | null;
+  by: "own rewrite" | "another print" | "at once" | "timer" | "closed";
+  landing: boolean;
+  retrying: boolean;
+  frozen: boolean;
+  tasks: { task: string; ms: number }[];
 }
 
 export interface ViewRow {
@@ -443,7 +487,7 @@ export class Materializer {
   private readonly host: MaterializerHost;
   private readonly codec: TimelineCodec;
   private readonly clock: Clock;
-  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock" | "onCards" | "keepPrints" | "group">>;
+  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock" | "onCards" | "keepPrints" | "group" | "onSlowShow" | "slowShowMs">>;
   private readonly onCards: ((c: SaveCards) => void) | null;
   /** How long the shared file's superseded prints stay pinned (`keepPrints`). */
   private readonly keepPrints: PinKeep;
@@ -453,6 +497,13 @@ export class Materializer {
   private readonly noLinks: boolean;
   private readonly busy: BusyOptions;
   private queue: Promise<unknown> = Promise.resolve();
+  /** A slow read-your-writes answer's report (`SlowShow`), and from how long on. */
+  private readonly onSlowShow: ((s: SlowShow) => void) | null;
+  private readonly slowShowMs: number;
+  /** The queue's last tasks: what each was and when it ran, for a slow answer's report (`SlowShow.tasks`). */
+  private readonly ran: { task: () => Promise<unknown>; at: number; ms: number }[] = [];
+  /** The task running now, and since when (`SlowShow.tasks`: one still running counts up to the report). */
+  private current: { task: () => Promise<unknown>; at: number } | null = null;
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
   /** project.json's envelope for its stamp; `hash` null when the host gave it (`HostWrite`) and the file wasn't read. */
@@ -500,7 +551,7 @@ export class Materializer {
    */
   private printed: { cut: string | undefined; seq: number; ids: ReadonlySet<string>; hash: string } | null = null;
   /** Writes waiting to show in timeline.tsx (`showChange`). */
-  private readonly showing = new Set<{ c: ShowTarget; done: (s: Showing) => void }>();
+  private readonly showing = new Set<Waiting>();
   /** The cause the coalesced local rewrite (`localTimer`) was armed for. */
   private localCause: "local" | "gui" | "remote" = "local";
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
@@ -536,6 +587,8 @@ export class Materializer {
     this.codec = o.codec;
     this.clock = o.clock ?? realClock;
     this.onCards = o.onCards ?? null;
+    this.onSlowShow = o.onSlowShow ?? null;
+    this.slowShowMs = o.slowShowMs ?? 500;
     this.keepPrints = { count: o.keepPrints?.count ?? 256, ms: o.keepPrints?.ms ?? DAY };
     this.group = o.group ?? null;
     this.opts = {
@@ -619,7 +672,7 @@ export class Materializer {
     await this.run(() => this.reviewDisplaced()).catch(() => undefined);
     this.closed = true;
     for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, ...this.writeRetryTimers.values(), this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
-    for (const w of [...this.showing]) w.done("later");
+    for (const w of [...this.showing]) w.done("later", "closed");
     await this.queue;
   }
 
@@ -634,7 +687,18 @@ export class Materializer {
   }
 
   private run<T>(task: () => Promise<T>): Promise<T> {
-    const p = this.queue.then(task, task);
+    // each task's run is noted (the last 32), for a slow read-your-writes answer's report (`SlowShow.tasks`)
+    const go = async (): Promise<T> => {
+      const at = this.clock.now();
+      this.current = { task, at };
+      try {
+        return await task();
+      } finally {
+        this.current = null;
+        if (this.ran.push({ task, at, ms: this.clock.now() - at }) > 32) this.ran.shift();
+      }
+    };
+    const p = this.queue.then(go, go);
     this.queue = p.catch(() => undefined);
     return p;
   }
@@ -903,43 +967,71 @@ export class Materializer {
    * - `later`: none of these within `ms` (a host write still landing, a rewrite that failed and is retried).
    * No polling: a rewrite waiting on its coalescing timer is made at once, and every print that lands (or is found
    * unchanged) tells the waiting writes (`wakeShowing`).
+   * An answer that took `slowShowMs` or longer is reported (`onSlowShow`) with where its time went (`SlowShow`);
+   * `o.beforeMs`: what the caller spent before it asked (the holder's look at carton.db).
    */
-  showChange(c: ShowTarget, ms: number): Promise<Showing> {
+  showChange(c: ShowTarget, ms: number, o: { beforeMs?: number } = {}): Promise<Showing> {
     if (this.closed) return Promise.resolve("later");
     return new Promise<Showing>((resolve) => {
       let timer: unknown = null;
-      const w = {
+      // for the report: when it was asked, when its own look began, and its own rewrite's time
+      const asked = this.clock.now();
+      let looked: number | null = null, rewriteMs: number | null = null, rewroteAt = 0;
+      const w: Waiting = {
         c,
-        done: (s: Showing) => {
+        rewriting: false,
+        done: (s, by) => {
           if (!this.showing.delete(w)) return;
           if (timer !== null) this.clock.clearTimeout(timer);
           resolve(s);
+          const now = this.clock.now(), took = now - asked;
+          // (answered by the print of its own rewrite, which hasn't returned yet: its time so far)
+          if (this.onSlowShow && took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
         },
       };
       this.showing.add(w);
-      timer = this.clock.setTimeout(() => w.done("later"), Math.max(0, ms));
+      timer = this.clock.setTimeout(() => w.done("later", "timer"), Math.max(0, ms));
       // the head this write moved, if nobody has told this materializer yet (B11: its holder's follower normally has)
       this.onExternalHeadChange()
         .catch(() => undefined)
         .then(() => this.run(async () => {
           if (!this.showing.has(w)) return;
-          if (await this.holdsChange(c)) return w.done("shown");
+          looked = this.clock.now();
+          if (await this.holdsChange(c)) return w.done("shown", "at once");
           const cut = this.engine.cut?.();
-          if (c.cut !== undefined && cut !== undefined && c.cut !== cut) return w.done("elsewhere");
+          if (c.cut !== undefined && cut !== undefined && c.cut !== cut) return w.done("elsewhere", "at once");
           // the rewrite this write is waiting for, coalescing on its timer: made now (a host write landing goes first)
           if (this.localTimer && !this.landing.size) {
             this.clock.clearTimeout(this.localTimer);
             this.localTimer = null;
+            rewroteAt = this.clock.now();
+            w.rewriting = true;
             await this.orRetry("shared", () => this.localRewrite(this.localCause)).catch((e: unknown) => {
               this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: e instanceof Error ? e.message : String(e) });
             });
+            w.rewriting = false;
+            rewriteMs = this.clock.now() - rewroteAt;
             if (!this.showing.has(w)) return; // the print told it (`wakeShowing`)
-            if (await this.holdsChange(c)) return w.done("shown");
+            if (await this.holdsChange(c)) return w.done("shown", "own rewrite");
           }
-          if (this.holdsBack(c)) w.done("held");
+          if (this.holdsBack(c)) w.done("held", "at once");
         }))
         .catch(() => undefined);
     });
+  }
+  /** A slow answer's report (`SlowShow`): what held rewrites back, and the longest tasks since it was asked. */
+  private reportSlowShow(s: Omit<SlowShow, "landing" | "retrying" | "frozen" | "tasks">, since: number): void {
+    const now = this.clock.now();
+    const tasks = [...this.ran, ...(this.current ? [{ ...this.current, ms: now - this.current.at }] : [])]
+      .filter((r) => r.at + r.ms > since && r.ms >= 20)
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 4)
+      .map((r) => ({ task: String(r.task).split("\n").slice(0, 2).join(" ").replace(/\s+/g, " ").slice(0, 120), ms: r.ms }));
+    try {
+      this.onSlowShow!({ ...s, landing: this.landing.size > 0, retrying: this.writeRetryTimers.size > 0, frozen: this.freeze.active, tasks });
+    } catch {
+      // a report that fails changes nothing
+    }
   }
   /** Whether the installed print holds `c` (see `showChange`). */
   private async holdsChange(c: ShowTarget): Promise<boolean> {
@@ -965,7 +1057,7 @@ export class Materializer {
   }
   /** A print landed (or was found unchanged): the writes it shows are told. */
   private async wakeShowing(): Promise<void> {
-    for (const w of [...this.showing]) if (await this.holdsChange(w.c)) w.done("shown");
+    for (const w of [...this.showing]) if (await this.holdsChange(w.c)) w.done("shown", w.rewriting ? "own rewrite" : "another print");
   }
 
   /** Host writes told with a head change (`onHeadChange`'s `after`) that haven't landed yet. */

@@ -2,7 +2,8 @@
 // it): each failure's writer, step, exit code and message in brief, in --out's `failures` and one line each after the
 // table, which is otherwise as it was; and every timed edit raw (`samples`: start, duration, outcome), so its timing
 // can be recomputed later. Driven against a stand-in `cb` (a .mjs runs with this Node, as writers.js runs Cardboard's
-// own) whose third apply fails and fourth clashes. 3 s of edits, so the fourth comes on a loaded box too.
+// own) whose third apply fails, fourth clashes and fifth says the app's timeline.tsx didn't show it in time. 3 s of
+// edits, so the fifth comes on a loaded box too.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path"), { spawnSync } = require("child_process");
@@ -20,7 +21,7 @@ if (rest[0] === "source" && rest[1] === "apply") {
   if (k === 3) { process.stderr.write("Carton: the project's lease is held by another process\\n  (try again)\\n"); process.exit(3); }
   if (k === 4) { console.log(JSON.stringify({ applied: false, status: "conflicts", conflicts: [{ path: "items/w1/fontSize" }] })); process.exit(0); }
   fs.writeFileSync(tsx, fs.readFileSync(rest[3], "utf8"));
-  console.log(JSON.stringify({ applied: true }));
+  console.log(JSON.stringify(k === 5 ? { applied: true, carton: { status: "confirmed", timeline: "later" } } : { applied: true }));
   process.exit(0);
 }
 process.exit(9);
@@ -51,7 +52,11 @@ test("writers.js records each failed apply's exit code and reason; the timing ta
     const raw = res.samples.W1;
     assert.deepEqual(Object.keys(res.samples), ["W1"]);
     assert.equal(raw.length, row.applied + row.failed);
-    assert.deepEqual(raw.map((x) => Object.keys(x)), raw.map(() => ["edit", "start", "ms", "outcome"]));
+    assert.deepEqual(raw.map((x) => Object.keys(x)), raw.map(() => ["edit", "start", "ms", "print", "apply", "timeline", "outcome"]));
+    // perf/apply-tail: the print's and the apply's own times, which make up the round trip, and the apply's
+    // carton.timeline answer (the stand-in answers "later" on its fifth apply, nothing before)
+    assert.ok(raw.every((x) => x.print >= 0 && x.apply >= 0 && x.print + x.apply <= x.ms + 1), JSON.stringify(raw.slice(0, 3)));
+    assert.deepEqual(raw.slice(0, 5).map((x) => x.timeline), [null, null, null, null, "later"]);
     assert.deepEqual(raw.map((x) => x.edit), raw.map((_, i) => i + 1));
     assert.deepEqual(raw.filter((x) => x.outcome === "failed").map((x) => x.edit), [3, 4]);
     assert.equal(raw.filter((x) => x.outcome === "applied").length, row.applied);
