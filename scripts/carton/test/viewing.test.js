@@ -178,7 +178,8 @@ test("PLAN 1.4: an edit tried while viewing: one line and one pulse, Back to my 
     const t = m.toast();
     assert.equal(t?.getAttribute("data-tone"), "viewing");
     const label = m.ui.viewing().label.replace(/^Your\b/, "your");
-    assert.equal(t.querySelector(".carton-toast-text").textContent, `You're looking at ${label}.`);
+    // a label that ends in an ellipsis takes no full stop after it (design QA G21: never "…”.")
+    assert.equal(t.querySelector(".carton-toast-text").textContent, `You're looking at ${/…”$/.test(label) ? label : `${label}.`}`);
     assert.deepEqual([...t.querySelectorAll("button")].map((b) => b.textContent), ["Back to my edit"], "one button, no Restore");
     assert.equal(t.querySelector(".carton-toast-key").textContent, "Esc");
     assert.equal(m.frame().getAttribute("data-pulse"), "a", "the frame pulses");

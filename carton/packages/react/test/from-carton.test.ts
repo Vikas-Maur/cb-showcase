@@ -173,6 +173,8 @@ test("fold in with a conflict card: the pick decides, nothing is lost", async ()
   assert.equal(card.theirs.summary, "“Theirs”");
   assert.equal(card.mine.where, "Main cut", "your side names the cut you fold into");
   assert.equal(card.theirs.where, "alt", "their side names the cut you fold in");
+  // a fold's card comes with its sentences, as the stage's do (design QA G30: no fallback words on a real path)
+  assert.ok(card.mine.text && card.mine.did && card.mine.what && card.theirs.text && card.theirs.did && card.theirs.what, JSON.stringify(card));
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { [card.id]: "theirs" } });
   assert.equal(r.ok, true);
   assert.equal(((await carton.head(main)).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Theirs");

@@ -3,6 +3,8 @@
 //   lead says which side the timeline shows until the pick (core keeps the head's side, which isn't always yours).
 // - The sides are a radio group that only picks, starting on the side the timeline shows. Picking changes nothing on
 //   the stage. Each side's "See it" shows that side there (viewing, kind "conflict"); again, Esc or deciding comes back.
+//   While a side is seen the card gets out of its way (design QA G5, `data-seeing`): its title and the two sides only,
+//   translucent, until the pointer is on it or the keyboard is in it (then Keep is there too).
 // - One primary button keeps the pick and names it ("Keep Claude Code's"); no two buttons on a card read the same.
 // - During the other side's agent turn, one more line; a pick made on values that changed since asks again (`sig`).
 // Words come from conflict-words.ts, so the card, its toast and the viewing label agree. Nothing is decided silently.
@@ -10,7 +12,7 @@
 import { createElement as h, memo, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { clockTime, when } from "../format.ts";
 import { actorLabel } from "../actors.ts";
-import { conflictWords } from "../conflict-words.ts";
+import { conflictWords, sameAuthor, sideText } from "../conflict-words.ts";
 import { useAction, useCartonUi, useConflicts, useLocale, useNow, usePreview, useViewing, useWords, useWorking } from "../hooks.ts";
 import type { Actor, Conflict, ConflictChoice, ConflictSide } from "../model.ts";
 import { ActorName, Avatar, Button, cx } from "./ui.ts";
@@ -87,6 +89,13 @@ function StageCard(p: ConflictCardProps) {
   const seeing: ConflictChoice | null =
     viewing?.kind === "conflict" ? (viewing.conflictId === c.id ? (viewing.side ?? null) : null) : seen && seen.id === c.id && onStage?.label === seen.label ? seen.side : null;
   const [seeFailed, setSeeFailed] = useState(false);
+  // While a side is seen the card is down to its title and sides until the pointer is on it; a key pressed in it brings
+  // it back whole (every choice, Keep) until the pointer is used again or the side isn't seen (review of fix/ux2-c: an
+  // arrow picked Both while it was hidden)
+  const [keyed, setKeyed] = useState(false);
+  useEffect(() => {
+    if (!seeing) setKeyed(false);
+  }, [seeing]);
   // Back to your edit, from what the stage shows now (not what this render saw).
   const back = async () => {
     setSeen(null);
@@ -162,13 +171,18 @@ function StageCard(p: ConflictCardProps) {
     if (step) {
       const next = order[(order.indexOf(pick) + step + order.length) % order.length]!;
       choose(next);
-      radios.current[next]?.focus();
+      if (seeing && !keyed) {
+        // Both comes back with the rest of the card first: focus it once it is drawn
+        setKeyed(true);
+        requestAnimationFrame(() => radios.current[next]?.focus());
+      } else radios.current[next]?.focus();
     } else if (e.key === " ") choose((e.target as HTMLElement).dataset.choice as ConflictChoice);
     else if (!e.repeat) void keep(pick);
   };
   // Esc in the card: back from a side being seen, then "Not now" (innermost first, as the panel's Esc). Taken here, so
   // the stage's own Esc never sees it twice. Enter and Space on the card's buttons are theirs too.
   const onCardKey = (e: KeyboardEvent) => {
+    if (seeing && !keyed && e.key !== "Escape") setKeyed(true);
     if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).tagName === "BUTTON") {
       e.stopPropagation();
       return;
@@ -206,7 +220,7 @@ function StageCard(p: ConflictCardProps) {
             s?.where ? h("span", { className: "carton-conflict-where" }, s.where) : null,
             t && s?.at != null ? h("time", { dateTime: new Date(s.at).toISOString() }, ` · ${t}`) : null,
           ),
-          k === "both" ? (c.both ? h("span", { className: "carton-conflict-what" }, c.both) : null) : h("span", { className: "carton-conflict-what" }, s!.text ?? s!.summary),
+          k === "both" ? (c.both ? h("span", { className: "carton-conflict-what" }, c.both) : null) : h("span", { className: "carton-conflict-what" }, sideText(s!)),
         ),
       ),
       k === "both"
@@ -224,7 +238,7 @@ function StageCard(p: ConflictCardProps) {
   const turn = working && [c.theirs.author, c.mine.author].some((a) => a.kind !== "human" && (a.key === working.actor.key || a.name === working.actor.name)) ? working : null;
   return h(
     "section",
-    { className: cx("carton-card carton-conflict", p.className), "aria-label": cw.title, onKeyDown: onCardKey },
+    { className: cx("carton-card carton-conflict", p.className), "aria-label": cw.title, "data-seeing": seeing ? "" : undefined, "data-keyed": seeing && keyed ? "" : undefined, onKeyDown: onCardKey, onPointerDown: keyed ? () => setKeyed(false) : undefined },
     h(
       "header",
       { className: "carton-card-head" },
@@ -295,7 +309,7 @@ function keepLabel(side: ConflictSide, words: Words): string {
  * apart by order: the side shown now (head) landed first unless their times say otherwise. Null when the names differ.
  */
 function byOrder(c: Conflict, name: (s: ConflictSide) => string, words: Words, locale: string | undefined): { mine: string; theirs: string; keepMine: string; keepTheirs: string } | null {
-  if (name(c.mine) !== name(c.theirs) || (c.mine.where ?? "") !== (c.theirs.where ?? "")) return null;
+  if (name(c.mine) !== name(c.theirs) || !sameAuthor(c.mine.author, c.theirs.author) || (c.mine.where ?? "") !== (c.theirs.where ?? "")) return null;
   const earlier: ConflictChoice = c.mine.at != null && c.theirs.at != null ? (c.mine.at <= c.theirs.at ? "mine" : "theirs") : c.provisional === "mine" ? "mine" : "theirs";
   const a = c.mine.author;
   const who = a.kind === "human" && a.isYou ? null : name(c.mine);

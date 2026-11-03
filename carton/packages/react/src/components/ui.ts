@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { actorColor, actorDetail, actorLabel, agentOf, initials } from "../actors.ts";
-import { useCartonUi, useWords } from "../hooks.ts";
+import { useCartonUi, useCartonUiIfAny, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Actor } from "../model.ts";
 
@@ -79,12 +79,15 @@ const agentMark = (a: Actor): IconName => {
  * has none.
  */
 export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?: number; title?: string; named?: boolean }) {
-  const ui = useCartonUi();
+  // Comments draws its people with it too, and may have no CartonProvider: then agents aren't looked up by key
+  const ui = useCartonUiIfAny();
+  const byKey = ui ? ui.actor.bind(ui) : undefined;
   const words = useWords();
   if (actor.kind === "system") return null;
-  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3).
-  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, ui.actor.bind(ui));
-  const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
+  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3), everywhere
+  // it is drawn: History, Comments and Share (design QA G11).
+  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, byKey);
+  const label = title ?? actorLabel(actor, byKey, words.you);
   // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
   const letters = (s: string) => (size < 20 ? Array.from(s)[0] ?? "?" : s);
   const style: CSSProperties = { width: size, height: size, fontSize: Math.max(7, Math.round(size * (size < 20 ? 0.5 : 0.4))), ["--carton-actor" as string]: color };

@@ -307,7 +307,8 @@ test(name("ghost layer draws remote drags without rendering through React"), asy
   assert.ok(g, "a ghost element");
   assert.equal(g.style.transform, "translate(125px, 40px)");
   assert.equal(g.style.width, "40px");
-  assert.match(g.textContent ?? "", /Bob Okafor · B-roll city/);
+  // a teammate by first name, as every author slot names them (design QA G27)
+  assert.match(g.textContent ?? "", /^Bob · B-roll city/);
   await act(() => ui.setGhosts([]));
   await waitFor(() => !$(m.container, ".carton-ghost"), "the ghost to go");
   assert.equal($(m.container, ".carton-ghost"), null);
