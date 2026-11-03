@@ -361,3 +361,42 @@ The user approved re-running the network test on the hotspot, about 100–120 MB
    slowed link. Push the results file to `audit/regress-2026-11-02` under `docs/regress/network/`, unless it contains the
    config's tokens.
 4. **Then wait for Update 7.**
+
+### Update 7 (2026-11-03 ~00:45 UTC): `main` is the release. Reinstall and wrap up
+`main` = **`2ccfe9b4`** (fast-forward from `fb295c02`) = the window-size fix (patch-main 15) + the whole Carton release
+`39312830` (the asar fix is now patch-main 16) + the cost calculator. Linux: 3,583 pass / 0 fail. Windows: your Update 6b
+green.
+
+1. **Finish Update 6c first** (the network test, once), if it isn't done yet.
+2. **Build `main`** the normal way: in `D:\Projects\cardboard-showcase`, `git fetch && git checkout main && git pull --ff-only`
+   (expect `2ccfe9b4`), then `node scripts/build-windows.js`. That's the default build: Carton is built in and off unless
+   `CARDBOARD_CARTON=1`. Check `build-info.json`: commit 2ccfe9b4, variant full. Check disk before building.
+3. **Window size (patch 15), on that build with a test profile, before installing:** launch, note the window's size, quit
+   cleanly, 3 times. The size stays the same (to within a few DIP on the first launch after a resize, then exactly). Also
+   resize it once and check that the size is kept.
+4. **Replace the user's installed Cardboard** at `D:\cardboard\Cardboard` with this build, the way it was installed before.
+   **Keep no older copy** (AGENTS.md rule 8).
+   - **If the user's Cardboard is running, don't close it.** Wait and post a one-line note asking the user to quit it. Never
+     kill it: it could hold unsaved work.
+   - Replace only the app files. Never touch the user's profile, library or projects.
+   - After replacing, check that `D:\cardboard\Cardboard` holds the new build (`build-info.json`: 2ccfe9b4) and that nothing
+     of the old install is left beside it. Don't launch it with the user's profile.
+5. **Clean up what our work created:**
+   - every test profile under `D:\cbwork` (dl, fr-dl3, p2-1-repro, dt-prod4, hold-base, kb-prod3, large-src, n2-on, p3r-c,
+     ui-days and the rest);
+   - `out\` (carton-prod5 and the new build once installed);
+   - worktrees and their `node_modules`;
+   - scratch;
+   - any leftover `%TEMP%` copies matching our builds (the exact-match rule).
+
+   **Keep:** `dl\` (the build inputs), `D:\cbwork\clips` (the showcase clips) and the small report files. Delete only what
+   our work created.
+6. **Stop** the keep-awake and your scheduled ORDERS fetch task.
+7. **Report:**
+   - the installed build's `build-info.json`;
+   - the window-size result;
+   - what was deleted and what was kept;
+   - free space on C: and D:;
+   - that the keep-awake and the task are stopped.
+
+   Then you're done. Thank you, an excellent run.
