@@ -82,9 +82,10 @@ export interface BeforeControl {
   readonly latched: boolean;
   /** The button is offered: while a session is on (or Before is still on). */
   readonly available: boolean;
-  /** Hold (pointer or B key) starts; let go ends, unless it was a click (shorter than HOLD_MS), which latches. */
+  /** Hold (pointer or B key) starts; let go ends, unless it was a pointer click (shorter than HOLD_MS), which latches. */
   press(): void;
-  release(): void;
+  /** `hold`: the B key, which only holds (a quick tap of it comes back, never latches). */
+  release(opts?: { hold?: boolean }): void;
   /** A keyboard click (Enter or Space on the button): latch on or off. */
   toggle(): void;
   /** Focus left while held (a key up that never came): back. */
@@ -229,14 +230,14 @@ export function usePlayChanges(o: PlayOptions): Playback {
         downAt.current = Date.now();
         setBefore(true, false);
       },
-      release() {
+      release(opts) {
         if (unlatchOnUp.current) {
           unlatchOnUp.current = false;
           setBefore(false, false);
           return;
         }
         if (!bOnRef.current || latchedRef.current) return;
-        if (Date.now() - downAt.current < HOLD_MS) setBefore(true, true);
+        if (!opts?.hold && Date.now() - downAt.current < HOLD_MS) setBefore(true, true);
         else setBefore(false, false);
       },
       toggle() {
@@ -407,7 +408,7 @@ export function playKeys(play: Playback, e: KeyboardEvent<HTMLElement>, up = fal
   if (e.key === "b" || e.key === "B") {
     e.preventDefault();
     e.stopPropagation();
-    if (up) play.before.release();
+    if (up) play.before.release({ hold: true });
     else if (!e.repeat) play.before.press();
     return true;
   }

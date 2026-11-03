@@ -58,6 +58,9 @@ module.exports = String.raw`window.__carton = (() => {
     return p;
   };
   let own = null;
+  // the editor's own timeline saves, counted: one made after the fast step means head (read after it) is older than
+  // what the person sees, and isn't adopted over it (their save's own events bring head)
+  let saves = 0;
   // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
   // playback clock while playing.
   const playhead = () => {
@@ -159,6 +162,7 @@ module.exports = String.raw`window.__carton = (() => {
       // version before both, where it clashed with the earlier save at head (a card of the person against themself).
       const after = unanswered && unanswered.id === doc.id && (st.cartonBase == null || unanswered.rev > st.cartonBase) ? unanswered.rev : undefined;
       sent = unanswered = { id: doc.id, rev: doc.stateUpdatedAt };
+      saves++;
       // the person's own edit: there is something to undo now, and nothing to redo (as the editor's own stacks); the
       // save's echo asks the worker again
       store.raw({ cartonCanUndo: true, cartonCanRedo: false });
@@ -333,6 +337,7 @@ module.exports = String.raw`window.__carton = (() => {
       if (ref == null) own = null;
       const fast = !!mine && mine.project === projectId && st0.projectId === projectId && !!st0.cartonPreview && !stale;
       if (fast) store.adopt({ ...mine.timeline, cartonBase: mine.base, cartonPreview: null });
+      const saves0 = saves;
       if (ref != null && !st0.cartonPreview && st0.projectId === projectId)
         own = { project: projectId, base: st0.cartonBase ?? null, timeline: { tracks: st0.tracks, timelineItems: st0.timelineItems, aspectRatio: st0.aspectRatio, duration: duration(st0.timelineItems ?? []) } };
       const doc = await (ref == null ? call("head", { projectId, ref }) : checkout(projectId, ref));
@@ -347,7 +352,7 @@ module.exports = String.raw`window.__carton = (() => {
         // head moved meanwhile and the person has nothing unsaved (their save goes first; its echo brings head), and
         // no preview opened again since.
         const now = store.state();
-        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.());
+        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.() && saves === saves0 && stepping !== projectId);
         if (moved) {
           store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
           store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });

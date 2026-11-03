@@ -294,6 +294,26 @@ test("Play and Before: a change during the preview, or head moved meanwhile, sti
   t.answers.head = () => (t.setArmed(true), t.project(500, [{ id: "other", endTime: 8 }]));
   await t.c.preview("p1", null);
   assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]], "not overwritten under the person");
+  // their save went out and was done before head answered (nothing armed or in flight by then): head was read before
+  // it, so it isn't adopted over it either; the save's own events bring head
+  t.setArmed(false);
+  await t.c.preview("p1", "main@3");
+  t.answers.head = () => (t.c.saveMeta({ id: "p1", stateUpdatedAt: 401 }, { ownedFields: ["tracks", "timelineItems"] }), t.project(500, [{ id: "other", endTime: 8 }]));
+  await t.c.preview("p1", null);
+  assert.deepEqual(t.state().timelineItems, [{ id: "newer", endTime: 7 }], "a save made since the fast step: head not adopted over it");
+  // an undo or redo under way for the project: its answer is adopted, not this head
+  t.answers.head = () => t.project(600, [{ id: "late", endTime: 9 }]);
+  let stepDone;
+  t.answers.undo = () => new Promise((r) => (stepDone = r));
+  await t.c.preview("p1", "main@3");
+  const back2 = t.c.preview("p1", null); // the fast step: back on the editor's own timeline
+  assert.equal(t.c.undo(), true); // Ctrl+Z at once, before head answers
+  await new Promise((r) => setTimeout(r, 5));
+  await back2;
+  assert.deepEqual(t.state().timelineItems, [{ id: "newer", endTime: 7 }], "head isn't adopted while the undo steps");
+  stepDone({ status: "confirmed", project: t.project(700, [{ id: "undone", endTime: 3 }]) });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(t.state().timelineItems, [{ id: "undone", endTime: 3 }], "the undo's answer is");
 });
 
 test("Play and Before: only versions that never change are kept, a few at a time; nothing with Carton off", async () => {

@@ -189,6 +189,14 @@ test(name("Play on an older version views it first; Before held shows the older 
   await flush();
   assert.equal(ui.viewing()?.ref, yours.ref);
   assert.equal(reached, 0, "B stopped in the panel");
+  // B only holds: a quick tap comes back at once, it never latches (only a click on the button does)
+  await act(() => void listEl.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true })));
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref);
+  await act(() => void listEl.dispatchEvent(new KeyboardEvent("keyup", { key: "b", bubbles: true, cancelable: true })));
+  await flush();
+  assert.equal(ui.viewing()?.ref, yours.ref, "a tap of B: back");
+  assert.equal($(root, ".carton-before")!.getAttribute("aria-pressed"), "false");
   await m.unmount();
 });
 

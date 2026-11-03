@@ -569,7 +569,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
     e.preventDefault();
     e.stopPropagation();
-    if (up) cardPlay.before.release();
+    if (up) cardPlay.before.release({ hold: true });
     else if (!e.repeat) cardPlay.before.press();
   };
   const sectionRef = useCallback((el: HTMLElement | null) => {
