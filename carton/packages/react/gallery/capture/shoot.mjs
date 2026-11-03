@@ -72,6 +72,7 @@ const AFTER = [
   P("after-history-empty", "ux-empty", "Nothing of yours yet, only the project's start.", null),
   P("after-history-loading", "ux-loading", "The worker hasn't answered yet: three grey rows.", null),
   P("after-history-viewing", "ux-history", "The Director's card → Play all: viewing it (the row's \"Viewing ✕\").", async (p) => { await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-btn", { hasText: "Play all" }).click(); await p.waitForTimeout(300); }),
+  P("after-history-cuts-rename", "ws6-cuts", "The cuts menu in History's cut bar → Rename “Main cut”: the form inside the menu, across the bar.", async (p) => { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); await p.locator(".carton-menu-item", { hasText: "Rename" }).first().click(); await p.waitForTimeout(150); }),
   P("after-history-newcut", "ux-history", "⋯ on the Director's turn → New cut from this version…: the name field in the card.", async (p) => { await foldOlder(p); await uxMenu(p, "Add captions to the interview"); await menuItem(p, "New cut from this version").click(); await p.keyboard.type("30s Instagram cut"); await p.waitForTimeout(150); }),
 ];
 const SHOTS = [...AFTER,

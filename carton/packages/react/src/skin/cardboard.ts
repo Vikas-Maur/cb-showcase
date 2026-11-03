@@ -215,7 +215,16 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cutbar .carton-cuts){flex:1 1 auto;min-width:0;flex-wrap:wrap;row-gap:6px}
 /* the cut's name lines up with the rows' text: the menu's anchor steps left by the trigger's padding (on the trigger itself,
    a negative margin inside the anchor's max-width took the 8 px from the name: "Leo's Main …") */
-:where(${S}) :where(.carton-cutbar .carton-cuts > .carton-menu-anchor){margin-left:-8px}
+/* the cut's name gives way first (cut off, whole on hover), so the Viewing pill stays on its line: the anchor takes the
+   room left (a wrapping row breaks before it shrinks: at 300 px the pill went to a line of its own), from 96 px, so the
+   queued-switch line (a whole line) still wraps under the cut and never squeezes it out */
+:where(${S}) :where(.carton-cutbar .carton-cuts > .carton-menu-anchor){margin-left:-8px;flex:1 1 0;min-width:96px}
+/* the cuts menu opens across the whole cut bar, as wide as in Workstream 6's own layout (beside the filter, sized to the
+   cuts block alone, its Rename and New cut forms ran out of it at the panel's 300 px: review of the merge, P3), and its
+   forms take the width they get */
+:where(${S}) :where(.carton-cutbar .carton-cuts){position:static}
+:where(${S}) :where(.carton-cutbar .carton-cuts .carton-menu-pop){left:12px;right:10px}
+:where(${S}) :where(.carton-cuts-menu .carton-menu-form){min-width:0}
 /* the bar grows when the cuts menu adds its queued-switch line under the cut: the filter stays by the cut's name */
 :where(${S}) :where(.carton-cutbar .carton-filter-anchor){align-self:flex-start;margin-top:2px}
 :where(${S}) :where(.carton-cutbar .carton-cuts-trigger){font-size:13.5px;font-weight:600;border-radius:7px}
