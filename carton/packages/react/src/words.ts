@@ -511,15 +511,12 @@ export const words = {
 
   // Share and Join, the dialogs' own words beside the ones above (Carton UX redesign PLAN 8.1, 8.2; scripts/carton/sync/ui.js)
   shareThisProject: "Share this project",
-  // review finding 8: not every original stays on this computer
-  shareLeadMore: "Audio and still images go as they are.",
   sharingServerPlaceholder: "share.example.com",
   sharingNow: "Sharing…",
   youHereNow: (name: string) => `${name} · here now`,
   hereNotEditing: "Here, not editing",
   nobodyElseHere: "Nobody else is here right now.",
   whoCanDoWhat: "Who can do what",
-  copyLinkToMake: "Copy link to make one",
   anyoneCanJoinTo: (role: string) => (role === "viewer" ? "Anyone with this link can join and watch." : role === "commenter" ? "Anyone with this link can join and comment." : "Anyone with this link can join and edit."),
   inviteWhenOnline: "You can make a link when you're back online.",
   offlineLineNone: "You're offline. Keep editing: your changes are saved here and are sent when you're back.",

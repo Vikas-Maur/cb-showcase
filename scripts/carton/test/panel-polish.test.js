@@ -348,10 +348,10 @@ const chip = (st) => render(React.createElement(T.LiveChipView, { st, onOpen() {
 
 test("N-3 (laptop, merge/prod-2): a save that failed (or an undo refused) has the warning look, not a confirmation's ✓", opt, () => {
   const html = () => render(React.createElement(T.Toast));
-  T.tellFailure("Your last change couldn't be saved. It's on screen, but it isn't in the project yet.");
+  T.tellFailure("Your last change wasn't saved. Do it again, or reopen the project.");
   const failed = html();
   assert.match(failed, /class="carton-toast" data-tone="warning" role="alert" aria-live="assertive"/);
-  assert.match(failed, /Your last change couldn&#x27;t be saved/);
+  assert.match(failed, /Your last change wasn&#x27;t saved\. Do it again, or reopen the project\./);
   // the warning icon (its triangle's path), not the check
   assert.match(failed, /M10\.6 4\.5L3 18/);
   // a confirmation keeps its look: a polite status with the ✓
@@ -405,10 +405,11 @@ test("P2-11 (title bar): the strip's summary of a shared project: its state, its
 
 // The title bar's strip (scripts/carton/strip-buttons.js), in its own bundle's scope: `n` the JSX runtime, `c` React,
 // `w` joins class names, `I` sends a strip command, `C` the strip's button class.
-function strip({ narrow = false } = {}) {
+function strip({ narrow = false, width = narrow ? 1100 : 1522 } = {}) {
   const src = require(path.join(ROOT, "scripts", "carton", "strip-buttons.js"));
   const sent = [];
-  const matchMedia = () => ({ matches: narrow, addEventListener() {}, removeEventListener() {} });
+  // the window's width, as each of the strip's queries asks it ("(max-width: 1180px)", "(max-width: 1000px)")
+  const matchMedia = (q) => ({ matches: width <= Number(/max-width:\s*(\d+)px/.exec(q)?.[1] ?? Infinity), addEventListener() {}, removeEventListener() {} });
   const [Strip, Chip] = new Function("n", "c", "w", "I", "C", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
   return { html: (panel) => render(React.createElement(Strip, { panel })), chip: (panel) => render(React.createElement(Chip, { panel })), Chip, sent };
 }
@@ -463,6 +464,35 @@ test("PLAN 2.1: while viewing, the chip grows its second part, the label and a �
   assert.match(html, /<span class="sr-only">Looking at <\/span>Director&#x27;s “Add captions…”/);
   assert.match(html, /<button type="button" aria-label="Back to my edit \(Esc\)" title="Back to my edit \(Esc\)" aria-keyshortcuts="Escape" data-carton-back=""/);
   assert.doesNotMatch(html, /role="status"|aria-live/, "the editor's page announces viewing, not the title bar too");
+});
+
+test("QA G4: the chip is what gives way in a narrow window; below 1000 px while viewing the cut is its mark only, its name in the tooltip", opt, () => {
+  const report = (dot) => ({ panel: "history", cut: { name: "Client review: the long version", dot }, viewing: { label: "Director's “Add captions to the interview”" } });
+  const spans = (html) => [...html.matchAll(/<span style="([^"]*)">([^<]*)<\/span>/g)].map((m) => [m[2], /max-width:(\d+)px/.exec(m[1])?.[1]]);
+  // the chip may shrink; its marks and its ✕ never do
+  const wide = strip().chip(report(null));
+  assert.match(wide, /data-carton-cut-chip=""[^>]*class="flex min-w-0 shrink items-center overflow-hidden rounded-ui-sm"/);
+  assert.match(wide, /data-carton-cut="main"[^>]*class="btn min-w-0 /);
+  assert.match(wide, /data-carton-viewing=""[^>]*class="flex h-7 min-w-0 items-center/);
+  assert.match(wide, /data-carton-back=""[^>]*class="btn size-\[22px\] shrink-0 /);
+  assert.deepEqual(spans(wide), [["Client review: the long version", "220"]]);
+  // 1100 px: the name at 120 px beside the label, the label at 100 px
+  const narrow = strip({ width: 1100 }).chip(report("#22d3ee"));
+  assert.deepEqual(spans(narrow), [["Client review: the long version", "120"]]);
+  assert.match(narrow, /<span class="text-ui-sm font-medium" style="[^"]*max-width:100px/);
+  // 960 px, viewing: the dot alone (scissors for Main), no name or caret; the name in the tooltip and to screen readers
+  for (const dot of ["#22d3ee", null]) {
+    const tight = strip({ width: 960 }).chip(report(dot));
+    assert.match(tight, /aria-label="Cut: Client review: the long version\. Switch cuts" title="Client review: the long version"[^>]*data-mark-only=""/);
+    assert.deepEqual(spans(tight), [], "no name");
+    assert.doesNotMatch(tight, /M7 10l5 5 5-5/, "no caret");
+    assert.match(tight, dot ? /data-carton-cut-dot=""/ : /M8\.2 7\.4 20 17/, dot ? "the dot" : "the scissors");
+    assert.match(tight, /<span class="text-ui-sm font-medium" style="[^"]*max-width:100px[^"]*"><span class="sr-only">Looking at <\/span>Director&#x27;s/, "the label at 100 px");
+  }
+  // 960 px, not viewing: the name stays (at 150 px)
+  const idle = strip({ width: 960 }).chip({ cut: { name: "30s Instagram cut", dot: "#f59e0b" } });
+  assert.deepEqual(spans(idle), [["30s Instagram cut", "150"]]);
+  assert.doesNotMatch(idle, /data-mark-only/);
 });
 
 test("PLAN 2.1, 2.2: the chip's click asks for the cuts menu, its ✕ for your edit", opt, async () => {

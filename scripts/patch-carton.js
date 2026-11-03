@@ -425,6 +425,10 @@ if (mode === "--cli") {
       "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),",
       "t.cartonPanel!==void 0&&n.jsx(__cbCartonCutChip,{panel:t.cartonPanel}),n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),",
     );
+    // The editor controls' row (Wt) may shrink (QA G4): in a narrow window the cut chip, the one part of it that gives
+    // way (min-w-0 shrink), shortens before the row pushes the window's own buttons out of the title bar. Its other
+    // parts keep their size, so without Carton's chip nothing in the row changes.
+    replace('className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"', 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"');
     prepend(require("./carton/strip-buttons"));
   });
 } else {
