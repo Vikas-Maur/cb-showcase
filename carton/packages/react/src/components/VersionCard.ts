@@ -82,12 +82,15 @@ export function VersionCard(p: VersionCardProps) {
   const locale = useLocale();
   const v = p.version;
   const versions = p.group && p.group.length > 1 ? p.group : null;
-  const ids = versions ? versions.map((x) => x.id).join(",") : v.id;
+  // What it is: each version's id, ref, whether it's sent and its words (a provisional version confirmed keeps its id,
+  // with a new ref and content: review #3), so the card reads it again when any of them changes
+  const ids = (versions ?? [v]).map((x) => `${x.id}|${x.ref}|${x.provisional ? 1 : 0}|${x.changes ?? ""}|${x.summary}`).join("\n");
   // What it did: its own changes (a group's: every version's), in timeline order. Only an open card asks.
   const did = useAsync<readonly Change[]>(async () => {
     const one = (x: Version) => ui.changesIn(x.id).catch((e: unknown) => sentences(x, e));
     if (!versions) return one(v);
-    const lists = await Promise.all(versions.map(one));
+    // a group's versions can each change one record: each row its own key, so ▶ and the lit row are that change alone
+    const lists = await Promise.all(versions.map(async (x) => (await one(x)).map((c) => ({ ...c, key: `${x.id}/${c.key}` }))));
     return lists.flat().sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
   }, [ui, ids]);
   // How far your edit has moved on since (DESIGN §5.2): an older, confirmed version only
@@ -149,6 +152,17 @@ export function VersionCard(p: VersionCardProps) {
     );
   };
 
+  // Leaving Restore… or New cut keeps the keyboard in the card (its focused control goes: review #8): once the step has
+  // closed (after the render that removed it, whatever the runtime's timing), focus that fell out comes to the card
+  const leaveMode = () => p.onMode?.(null);
+  const lastMode = useRef(p.mode ?? null);
+  useEffect(() => {
+    const was = lastMode.current;
+    lastMode.current = p.mode ?? null;
+    if (!was || p.mode) return;
+    const el = root.current, at = document.activeElement;
+    if (el && (!at || at === document.body || !at.isConnected || !el.contains(at))) el.focus({ preventScroll: true });
+  }, [p.mode]);
   // Esc closes the card (the innermost layer, DESIGN §7); ↓ from its buttons goes into the change rows
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
@@ -156,7 +170,7 @@ export function VersionCard(p: VersionCardProps) {
       if (t.tagName === "INPUT") return; // a field's own Esc (the new cut's name) goes first
       e.preventDefault();
       e.stopPropagation();
-      if (p.mode) p.onMode?.(null);
+      if (p.mode) leaveMode();
       else p.onClose();
       return;
     }
@@ -212,7 +226,7 @@ export function VersionCard(p: VersionCardProps) {
                     {
                       type: "button",
                       className: "carton-card-more",
-                      onClick: () => (mode ? p.onMode?.(null) : !all && changes!.length <= CARD_ROWS_MAX ? setAll(true) : seeAll()),
+                      onClick: () => (mode ? leaveMode() : !all && changes!.length <= CARD_ROWS_MAX ? setAll(true) : seeAll()),
                     },
                     !mode && all && changes!.length > CARD_ROWS_MAX && p.onCompare ? words.seeAll(changes!.length) : words.andMore(more),
                   )
@@ -244,13 +258,13 @@ export function VersionCard(p: VersionCardProps) {
             "div",
             { className: "carton-card-actions" },
             h(Button, { variant: "primary", icon: "restoreArc", busy, onClick: () => act(() => ui.restore(v.ref), words.restoreFailed) }, words.restore),
-            h(Button, { variant: "ghost", onClick: () => p.onMode?.(null) }, words.cancel),
+            h(Button, { variant: "ghost", onClick: leaveMode }, words.cancel),
             h("span", { className: "carton-card-gap" }),
             n && p.onCompare ? h("button", { type: "button", className: "carton-link", onClick: () => p.onCompare!(v.ref, p.head!) }, words.seeThe(n)) : null,
           ),
         )
       : mode === "newCut"
-        ? h(NewCutForm, { cutName: p.cutName ?? words.mainCut, busy, onCancel: () => p.onMode?.(null), onSave: (name: string) => act(() => ui.newCut(name, v.ref), words.newCutFailed) })
+        ? h(NewCutForm, { cutName: p.cutName ?? words.mainCut, busy, onCancel: leaveMode, onSave: (name: string) => act(() => ui.newCut(name, v.ref), words.newCutFailed) })
         : h(
             "div",
             { className: "carton-card-actions" },
@@ -279,6 +293,8 @@ export function VersionCard(p: VersionCardProps) {
       id: p.id,
       role: "region",
       "aria-label": words.cardRegion(label),
+      // focusable itself, so the keyboard stays in the card when a step inside it closes
+      tabIndex: -1,
       className: cx("carton-card-version", mode ? `carton-card-${mode}` : null),
       "data-own-keys": "",
       onKeyDown,

@@ -298,6 +298,128 @@ test(name("your run of changes grows as you edit: its open card and its listed v
   await m.unmount();
 });
 
+// ---------------------------------------------------------------- the review of feat/ux-3-history (GPT-6.1 Sol)
+
+test(name("review #1: a group listed open, then hidden (its day folded, a filter), closes, with no render loop"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
+  await flush();
+  await click($(m.container, ".carton-version[data-group] .carton-version-group"));
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 6);
+  // fold Today (its header is the first row): the group goes; React would throw "Maximum update depth exceeded" here
+  await click($$(m.container, ".carton-day")[0]!);
+  await flush();
+  assert.equal($$(m.container, ".carton-day")[0]!.getAttribute("aria-expanded"), "false");
+  await click($$(m.container, ".carton-day")[0]!);
+  await flush();
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 0, "open again, its group is closed");
+  // and through a filter
+  await click($(m.container, ".carton-version[data-group] .carton-version-group"));
+  await click($(m.container, ".carton-filter-btn"));
+  await click(byText(m.container, "[role=menuitemradio]", "Agent turns"));
+  await click($(m.container, ".carton-filter-chip-x"));
+  assert.ok(row(m.container, "Tighten the intro"), "back to every version, still alive");
+  await m.unmount();
+});
+
+test(name("review #3: a card opened on a version not sent yet reads it again once it is confirmed"), async () => {
+  const ui = createMockUi({ versions: 8, now: noon48(), provisional: true });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
+  await flush();
+  await click($$(m.container, ".carton-version[data-provisional]")[0]!);
+  await waitFor(() => $$(m.container, ".carton-card-version .carton-change").length > 0, "its card");
+  const asked = ui.counts.changesIn;
+  await act(async () => ui.confirmAll());
+  await flush();
+  assert.ok(ui.counts.changesIn > asked, "confirmed: its new ref and content are read");
+  assert.equal($(m.container, ".carton-version[data-provisional]"), null);
+  assert.ok($(m.container, ".carton-card-version"), "the card stays open");
+  await m.unmount();
+});
+
+test(name("review #5: Play on the newest after an older version was viewed goes back to your edit first"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, onSeek: () => {} })));
+  await flush();
+  const playAll = async (text: string) => {
+    await click(row(m.container, text));
+    await waitFor(() => !!byText(m.container, ".carton-card-version button", "Play all") && !(byText(m.container, ".carton-card-version button", "Play all") as HTMLButtonElement).disabled, "Play all");
+    await click(byText(m.container, ".carton-card-version button", "Play all"));
+    await flush();
+  };
+  await playAll("Add captions to the interview");
+  assert.equal(ui.viewing()?.kind, "version", "the older one is viewed");
+  await playAll("Tighten the intro");
+  assert.equal(ui.viewing(), null, "the newest plays on your edit");
+  await m.unmount();
+});
+
+test(name("review #6: a group's changes are each their own row: unique keys, and ▶ lights only the one played"), async () => {
+  const ui = story();
+  const errors: string[] = [];
+  const err = console.error;
+  console.error = (...a: unknown[]) => void errors.push(a.map(String).join(" "));
+  try {
+    const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, onSeek: () => {} })));
+    await flush();
+    await click($(m.container, ".carton-version[data-group]"));
+    await waitFor(() => $$(m.container, ".carton-card-version .carton-change").length > 0, "the group's changes");
+    await click($(m.container, ".carton-card-more"));
+    const rows = $$(m.container, ".carton-card-version .carton-change");
+    assert.equal(rows.length, 6, "six changes, three of them to “Interview B”");
+    const keys = rows.map((r) => r.dataset.changeKey);
+    assert.equal(new Set(keys).size, 6, "each its own key");
+    const ib = rows.find((r) => /Interview B/.test(r.textContent ?? ""))!;
+    await click($(ib, ".carton-change-play"));
+    assert.equal($$(m.container, ".carton-card-version .carton-change[data-playing]").length, 1, "only the one played is lit");
+    await m.unmount();
+  } finally {
+    console.error = err;
+  }
+  assert.deepEqual(errors.filter((e) => /same key|unique "key"/i.test(e)), []);
+});
+
+test(name("review #7: your run of changes growing at the top never pulls a reader back up the list"), async () => {
+  const ui = story({ versions: 600 });
+  const m = await render(wrap(ui, h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  // your edits on top (newest), the group picked and open
+  await act(async () => void ui.addVersion({ author: people.alice, kind: "edit", at: Date.now() }));
+  await act(async () => void ui.addVersion({ author: people.alice, kind: "edit", at: Date.now() }));
+  await flush();
+  await click($$(m.container, ".carton-version[data-group]")[0]!);
+  const list = $(m.container, ".carton-history-list")!;
+  list.scrollTop = 2400;
+  await act(async () => {
+    list.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  const before = list.scrollTop;
+  await act(async () => void ui.addVersion({ author: people.alice, kind: "edit", at: Date.now() }));
+  await flush();
+  assert.ok(list.scrollTop >= before, `the reader stays down the list (${before} → ${list.scrollTop})`);
+  await m.unmount();
+});
+
+test(name("review #8: leaving New cut or Restore… with Esc or Cancel keeps the keyboard in the card; the next Esc closes it"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
+  await flush();
+  const dir = row(m.container, "Add captions to the interview")!;
+  await click($(dir, ".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", /^New cut from this version/));
+  await waitFor(() => !!$(m.container, ".carton-card-newcut input"), "the new cut's field");
+  const input = $(m.container, ".carton-card-newcut input")!;
+  input.focus();
+  await press(input, "Escape");
+  assert.equal($(m.container, ".carton-card-newcut"), null);
+  // (focus comes back on the next frame; preact's act holds frames, so wait for it rather than for a frame)
+  await waitFor(() => document.activeElement === $(m.container, ".carton-card-version"), "focus on the card, not <body>");
+  await press(document.activeElement!, "Escape");
+  assert.equal($(m.container, ".carton-card-version"), null, "the next Esc closes the card");
+  await m.unmount();
+});
+
 test(name("an agent working: a live row on top with its line; the newest version shows its time"), async () => {
   const ui = story();
   ui.setWorking("director");

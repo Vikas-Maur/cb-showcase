@@ -210,17 +210,18 @@ function HistorySide({ bridge }) {
   }, [bridge]);
   const onFrame = seeker.onFrame;
   useEffect(() => (watch ? seeker.stop : undefined), [watch, seeker]);
+  // (every hook above the Watch return: one render with fewer hooks than the last crashes React, review #2)
+  // History's cut bar holds the cut and its menu (docs/carton-ux DESIGN §6.1): one element, so History re-rendering for a
+  // new version never re-renders the menu
+  const cutsMenu = useMemo(() => h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) }), []);
+  const selectedClip = useCallback(() => bridge.selectedClip?.() ?? null, [bridge]);
+  const seek = useCallback((t) => bridge.seek?.(t), [bridge]);
   if (watch) {
     // Esc leaves Watch (the innermost layer) and goes no further: the panel stays open.
     return h("div", { className: "carton-sidebar-watch", onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); back(); } } },
       h(Button, { variant: "ghost", icon: "arrowLeft", onClick: back, title: "Back to History (Esc)" }, words.history),
       h(WatchTheChanges, { a: watch.a, b: watch.b, inPlayer: true, onFrame }));
   }
-  // History's cut bar holds the cut and its menu (docs/carton-ux DESIGN §6.1): one element, so History re-rendering for a
-  // new version never re-renders the menu
-  const cutsMenu = useMemo(() => h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) }), []);
-  const selectedClip = useCallback(() => bridge.selectedClip?.() ?? null, [bridge]);
-  const seek = useCallback((t) => bridge.seek?.(t), [bridge]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
     h(HistoryPanel, { cuts: cutsMenu, selectedClip, onSeek: seek, currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);

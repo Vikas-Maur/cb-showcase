@@ -492,8 +492,11 @@ export function HistoryPanel(props: HistoryPanelProps) {
       const go = () => {
         if (first?.at !== undefined) onSeek?.(Math.max(0, first.at - 1));
       };
-      if (req.newest) go();
-      else
+      // the newest plays on your edit: back to it first if an older version is on the stage (review #5)
+      if (req.newest) {
+        if (ui.viewing()) ui.view(null).then(go, () => setOwnPlaying(null));
+        else go();
+      } else
         ui.view({ kind: "version", versionId: req.version.id }).then(go, (e: unknown) => {
           setOwnPlaying(null);
           setFailed(e instanceof Error && e.message ? e.message : words.loadFailed);
@@ -650,7 +653,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
       const k = follow(activeKey);
       if (k) setActiveKey(k);
     }
-    if ([...openGroups].some((k) => !rowIndex.has(k))) setOpenGroups(new Set([...openGroups].map((k) => follow(k) ?? k)));
+    // (a group hidden by a folded day or a filter is closed: review #1, a key kept that no row has looped renders)
+    if ([...openGroups].some((k) => !rowIndex.has(k))) {
+      const next = new Set<string>();
+      for (const k of openGroups) {
+        const f = follow(k);
+        if (f) next.add(f);
+      }
+      setOpenGroups((s) => (s.size === next.size && [...next].every((k) => s.has(k)) ? s : next));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
   useEffect(() => {
