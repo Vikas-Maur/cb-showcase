@@ -31,6 +31,17 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-find-empty-body){margin:0 0 6px;font-size:12.5px;line-height:18px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-find-empty .carton-btn){margin-top:8px;height:28px;padding:0 12px;font-size:12.5px;border-radius:7px}
 
+/* "Search every cut" (§2.3): the other cuts' versions, each with its cut's dot and name */
+:where(${S}) :where(.carton-find-every-btn){font-size:12.5px}
+:where(${S}) :where(.carton-find-every){margin-top:10px;width:100%}
+:where(${S}) :where(.carton-find-every-head){margin:0 0 4px;font-size:12px;font-weight:500;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-find-every-list){list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+:where(${S}) :where(.carton-find-every-row){display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:none;
+  color:var(--cb-fg-1);font:inherit;text-align:left;cursor:pointer}
+:where(${S}) :where(.carton-find-every-row:hover, .carton-find-every-row:focus-visible){background:#ffffff0a}
+:where(${S}) :where(.carton-find-every-title){font-size:13px;line-height:18px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-find-every-meta){display:flex;align-items:center;gap:5px;font-size:12px;line-height:16px;color:var(--cb-fg-3);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
 /* a past day's run of changes between two landmarks (§2.5): one quiet line under the landmark above it */
 :where(${S}) :where(.carton-run){padding-left:18px;font-weight:400;color:var(--cb-fg-4)}
 :where(${S}) :where(.carton-run[data-open]){color:var(--cb-fg-3)}

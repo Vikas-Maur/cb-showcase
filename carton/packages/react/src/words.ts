@@ -584,6 +584,12 @@ export const words = {
   findNone: (q: string) => `No versions mention “${q}”`,
   findNoneHint: "Try a clip's name, words from a title or caption, an agent's request, or a person.",
   findSearched: (cut: string) => `Searched ${cut}.`,
+  // "Search every cut" (DESIGN-V2 §2.3; design QA v2 G13)
+  searchEveryCut: "Search every cut",
+  findingEveryCut: "Searching every cut…",
+  findNoneAnywhere: (q: string) => `No other cut mentions “${q}” either.`,
+  findOnOtherCuts: (n: number) => `${plural(n, "version", "versions")} on other cuts`,
+  compareAcrossCuts: "Compare it with your edit",
   findFields: { name: "Name", prompt: "Prompt", clip: "Clip name", text: "Title or caption text", person: "Person", day: "Day" } as Record<"name" | "prompt" | "clip" | "text" | "person" | "day", string>,
   wasHere: (clip: string, span: string) => `“${clip}” was ${span} here`,
   findMore: (n: number) => `${n} more`,

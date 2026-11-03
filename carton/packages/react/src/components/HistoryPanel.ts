@@ -24,7 +24,8 @@ import { CLIP_ICON } from "./ChangeRow.ts";
 import { ChangesView } from "./ChangesView.ts";
 import { sentenceTail } from "./ChangeRow.ts";
 import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
-import { CutsMenu } from "./CutsMenu.ts";
+import { CutDot, CutsMenu } from "./CutsMenu.ts";
+import { cutRef } from "../cuts.ts";
 import { VersionCard, stopViewing, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
 // Carton UX v2 (N2: DESIGN-V2 §2–§4): landmarks, search, hold to peek, Compare with… and the Compare button
 import { LandmarkTag, LandmarkTile, landmarkTitle, useLandmarks, useStagePictures } from "./LandmarkRow.ts";
@@ -444,6 +445,50 @@ const RunRow = memo(function RunRow({ row, domId, active, onToggle }: { row: Run
   );
 });
 
+/** "Search every cut" (DESIGN-V2 §2.3): what it found, the other cuts' versions. */
+interface EveryCut {
+  readonly q: string;
+  readonly status: "loading" | "ready" | "error";
+  readonly hits: readonly FindHit[];
+}
+/**
+ * The other cuts' versions a search found once "Search every cut" was asked (DESIGN-V2 §2.3; design QA v2 G13): each
+ * says which cut it is on (its dot and name) in its meta line; a click compares it with your edit, across cuts.
+ */
+function EveryCutHits({ found, onOpen }: { found: EveryCut; onOpen: (hit: FindHit) => void }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const locale = useLocale();
+  const now = useNow();
+  if (found.status !== "ready" || !found.hits.length)
+    return h("p", { className: "carton-find-empty-body carton-find-every-status", role: "status" }, found.status === "loading" ? words.findingEveryCut : found.status === "error" ? words.findFailed : words.findNoneAnywhere(found.q.trim()));
+  const cuts = ui.cuts();
+  return h(
+    "div",
+    { className: "carton-find-every" },
+    h("p", { className: "carton-find-every-head", role: "status" }, words.findOnOtherCuts(found.hits.length)),
+    h(
+      "ul",
+      { className: "carton-find-every-list" },
+      ...found.hits.map((x) => {
+        const cut = cuts.find((c) => c.id === x.cutId);
+        const where = cut ? cutRef(cut) : words.anotherCut;
+        const who = actorLabel(x.author, ui.actor.bind(ui), words.you);
+        return h(
+          "li",
+          { key: `${x.cutId}:${x.ref}` },
+          h(
+            "button",
+            { type: "button", className: "carton-find-every-row", title: words.compareAcrossCuts, onClick: () => onOpen(x) },
+            h("span", { className: "carton-find-every-title" }, highlight(x.snippet, found.q)),
+            h("span", { className: "carton-find-every-meta" }, cut ? h(CutDot, { cut }) : null, [where, who, clock(x.at, { now, locale })].filter(Boolean).join(" · ")),
+          ),
+        );
+      }),
+    ),
+  );
+}
+
 /**
  * The clip History is filtered to: its kind chip and name, then its credits, oldest first ("Added by You on Oct 30 ·
  * trimmed by Director · moved by You at 12:41 pm"; the verbs from what each change did: credits.ts, design QA G7).
@@ -544,6 +589,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [findAll, setFindAll] = useState<string | null>(null);
   const found = useFind(searching ? query : "", cutId, { revision, ...(findAll === query ? { limit: 5000 } : {}) });
   const [marksOnly, setMarksOnly] = useState(false);
+  // "Search every cut" from the empty state (DESIGN-V2 §2.3): N0's find across cuts, for this query only
+  const [everyCut, setEveryCut] = useState<EveryCut | null>(null);
   // a search's own folded days (its older days fold after 20 results; a click opens one), new for each query
   const [findFolds, setFindFolds] = useState<{ q: string; days: ReadonlyMap<number, boolean> }>({ q: "", days: new Map() });
   const [pick, setPick] = useState<Picking | null>(null);
@@ -977,6 +1024,18 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [rows, keyAt, listId, onMenu],
   );
 
+  // "Search every cut": the other cuts' versions (this cut's are the list's); a click compares one with your edit
+  const searchEveryCut = useCallback(() => {
+    const q = query;
+    setEveryCut({ q, status: "loading", hits: [] });
+    const done = (e: EveryCut) => setEveryCut((x) => (x && x.q === q ? e : x));
+    ui.find!(q.trim(), { allCuts: true, limit: 50 }).then(
+      (r) => done({ q, status: "ready", hits: r.hits.filter((x) => x.cutId !== cutId) }),
+      () => done({ q, status: "error", hits: [] }),
+    );
+  }, [ui, query, cutId]);
+  const elsewhere = everyCut && everyCut.q === query ? everyCut : null;
+
   // ---------------------------------------------------------------- what the list shows
   const active = activeKey ? (rowIndex ? (rowIndex.get(activeKey) ?? -1) : hist.indexOf(filter, activeKey)) : -1;
   // (the open card's row as it is now: a run of changes that grew since keeps its card in this very render)
@@ -1378,7 +1437,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
             { className: "carton-find-empty", role: "status" },
             h("p", { className: "carton-find-empty-title" }, found.status === "error" ? words.findFailed : words.findNone(query.trim())),
             h("p", { className: "carton-find-empty-body" }, words.findNoneHint),
-            h("p", { className: "carton-find-empty-body" }, words.findSearched(ui.cuts().find((c) => c.current)?.label ?? words.mainCut)),
+            h(
+              "p",
+              { className: "carton-find-empty-body" },
+              words.findSearched(ui.cuts().find((c) => c.current)?.label ?? words.mainCut),
+              // (once asked, what it found is under these lines; one cut only: nothing more to search)
+              !elsewhere && found.status === "ready" && ui.cuts().length > 1 ? [" ", h("button", { key: "every", type: "button", className: "carton-link carton-find-every-btn", onClick: searchEveryCut }, words.searchEveryCut)] : null,
+            ),
+            elsewhere ? h(EveryCutHits, { found: elsewhere, onOpen: (x: FindHit) => void compareTo(x.ref, null) }) : null,
             // (a filter on top of the newest results only: the rest may hold what it looks for)
             found.status === "ready" && found.total > found.hits.length ? h(Button, { onClick: () => setFindAll(query) }, words.findShowAll) : null,
             h(Button, { onClick: () => (search.current?.clear(), search.current?.focus()) }, words.clearFind),

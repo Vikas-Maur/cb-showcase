@@ -219,6 +219,47 @@ test(name("search: nothing found says what to try and where it searched, with Cl
   await m.unmount();
 });
 
+test(name("design QA v2 G13: Search every cut from the empty state: the other cuts' versions say which cut; a click compares across cuts"), async () => {
+  const ui = story();
+  const opened: [string, string | null | undefined][] = [];
+  (ui as { openCompare?: CartonUi["openCompare"] }).openCompare = async (from, to) => void opened.push([from, to]);
+  const asked: unknown[] = [];
+  const find = ui.find!.bind(ui);
+  ui.find = (q, o) => (asked.push(o), find(q, o));
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900 })));
+  await flush();
+  // "city": only other cuts' versions mention it ("Cut “B-roll city” at 0:09")
+  await type($(m.container, ".carton-search-input"), "city");
+  await waitFor(() => !!$(m.container, ".carton-find-every-btn"), "Search every cut");
+  assert.match($(m.container, ".carton-find-empty")!.textContent ?? "", /Searched Main cut\. Search every cut/);
+  await click($(m.container, ".carton-find-every-btn"));
+  await waitFor(() => $$(m.container, ".carton-find-every-row").length > 0, "the other cuts' versions");
+  assert.ok(asked.some((o) => (o as { allCuts?: boolean } | undefined)?.allCuts === true), "N0's find, across cuts");
+  assert.equal($(m.container, ".carton-find-every-btn"), null, "asked once: the link goes");
+  const rows = $$(m.container, ".carton-find-every-row");
+  assert.match($(m.container, ".carton-find-every-head")!.textContent ?? "", /^\d+ versions? on other cuts$/);
+  const cuts = ui.cuts().filter((c) => !c.current);
+  for (const r of rows) {
+    const meta = $(r, ".carton-find-every-meta")!.textContent ?? "";
+    assert.ok(cuts.some((c) => meta.includes(c.label)), `says its cut: ${meta}`);
+    assert.ok(!/cut-|human\/|agent\//.test(r.textContent ?? ""), `no ids: ${r.textContent}`);
+    assert.match($(r, ".carton-find-every-title")!.textContent ?? "", /city/i);
+  }
+  assert.ok($(rows[0]!, ".carton-cut-dot") || !cuts.some((c) => c.color), "the cut's dot");
+  // a click compares that version with your edit, across cuts (Compare in the editor)
+  await click(rows[0]);
+  await flush();
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]![1], null, "with your edit");
+  assert.ok(opened[0]![0] && !opened[0]![0].startsWith("cut-"), "a version's ref");
+  // a new query starts over: the link is back, the old results gone
+  await type($(m.container, ".carton-search-input"), "nothing like this");
+  await waitFor(() => !!$(m.container, ".carton-find-every-btn") && !$(m.container, ".carton-find-every-row"), "the link again");
+  await click($(m.container, ".carton-find-every-btn"));
+  await waitFor(() => /No other cut mentions “nothing like this” either\./.test($(m.container, ".carton-find-empty")?.textContent ?? ""), "nothing anywhere");
+  await m.unmount();
+});
+
 test(name("search from a scrolled list: the results start at the top, with no ↑ Newest over them; nor once cleared (design QA v2)"), async () => {
   const ui = createMockUi({ versions: 300, seed: 5, now: noon48(), landmarks: true });
   const m = await render(wrap(ui, h("div", { style: { height: "500px" } }, h(HistoryPanel, { initialHeight: 500 }))));
