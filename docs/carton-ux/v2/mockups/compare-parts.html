@@ -1,0 +1,52 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../mockups/skin.css"><link rel="stylesheet" href="v2.css">
+<script src="../../mockups/icons.js"></script><script src="../../mockups/kit.js"></script><script src="../../mockups/story.js"></script><script src="../../mockups/editor.js"></script><script src="compare.js"></script></head><body><script>
+const frames = [];
+// The panel while comparing, at its two widths. A removed clip selected: it can come back on its own.
+const remDetail = `<div class="chgx"><div class="tn"><span>Then</span><span>0:06–0:09, between “Intro” and “Interview A”</span><span>Now</span><span>Not in your edit</span></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn xs sec">${I("restore", 12)}Bring back “B-roll pier”</button></div>
+  <div class="hint" style="margin-top:6px;font-size:11.5px">It goes back between “Intro” and “Interview A”. Everything after moves 3 s later. Ctrl+Z takes it back.</div></div>`;
+frames.push(shot("compare-panel-384", 384, 760, cmpPanel({ h: 760, sel: 3, detail: remDetail })));
+frames.push(shot("compare-panel-300", 300, 760, cmpPanel({ w: 300, h: 760, sel: 3, detail: remDetail })));
+// An added clip selected: "as it was" means it wasn't there.
+const addDetail = `<div class="chgx"><div class="tn"><span>Then</span><span>Not in ${SENT}</span><span>Now</span><span>0:12–0:16</span></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn xs sec">${I("restore", 12)}Take out “Drone shot”</button></div>
+  <div class="hint" style="margin-top:6px;font-size:11.5px">It wasn't in ${SENT}. Everything after moves 4 s earlier. Ctrl+Z takes it back.</div></div>`;
+frames.push(shot("compare-panel-added-384", 384, 560, cmpPanel({ h: 560, sel: 5, detail: addDetail })));
+
+// Toasts and lines on the stage while comparing, and the agent's two ways in.
+const T = (html) => `<div class="toast" style="white-space:normal;margin-bottom:12px">${html}</div>`;
+frames.push(shot("compare-toasts", 640, 330, `<div style="padding:16px;background:var(--stage);height:100%">
+  ${T(`${I("compare", 16, "dim")}<span style="flex:1">You're comparing ${SENT} with your edit.</span><button class="btn xs pri">Done comparing</button><span class="kbd">Esc</span>`)}
+  ${T(`${I("compare", 16, "dim")}<span style="flex:1">You're comparing two earlier versions.</span><button class="btn xs pri">Back to my edit</button><span class="kbd">Esc</span>`)}
+  ${T(`${I("compare", 16, "dim")}<span style="flex:1">Director opened a comparison.</span><span class="kbd">Esc to go back</span><button class="b2" title="Hide">${I("x", 12)}</button>`)}
+  ${T(`${I("compare", 16, "dim")}<span style="flex:1">Claude Code has a comparison ready: ${CUT30} with Main cut.</span><button class="btn xs pri">Open</button><button class="b2" title="Not now">${I("x", 12)}</button>`)}
+  ${T(`${I("compare", 16, "dim")}<span style="flex:1">Couldn't show “Sent to client” side by side here. Showing it as a flip.</span><button class="b2" title="Hide">${I("x", 12)}</button>`)}
+</div>`));
+
+// The cuts menu: every other cut can be compared with the one you're on.
+frames.push(shot("compare-cuts-menu-384", 384, 470, panel(head() + cutbar({ right: filterBtn }) + `<div class="list" style="opacity:.35">${day("Today", "")}${turnRow()}${mineRow()}</div>
+  <div class="menu" style="position:absolute;left:8px;top:84px;width:330px">
+    <div class="mlabel">Cuts</div>
+    <div class="mi"><span class="ck">${I("check", 14)}</span>${I("cut")}<span>Main cut<span class="sub">You · now</span></span></div>
+    <div class="mi hov"><span class="ck"></span><span class="cutdot" style="background:${DOT30}"></span><span>30s Instagram cut<span class="sub">Director · 2 h ago</span></span><span class="r"><button class="btn xs outline" title="Compare with this cut">${I("compare", 12)}Compare</button></span></div>
+    <div class="mlabel">From teammates</div>
+    <div class="mi"><span class="ck"></span><span class="av leo sm">L</span><span>Leo's Main cut<span class="sub">View only · Leo · 20 min ago</span></span><span class="r" style="opacity:0">x</span></div>
+    <div class="msep"></div>
+    <div class="mi">${I("plus")}New cut from your edit</div>
+    <div class="mi">${I("foldIn")}Fold in changes from a cut…</div>
+    <div class="mnote">Agents work on the cut you're on.</div>
+  </div>`, 470)));
+
+// Fold in's preview: the same differences, one step from the stage.
+frames.push(shot("compare-fold-entry", 560, 300, `<div class="dialog" style="width:560px;height:300px">
+  <div class="dh"><h3>Fold in changes</h3><span style="flex:1"></span><button class="btn icon">${I("x", 16)}</button></div>
+  <div class="db"><p class="hint" style="margin:0 0 10px">Main cut gets what changed on ${CUT30} since it was made from Main cut at 12:20 pm.</p>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span class="cbx on">${I("check")}</span><span style="flex:1">${chg("0:16", "v", "chg", "Trimmed “Interview B”, now ends at 0:19").replace('class="chg "', 'class="chg " style="margin:0;flex:1"')}</span></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span class="cbx on">${I("check")}</span><span style="flex:1">${chg("0:25", "v", "add", "Added “Logo sting”").replace('class="chg "', 'class="chg " style="margin:0;flex:1"')}</span></div>
+  <div style="display:flex;align-items:center;gap:8px"><span class="cbx"></span><span style="flex:1">${chg("0:29", "v", "rem", "Removed “Outro”").replace('class="chg "', 'class="chg " style="margin:0;flex:1"')}</span></div></div>
+  <div class="df"><button class="btn sm ghost">${I("compare", 14)}See them side by side</button><span class="sp"></span><button class="btn sm ghost">Cancel</button><button class="btn sm pri">Fold in 2 changes</button></div></div>`));
+
+// The marks on Cardboard's timeline, close up, one of each.
+frames.push(shot("compare-timeline-marks", 754, 242, cmpTimeline({ w: 754 })));
+build(frames.join(""));
+</script></body></html>

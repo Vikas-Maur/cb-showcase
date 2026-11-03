@@ -1,0 +1,61 @@
+<!doctype html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../../mockups/skin.css"><link rel="stylesheet" href="v2.css">
+<script src="../../mockups/icons.js"></script><script src="../../mockups/kit.js"></script><script src="../../mockups/story.js"></script><script src="../../mockups/editor.js"></script><script src="compare.js"></script></head><body><script>
+const frames = [];
+// 1. The default: Side by side. "Sent to client" on the left, your edit on the right (the real preview), the title change
+//    selected in the list, its clip ringed on the timeline, both players on the same shot.
+frames.push(shot("compare-side-by-side", 1522, 810, cmpEditor()));
+// 2. Wipe: one picture, the line splits then (left) from now (right).
+frames.push(shot("compare-wipe", 1522, 810, cmpEditor({ stage: { mode: "wipe" } })));
+// 3. Flip with B held: the whole picture shows "Sent to client"; release to come back to your edit.
+frames.push(shot("compare-flip", 1522, 810, cmpEditor({ stage: { mode: "flip", flipShows: "a" } })));
+// 4. Play both, in step by shot: at 0:13 your edit plays the added "Drone shot"; the left side has no such shot, so it
+//    holds a slate. Two playheads: white on the timeline (your edit), dotted on the strip (Sent to client).
+frames.push(shot("compare-play-both", 1522, 810, cmpEditor({
+  stage: { playing: true, prog: 36, a: sideA({ tc: "0:16 · waiting", pic: () => slate("“Drone shot”", SENT) }), b: sideB({ tc: "0:13", pic: (w, h) => scene({ w, h, title: "", cap: "", hue: 190, sh: 30 }) }) },
+  tl: { playhead: 13, aPlayhead: 16, sel: "Drone shot" },
+  panelHtml: cmpPanel({ sel: 5, open: false }),
+})));
+// 5. An edit tried while comparing: nothing changes, the frame pulses once, one line.
+frames.push(shot("compare-edit-attempt", 1522, 810, cmpEditor({ stageExtra: stageToast(`${I("compare", 16, "dim")}<span style="flex:1;min-width:0">You're comparing ${SENT} with your edit.</span><button class="btn xs pri" style="flex:none">Done comparing</button><span class="kbd" style="flex:none">Esc</span>`) + `<div style="position:absolute;inset:0;box-shadow:inset 0 0 0 4px #8ab4ffcc;pointer-events:none"></div>` })));
+// 6. A narrow window (1100 px): the panel at 300 px, the stage too small for two players. Flip is the default; Side by
+//    side is greyed with the reason in its tooltip.
+frames.push(shot("compare-narrow", 1100, 760, cmpEditor({ W: 1100, H: 760, panelW: 300, chatW: 340, chip: cmpChip(`Comparing ${SENT}…`), stage: { mode: "flip", narrow: true }, tl: { legend: false }, panelHtml: cmpPanel({ w: 300, h: 720 }) })));
+// 7. The drawer hidden: the list isn't on screen, so the frame's own label says what's compared, with the count.
+frames.push(shot("compare-drawer-hidden", 1100, 760, cmpEditor({ barTop: 22, W: 1100, H: 760, panelW: 0, chatW: 340, chip: cmpChip(`Comparing ${SENT}…`), stage: { mode: "flip", narrow: true }, tl: { legend: false },
+  drawerTab: `<div class="framelabel" style="z-index:3">${I("compare", 13)}<span>Comparing ${SENT} with your edit · 7 changes</span><button class="b" title="Done comparing (Esc)">${I("x", 12)}</button></div>` })));
+// 8. The fallback: no second player on this computer. Flip only; the list, the marks and the jumps all still work.
+frames.push(shot("compare-flip-only", 1522, 810, cmpEditor({ stage: { mode: "flip", only: true } })));
+// 9. Across cuts: "30s Instagram cut" now (left) against Main cut now, your edit (right). Shots lined up by shot; a
+//    clip only one cut has is marked added (here) or removed (there).
+const CUTS = {
+  b: {
+    Titles: [[1, 5, "Summer launch"], [18, 23, "Jane Smith, Founder", "add", "+"], [26, 30, "Meet the team"]],
+    "Track 1": [[0, 5, "Intro", "chg", "•"], [5, 12, "Interview A", "add", "+"], [12, 16, "Drone shot", "add", "+"], [16, 25, "Interview B", "chg", "−6 s"], [25, 29, "B-roll 3"], [29, 36, "Outro", "add", "+"]],
+    Captions: [[0.5, 3, "we cut editing time"], [3.2, 5, "in half"], [26, 29, "built for speed"]],
+    Music: [[0, 36, "Tone.mp3"]],
+  },
+  ghosts: {}, seams: { "Track 1": [[25, "Logo sting"]] },
+  a: [[0, 3, "Intro"], [3, 6, "Interview B"], [6, 10, "B-roll 3"], [10, 13, "Logo sting", "rem"]],
+};
+const cutA = { label: `<span class="cutdot" style="background:${DOT30}"></span><b>30s Instagram cut</b>`, short: "30s Instagram cut", sub: "now · Leo", tc: "0:16", pic: (w, h) => scene({ w, h, title: "", cap: "", hue: 28, sh: 10 }) };
+const cutB = { label: `${I("cut", 12)}<b>Main cut</b>`, short: "Main cut", sub: "your edit now", tc: "0:16 · same shot", pic: (w, h) => scene({ w, h, title: "", cap: "", hue: 28, sh: 10 }) };
+frames.push(shot("compare-cuts", 1522, 810, cmpEditor({
+  chip: cmpChip(`Comparing ${CUT30} with Main cut`),
+  stage: { a: cutA, b: cutB, count: "7 differences" },
+  tl: { story: CUTS, aName: "30s Instagram cut", playhead: 16, aPlayhead: 3.4, sel: "Interview B", end: 36 },
+  panelHtml: cmpPanel({ rows: CUT_CHANGES, sel: 3, range: `<b>${CUT30}</b> now<br>with <b>Main cut</b> · your edit now`, count: "7 differences · 0:30 and 0:36",
+    detail: `<div class="chgx"><div class="tn"><span>There</span><span>0:03–0:06 (3 s)</span><span>Here</span><span>0:16–0:25 (9 s)</span></div><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn xs sec">${I("restore", 12)}Use the 30s cut's “Interview B” here</button></div><div class="hint" style="margin-top:6px;font-size:11.5px">Only “Interview B” changes on Main cut. Ctrl+Z takes it back.</div></div>`,
+    foot: `<button class="btn sm ghost" style="justify-content:flex-start;margin-left:-8px">${I("foldIn", 14)}Fold in changes from ${CUT30}…</button>` }),
+})));
+// 10. The agent opened it: the user asked Director in the chat; the chip as usual, one toast with ✕.
+const chatAsk = (w, ask, reply) => `<div class="chat" style="width:${w}px;display:flex;flex-direction:column;border-left:1px solid #ffffff0a">
+    <div style="height:40px;display:flex;align-items:center;padding:0 14px;gap:8px"><span class="tb-btn" style="background:#ffffff0f;color:#fff">New chat</span><span style="flex:1"></span>${I("restore", 16, "dim")}${I("plus", 16, "dim")}</div>
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:16px;gap:12px">
+      <div style="align-self:flex-end;background:#262626;border-radius:12px;padding:8px 12px;color:var(--fg1);max-width:85%">${ask}</div>
+      <div style="color:var(--fg2);line-height:20px">${reply}</div></div>
+    <div style="margin:12px;height:120px;border-radius:12px;background:#1b1b1b;box-shadow:inset 0 0 0 1px #ffffff12;padding:12px;color:var(--fg4)">Describe the edit…</div></div>`;
+const agentToast = stageToast(`${I("compare", 16, "dim")}<span>Director opened a comparison.</span><span class="kbd">Esc to go back</span><button class="b2" title="Hide" style="pointer-events:auto">${I("x", 12)}</button>`);
+frames.push(shot("compare-agent", 1522, 810, cmpEditor({ stageExtra: agentToast,
+  chatHtml: chatAsk(384, "show me what changed since I sent it to the client", `I opened a comparison in the editor: “Sent to client” (yesterday at 4:10 pm) on the left, your edit on the right. There are 7 changes. The biggest: “B-roll pier” is gone, “Drone shot” is new at 0:12, and “Interview B” starts 4 s earlier. Press Esc to go back to your edit.`) })));
+build(frames.join(""));
+</script></body></html>
