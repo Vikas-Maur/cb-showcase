@@ -85,7 +85,7 @@ test("view model: find, landmarks, bring back one clip, its choices, align and t
     await assert.rejects(client.ui.saveLandmarkPicture!("k@2", "data:image/png;base64,AAAA"));
   } finally {
     server.close();
-    ui.close?.();
+    ui.dispose();
     await carton.close();
   }
 });
