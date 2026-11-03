@@ -75,7 +75,19 @@ function __cbCartonPlayer({ doc, follow, onReady }) {
   const size = o.useMemo(() => L2(doc.aspectRatio), [doc.aspectRatio]);
   const items = o.useMemo(() => doc.timelineItems.filter((i) => i.type !== "audio").map((i) => (i.muted ? i : { ...i, muted: true })), [doc.timelineItems]);
   const r = YD({ width: size.width, height: size.height, timelineItems: items, tracks: doc.tracks, mediaItems: doc.media, currentTime: Number.isFinite(at) ? Math.max(0, at) : 0, isPlaying: playing, masterVolume: 0, enabled: true, drivenByExternalClock: false });
-  o.useEffect(() => { onReady?.(!!r.isReady); }, [r.isReady, onReady]);
+  // ready: the engine runs and has sized its canvas (initializeRenderer: a WebGL or 2D context made). Not proof of a
+  // painted frame: YD logs a failed frame itself and goes on (a check for the laptop, FEASIBILITY §5).
+  o.useEffect(() => {
+    if (!r.isReady) return undefined;
+    let n = 0, id = 0;
+    const look = () => {
+      const cv = r.canvasRef.current;
+      if (cv && cv.width > 0 && cv.height > 0) return onReady?.(true);
+      if (++n < 90) id = requestAnimationFrame(look);
+    };
+    look();
+    return () => cancelAnimationFrame(id);
+  }, [r.isReady, r.canvasRef, onReady]);
   return c.jsx("canvas", { ref: r.canvasRef, "data-carton-player": "", style: { display: "block", width: "100%", height: "100%" } });
 }
 // What the timeline shows besides Cardboard's own: { projectId, viewing, cut, dot, compare }, or null (compare: Compare

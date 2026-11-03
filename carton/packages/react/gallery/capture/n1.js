@@ -111,7 +111,7 @@ export function n1Bridge(api, sc) {
   Object.assign(api, {
     // your edit held: the stand-in stage shows it (as the base bridge's preview(null) tells it)
     hold(p) { window.__cap.held = (window.__cap.held ?? 0) + 1; return preview(p, null); },
-    compareDoc: (_p, ref) => Promise.resolve(ref == null ? doc(RIGHT) : doc(sc.n1?.from === "cut-ig" ? LEFT.filter((i) => i.id !== "item-pier") : LEFT)),
+    compareDoc: (_p, ref) => Promise.resolve(ref == null || ref === sc.ui.cuts().find((c) => c.current)?.head ? doc(RIGHT) : doc(sc.n1?.from === "cut-ig" ? LEFT.filter((i) => i.id !== "item-pier") : LEFT)),
     togglePlay() { playing = !playing; tell(); },
     pause() { if (playing) { playing = false; tell(); } },
     get playing() { return playing; },

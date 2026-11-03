@@ -513,9 +513,17 @@ module.exports = String.raw`window.__carton = (() => {
         const t = own && own.project === projectId ? own.timeline : timelineOf(st);
         return { tracks: t.tracks ?? [], timelineItems: t.timelineItems ?? [], aspectRatio: t.aspectRatio ?? "16:9", media: projectMedia };
       }
+      // The version's own media entries win (a code graphic's source, a title's text as they were then: review #1),
+      // keeping the project's local file location for a file both have; the project's entries the version lacks after.
       const project = store.deserialize(await checkout(projectId, ref)), t = timelineOf(project);
-      const have = new Set(projectMedia.map((m) => m.id));
-      return { ...t, media: [...projectMedia, ...(project.media ?? []).filter((m) => !have.has(m.id))] };
+      const now = new Map(projectMedia.map((m) => [m.id, m]));
+      const then = (project.media ?? []).map((m) => {
+        const p = now.get(m.id), src = p?.data?.src;
+        const file = m.data && "src" in m.data && m.data.type !== "code" && m.data.type !== "text";
+        return p && typeof src === "string" && file ? { ...m, data: { ...m.data, src } } : m;
+      });
+      const had = new Set(then.map((m) => m.id));
+      return { ...t, media: [...then, ...projectMedia.filter((m) => !had.has(m.id))] };
     },
     // Compare (DESIGN-V2 §1.1): the Library steps aside to give the stage its width, as when the person collapses it,
     // and comes back on exit, unless the person had it collapsed already (then it stays as they left it)

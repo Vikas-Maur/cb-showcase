@@ -33,9 +33,9 @@ import { attachCompare, CompareStage, CompareSide, comparingLabel } from "./comp
 const toasts = {
   // ms: how long one stays when nothing holds it (DESIGN §6.7: 6 s)
   value: null, seq: 0, subs: new Set(), ms: 6000,
-  show(text, actions, tone, icon) {
+  show(text, actions, tone, icon, o) {
     const list = (Array.isArray(actions) ? actions : actions ? [actions] : []).filter(Boolean);
-    this.set({ id: ++this.seq, text, ...(list.length ? { actions: list, action: list[0] } : {}), ...(tone ? { tone } : {}), ...(icon ? { icon } : {}) });
+    this.set({ id: ++this.seq, text, ...(list.length ? { actions: list, action: list[0] } : {}), ...(tone ? { tone } : {}), ...(icon ? { icon } : {}), ...(o?.sticky ? { sticky: true } : {}) });
   },
   set(v) { this.value = v; for (const f of this.subs) f(v); },
 };
@@ -282,7 +282,8 @@ function Toast() {
   const busyAt = busy && t && busy.id === t.id ? busy.i : null;
   const held = hover || focus || busyAt !== null;
   useEffect(() => {
-    if (!t || held) return undefined;
+    // (sticky: an agent's offer to open Compare stays until Open, its ✕ or the next one: DESIGN-V2 §1.13)
+    if (!t || held || t.sticky) return undefined;
     const id = t.id, timer = setTimeout(() => { if (toasts.value?.id === id) toasts.set(null); }, toasts.ms);
     return () => clearTimeout(timer);
   }, [t, held]);
@@ -425,9 +426,9 @@ export function backToEdit(ui) {
  * What the panel showed goes with it (PLAN 1.3), shown or still loading (a Play whose version hasn't loaded when the
  * panel closes: review of feat/ux-1-viewing #3); a conflict's side belongs to its card on the stage.
  */
-const leavesWithPanel = (ui) => {
-  // closing History ends Compare (DESIGN-V2 §1.7)
-  if (ui.comparing?.()) return true;
+const leavesWithPanel = (ui, next) => {
+  // closing History ends Compare (DESIGN-V2 §1.7); opening it (an agent's Compare, from Comments: review #6) doesn't
+  if (ui.comparing?.()) return next !== "history";
   const v = viewingOf(ui) ?? ui.pendingView?.() ?? null;
   return !!v && v.kind !== "conflict";
 };
@@ -577,10 +578,13 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   // History is its change list
   const comparing = useComparingNow(ui);
   const onCompare = useCallback((a, b) => void Promise.resolve(ui.openCompare?.(a, b)).catch(() => {}), [ui]);
-  if (comparing) return h("div", { ref: box, className: "carton-sidebar-history" }, h(CompareSide, { bridge }));
+  const foldIds = useCallback((from, into) => setFold({ from, into }), []);
   return h("div", { ref: box, className: "carton-sidebar-history" },
-    // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2)
-    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play, ...(typeof ui.openCompare === "function" ? { onCompare } : {}) }),
+    comparing ? h(CompareSide, { bridge, onFoldIn: foldIds }) : null,
+    // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2);
+    // kept mounted under Compare's list, so the card you came from is still open after it (DESIGN-V2 §1.7)
+    h("div", { style: { display: comparing ? "none" : "contents" } },
+      h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play, ...(typeof ui.openCompare === "function" ? { onCompare } : {}) })),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }
 
@@ -730,7 +734,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     const was = shownPanel.current;
     shownPanel.current = panel;
     if (!was || was === panel || !ready) return;
-    if (leavesWithPanel(conn.ui)) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
+    if (leavesWithPanel(conn.ui, panel)) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
   }, [panel, ready, conn]);
   const [share, setShare] = useState(false);
   // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
@@ -1013,7 +1017,7 @@ function StageViewing({ projectId, bridge, panel }) {
   return h(ViewingFrame, { viewing: shown, label: !listMarks(panel, v), onBack: back, isViewing, escapeState: bridge.selection, pulse });
 }
 
-const showToast = (text, actions, tone, icon) => toasts.show(text, actions, tone, icon);
+const showToast = (text, actions, tone, icon, o) => toasts.show(text, actions, tone, icon, o);
 // Compare's edit-attempt line goes when Compare does
 showToast.clearViewing = () => { if (toasts.value?.tone === "viewing") toasts.set(null); };
 const openPanel = (p) => { for (const f of panelRequests) f(p); };

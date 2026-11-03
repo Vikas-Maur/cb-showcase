@@ -101,7 +101,7 @@ async function mount(o = {}) {
     reportPanel: (panel, live, chip) => did.reports.push({ panel, ...chip }),
     preview: async (_p, ref) => { did.previews.push(ref); },
     hold: async () => { did.holds++; },
-    compareDoc: async (_p, ref) => { did.docs.push(ref); return ref == null ? DOCS.right : DOCS.left; },
+    compareDoc: async (_p, ref) => { did.docs.push(ref); return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? DOCS.right : DOCS.left; },
     prefetch: () => {},
     libraryAside: (on) => did.aside.push(on),
     togglePlay: () => { playing = !playing; did.plays++; for (const f of [...timeline]) f(); },
@@ -213,13 +213,16 @@ test("N1 §1.3: the modes: Side by side (the hole for the editor's picture, the 
     assert.equal(m.compare().getAttribute("data-mode"), "flip");
     assert.ok(!m.stage.querySelector("[data-test-player]"), "Flip: no second player (its engine is gone)");
     const before = m.did.previews.length, holds = m.did.holds;
+    await act(async () => { m.bridge.seek(10); await sleep(10); });
     await m.key("b");
     assert.equal(m.did.previews.at(-1), v.ref, "B held: the editor shows the left side");
+    assert.equal(m.did.seeks.at(-1), 14, "at the same moment, in step by shot (right 0:10 is left 0:14)");
     assert.equal(m.did.previews.length, before + 1);
     assert.match(m.compare().querySelector(".carton-compare-tag").textContent, /Showing/);
     assert.ok(m.compare().querySelector(".carton-compare-tag[data-left]"), "the tag turns blue on the left side");
     await m.key("b", "keyup");
     assert.equal(m.did.holds, holds + 1, "released: your edit again");
+    assert.equal(m.did.seeks.at(-1), 10, "at its own moment");
     assert.equal(localStorage.getItem("carton.compareMode"), "flip", "the mode picked is kept for next time");
   } finally { localStorage.removeItem("carton.compareMode"); await m.done(); }
 });
@@ -354,5 +357,70 @@ test("N1 §1.13: the agent's request opens Compare when the person is idle, with
     await m.key("Escape");
     assert.equal(m.page().comparing(), null);
     assert.equal(m.did.previews.at(-1), null, "Esc: back to your edit, not to the earlier view");
+  } finally { await m.done(); }
+});
+
+test("N1 review: Restore asks first and Compare stays open; across cuts the footer is Fold in; a row's ▶ plays its spot on both sides", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    const v = m.older();
+    await m.open(v.ref);
+    const foot = () => m.list().querySelector(".carton-compare-foot");
+    const restoreBtn = [...foot().querySelectorAll("button")].find((b) => /^Restore your edit to /.test(b.textContent));
+    assert.ok(restoreBtn);
+    const restored = [];
+    const restore = m.ui.restore.bind(m.ui);
+    m.ui.restore = async (ref) => { restored.push(ref); return restore(ref); };
+    await m.click(restoreBtn);
+    assert.deepEqual(restored, [], "asked first");
+    assert.ok(foot().querySelector(".carton-changes-confirm"), "its consequence said");
+    await m.click([...foot().querySelectorAll("button")].find((b) => b.textContent === "Restore"));
+    await m.settle(80);
+    assert.deepEqual(restored, [v.ref]);
+    assert.ok(m.page().comparing(), "Compare stays open, your edit updated");
+    // a row's ▶: its spot (a second before), both sides playing
+    const plays = m.did.plays;
+    await m.click([...m.list().querySelectorAll(".carton-change")].find((r) => /Interview B/.test(r.textContent)).querySelector(".carton-change-play, button"));
+    assert.equal(m.did.seeks.at(-1), 8, "a second before 0:09");
+    assert.equal(m.did.plays, plays + 1, "playing");
+    // across cuts with your cut on the right: Fold in changes from the other cut…
+    await m.open("cut-ig");
+    const fold = [...foot().querySelectorAll("button")].find((b) => /^Fold in changes from /.test(b.textContent));
+    assert.equal(fold?.textContent, "Fold in changes from “30s Instagram cut”…");
+  } finally { await m.done(); }
+});
+
+test("N1 review: a newer comparison isn't moved by an older one's close; an agent's Compare from Comments stays; its offer stays", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    const older = m.ui.history().all().filter((v) => !v.provisional);
+    // two older versions (the right side isn't your edit): close puts the playhead back where it was, unless a new
+    // comparison opened meanwhile
+    await act(async () => { m.bridge.seek(3); await sleep(5); });
+    await m.open(older.at(-5).ref, older.at(-3).ref);
+    await act(async () => { m.bridge.seek(7); await sleep(5); });
+    const seeks = m.did.seeks.length;
+    await act(async () => { const p = m.page().closeCompare(); await m.page().openCompare(older.at(-4).ref); await p; await sleep(30); });
+    await m.settle();
+    assert.ok(m.page().comparing(), "the newer comparison is on");
+    assert.equal(m.did.seeks.slice(seeks).includes(3), false, "the older close didn't move the newer one's playhead");
+    await m.key("Escape");
+    // Comments open; an idle agent's request (no key for 2 s): History opens to the list, and Compare stays
+    await m.click([...m.side.querySelectorAll("[role=tab]")].find((t) => t.getAttribute("aria-label") === "Comments"));
+    await act(async () => { await sleep(2100); });
+    await act(async () => { m.bridge.fire({ id: m.bridge.projectId, topic: "compare", compare: { from: older.at(-4).ref, to: "cut-main", by: { kind: "agent", id: "claude" }, byName: "Claude Code", at: Date.now(), request: "x1" } }); await sleep(40); });
+    await m.settle(80);
+    assert.ok(m.page().comparing(), "opened, and not closed by the panel's switch to History");
+    assert.ok(m.list());
+    await m.key("Escape");
+    // viewing: the offer stays (no 6 s timeout) until Open or ✕
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { m.bridge.fire({ id: m.bridge.projectId, topic: "compare", compare: { from: older.at(-4).ref, to: "cut-main", by: { kind: "agent", id: "claude" }, byName: "Claude Code", at: Date.now(), request: "x2" } }); await sleep(40); });
+    await m.settle();
+    assert.ok(m.toast()?.textContent.includes("Claude Code has a comparison ready"));
+    await act(async () => { await sleep(6500); });
+    assert.ok(m.toast()?.textContent.includes("Claude Code has a comparison ready"), "still there after 6 s");
   } finally { await m.done(); }
 });

@@ -125,7 +125,9 @@ export function attachCompare(ui, o) {
       Object.assign(d, { status: "error", error: e });
       notify();
     });
-    Promise.all([doc(c.left.ref), doc(c.right.you ? null : c.right.ref)]).then(([l, r]) => {
+    // both by their exact refs (your edit too: the head the cuts say, which the list's rows are against; the editor's
+    // held copy may not have caught up with a head that just moved: review #4)
+    Promise.all([doc(c.left.ref), doc(c.right.ref)]).then(([l, r]) => {
       if (!mine()) return;
       Object.assign(d, { leftDoc: l, rightDoc: r });
       notify();
@@ -159,6 +161,8 @@ export function attachCompare(ui, o) {
     bridge.libraryAside?.(true);
     try {
       await showRight(sides.right);
+      // a newer open or a close since: theirs to place the playhead (review #5)
+      if (mine !== seq) return;
       bridge.prefetch?.(projectId, sides.left.ref);
       if (Number.isFinite(opts.at)) bridge.seek?.(opts.at);
     } catch (e) {
@@ -172,16 +176,16 @@ export function attachCompare(ui, o) {
   };
   ui.closeCompare = async () => {
     if (!value) return;
-    const was = value;
-    ++seq;
+    const was = value, mine = ++seq, at = back?.at;
+    back = null;
+    clearTimeout(spot);
     bridge.pause?.();
     set(null);
     // your edit again, on the cut you were on: the playhead stays at the change when the right side was your edit,
-    // else it goes back where it was before comparing (§1.7)
+    // else it goes back where it was before comparing (§1.7); not if a new comparison opened meanwhile (review #5)
     bridge.libraryAside?.(false);
     await o.swap(null);
-    if (!was.right.you && Number.isFinite(back?.at)) bridge.seek?.(back.at);
-    back = null;
+    if (mine === seq && !was.right.you && Number.isFinite(at)) bridge.seek?.(at);
   };
   ui.compareMode = (m) => {
     if (!value || value.mode === m) return;
@@ -193,13 +197,24 @@ export function attachCompare(ui, o) {
     if (leaving) void Promise.resolve(showRight(value.right)).catch(() => {});
   };
   // Flip (hold B, or the pill): the editor's one preview shows the left side, then the right again, as Before swaps
+  // at the same moment (review #2): the left side at the right side's moment mapped in step by shot, and the right
+  // side's own moment back on release
+  let flipAt = null;
   ui.compareFlip = (show) => {
     if (!value) return undefined;
     const left = show === "left";
     if (left === flipped) return undefined;
     flipped = left;
     notify();
-    return Promise.resolve(left ? o.swap(value.left.ref) : showRight(value.right)).catch(() => {});
+    const c = value, d = data;
+    if (left) {
+      flipAt = bridge.clock?.() ?? null;
+      const to = Number.isFinite(flipAt) && d?.diff && d.rows ? followTime(d.diff, d.rows, flipAt) : flipAt;
+      return Promise.resolve(o.swap(c.left.ref)).then(() => { if (flipped && value === c && Number.isFinite(to)) bridge.seek?.(to); }, () => {});
+    }
+    const at = flipAt;
+    flipAt = null;
+    return Promise.resolve(showRight(c.right)).then(() => { if (!flipped && value === c && Number.isFinite(at)) bridge.seek?.(at); }, () => {});
   };
   // A change picked (the list, the timeline): both players there, paused (§1.5). The right side's place; a removal's
   // is where it was, mapped from the left. The left player follows the right's time (in step by shot).
@@ -212,6 +227,19 @@ export function attachCompare(ui, o) {
     const d = data;
     const t = change.kind === "remove" && d?.diff && d.rows ? leadTime(d.diff, d.rows, change.at) : change.at;
     bridge.seek?.(Math.max(0, t));
+  };
+  // ▶ on a row, Enter (§1.5): that spot on both sides, a second either side, in step; then paused
+  let spot = null;
+  ui.comparePlay = (change) => {
+    if (!value || !change || !Number.isFinite(change.at)) return;
+    ui.compareSelect(change);
+    const d = data;
+    const t = change.kind === "remove" && d?.diff && d.rows ? leadTime(d.diff, d.rows, change.at) : change.at;
+    const end = Number.isFinite(change.end) ? Math.max(t, change.kind === "remove" ? t : change.end) : t;
+    bridge.seek?.(Math.max(0, t - 1));
+    clearTimeout(spot);
+    if (!bridge.playing) bridge.togglePlay?.();
+    spot = setTimeout(() => { if (value) bridge.pause?.(); }, Math.min(10, end - t + 2) * 1000);
   };
   // "Your edit now" follows your edit (§1.8): a version saved on the cut you're on (an agent's, a teammate's, a Bring
   // back) moves the right side to it, the list and the marks with it, and the stage reads it (hold, which re-reads a
@@ -350,6 +378,9 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
     told.current = true;
     toast?.(words.sideBySideFailed(c.left.label), null, "warning");
   }, [failed, c.mode, c.left.label, toast]);
+  // Flip left showing the left side and the mode shown is no longer Flip (the stage widened, a mode picked): the
+  // right side back on the stage (review #3)
+  useEffect(() => { if (mode !== "flip" && ui.compareFlipped?.()) ui.compareFlip?.("right"); }, [mode, ui]);
   // Cardboard's picture into the hole (the right side): the insets on the stage's host
   useLayoutEffect(() => {
     window.__cartonStageMode?.(hole ? { mode, hole: { top: hole.top, right: hole.right, bottom: hole.bottom, left: hole.left } } : { mode });
@@ -534,10 +565,15 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
 // ---------------------------------------------------------------- the side panel (§1.2)
 
 /** The History panel while comparing: the range, the count, every change; ← History ends Compare. */
-export function CompareSide({ bridge }) {
+export function CompareSide({ bridge, onFoldIn }) {
   const ui = useCartonUi();
   const c = useComparing(ui);
   const data = ui.compareData?.() ?? null;
+  // Restore asks first, with its consequence (as the Changes view did), and Compare stays open with your edit updated
+  // (§1.8): the right side follows your edit
+  const [confirm, setConfirm] = useState(null);
+  const key = c ? `${c.left.ref}|${c.right.ref}` : "";
+  useEffect(() => setConfirm(null), [key]);
   if (!c) return null;
   const selected = ui.compareSelected?.() ?? null;
   const n = data?.changes?.length ?? null;
@@ -548,12 +584,32 @@ export function CompareSide({ bridge }) {
   const range = c.acrossCuts
     ? [h("span", null, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWith} `, strong(c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]
     : [h("span", null, `${words.compareFrom} `, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareTo} `, strong(c.right.you ? words.yourEditNow : c.right.label), !c.right.you && c.right.detail ? ` · ${c.right.detail}` : "")];
-  // the footer: Restore your edit to the left side (one cut, your edit on the right), never across cuts or between two
-  // others (§1.12: no actions there)
+  // The footer (§1.2, §1.12): one cut, your edit on the right: Restore your edit to the left side…; across cuts, your
+  // cut on the right: Fold in changes from the left cut…; between two others: nothing, only Done comparing
   const canRestore = c.right.you && !c.acrossCuts && !!c.left.versionId;
-  const footer = canRestore
-    ? h(Button, { variant: "ghost", icon: "restore", onClick: () => void ui.restore(c.left.ref).then(() => ui.closeCompare?.(), () => {}) }, words.restoreEditTo(c.left.label))
-    : null;
+  const canFold = c.acrossCuts && c.right.you && !!c.left.cutId && typeof onFoldIn === "function";
+  const restore = async () => {
+    setConfirm({ busy: true, failed: false });
+    try {
+      await ui.restore(c.left.ref);
+      setConfirm(null);
+    } catch {
+      setConfirm({ busy: false, failed: true });
+    }
+  };
+  const footer = confirm
+    ? h("div", { className: "carton-changes-confirm", role: "group", "aria-label": words.restoreQuestion(c.left.label) },
+        h("p", { className: "carton-changes-confirm-title" }, words.restoreQuestion(c.left.label)),
+        h("p", { className: "carton-changes-confirm-body" }, words.restoreBody(n ?? 0)),
+        confirm.failed ? h("p", { className: "carton-error", role: "alert" }, words.restoreFailed) : null,
+        h("div", { className: "carton-changes-confirm-acts" },
+          h(Button, { variant: "primary", icon: "restore", busy: confirm.busy, onClick: () => void restore() }, words.restore),
+          h(Button, { variant: "ghost", onClick: () => setConfirm(null) }, words.cancel)))
+    : canRestore
+      ? h(Button, { variant: "ghost", icon: "restore", onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreEditTo(c.left.label))
+      : canFold
+        ? h(Button, { variant: "ghost", icon: "foldIn", onClick: () => onFoldIn(c.left.cutId, c.right.cutId) }, words.foldInFrom(c.left.label))
+        : null;
   return h(CompareList, {
     className: "carton-sidebar-compare",
     range,
@@ -562,6 +618,7 @@ export function CompareSide({ bridge }) {
     status: data?.status ?? "loading",
     selected,
     onSelect: (ch) => ui.compareSelect?.(ch),
+    onPlay: (ch) => ui.comparePlay?.(ch),
     onBack: () => void ui.closeCompare?.(),
     footer,
     empty: c.right.you ? words.sameAs(c.left.label) : words.sameVersions,
@@ -617,7 +674,7 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
       const by = ask.byName || ask.by?.name || "An agent";
       const sides = sidesOf(ui, ask.from, ask.to);
       if (!sides) return;
-      toast?.(words.comparisonReady(by, sides.left.label, sides.right.label), { label: words.openIt, run: () => open(ask) }, null, "compare");
+      toast?.(words.comparisonReady(by, sides.left.label, sides.right.label), { label: words.openIt, run: () => open(ask) }, null, "compare", { sticky: true });
     };
     function tryWaiting() {
       if (!waiting || !idle()) return;
