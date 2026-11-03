@@ -8,6 +8,14 @@ const C = (cx: number, cy: number, r: number, fill = false) => h("circle", { cx,
 
 const shapes = {
   history: [P("M3.6 12.4A8.5 8.5 0 1 0 6 6.1"), P("M3.4 3.9v4.4h4.4"), P("M12 7.8V12l3.1 2")],
+  // Carton UX v2 (N2): History's search, Compare (⇆), and the landmarks' own marks: an export, a send, a day's start,
+  // a safety point before a restore
+  search: [C(11, 11, 6.5), P("M20 20l-4.3-4.3")],
+  compare: [P("M4 8h15"), P("M15 4l4 4-4 4"), P("M20 16H5"), P("M9 12l-4 4 4 4")],
+  exportUp: [P("M12 15V3.5"), P("M7.5 8L12 3.5 16.5 8"), P("M5 13v6.5h14V13")],
+  send: [P("M20.5 3.5L10 14"), P("M20.5 3.5l-6.5 17-4-6.5-6.5-4z")],
+  sun: [C(12, 12, 3.6), P("M12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3")],
+  shield: [P("M12 3.5l7 2.6v5.4c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6.1z")],
   // Version history: a stack of saved versions. Not the clock above, which is the chat's own "chat history" button in
   // the same title bar (UI audit P2-14).
   versions: [P("M12 3.8l8.2 4.2-8.2 4.2-8.2-4.2z"), P("M3.8 12.2l8.2 4.2 8.2-4.2"), P("M3.8 16.2l8.2 4.2 8.2-4.2")],

@@ -65,8 +65,14 @@ test("view model: find, landmarks, bring back one clip, its choices, align and t
       const al = await u.align!(`${carton.cut}@0`, `${carton.cut}@1`);
       assert.deepEqual(al.find((e) => e.item === "a"), { item: "a", name: "Intro", aStart: 0, aEnd: 5, bStart: 0, bEnd: 4, track: "t1" });
     }
+    // N0b: a choice's token, passed back as expect; a stale one is refused in words, nothing written
+    const tok = (await client.ui.bringBackChoices!(`${carton.cut}@0`)).changed.find((c) => c.itemId === "a")!;
+    assert.equal(typeof tok.token, "string");
+    assert.deepEqual(tok.place, { placed: "same" });
+    await assert.rejects(client.ui.restoreClip!(`${carton.cut}@0`, "a", { expect: "stale" }), /just changed again/);
     // bring back one clip, through the bridge; its version is made, and Ctrl+Z (the stack) has it
-    const r = await client.ui.restoreClip!(`${carton.cut}@0`, "a");
+    const r = await client.ui.restoreClip!(`${carton.cut}@0`, "a", { expect: tok.token });
+    assert.deepEqual([r.place, r.ripple], [{ placed: "same" }, null]);
     assert.equal(r.how, "changed");
     assert.equal(r.clipName, "Intro");
     assert.ok(r.made?.changes.length === 1);

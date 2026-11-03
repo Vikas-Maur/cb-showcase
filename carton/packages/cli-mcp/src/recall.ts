@@ -203,20 +203,31 @@ export async function restoreClipCommand(ctx: CbContext, a: Record<string, any>)
   const rec = (d: Record<string, unknown>) => ((d[coll] as Record<string, unknown>[] | undefined) ?? []).find((r) => String(r[key]) === clip.id);
   const was = rec(then), is = rec(head.doc);
   const place = (r: Record<string, unknown> | undefined) => (r && tl ? `${timecode(Number(r[tl.start]))}–${timecode(Number(r[tl.end]))}` : "");
+  const record = `${coll}/${clip.id.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+  // who deleted it, read before the bring-back (which touches it too)
+  const gone = !is ? (await carton.touched({ cut: head.ref.branchId, record, after: ref.branchId === head.ref.branchId ? ref.seq : 0 })).at(-1) : undefined;
+  const secs = (n: number) => `${Math.round(n * 10) / 10} s`;
   if (!was && !a.remove) {
-    return { json: { status: "not-in-version", clip }, text: `${quote(clip.name)} wasn't in ${ver.words}, so bringing that version back means taking it out${is ? ` (${place(is)})` : ""}. Nothing changed. To take it out: cb restore <project> ${shellWord(String(a.version))} --clip ${shellWord(text)} --remove`, exitCode: 1 };
+    // what taking it out would do with the rest (DESIGN-V2 §5.3: "everything after would move 4 s earlier")
+    const choice = (await carton.bringBackChoices(ref).catch(() => null))?.added.find((c) => c.record === record);
+    const after = choice?.ripple ? `; everything after would move ${secs(choice.ripple.by)} earlier` : "";
+    return { json: { status: "not-in-version", clip, ...(choice ? { ripple: choice.ripple ?? null } : {}) }, text: `${quote(clip.name)} wasn't in ${ver.words}, so bringing that version back means taking it out${is ? ` (${place(is)}${after})` : ""}. Nothing changed. To take it out: cb restore <project> ${shellWord(String(a.version))} --clip ${shellWord(text)} --remove`, exitCode: 1 };
   }
-  const r: CbResult = await ctx.project.write({ kind: "restoreClip", ref: `${ref.branchId}@${ref.seq}`, record: `${coll}/${clip.id.replace(/~/g, "~0").replace(/\//g, "~1")}`, ...(a.remove ? { remove: true } : {}) }, { actor: ctx.actor });
+  const r: CbResult = await ctx.project.write({ kind: "restoreClip", ref: `${ref.branchId}@${ref.seq}`, record, ...(a.remove ? { remove: true } : {}) }, { actor: ctx.actor });
   if (r.status === "error" || r.status === "rejected") return { json: r, text: resultText(r), exitCode: exitCodeOf(r) };
-  const brought = (r as { brought?: { how: string; parts: string[] } }).brought;
+  const brought = (r as { brought?: { how: string; parts: string[]; place?: { placed: string; track?: string; takenBy?: { name: string }[] }; ripple?: { direction: string; by: number } | null } }).brought;
   const lines = [...noticeLines(r.notices ?? [])];
+  // where it went and what else moved (N0b, DESIGN-V2 §5.3): a new track when its place was taken; the rest moved back
+  const taken = brought?.place?.placed === "new-track" ? brought.place.takenBy?.map((t) => quote(t.name)) ?? [] : [];
+  const placeLine = taken.length && was && tl ? `Its place is taken by ${taken.length > 1 ? `${taken.slice(0, -1).join(", ")} and ${taken.at(-1)}` : taken[0]}, so it went on a new track above, at ${timecode(Number(was[tl.start]))}.` : "";
+  const moved = brought?.ripple ? `Everything after it moved ${secs(brought.ripple.by)} ${brought.ripple.direction}.` : "";
+  const rest = [placeLine, moved, moved ? "Nothing else changed." : "Nothing else changed."].filter(Boolean).join(" ");
   if (brought?.how === "same") lines.push(`${quote(clip.name)} is already as it was in ${ver.words}. Nothing changed.`);
-  else if (brought?.how === "removed") lines.push(`Took out ${quote(clip.name)}: it wasn't in ${ver.words}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
+  else if (brought?.how === "removed") lines.push(`Took out ${quote(clip.name)}: it wasn't in ${ver.words}. ${rest}`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
   else if (brought?.how === "added") {
-    const gone = (await carton.touched({ cut: head.ref.branchId, record: `${coll}/${clip.id}`, after: ref.branchId === head.ref.branchId ? ref.seq : 0 })).at(-1);
     const track = was && tl ? String((then[tl.lanes] as Record<string, unknown>[] | undefined)?.find((t) => t.id === was[tl.lane])?.name ?? "its track") : "its track";
-    lines.push(`Brought back ${quote(clip.name)}${gone ? ` (deleted by ${person(gone.author, ctx.actor)} ${whenAt(gone.at, now)})` : ""} where it was: ${tl && was ? timecode(Number(was[tl.start])) : ""} on ${track}. Nothing else changed.`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
-  } else lines.push(`Brought back ${quote(clip.name)} as it was in ${ver.words}${was && is ? `: now ${place(was)}, was ${place(is)}` : ""}.`, "Nothing else changed. The user can undo it with Ctrl+Z; you can with: cb undo <project>");
+    lines.push(`Brought back ${quote(clip.name)}${gone ? ` (deleted by ${person(gone.author, ctx.actor)} ${whenAt(gone.at, now)})` : ""}${placeLine ? "" : ` where it was: ${tl && was ? timecode(Number(was[tl.start])) : ""} on ${track}`}. ${rest}`, "The user can undo it with Ctrl+Z; you can with: cb undo <project>");
+  } else lines.push(`Brought back ${quote(clip.name)} as it was in ${ver.words}${was && is ? `: now ${place(was)}, was ${place(is)}` : ""}.${placeLine ? ` ${placeLine}` : ""}`, "Nothing else changed. The user can undo it with Ctrl+Z; you can with: cb undo <project>");
   if (r.status === "pending") lines.push("It is saved here and goes to the team's server when it's back.");
   if (r.status === "conflicts") lines.push(`A teammate changed ${quote(clip.name)} meanwhile: their value was kept, as a card. See it with: cb conflicts`);
   return { json: { ...r, clip }, text: lines.join("\n"), exitCode: exitCodeOf(r) };

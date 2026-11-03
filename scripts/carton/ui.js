@@ -82,6 +82,43 @@ function stepper(bridge) {
   };
 }
 
+// (imported here, beside the toasts that use it, rather than in the long import line other workstreams edit)
+import { clockOfDay } from "@carton/react";
+
+/**
+ * A landmark's picture (Carton UX v2, DESIGN-V2 §2.2): what the stage shows now, as one 88 × 50 JPEG, drawn from the
+ * preview's largest canvas or video into a small canvas of its own (the preview's is only read). Null when there is no
+ * picture to take: no preview, a black frame (a canvas the GPU dropped reads black), a frame the page may not read
+ * (footage from another origin taints it), or one over 64 KB. History asks for it once per landmark, after the stage
+ * has shown that version for a moment, never while anything plays: one small draw, never on the save path.
+ */
+function stagePicture() {
+  const host = document.querySelector("[data-carton-stage-host]");
+  let best = null, area = 0;
+  for (const el of host?.querySelectorAll("canvas, video") ?? []) {
+    const r = el.getBoundingClientRect();
+    if (r.width >= 80 && r.height >= 45 && r.width * r.height > area) { best = el; area = r.width * r.height; }
+  }
+  const sw = best ? best.videoWidth || best.width : 0, sh = best ? best.videoHeight || best.height : 0;
+  if (!best || !sw || !sh) return Promise.resolve(null);
+  try {
+    const W = 88, H = 50, c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const x = c.getContext("2d", { willReadFrequently: true });
+    // the middle of the frame at 88:50 (a 9:16 edit shows its middle)
+    const k = Math.min(sw / W, sh / H), cw = W * k, ch = H * k;
+    x.drawImage(best, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, W, H);
+    const d = x.getImageData(0, 0, W, H).data;
+    let lit = 0;
+    for (let i = 0; i < d.length; i += 16) if (d[i] + d[i + 1] + d[i + 2] > 36) lit++;
+    if (lit < 24) return Promise.resolve(null);
+    const url = c.toDataURL("image/jpeg", 0.72);
+    return Promise.resolve(url.length <= 64 * 1024 ? url : null);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
 function confirmations(ui, bridge) {
   const steps = stepper(bridge);
   const undo = (kind, said, made) => steps?.undo(kind, said, made) ?? null;
@@ -125,6 +162,18 @@ function confirmations(ui, bridge) {
     const c = ui.conflicts().find((x) => x.id === id);
     const r = await resolve(id, choice);
     if (c) toasts.show(keptText(c, choice, actor), undo("pick", { undone: pickUndoneText(c, actor), redone: words.pickRedone }, r?.made));
+    return r;
+  });
+  // Bring back one clip (Carton UX v2, DESIGN-V2 §3.2): "Brought back “B-roll pier” as it was at 10:20 am." [Undo]; one
+  // not there then: "Took out “Drone shot”." Nothing when it already was as it was (`how` "same": nothing made).
+  wrap("restoreClip", (restoreClip) => async (ref, itemId, o) => {
+    const v = versionByRef(ref);
+    const r = await restoreClip(ref, itemId, ...(o !== undefined ? [o] : []));
+    if (r && r.how !== "same") {
+      const name = r.clipName || "the clip";
+      const text = r.how === "removed" ? words.tookOutClipToast(name) : words.broughtBackToast(name, v ? clockOfDay(v.at) : "then");
+      toasts.show(text, undo("clip", { undone: words.bringBackUndone(name), redone: words.bringBackRedone(name) }, r.made));
+    }
     return r;
   });
   // Undo this turn (PLAN 5.4): "Took out Claude Code's “Tighten the intro…” (4 changes)." [Undo], which puts it back
@@ -654,6 +703,8 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     seek: (t) => { seeker.stop(); bridge.seek?.(t); },
     prefetch: (ref) => bridge.prefetch?.(projectId, ref),
     length: () => bridge.editLength?.(),
+    // a landmark's picture from the stage (Carton UX v2): History takes one when the stage shows a landmark's version
+    picture: stagePicture,
   }), [seeker, bridge, projectId]);
   // Compare in the editor (N1, DESIGN-V2 §1.2): every way into the Changes view opens Compare; while comparing,
   // History is its change list

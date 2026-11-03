@@ -427,9 +427,26 @@ unchanged by it).
   true`; else `NotInVersion` (`code: "NOT_IN_VERSION"`) and nothing changes. `NoSuchClip` (`NO_SUCH_CLIP`) when neither
   side has it. `brought: { record, name, how: changed | added | removed | same, parts, of }`; `same`: nothing saved
   (confirmed, empty). A stable `id` as restore's. `log({ summary: true, rows: true })` titles it `{ kind: "bring-back",
-  of, record, name }`. Not yet: §3.2's moving the rest back when a ripple delete took it out, and a new track when its
-  place is taken (it goes back at its own time and track; a soft overlap warning says so).
+  of, record, name }`. Placement and the ripple: N0b, below.
 - `carton.bringBackChoices(ref, { cut? }) → { changed, deleted, added, same }`: "Choose a clip…"'s three groups.
+- **N0b (placement, the "changed again" check; added fields only).** A brought-back clip never lands on top of another
+  clip: if its place on its track is taken now, it goes on a new track made just above its own (before it in the track
+  order: Cardboard's first track is the top layer; named "<track> 2") at the same time; `brought.place` = `{ placed: "same" | "new-track", track?, takenBy? }`.
+  DESIGN-V2 §3.2's ripple: a clip deleted with a ripple (the deleting change recorded or inferred a remap taking out a
+  range that held it) comes back with the rest of its track moved back by that range (`later`); a clip added with one
+  (a gap inserted where it starts), taken out, moves the rest `earlier`; the version records that remap as its intent,
+  so a fold or a teammate's edit follows it, and one undo takes it all back. `brought.ripple` = `{ direction, by, at,
+  tracks, moved }`, or null when nothing else moved (the panel says so). `BringBackChoice` gains `token` (the clip as
+  it is now: a hash of its record and own parts, "absent" when gone), and `place` / `ripple` previewing the above for
+  the confirmation's line. `restoreClip(ref, record, { expect: token })` refuses a clip that changed since with
+  `ChangedSince` (`code: "CHANGED_SINCE"`, "“Intro” just changed again. Nothing was brought back.", the new `token`),
+  checked inside the write, nothing written. A retried id answers with the same place and ripple.
+- **Open (needs a sync-server deploy, not allowed 2026-11-03):** Exported and Sent landmarks reaching teammates
+  (DESIGN-V2 §2.1 "Everyone"): the server keeps a change's fields by a whitelist (`HISTORY_FIELDS`,
+  `packages/server/src/sequencer.ts`) and has no landmark message, so they stay `local` on the computer that recorded
+  them; the same whitelist drops `restoreOf`/`restoreRecord`, so a shared cut's bring-back reads as a restore to
+  teammates. Not done: a changed
+  clip whose old timing overlaps another goes on a new track as well (same rule); no other placement rule.
 - **Compare across cuts.** `diff(a, b, { shots?, rows? })`, `shots(a, b)` and `checkout` take versions of any two cuts
   (a shared cut's, a teammate's tracking cut's); a cut id is that cut's head, read fresh. `rows: true` adds
   `DiffResult.rows` (`changeList`) and `count` (`countChanges`).
@@ -448,7 +465,8 @@ holder or none has the project open: an `open` never starts a helper; `shown`: t
 **The app (`scripts/carton`).**
 - `CartonUi` (`@carton/react` model.ts, optional methods, served by the worker through `serveUi` as the rest of the
   History panel): `find(text, { allCuts? }) → FindHits`, `landmarks() → Landmark[]` (topic `landmarks` says when to read
-  them again), `restoreClip(ref, itemId, { remove? }) → BringBack`, `bringBackChoices(ref)`, `align(a, b) →
+  them again), `restoreClip(ref, itemId, { remove?, expect? }) → BringBack` (N0b: `place`, `ripple`), `bringBackChoices(ref)` (N0b:
+  each choice's `token`, `place`, `ripple`), `align(a, b) →
   AlignEntry[]` (DESIGN-V2 §1.15, cached per pair), `changes(a, b, { between: "cuts" })` (difference sentences),
   `landmarkPicture(key) → data:image/jpeg URL | null`, `saveLandmarkPicture(key, jpegDataUrl)` (at most 64 KB; the
   worker keeps it as `<bundle>/.carton/pictures/<key>.jpg`; `fromCarton({ pictures })`).

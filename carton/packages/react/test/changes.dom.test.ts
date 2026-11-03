@@ -533,21 +533,21 @@ test(name("review #6, #8: History's card says a version couldn't load; Space on 
   await v.unmount();
 });
 
-// Design QA G18, G13: while a card's Play runs, its footer is Pause, Before and ⋯, with Restore… back on Pause; the
-// Changes view's Restore wears the card's ↺, never the Undo arrow.
-test(name("design QA G18, G13: no Restore… in a card while its Play runs; the Changes view's Restore is the card's ↺"), async () => {
+// Design QA G18, G13: while a card's Play runs, its footer is Pause, Before and ⋯, with Go back… (Carton UX v2's Restore…)
+// back on Pause; the Changes view's Restore wears the card's ↺, never the Undo arrow.
+test(name("design QA G18, G13: no Go back… in a card while its Play runs; the Changes view's Restore is the card's ↺"), async () => {
   const ui = createMockUi({ versions: 20 });
   const { director, yours } = story(ui);
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, play: host().play })));
   await flush();
   await openCardOf(m.container, "Add captions to the interview");
-  assert.ok(byText(card(m.container), "button", "Restore…"), "Restore… before Play");
+  assert.ok(byText(card(m.container), "button", "Go back…"), "Go back… before Play");
   await click(byText(card(m.container), "button", "Play all"));
   await waitFor(() => ui.viewing()?.ref === director.ref, "playing it");
   await waitFor(() => !!byText(card(m.container), "button", "Pause"), "Pause");
-  assert.equal(byText(card(m.container), "button", "Restore…"), null, "no Restore… while it plays");
+  assert.equal(byText(card(m.container), "button", "Go back…"), null, "no Go back… while it plays");
   await click(byText(card(m.container), "button", "Pause"));
-  await waitFor(() => !!byText(card(m.container), "button", "Restore…"), "Restore… back on Pause");
+  await waitFor(() => !!byText(card(m.container), "button", "Go back…"), "Go back… back on Pause");
   await m.unmount();
   const v = await render(wrap(ui, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: host().play })));
   await flush();

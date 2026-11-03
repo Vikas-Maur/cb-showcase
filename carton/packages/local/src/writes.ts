@@ -36,7 +36,7 @@ export type WriteOp =
    * Bring back one clip (Carton UX v2, `cb restore <version> --clip <name or id>`): core's `restoreClip`, under the
    * request's id. `record`: `timelineItems/<id>`. `remove`: also when the clip wasn't there then (it is removed).
    */
-  | { kind: "restoreClip"; ref: string; record: PathKey; cut?: string; remove?: boolean; head?: boolean }
+  | { kind: "restoreClip"; ref: string; record: PathKey; cut?: string; remove?: boolean; head?: boolean; expect?: string }
   /**
    * Open a view in the editor (Carton UX v2, `cb compare <a> [b] --show`): the holder tells the app's pages
    * (`ViewPrinter.openView`), which open Compare on those two versions. Saves nothing; never starts a helper. Answered
@@ -564,7 +564,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
     case "restoreClip": {
-      r = await carton.restoreClip(op.ref, op.record, { author, cut: op.cut, id: req.id, ...(op.remove ? { remove: true } : {}) });
+      r = await carton.restoreClip(op.ref, op.record, { author, cut: op.cut, id: req.id, ...(op.remove ? { remove: true } : {}), ...(typeof op.expect === "string" ? { expect: op.expect } : {}) });
       extra = { brought: r.brought };
       break;
     }

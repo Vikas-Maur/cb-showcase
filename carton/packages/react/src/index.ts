@@ -82,3 +82,11 @@ export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./rem
 export { itemFilter, type ItemFilter } from "./item-filter.ts";
 // Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.
 export * from "./comments/index.ts";
+// Carton UX v2, History (N2: DESIGN-V2 §2–§4): Go back… and Bring back one clip, search, landmarks, hold to peek,
+// Compare with… and the Compare button
+export { GoBack, clipChoices, type GoBackChoice, type GoBackProps, type ClipChoice } from "./components/GoBack.ts";
+export { SearchBox, useFind, highlight, snippetOf, searchable, FIND_DEBOUNCE_MS, FIND_LIMIT, type Found, type SearchBoxHandle } from "./components/SearchBox.ts";
+export { LandmarkTag, LandmarkTile, landmarkTitle, indexLandmarks, useLandmarks, forgetPicture, LANDMARK_TONE, type LandmarkIndex } from "./components/LandmarkRow.ts";
+export { CompareButton, PickLine, openCompareVia, type CompareTo, type Picking } from "./components/CompareMenu.ts";
+export { usePeek, PEEK_HOLD_MS, PEEK_PREFETCH_MS, type PeekOptions } from "./components/peek.ts";
+export { historyV2Css } from "./skin/history-v2.ts";

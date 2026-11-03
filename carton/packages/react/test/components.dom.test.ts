@@ -395,10 +395,10 @@ test(name("a restore the app refuses says so in its card, with the app's reason 
   await click(row.querySelector(".carton-version-more"));
   await click($$(m.container, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!);
   await flush();
-  // Restore… asks first, in the card, with what it does
+  // Restore… opens Go back… in the card (Carton UX v2), Restore the whole edit picked, with what it does
   const card = $(m.container, ".carton-card-version")!;
-  assert.match($(card, ".carton-card-confirm-title")!.textContent ?? "", /^Restore .+\?$/);
-  await click(byText(card, "button", "Restore"));
+  assert.match($(card, ".carton-goback-title")!.textContent ?? "", /^Go back to .+/);
+  await click(byText(card, "button", "Restore the whole edit"));
   await waitFor(() => !!$(m.container, ".carton-card-version .carton-card-error[role=alert]"), "the error line");
   const err = $(m.container, ".carton-card-version .carton-card-error")!;
   assert.equal(err.textContent, "Couldn't restore this version. Try again.");

@@ -7,8 +7,9 @@ export function ws59Shots({ P, T, menuItem, foldOlder, uxMenu, openCard, cutsMen
     await foldOlder(p);
     await uxMenu(p, "Moved “Interview B” 2 s later");
     await menuItem(p, "Restore…").click();
-    await p.locator(".carton-card-confirm").waitFor();
-    await p.locator(".carton-card-confirm .carton-btn", { hasText: "Restore" }).first().click();
+    // Go back… opens with Restore the whole edit picked (Carton UX v2, DESIGN-V2 §3.1)
+    await p.locator(".carton-goback").waitFor();
+    await p.locator(".carton-goback .carton-btn", { hasText: "Restore the whole edit" }).first().click();
     await toast(p);
   };
   const panel = { panelOpen: true };

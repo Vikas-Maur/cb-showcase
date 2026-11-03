@@ -490,6 +490,9 @@ What changes with it on:
     agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
   - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
     takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+    It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
+    time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
+    taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
   - `cb compare <project> <left> [right] --show` opens the comparison in your editor, also between two cuts.
   - In place of a version you can write `sent`, `exported`, `today`, `now`, a version's name or a cut's name.
   - The agents' instructions say when to use these ("go back to the version I sent the client", "bring back the old
@@ -503,10 +506,20 @@ What changes with it on:
   at work shows as a live row ("Keep editing. Director sees your changes when its turn ends."), and the cut's start is
   one row at the bottom. A click opens the version's card under it: how far your edit has moved on since ("Your edit has
   7 changes since this · See them"), where each change is in the edit (0:12) and on what kind of clip, Play all, and
-  Restore… (it asks first, saying how many later changes it undoes) or Undo this turn. A click never changes what the
-  editor shows; only Play does, and the row then says "Viewing ✕". A filter (the icon by the cut) shows named
-  versions, agent turns, your changes, or only the versions that touched the clip selected on the timeline, with that
-  clip's credits.
+  **Go back…** (on the newest agent turn, Undo this turn). Go back… shows the four ways back side by side, smallest
+  first, each saying what it will do before anything happens: **Bring back one clip** (pick a clip that changed, was
+  deleted or wasn't there yet; only it goes back, "Brought back “B-roll pier” as it was at 10:20 am." [Undo]), **Undo
+  Director's turn** (an agent's turn only), **Restore the whole edit**, and **Start a new cut from here**. With a clip
+  selected on the timeline, Bring back is picked for it. A click never changes what the editor shows; only Play does,
+  and the row then says "Viewing ✕"; **press and hold** a row (or hold V) to peek at it on the stage, and let go to
+  come back. The versions people remember are marked on their own, as **landmarks**: Exported, Sent, Named, an agent's
+  turn, the day's Start, and Before (kept just before a restore, only for you), with a small picture of the version,
+  and a folded day keeps them in view. **Find a clip, a word, a person…** above the list finds versions by clip names,
+  title and caption text, agents' requests, names and people, newest first, each saying why it matched. **⇆ Compare**
+  answers "what changed since the version I sent / the last export / this morning / in another cut", and a row's ⋯ →
+  **Compare with…** picks any second version (or another cut) to compare with. A filter (the icon by the cut) shows
+  landmarks, named versions, agent turns, your changes, or only the versions that touched the clip selected on the
+  timeline, with that clip's credits.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and

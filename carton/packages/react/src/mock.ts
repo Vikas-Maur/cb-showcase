@@ -46,6 +46,7 @@ import type {
 import { diffSummary } from "./shots.ts";
 import { actorLabel } from "./actors.ts";
 import { conflictWords } from "./conflict-words.ts";
+import { mockFind } from "./mock-find.ts";
 
 function rng(seed: number) {
   let a = seed >>> 0;
@@ -168,6 +169,8 @@ export interface MockOptions {
   now?: number;
   /** Two of your newest changes still on their way (offline, "Not sent yet"). Default: false. */
   provisional?: boolean;
+  /** Carton UX v2's landmarks (Exported, Sent, Named, turns, Start, Before), as `landmarks()` answers. Default: none. */
+  landmarks?: boolean;
 }
 
 /** A CartonUi plus the knobs a gallery, test or benchmark needs. */
@@ -191,6 +194,8 @@ export interface MockUi extends CartonUi {
   setShotCount(n: number): void;
   /** How many times `changes`/`changesIn` computed a list (tests: only an open card asks). */
   readonly counts: { changes: number; changesIn: number; clipVersions: number };
+  /** Carton UX v2: turn the mock's landmarks on or off (topic "landmarks" fires). */
+  setLandmarks(on: boolean): void;
 }
 
 const MIN = 60_000;
@@ -697,6 +702,21 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       if (!ref) throw new Error("Couldn't load this version. Try again.");
       return setViewing({ ref, kind: "version", ...(v ? { versionId: v.id } : {}), label: v ? versionLabel(v, { ...labelCtx, start: true }) : (target.label ?? ref), short: v ? versionShort(v, labelCtx) : (target.label ?? ref) });
     },
+
+    // Carton UX v2 (N2's gallery and tests): find, landmarks, bring back one clip, landmark pictures
+    ...mockFind({
+      all: () => all,
+      did: (id) => did.get(id) ?? [],
+      between,
+      head: headOf,
+      actor: (k) => actors.get(k),
+      addVersion: (v, c) => addVersion(v, c),
+      made: madeHere,
+      notify: (t) => hub.notify(t),
+      me: people.alice,
+      now: now0,
+      landmarks: !!opts.landmarks,
+    }),
 
     addVersion,
     confirmAll() {

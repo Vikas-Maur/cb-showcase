@@ -66,6 +66,13 @@ export interface GroupOptions {
   readonly group?: boolean;
   /** Whether a group (by its key) is open. Default: closed. */
   readonly open?: (key: string) => boolean;
+  /**
+   * A version a folded day keeps showing (Carton UX v2, DESIGN-V2 §2.5: every landmark). Default: a named one
+   * (`isAnchor`). A search's results fold with nothing kept: `() => false`.
+   */
+  readonly anchor?: (v: Version) => boolean;
+  /** A version that is always its own row (a landmark: a group never crosses one, DESIGN-V2 §2.6). Default: none. */
+  readonly alone?: (v: Version) => boolean;
 }
 
 /** A version a group can hold: a person's plain edit, not named, not History's start. */
@@ -101,6 +108,9 @@ export function spansDays(versions: readonly Version[]): boolean {
  */
 export function groupHistory(versions: readonly Version[], collapsed: (day: number, newest: boolean) => boolean, opts: GroupOptions = {}): HistoryRow[] {
   const rows: HistoryRow[] = [];
+  const anchor = opts.anchor ?? isAnchor;
+  const alone = opts.alone;
+  const joins = (v: Version) => groupable(v) && !alone?.(v);
   const n = versions.length;
   // The start rows: the oldest versions marked `start`, merged into one row at the very bottom
   let starts = 0;
@@ -122,7 +132,7 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
     let hidden = 0;
     for (let k = i; k > j; k--) {
       const v = versions[k]!;
-      if (shut && !isAnchor(v)) {
+      if (shut && !anchor(v)) {
         hidden++;
         continue;
       }
@@ -138,8 +148,8 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
       }
       // a person's run: newest first, back while the next older one is theirs, close enough, on this day
       let m = k;
-      if (opts.group && !shut && groupable(v))
-        while (m - 1 > j && groupable(versions[m - 1]!) && versions[m - 1]!.author.key === v.author.key && versions[m]!.at - versions[m - 1]!.at <= GROUP_GAP_MS) m--;
+      if (opts.group && !shut && joins(v))
+        while (m - 1 > j && joins(versions[m - 1]!) && versions[m - 1]!.author.key === v.author.key && versions[m]!.at - versions[m - 1]!.at <= GROUP_GAP_MS) m--;
       if (m === k) {
         rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k }));
         continue;
