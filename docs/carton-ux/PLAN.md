@@ -120,6 +120,7 @@ once. Follow `AGENTS.md`:
   - times as "0:06";
   - "That moment changed since. See it as it was" (views the version it was made on: 0.5) | `react/src/comments/CommentsPanel.ts`, `comments/words.ts` | Matches `after/comments-384.png` / `-300.png` |
 | 9.2 | **Credits** through History's "Only “clip”" filter (0.8) | `HistoryPanel.ts` | The filter shows the credit lines at its top |
+| 9.4 | **Small fixes found while capturing** (AUDIT R3, R4, R7, R8): field error and focus borders that exist in Cardboard's CSS (use its own classes or inline styles); title-bar avatars spaced so initials show; the minute clock read on first subscribe (Preact first render); retire `gallery/screens.mjs` for the capture rig | `scripts/carton/sync/ui.js`, `scripts/carton/strip-buttons.js`, `react/src/hooks.ts`, `react/gallery/` | Shots `share-unreachable`, `titlebar-shared` show the border and readable initials; a Preact test renders "1 min ago" on first render |
 | 9.3 | **Teammates' drags on your timeline** (`GhostLayer`): needs the timeline hook from 1.5 plus the timeline's time→x and track bands. Ship it only if the hook gives both without a second anchor; else leave it for its own design review | `scripts/patch-carton.js`, `scripts/carton/ui.js` | With two instances shared: the other's drag shows as a ghost; nothing when not shared |
 
 ## Order and parallelism

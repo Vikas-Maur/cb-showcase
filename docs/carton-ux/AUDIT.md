@@ -244,6 +244,26 @@ Shots: `before/gallery/comments-empty-384.png`, `comments-some-384.png`, `before
 `GhostLayer` (teammates' drags on your timeline) are in `@carton/react` and its gallery, but `scripts/carton/ui.js`
 doesn't mount them. In the app, credits and teammates' cursors don't exist (P2). The title bar draws its own avatars.
 
+## Found while rendering today's UI (capture rig, 2026-11-03)
+
+These come from running the app's own composition on Cardboard's CSS (`before/gallery/`). Each one holds in the real
+app unless it says otherwise.
+
+| # | Sev | Problem | Shot |
+|---|---|---|---|
+| R1 | P1 | **Two "Previewing" banners at once.** On Watch's Before side, one banner sits over the stage and another inside Watch. | `before/gallery/window-watch-before-384.png`, `watch-before-384.png` |
+| R2 | P2 | **The cuts menu is wider than a 300 px panel.** "Fold “Director's cut: punchier open” in here" and the menu's right edge are clipped. | `before/gallery/cuts-open-several-300.png` |
+| R3 | P2 | **Share and Join fields never show their error or focus border.** Their classes (`aria-[invalid=true]:border-destructive/70`, `focus-visible:border-white/30`) aren't in Cardboard's compiled CSS, so the real app shows only the red message. | `before/gallery/share-empty-submitted-384.png`, `join-errors.png` |
+| R4 | P3 | **The title bar's avatars overlap** enough to hide each other's initials ("BO" reads "BC"). | `before/gallery/titlebar-peers.png`, `titlebar-offline.png` |
+| R5 | P2 | **One thing, different words:** the stack's "1 conflict card waiting" against the pill's "2 conflicts"; Watch's "4 changes" beside "Section 1 of 4"; older days' "Yesterday 03:41 PM" (leading zero) against toasts' "2:28 PM". | `before/gallery/stage-conflict-one.png`, `stage-conflict-pill.png`, `watch-initial-384.png`, `history-many-bottom-384.png` |
+| R6 | P2 | **One conflict card covers nearly half of a 700 px stage.** At 300 px a commenter's name shrinks to "Cor…". | `before/gallery/stage-conflict-one.png`, `comments-some-300.png` |
+| R7 | P3 | **Preact only:** the first render can show a relative time a minute out ("just now" where React shows "1 min ago"). The shared minute clock looks to be read at module load, not on the first subscribe. The app runs on React, so this matters for other hosts. Apart from this, the React and Preact renders match. | `before/notes/preact-first-render-clock.png` |
+| R8 | P3 | **`npm run screens` is broken:** `gallery/screens.mjs` still clicks "Next change", and the button is now "Next section", so it times out at the Watch step. The capture rig replaces it (`capture-rig.patch`). | none |
+
+R1, R2, R5 and R6 go away with the redesign: no banner, the menu fits the panel, one counting noun and one clock, and
+a compact card. R3 and R4 are fixed in PLAN workstreams 8 and 2. R7 and R8 are small fixes in the gallery and hooks
+code, added to PLAN workstream 9.
+
 ## The ten problems that matter most
 
 1. **Watch the changes doesn't say what changed** (W1, W4). It's coloured blocks and counters, never sentences.
