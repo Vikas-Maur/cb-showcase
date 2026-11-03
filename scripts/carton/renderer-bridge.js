@@ -51,7 +51,8 @@ module.exports = String.raw`window.__carton = (() => {
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
-  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3; PLAN 1.4 makes it the toast)
+  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3): its own note over the timeline,
+  // only when no Carton part of the page took the attempt (blocked(), below: the edit-attempt toast, PLAN 1.4).
   const PREVIEW = "You're looking at an earlier version. Go back to your edit (Esc) to change it.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
   // (laptop, final candidate P2-1: a project with no aspect ratio, which an undo right after a recovery made, crashed
@@ -59,6 +60,9 @@ module.exports = String.raw`window.__carton = (() => {
   const timelineOf = (p) => ({ tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: typeof p.aspectRatio === "string" && p.aspectRatio ? p.aspectRatio : "16:9" });
   // What the person is told over the stage (scripts/carton/ui.js shows each as a toast); the console has it too.
   const noticeSubs = new Set();
+  // The page's Carton parts (scripts/carton/ui.js): what they show for an edit tried while viewing (blocked), and how
+  // they bring your edit back when the editor asks (back: Export opened while viewing). The newest one answers.
+  const blockedSubs = new Set(), backSubs = new Set();
   const notice = (text) => {
     console.info("[carton] " + text);
     for (const f of noticeSubs) try { f(text); } catch {}
@@ -339,6 +343,33 @@ module.exports = String.raw`window.__carton = (() => {
       }
     },
     get stale() { return stale; },
+    // PLAN 1.4: Cardboard's own refusal of an edit (patch-carton: its xv, which every edit its guard refuses goes
+    // through: a drag, a trim, Delete, Ctrl+Z, the stage's text editor) asks here first while a Carton preview is shown.
+    // True when a Carton part of the page told the person (the edit-attempt toast and the frame's pulse): Cardboard's
+    // note then stays away. Nothing is written either way: the guard refused it before this is asked.
+    blocked() {
+      if (!on || !store?.state().cartonPreview) return false;
+      for (const f of [...blockedSubs].reverse()) {
+        try { if (f() === true) return true; } catch (e) { console.warn("[carton] the edit-attempt toast failed:", e?.message ?? e); }
+      }
+      return false;
+    },
+    onBlocked(f) { blockedSubs.add(f); return () => blockedSubs.delete(f); },
+    // PLAN 1.6 (DESIGN §9): Export never exports what is viewed. patch-carton's Export opens (the person's Export command,
+    // an agent's scripted export) ask here first: null to go on as before (nothing viewed, or Carton off); else a promise
+    // that resolves once the editor shows your edit again (the page's Carton part goes back and says so; without one, the
+    // preview is left here), after which Export opens.
+    beforeExport() {
+      if (!on || !store) return null;
+      const st = store.state();
+      for (const f of [...backSubs].reverse()) {
+        let r;
+        try { r = f("export"); } catch { r = null; }
+        if (r) return Promise.resolve(r).then(() => undefined);
+      }
+      return st.cartonPreview && st.projectId ? this.preview(st.projectId, null) : null;
+    },
+    onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
     // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
     // with its refusal (Cardboard's words: an earlier version is shown, go back to edit) over the timeline (store.refuse is its guard,
@@ -378,13 +409,15 @@ module.exports = String.raw`window.__carton = (() => {
       const name = text(it.name) ?? text(it.textContent) ?? text(it.captionText) ?? text(media?.data?.fileName) ?? text(media?.data?.content) ?? text(it.type) ?? "clip";
       return { id: it.id, name };
     },
-    // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
-    // editor doesn't show it (another project, or the clip isn't in this version).
-    reveal(itemId) {
+    // "On timeline" (a conflict card's): the clip selected and the playhead at its start. A conflict's See it brings
+    // the clip into view without selecting it ({select: false}): a selection would take viewing's first Esc (Cardboard's
+    // own Esc clears it first; PLAN 1.3). False when the editor doesn't show it (another project, or the clip isn't in
+    // this version).
+    reveal(itemId, opts) {
       if (!on || !store || !itemId) return false;
       const st = store.state(), it = (st.timelineItems ?? []).find((i) => i.id === itemId);
       if (!it) return false;
-      st.selectTimelineItem?.(itemId);
+      if (opts?.select !== false) st.selectTimelineItem?.(itemId);
       st.setPlaybackPosition?.(it.startTime);
       return true;
     },

@@ -62,3 +62,6 @@ html,body{margin:0;height:100%;background:#000;color:#e5e5e5;font-family:Geist,u
 .cap-dash-grid{display:flex;gap:18px}
 .cap-dash-tile{width:220px;font-size:13px;font-weight:600;color:#ddd}
 .cap-dash-thumb{height:124px;margin-bottom:8px;border-radius:10px;background:#1b1b1b;box-shadow:inset 0 0 0 1px #ffffff12}
+/* the timeline's zoom, as Cardboard's toolbar has it at its right (the cut label sits before it, PLAN 1.5) */
+.cap-tl-zoom{display:inline-flex;align-items:center;gap:8px;color:#cfcfcf}
+.cap-tl-zoom-bar{display:inline-block;width:110px;height:3px;border-radius:2px;background:#ffffff24}

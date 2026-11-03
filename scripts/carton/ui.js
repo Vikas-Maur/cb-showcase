@@ -6,7 +6,9 @@
 //   (scripts/carton/strip-buttons.js) send their commands here (patch-carton.js routes them as carton:command to this
 //   page), and this page reports back what is open, the cut it is on and what it is viewing (bridge.reportPanel).
 // - CartonStage: a layer over the stage (the preview's column, above the timeline, left of the chat): the conflict
-//   cards' floating stack in its bottom-right corner, with "See it", and the viewing banner ("Back to my edit").
+//   cards' floating stack in its bottom-right corner, with "See it", and viewing's frame round the stage (Carton UX
+//   redesign PLAN 1.1: no banner over the picture; the frame's label tab only when History's list isn't on screen),
+//   the edit-attempt toast (PLAN 1.4), and the timeline's frame and cut label (PLAN 1.5, through editor-panel.js).
 // Neither takes keys but its own (Esc closes the panel while focus is in it), so the stage, the timeline's keyboard,
 // Ctrl+Z and the chat work as before.
 // Carton runs in the library worker. There @carton/react's view model is served to each page (serveUi over the
@@ -14,14 +16,16 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
-import { injectCardboardSkin } from "@carton/react/skin/cardboard";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
+import { injectCardboardSkin, injectStyles } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
 // person couldn't tell they had worked. One at a time, gone after 6 s; Fold in offers to switch to the cut it went into.
 // `tone` "warning": a failure or a refusal the bridge tells (a save that failed, an undo refused), with the warning
 // look Carton's other failures have (the conflict stack, footage still on its way, Offline), not the ✓ of a
-// confirmation (laptop, merge/prod-2 N-3), and said at once to a screen reader (role alert).
+// confirmation (laptop, merge/prod-2 N-3), and said at once to a screen reader (role alert). `tone` "viewing": an edit
+// tried while viewing (PLAN 1.4, DESIGN §4.3): the eye, "You're looking at …", Back to my edit and its key, Esc; it
+// goes when viewing does.
 const toasts = { value: null, seq: 0, subs: new Set(), show(text, action, tone) { this.set({ id: ++this.seq, text, action, ...(tone ? { tone } : {}) }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
 // what the bridge tells (scripts/carton/renderer-bridge.js notice: a save that failed, an undo refused)
 const tellFailure = (text) => toasts.show(text, null, "warning");
@@ -64,16 +68,25 @@ function connect(projectId, bridge) {
   r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
   // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
   // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
+  // A conflict's side (its card's See it, PLAN 7.1) brings the card's clip into view: the playhead at its start in the
+  // side shown, the clip not selected, so the first Esc is viewing's, not Cardboard's deselect (PLAN 1.3).
   const view = r.ui.view.bind(r.ui);
   r.ui.view = async (target) => {
     await view(target);
-    return bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
+    await bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
+    if (target?.kind === "conflict" && r.ui.viewing()?.conflictId === target.conflictId) {
+      const item = r.ui.conflicts().find((c) => c.id === target.conflictId)?.item;
+      if (item) bridge.reveal?.(item, { select: false });
+    }
   };
   confirmations(r.ui);
   return { ...r, close: off };
 }
 
-/** The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. */
+/**
+ * The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. The
+ * edit-attempt toast (tone "viewing") has its action as the primary button and Esc, its key, in place of the ✕.
+ */
 function Toast() {
   const [t, setT] = useState(toasts.value);
   useEffect(() => { toasts.subs.add(setT); return () => { toasts.subs.delete(setT); }; }, []);
@@ -83,12 +96,12 @@ function Toast() {
     return () => clearTimeout(timer);
   }, [t]);
   if (!t) return null;
-  const warn = t.tone === "warning";
-  return h("div", { className: "carton-toast", "data-tone": warn ? "warning" : undefined, role: warn ? "alert" : "status", "aria-live": warn ? "assertive" : "polite" },
-    h(Icon, { name: warn ? "warning" : "check", size: 14 }),
+  const warn = t.tone === "warning", viewing = t.tone === "viewing";
+  return h("div", { className: "carton-toast", "data-tone": t.tone ?? undefined, role: warn ? "alert" : "status", "aria-live": warn ? "assertive" : "polite" },
+    h(Icon, { name: warn ? "warning" : viewing ? "eye" : "check", size: 14 }),
     h("span", { className: "carton-toast-text" }, t.text),
-    t.action ? h(Button, { onClick: () => { toasts.set(null); void t.action.run(); } }, t.action.label) : null,
-    h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
+    t.action ? h(Button, { variant: viewing ? "primary" : undefined, keys: viewing ? "Escape" : undefined, onClick: () => { toasts.set(null); void Promise.resolve(t.action.run()).catch(() => {}); } }, t.action.label) : null,
+    viewing ? h("kbd", { className: "carton-toast-key", "aria-hidden": true }, "Esc") : h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
 }
 
 // One connection per project, shared by the side panel and the stage layer; closed when neither uses it.
@@ -187,6 +200,17 @@ export function backToEdit(ui) {
   if (current?.readOnly && home) return ui.switchCut(home.id);
   if (viewingOf(ui)) return ui.openPreview(null);
   return undefined;
+}
+/** What the panel showed goes with it (PLAN 1.3); a conflict's side belongs to its card on the stage. */
+const leavesWithPanel = (v) => !!v && v.kind !== "conflict";
+/**
+ * Whether History's list marks what is viewed itself (its row's "👁 Viewing ✕", or a teammate's cut in its cut bar),
+ * so the stage frame needs no label (PLAN 1.1): History open on a version or how it was before one; never a conflict's
+ * side, nor a version without a row (Comments' "See it as it was").
+ */
+export function listMarks(panel, v) {
+  if (panel !== "history" || !v) return false;
+  return v.kind === "cut" || ((v.kind === "version" || v.kind === "before") && typeof v.versionId === "string");
 }
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
 // The preview keeps at least this much width beside the panel (UI audit P2-13: at a narrow window the panel took it all).
@@ -387,15 +411,15 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsA
   const width = fit.width;
   // A drawer over the chat when the window is too narrow for the preview, the panel and the chat side by side.
   const overlay = fit.mode === "overlay" ? { position: "fixed", right: 0, top: fit.top ?? 0, height: fit.height ?? "100%", zIndex: 40, boxShadow: "-16px 0 40px -12px #000000b3" } : null;
-  // Esc closes it, and only while focus is in it: the editor's own keys are never taken. A preview is the layer inside
-  // it (UI audit P2-1: "… → preview → panel"): Esc returns from the preview first, as its banner's button does, and
-  // the next Esc closes the panel (regress 2026-11-02 #4: it closed the panel and left the preview open).
+  // Esc closes it, and only while focus is in it: the editor's own keys are never taken. Viewing is the layer inside
+  // it (UI audit P2-1: "… → preview → panel"): Esc returns to your edit first, as the frame's ✕ does, and the next Esc
+  // closes the panel (regress 2026-11-02 #4: it closed the panel and left the preview open).
   const ui = useCartonUi();
   const onKeyDown = (e) => {
     // an Esc a handler nearer the page took (a Radix layer's, in the capture phase) is theirs: nothing here
     if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent?.defaultPrevented) return;
     e.stopPropagation();
-    if (ui.preview?.()) { void ui.openPreview(null); return; }
+    if (viewingOf(ui)) { void Promise.resolve(backToEdit(ui)).catch(() => {}); return; }
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
@@ -439,6 +463,17 @@ function ShareHost({ projectId, bridge, onClose }) {
 export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   const [panel, setPanelState] = useState(null);
+  // Closing the panel, or switching its tab, brings your edit back from what the panel showed you (PLAN 1.3, DESIGN
+  // §2): a version History played, a teammate's cut, Comments' "See it as it was". A conflict's side, seen from its
+  // card on the stage, stays until that card or Esc leaves it. However the panel closes: its ✕, Esc, Ctrl+Shift+H, the
+  // title bar's icon.
+  const shownPanel = useRef(panel);
+  useEffect(() => {
+    const was = shownPanel.current;
+    shownPanel.current = panel;
+    if (!was || was === panel || !ready) return;
+    if (leavesWithPanel(viewingOf(conn.ui))) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
+  }, [panel, ready, conn]);
   const [share, setShare] = useState(false);
   // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
   const [cutsAsk, setCutsAsk] = useState(0);
@@ -632,37 +667,110 @@ export function JoinDialog({ bridge, onClose }) {
       : h(Dialog, { title: words.joinTitle, onClose, className: "carton-join-dialog" }, h("p", { className: "carton-error", role: "alert" }, words.failed)));
 }
 
-/** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */
+// The timeline's frame and cut label (PLAN 1.5): editor-panel.js renders the timeline's wrapper with
+// data-carton-viewing while viewing (the frame, the clips muted) and data-carton-cut on a cut other than Main (its
+// name and dot at the right of the timeline's toolbar), from what this page publishes (window.__cartonTimelineMark).
+// The timeline is Cardboard's, outside Carton's skin root, so its rules are a sheet of their own, on Cardboard's own
+// structure there: the timeline's root (positioned) for the frame, its scroll area (data-timeline-scroll) for the
+// muted clips, the toolbar's right-hand group for the label. A rule whose structure moved only stops drawing: the
+// stage frame and the chip carry the state alone (the wrapper's anchor itself stops the build, as every patch does).
+// (Scoped to the timeline's region: the title bar's chip carries data-carton-viewing and data-carton-cut of its own.)
+const TL = '[data-analytics-region="editor-timeline"]';
+export const TIMELINE_CSS = `
+${TL}[data-carton-viewing]>*{position:relative}
+${TL}[data-carton-viewing]>*::after{content:"";position:absolute;inset:0;z-index:40;box-shadow:inset 0 0 0 2px #8ab4ff66;pointer-events:none}
+${TL}[data-carton-viewing] [data-timeline-scroll]{opacity:.72}
+${TL}[data-carton-cut] .justify-between>.flex-1.justify-end::before{content:var(--carton-cut-label);flex:0 1 auto;min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:6px;padding-left:14px;
+  background:radial-gradient(circle at 4px 50%,var(--carton-cut-dot,#f59e0b) 3.5px,transparent 4px);color:#ffffffb3;font-size:12px;line-height:16px}
+`;
+// What the timeline's wrapper shows: viewing (any), and your cut's name and dot when it isn't Main and nothing is viewed
+// (the timeline shows that cut then). Null fields stay off.
+export function timelineMarkOf(ui, projectId) {
+  const v = viewingOf(ui), chip = chipOf(ui);
+  const other = !v && chip?.cut?.dot ? chip.cut : null;
+  return { projectId, viewing: !!v, cut: other ? other.name : null, dot: other ? other.dot : null };
+}
+const sameMark = (a, b) => a === b || (!!a && !!b && a.projectId === b.projectId && a.viewing === b.viewing && a.cut === b.cut && a.dot === b.dot);
+
+/**
+ * The stage's viewing marks (PLAN 1.1, 1.4, 1.5), in one place so they say one thing: the frame round the stage with
+ * the chip's label (its tab only when History's list isn't on screen), Esc back, the edit-attempt toast and the
+ * frame's pulse, the timeline's frame and cut label, and Export returning to your edit first (PLAN 1.6).
+ */
+function StageViewing({ projectId, bridge, panel }) {
+  const ui = useCartonUi();
+  // what is viewed, as the chip says it (a teammate's cut switched to counts: viewingOf), read again on each topic
+  const [v, setV] = useState(() => viewingOf(ui));
+  const [pulse, setPulse] = useState(0);
+  useEffect(() => {
+    injectStyles(document, TIMELINE_CSS, "carton-timeline-css");
+    let mark = null;
+    const update = () => {
+      const next = viewingOf(ui);
+      setV((was) => (was === next || (was && next && was.ref === next.ref && was.kind === next.kind && was.label === next.label && was.versionId === next.versionId) ? was : next));
+      const m = timelineMarkOf(ui, projectId);
+      if (!sameMark(m, mark)) { mark = m; window.__cartonTimelineMark?.(m); }
+    };
+    update();
+    const offs = ["viewing", "preview", "cuts"].map((t) => ui.subscribe(t, update));
+    return () => {
+      for (const off of offs) off();
+      window.__cartonTimelineMark?.({ projectId, viewing: false, cut: null, dot: null });
+    };
+  }, [ui, projectId]);
+  // the edit-attempt toast goes with viewing
+  const viewing = !!v;
+  useEffect(() => { if (!viewing && toasts.value?.tone === "viewing") toasts.set(null); }, [viewing]);
+  // An edit tried while viewing (PLAN 1.4): Cardboard's own refusal path asks here first (the bridge's blocked(), from
+  // its xv: every edit its guard refuses), and gets one line and one pulse of the frame in place of its "read-only"
+  // note. Back to my edit, and no Restore (DESIGN §4.3). A drag refused at every move pulses once, not at every move.
+  const lastTry = useRef(0);
+  useEffect(() => bridge.onBlocked?.(() => {
+    const now = viewingOf(ui);
+    if (!now) return false;
+    const t = Date.now();
+    if (t - lastTry.current < 1200 && toasts.value?.tone === "viewing") return true;
+    lastTry.current = t;
+    // (mid-sentence: "You're looking at your edit from 12:41 pm.")
+    toasts.show(words.lookingAt(now.label.replace(/^Your\b/, "your")), { label: words.backToMyEdit, run: () => backToEdit(ui) }, "viewing");
+    setPulse((n) => n + 1);
+    return true;
+  }), [bridge, ui]);
+  // Export while viewing (PLAN 1.6, DESIGN §9): never what is viewed. Back to your edit first, said in a toast; Export
+  // opens once the editor shows your edit (the bridge's beforeExport waits for this).
+  useEffect(() => bridge.onBack?.((why) => {
+    if (!viewingOf(ui)) return null;
+    if (why === "export") toasts.show(words.backToExport);
+    return Promise.resolve(backToEdit(ui));
+  }), [bridge, ui]);
+  const shown = useMemo(() => (v ? { ...v, label: upFirst(v.label) } : null), [v]);
+  const isViewing = useCallback(() => !!viewingOf(ui), [ui]);
+  const back = useCallback(() => backToEdit(ui), [ui]);
+  return h(ViewingFrame, { viewing: shown, label: !listMarks(panel, v), onBack: back, isViewing, escapeState: bridge.selection, pulse });
+}
+
+/** The layer over the stage: viewing's frame, the conflict cards' floating stack, the toasts and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
-  // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the side's timeline, read-only, with the card's clip in view,
-  // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
-  // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
-  // "conflict"}) reaches the editor: the worker's view() (Workstream 0, PLAN 0.5) and the stage frame that shows its
-  // label (Workstream 1). Then this goes, and the card calls ui.view itself. `live()`: still wanted once loaded (the
-  // card wasn't left, decided or set aside meanwhile), else nothing is shown.
-  const onPreview = useCallback(async (conflict, side, label, live = () => true) => {
-    const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
-    if (!live()) return;
-    if (!ref) throw new Error(words.loadFailed);
-    await conn.ui.openPreview(ref, label);
-    if (live() && conflict.item) bridge.reveal(conflict.item);
-  }, [conn, bridge]);
+  // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the card calls ui.view({kind: "conflict"}) itself, which
+  // connect() hands to the editor (the bridge's preview, the card's clip in view) and the frame labels ("Claude Code's
+  // move of “Interview B”"). "On timeline" selects the clip and moves the playhead there, without viewing.
   const onReveal = useCallback((conflict) => { if (conflict.item) bridge.reveal(conflict.item); }, [bridge]);
-  const [panelOpen, setPanelOpen] = useState(sidePanel.value != null);
+  const [panel, setPanel] = useState(sidePanel.value);
   useEffect(() => {
-    const f = (v) => setPanelOpen(v != null);
-    sidePanel.subs.add(f);
-    return () => { sidePanel.subs.delete(f); };
+    sidePanel.subs.add(setPanel);
+    setPanel(sidePanel.value);
+    return () => { sidePanel.subs.delete(setPanel); };
   }, []);
   if (!ready) return null;
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
-      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, { escapeState: bridge.selection }), h(MediaNotice, { projectId, bridge })),
-      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })),
+      h(StageViewing, { projectId, bridge, panel }),
+      h("div", { className: "carton-stage-banner" }, h(MediaNotice, { projectId, bridge })),
+      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onReveal, collapsed: panel != null })),
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, listMarks, timelineMarkOf, StageViewing, sidePanel };

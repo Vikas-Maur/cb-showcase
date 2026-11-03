@@ -68,7 +68,8 @@ export { ConflictCard, ConflictList, type ConflictCardProps } from "./components
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
 export { cardSentences, conflictWords, keptText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";
 export { CompareCard, type CompareCardProps } from "./components/CompareCard.ts";
-export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
+export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner, ViewingFrame, useEscapeBack } from "./components/status.ts";
+export type { ViewingFrameProps } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box } from "./components/WatchTheChanges.ts";
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";

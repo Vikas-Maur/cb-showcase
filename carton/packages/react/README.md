@@ -67,7 +67,8 @@ Cardboard's own team, which has the source, would use React directly with no cha
 | `PresenceAvatars`, `GhostLayer` | People, each with their agents and subagents; ghosts of remote drags over your timeline |
 | `SyncStatusWords` | Syncing · Up to date · Offline: N edits waiting |
 | `WatchTheChanges` | The shot diff laid out like a side-by-side text diff, with Play changes and an aligned Before/After toggle |
-| `PreviewBanner` | "You're looking at …", with "Back to my edit" (§9 R2-16). Retired by the viewing frame (UX redesign PLAN 1.1) |
+| `ViewingFrame` | Viewing on the stage (UX redesign PLAN 1.1): a 2 px frame round it, the one label in a tab on its corner only when History's list isn't on screen, ✕ and Esc back (`useEscapeBack`: the host's own Esc first), one pulse per edit tried (`pulse`), viewing and the return announced once |
+| `PreviewBanner` | Deprecated (the app uses `ViewingFrame`): "You're looking at …", with "Back to my edit" (§9 R2-16). Kept one release for `WatchTheChanges` and the gallery |
 
 The components carry roles, keyboard handling and class names, and no colours. `skin/cardboard` styles them to look
 native in Cardboard: it reads Cardboard's CSS variables (`--popover`, `--surface-raised`, `--font-sans`…), with 1.4.0's

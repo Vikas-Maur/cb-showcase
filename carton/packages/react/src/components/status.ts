@@ -1,12 +1,13 @@
 // Small status pieces that live in toolbars: the sync status words, the published cut's status, Undo turn, the
-// credits popover and the read-only preview banner. Each subscribes to its one topic only.
+// credits popover, and viewing's frame round the stage (the read-only preview banner before it). Each subscribes to its
+// one topic only.
 
-import { createElement as h, useEffect, useRef, useState } from "react";
+import { Fragment, createElement as h, useEffect, useRef, useState, type RefObject } from "react";
 import { actorLabel } from "../actors.ts";
 import { exactTime, when } from "../format.ts";
-import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublishedShown, useSyncStatus, useUndoTurn, useWords } from "../hooks.ts";
+import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublishedShown, useSyncStatus, useUndoTurn, useViewing, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
-import type { Credits } from "../model.ts";
+import type { Credits, Viewing } from "../model.ts";
 import { ActorName, Avatar, Button, HoverMore, cx } from "./ui.ts";
 
 /** Syncing · Up to date · Offline: N edits waiting (§0.1, §13). Nothing for a cut that isn't shared. */
@@ -137,23 +138,22 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
 }
 
 /**
- * Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click, or Esc (regress
- * 2026-11-02 #4, UI audit P2-1: in a preview focus is on the page itself, so Esc reached nothing). Esc returns only when
- * it was nobody else's: focus on the page (<body>) or in the banner, and decided once the key has reached every handler
- * (not by which listened first: a chat approval that appears during the preview registers after this one). It stays
- * when a handler took it (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the
- * host's own Esc changes (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc
- * was theirs, and the next one returns. That state is read as the key arrives (the capture phase), so the host's
- * listener may come before or after this one (final re-check N2). Listened for only while a preview is open.
+ * Esc back to your edit while viewing (regress 2026-11-02 #4, UI audit P2-1: while viewing, focus is on the page itself,
+ * so Esc reached nothing). Esc returns only when it was nobody else's: focus on the page (<body>) or inside `inside`
+ * (the frame's label, the banner), and decided once the key has reached every handler (not by which listened first: a
+ * chat approval that appears while viewing registers after this one). It stays when a handler took it
+ * (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the host's own Esc changes
+ * (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc was theirs, and the
+ * next one returns. That state is read as the key arrives (the capture phase), so the host's listener may come before
+ * or after this one (final re-check N2). Listened for only while `open`. `viewing()` says whether there is still
+ * something to come back from (read again once the key has been everyone's); `back()` comes back.
  */
-export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
-  const preview = usePreview();
-  const ui = useCartonUi();
-  const words = useWords();
-  const banner = useRef<HTMLDivElement>(null);
-  const state = useRef(escapeState);
-  state.current = escapeState;
-  const open = !!preview;
+export function useEscapeBack(p: { open: boolean; viewing: () => boolean; back: () => unknown; escapeState?: () => unknown; inside: RefObject<HTMLElement | null> }): void {
+  const state = useRef(p.escapeState);
+  state.current = p.escapeState;
+  const live = useRef(p);
+  live.current = p;
+  const { open } = p;
   useEffect(() => {
     if (!open || typeof window === "undefined") return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -167,17 +167,17 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
     const onKey = (e: KeyboardEvent) => {
       const was = seen?.e === e ? seen : null;
       seen = null;
-      // a preview closed a moment ago (this listener goes after the render): the key isn't ours
-      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
+      // viewing ended a moment ago (this listener goes after the render): the key isn't ours
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !live.current.viewing()) return;
       const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
-      if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
+      if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !live.current.inside.current?.contains(t)) return;
       const before = was ? was.before : state.current?.();
       // a task, not a microtask: one runs between two listeners of the same key
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        if (e.defaultPrevented || !ui.preview() || (state.current && !Object.is(state.current(), before))) return;
-        ui.openPreview(null);
+        if (e.defaultPrevented || !live.current.viewing() || (state.current && !Object.is(state.current(), before))) return;
+        live.current.back();
       }, 0);
     };
     window.addEventListener("keydown", onCapture, true);
@@ -187,7 +187,19 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
       window.removeEventListener("keydown", onKey);
       if (timer) clearTimeout(timer);
     };
-  }, [open, ui]);
+  }, [open]);
+}
+
+/**
+ * Deprecated: `ViewingFrame` (UX redesign PLAN 1.1) replaces it in the app. Kept one release for WatchTheChanges and the
+ * gallery. Shown while a preview is open (§9, R2-16), with the way back to editing: one click, or Esc (useEscapeBack).
+ */
+export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
+  const preview = usePreview();
+  const ui = useCartonUi();
+  const words = useWords();
+  const banner = useRef<HTMLDivElement>(null);
+  useEscapeBack({ open: !!preview, viewing: () => !!ui.preview(), back: () => ui.openPreview(null), escapeState, inside: banner });
   if (!preview) return null;
   return h(
     "div",
@@ -196,5 +208,83 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
     h("span", { className: "carton-preview-label", title: words.previewing(preview.label) }, words.previewing(preview.label)),
     preview.blockedEdit ? h("span", { className: "carton-preview-blocked" }, words.previewBlocked) : null,
     h(Button, { variant: "primary", icon: "arrowLeft", keys: "Escape", title: words.returnToCurrentKey, onClick: () => ui.openPreview(null) }, words.returnToCurrent),
+  );
+}
+
+export interface ViewingFrameProps {
+  /** What the stage shows when it isn't your edit; default `ui.viewing()`. A host that knows more passes its own. */
+  viewing?: Viewing | null;
+  /**
+   * The label tab on the frame's top-left corner, with its ✕ (DESIGN §4.2): only when History's list isn't on screen to
+   * mark the row viewed (a conflict's side, Comments' "See it as it was", the panel closed). Default true.
+   */
+  label?: boolean;
+  /** Back to your edit (the tab's ✕, Esc); default `ui.view(null)`. */
+  onBack?: () => unknown;
+  /** Whether there is still something to come back from, read as an Esc lands; default `ui.viewing()`. */
+  isViewing?: () => boolean;
+  /** The host's own Esc state (useEscapeBack): Cardboard's clip selection. */
+  escapeState?: () => unknown;
+  /** Goes up by one at each edit tried while viewing: the frame pulses once (PLAN 1.4). */
+  pulse?: number;
+  className?: string;
+}
+
+/**
+ * Viewing on the stage (UX redesign PLAN 1.1, DESIGN §4.2), in place of the preview banner: a 2 px blue frame round the
+ * stage, over nothing in the picture, and, only when History's list isn't on screen, a small tab on its top-left corner
+ * with the one label (the chip's and the row's: "Director's “Add captions…”") and ✕ "Back to my edit (Esc)". Esc
+ * returns as the banner's did (useEscapeBack: the capture-phase state, the editor's own Esc first). Viewing and the
+ * return are announced once each, politely ("Looking at …. Esc to go back.", "Back to your edit"), never per frame.
+ */
+export function ViewingFrame(p: ViewingFrameProps) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const own = useViewing();
+  const v = p.viewing !== undefined ? p.viewing : own;
+  const frame = useRef<HTMLDivElement>(null);
+  const shown = useRef(v);
+  shown.current = v;
+  const back = () => void Promise.resolve(p.onBack ? p.onBack() : ui.view(null)).catch(() => undefined);
+  const isViewing = p.isViewing ?? (() => !!(p.viewing !== undefined ? shown.current : ui.viewing()));
+  useEscapeBack({ open: !!v, viewing: isViewing, back, escapeState: p.escapeState, inside: frame });
+  // what the live region says: a new label when viewing starts or changes, "Back to your edit" once it ends
+  const label = v?.label ?? null;
+  const [said, setSaid] = useState("");
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    if (label === last.current) return;
+    const was = last.current;
+    last.current = label;
+    if (label) setSaid(words.lookingAtAnnounce(label));
+    else if (was) setSaid(words.backAnnounce);
+  }, [label, words]);
+  const tab = p.label !== false;
+  return h(
+    Fragment,
+    null,
+    h("span", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
+    v
+      ? h(
+          "div",
+          {
+            ref: frame,
+            className: cx("carton-frame", p.className),
+            "data-kind": v.kind,
+            "data-label": tab ? "" : undefined,
+            // two names for one pulse: a new attempt switches the animation, so it plays again from the start
+            "data-pulse": p.pulse ? (p.pulse % 2 ? "a" : "b") : undefined,
+          },
+          tab
+            ? h(
+                "div",
+                { className: "carton-frame-label" },
+                h(Icon, { name: "eye", size: 13 }),
+                h("span", { className: "carton-frame-text", title: v.label }, v.label),
+                h("button", { type: "button", className: "carton-frame-back", "aria-label": words.backToMyEditKey, title: words.backToMyEditKey, "aria-keyshortcuts": "Escape", onClick: back }, h(Icon, { name: "x", size: 12 })),
+              )
+            : null,
+        )
+      : null,
   );
 }

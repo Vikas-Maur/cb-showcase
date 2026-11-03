@@ -524,14 +524,28 @@ What changes with it on:
   too: "Fold “X” in here"). Every change reads as one sentence in the editor's words, the same in History, Compare and
   the Fold dialog: verb first, the clip by its name, positions as the timeline shows them ("Trimmed “Intro”, now ends at
   0:05", "Moved “W6” 2 s later (now starts at 0:09)", "Restored the 12:41 pm version", "Folded in “30s cut”"), and
-  times of day always with am/pm. Opening an old version shows it read-only until "Back to my edit" or Esc (Undo and Redo
-  look unavailable meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question,
-  stays the editor's, whichever was selected first, and with focus in the History panel the first Esc returns from the
-  version and the next closes the panel). An edit tried meanwhile is refused with "You're looking at an earlier version.
-  Go back to your edit (Esc) to change it." in Cardboard's own refusal toast, the stage's text editor included (Enter or a double-click on a title no longer
-  opens it there, and a selected title or caption shows no text toolbar there: nothing in it looks editable), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
+  times of day always with am/pm. A click, Enter or a double-click on a row opens its card and never changes the
+  preview. Only a deliberate step shows something other than your edit ("viewing"): Play on a version that isn't the
+  newest, a conflict side's See it, a comment's "See it as it was", a teammate's cut. There is no banner over the
+  picture: three quiet marks say it, with one label ("Director's “Add captions…”"): the title bar's chip, a thin blue
+  frame round the preview and the timeline (the timeline's clips muted), and the row in History ("👁 Viewing ✕"). When
+  History's list isn't on screen to show the row (the panel closed, Comments, a conflict's side), the frame carries the
+  label itself in a small tab on its top-left corner, with ✕. Esc, any of those ✕, closing the panel or switching its
+  tab brings your edit back (a conflict side stays until its card or Esc leaves it). Undo and Redo look unavailable
+  meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question, stays the
+  editor's, whichever was selected first, and with focus in the History panel the first Esc returns to your edit and
+  the next closes the panel. Play and See it never select a clip, so the first Esc is always viewing's. An edit tried
+  while viewing (a drag, a trim, Delete, Ctrl+Z, Enter or a double-click on a title) changes nothing: the frame pulses
+  once and one line says "You're looking at Director's “Add captions…”. [Back to my edit] Esc", in place of
+  Cardboard's own refusal note, from the same guard, so every edit Cardboard refuses there is still refused (the
+  stage's text editor doesn't open there either, and a selected title or caption shows no text toolbar: nothing in it
+  looks editable); with Carton off Cardboard's own note is unchanged. Export opened while viewing (Ctrl+E, the title
+  bar's Export, or an agent's export) goes back to your edit first ("Back to your edit to export it.") and exports
+  that, never what you were looking at. On a cut other than Main, the timeline's toolbar shows the cut's name and colour
+  dot beside the zoom. The keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
   playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. Playing the
-  changes moves the preview's playhead with it, so the frames are the real ones.
+  changes moves the preview's playhead with it, so the frames are the real ones. Viewing and the return are each
+  announced once to a screen reader.
   Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in and a conflict card's pick each
   end with a short confirmation over the preview (Fold in offers to
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
@@ -552,8 +566,9 @@ What changes with it on:
   opacity to 50%", "Removed it"; a clip by its name or file, never an id), and which side the timeline shows until you
   pick ("Until you pick, yours is in the timeline."). The sides are radio buttons that only pick, starting on the side
   shown; the one main button names the pick ("Keep yours", "Keep Claude Code's", "Keep both") and Enter presses it.
-  **See it** on a side shows that side on the preview, read-only, with the clip in view ("Seeing it"; again, Esc, or
-  deciding brings your edit back); "On timeline" selects the clip and moves the playhead to it. "Keep Director's" puts
+  **See it** on a side shows that side on the preview, with the clip in view and the frame's label naming the side
+  ("Claude Code's move of “Interview B”"; "Seeing it"; again, Esc, or deciding brings your edit back); "On timeline"
+  selects the clip and moves the playhead to it. "Keep Director's" puts
   the agent's in as your own version (Ctrl+Z takes it back), and the confirmation names it ("Kept Claude Code's move
   of “Interview B”."). Two changes of your own read "Your earlier change · 10:04 am" and "Your later change", with
   "Keep earlier" and "Keep later". While the agent is still working, the card says so; if it changes the same thing
