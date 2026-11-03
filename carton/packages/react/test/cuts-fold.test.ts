@@ -141,7 +141,7 @@ test("queued switch (review P2): checked in the view model, a switch made since 
   ui.dispose();
 });
 
-test("cut colours and names in sentences: a teammate's cut its owner's colour; Main cut bare, any other in quotes", () => {
+test("cut colours and names in sentences: a teammate's cut a palette colour none of yours has; Main cut bare, any other in quotes", () => {
   const leo = { key: "human/leo", kind: "human" as const, name: "Leo", color: "#f0a35e" };
   const colors = cutColors(
     [
@@ -152,7 +152,10 @@ test("cut colours and names in sentences: a teammate's cut its owner's colour; M
     ],
     (id) => (id === "leo-m" ? leo : undefined),
   );
-  assert.deepEqual([...colors], [["x", CUT_COLORS[0]], ["leo-m", "#f0a35e"], ["y", CUT_COLORS[1]]]);
+  // design QA G25: not the owner's presence colour, which may sit beside amber ("#f0a35e" here); the first free hue
+  // from the owner's key, so two 8 px dots never read as one
+  assert.deepEqual(new Map([...colors].filter(([id]) => id !== "leo-m")), new Map([["x", CUT_COLORS[0]], ["y", CUT_COLORS[1]]]));
+  assert.ok(colors.get("leo-m") && ![CUT_COLORS[0], CUT_COLORS[1], "#f0a35e"].includes(colors.get("leo-m")!), String(colors.get("leo-m")));
   assert.equal(cutRef({ kind: "main", readOnly: false, label: "Main cut" }), "Main cut");
   assert.equal(cutRef({ kind: "cut", readOnly: false, label: "30s cut" }), "“30s cut”");
   assert.equal(cutRef({ kind: "main", readOnly: true, label: "Leo's Main cut" }), "“Leo's Main cut”");

@@ -36,6 +36,14 @@ export function CutDot({ cut }: { cut: Cut }) {
   return color ? h("span", { className: "carton-cut-dot", style: { background: color }, "aria-hidden": true }) : null;
 }
 
+/**
+ * A cut as the title bar's chip draws it (DESIGN §4.1): Main cut the scissors, any other cut its colour dot alone, never
+ * both (design QA G12). The cut bar's trigger and the Fold dialog's pickers.
+ */
+export function CutMark({ cut }: { cut: Cut | undefined }) {
+  return cut && cutColor(cut) ? h(CutDot, { cut }) : h(Icon, { name: "cut" });
+}
+
 const info = h(
   "svg",
   { className: "carton-icon", width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", "aria-hidden": true, focusable: "false" },
@@ -105,8 +113,7 @@ export function CutsMenu(p: CutsMenuProps) {
     ariaLabel: `${words.cut}: ${label}`,
     onOpenChange: (open) => !open && setMode("menu"),
     trigger: [
-      h(Icon, { key: "i", name: "cut" }),
-      shown ? h(CutDot, { key: "d", cut: shown }) : null,
+      h(CutMark, { key: "m", cut: shown }),
       h("span", { key: "n", className: "carton-cuts-name", onMouseEnter: tipIfCut }, label),
       h(Icon, { key: "c", name: "caretDown", size: 12 }),
     ],
@@ -192,7 +199,7 @@ function CutsMenuBody(p: BodyProps) {
       h(InlineName, {
         placeholder: words.newCutPlaceholder,
         label: words.newCutName,
-        saveLabel: words.create,
+        saveLabel: words.makeCut,
         onSave: (name) =>
           p.attempt(() => {
             const from = p.fromRef ?? homeCut(ui)?.head;

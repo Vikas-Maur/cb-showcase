@@ -3,6 +3,8 @@
 //   lead says which side the timeline shows until the pick (core keeps the head's side, which isn't always yours).
 // - The sides are a radio group that only picks, starting on the side the timeline shows. Picking changes nothing on
 //   the stage. Each side's "See it" shows that side there (viewing, kind "conflict"); again, Esc or deciding comes back.
+//   While a side is seen the card gets out of its way (design QA G5, `data-seeing`): its title and the two sides only,
+//   translucent, until the pointer is on it or the keyboard is in it (then Keep is there too).
 // - One primary button keeps the pick and names it ("Keep Claude Code's"); no two buttons on a card read the same.
 // - During the other side's agent turn, one more line; a pick made on values that changed since asks again (`sig`).
 // Words come from conflict-words.ts, so the card, its toast and the viewing label agree. Nothing is decided silently.
@@ -10,7 +12,7 @@
 import { createElement as h, memo, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { clockTime, when } from "../format.ts";
 import { actorLabel } from "../actors.ts";
-import { conflictWords } from "../conflict-words.ts";
+import { conflictWords, sideText } from "../conflict-words.ts";
 import { useAction, useCartonUi, useConflicts, useLocale, useNow, usePreview, useViewing, useWords, useWorking } from "../hooks.ts";
 import type { Actor, Conflict, ConflictChoice, ConflictSide } from "../model.ts";
 import { ActorName, Avatar, Button, cx } from "./ui.ts";
@@ -206,7 +208,7 @@ function StageCard(p: ConflictCardProps) {
             s?.where ? h("span", { className: "carton-conflict-where" }, s.where) : null,
             t && s?.at != null ? h("time", { dateTime: new Date(s.at).toISOString() }, ` · ${t}`) : null,
           ),
-          k === "both" ? (c.both ? h("span", { className: "carton-conflict-what" }, c.both) : null) : h("span", { className: "carton-conflict-what" }, s!.text ?? s!.summary),
+          k === "both" ? (c.both ? h("span", { className: "carton-conflict-what" }, c.both) : null) : h("span", { className: "carton-conflict-what" }, sideText(s!)),
         ),
       ),
       k === "both"
@@ -224,7 +226,7 @@ function StageCard(p: ConflictCardProps) {
   const turn = working && [c.theirs.author, c.mine.author].some((a) => a.kind !== "human" && (a.key === working.actor.key || a.name === working.actor.name)) ? working : null;
   return h(
     "section",
-    { className: cx("carton-card carton-conflict", p.className), "aria-label": cw.title, onKeyDown: onCardKey },
+    { className: cx("carton-card carton-conflict", p.className), "aria-label": cw.title, "data-seeing": seeing ? "" : undefined, onKeyDown: onCardKey },
     h(
       "header",
       { className: "carton-card-head" },

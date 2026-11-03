@@ -163,7 +163,10 @@ test(name("the filter: a menu (not a bar), Your changes, Only “clip” for the
   await click(only);
   await waitFor(() => !!$(m.container, ".carton-clip-credits"), "the clip's credits");
   assert.equal($(m.container, ".carton-filter-chip-text")!.textContent, "Only “Interview B”");
-  assert.match($(m.container, ".carton-clip-credits")!.textContent ?? "", /^“Interview B”Added by Bob Okafor/);
+  // the teammate by first name (design QA G27); a timing line with no change to read says "timing changed", never
+  // "retimed" (G7)
+  assert.match($(m.container, ".carton-clip-credits")!.textContent ?? "", /^“Interview B”Added by Bob on /);
+  assert.doesNotMatch($(m.container, ".carton-clip-credits")!.textContent ?? "", /retimed/);
   const rows = $$(m.container, ".carton-version");
   assert.ok(rows.length >= 2);
   assert.ok(rows.some((r) => /Add captions to the interview/.test(r.textContent ?? "")), "the Director's turn moved it");

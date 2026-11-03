@@ -233,12 +233,13 @@ test("PLAN 5.2, DESIGN §6.3: a new cut and a switch say where you are now, with
   };
   T.confirmations(ui, stepBridge());
   await ui.newCut("30s Instagram cut v2", "main@3");
-  assert.equal(T.toasts.value.text, "You're on “30s Instagram cut v2”, made from Director's “Add captions…”. Main cut is unchanged.");
+  // DESIGN §6.7's one line (design QA G21): the version it was made from is in History, not in the toast
+  assert.equal(T.toasts.value.text, "You're on “30s Instagram cut v2” now. Main cut is unchanged.");
   assert.deepEqual(T.toasts.value.actions.map((a) => a.label), ["Switch back to Main cut"]);
   await T.toasts.value.action.run();
   assert.deepEqual(calls.at(-1), ["switch", "main", undefined]);
   assert.deepEqual([T.toasts.value.text, T.toasts.value.action.label], ["You're on Main cut now.", "Switch back to 30s Instagram cut v2"], "the way back is a switch too");
-  // from your edit as it is (the cut's head): no "made from"
+  // from your edit as it is (the cut's head): the same line
   current = "main";
   await ui.newCut("Trailer", "main@5");
   assert.equal(T.toasts.value.text, "You're on “Trailer” now. Main cut is unchanged.");

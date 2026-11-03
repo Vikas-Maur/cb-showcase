@@ -8,7 +8,6 @@
 //
 // None of it renders: the components read it, and a host can call it.
 
-import { actorColor } from "./actors.ts";
 import { clockOfDay, shortDate } from "./format.ts";
 import type { Actor, CartonUi, Cut } from "./model.ts";
 
@@ -29,8 +28,13 @@ export function briefWhen(at: number, now: number, w: { now: string; yesterdaySh
   return shortDate(at, locale);
 }
 
-/** The cut dots, in the order cuts are given them: amber and cyan first, as the mockups; none reads as a clip colour. */
-export const CUT_COLORS: readonly string[] = ["#f59e0b", "#22d3ee", "#a78bfa", "#f472b6", "#a3e635", "#fb923c", "#38bdf8", "#34d399"];
+/**
+ * The cut dots, in the order cuts are given them: amber and cyan first, as the mockups, then violet, pink, lime and a
+ * blue sky. Hues far apart, so two 8 px dots never read as one colour: no yellow or orange beside amber, no second cyan
+ * (design QA G25). A teammate's cut takes one of these too (cutColors), not their presence colour, which may be amber's
+ * neighbour.
+ */
+export const CUT_COLORS: readonly string[] = ["#f59e0b", "#22d3ee", "#a78bfa", "#f472b6", "#a3e635", "#14a9ff"];
 
 /** Main cut: the one cut with no dot (a teammate's Main cut is theirs, and has one). */
 export const isMainCut = (c: Pick<Cut, "kind" | "readOnly">): boolean => c.kind === "main" && !c.readOnly;
@@ -42,28 +46,43 @@ function hash(s: string): number {
 }
 
 /**
- * A cut's colour dot, or undefined for Main cut: the view model's (`Cut.color`), else a teammate's cut its owner's
- * colour, else one from its id (stable across pages and computers).
+ * A cut's colour dot, or undefined for Main cut: the view model's (`Cut.color`), else one from the palette by its owner
+ * (a teammate's cut) or its id: stable across pages and computers.
  */
 export function cutColor(c: Cut): string | undefined {
   if (isMainCut(c)) return undefined;
   if (c.color) return c.color;
-  if (c.readOnly && c.owner) return actorColor(c.owner);
-  return CUT_COLORS[hash(c.id) % CUT_COLORS.length];
+  return CUT_COLORS[hash(c.readOnly && c.owner ? c.owner.key : c.id) % CUT_COLORS.length];
 }
 
 /**
  * Colours for a project's cuts, for a view model to put on `Cut.color`: your own cuts but Main take the palette in the
- * order given (creation order), so the first eight never share one; a teammate's cut takes its owner's colour.
- * `owner(c)`: the owner as an actor, when the cut is a teammate's.
+ * order given (creation order), so the first six never share one. A teammate's cuts all take one colour: the first in
+ * the palette's order that none of yours (or another teammate's) has, so their dot is never one of yours while the
+ * palette has room, and the hues next in line are the ones furthest from amber and cyan. `owner(c)`: the owner as an
+ * actor, when the cut is a teammate's.
  */
 export function cutColors(cuts: readonly Pick<Cut, "id" | "kind" | "readOnly">[], owner?: (id: string) => Actor | undefined): Map<string, string> {
   const out = new Map<string, string>();
+  const used = new Set<string>();
   let n = 0;
   for (const c of cuts) {
-    if (isMainCut(c)) continue;
-    const who = c.readOnly ? owner?.(c.id) : undefined;
-    out.set(c.id, who ? actorColor(who) : CUT_COLORS[n++ % CUT_COLORS.length]!);
+    if (isMainCut(c) || c.readOnly) continue;
+    const color = CUT_COLORS[n++ % CUT_COLORS.length]!;
+    out.set(c.id, color);
+    used.add(color);
+  }
+  const owners = new Map<string, string>();
+  for (const c of cuts) {
+    if (isMainCut(c) || !c.readOnly) continue;
+    const key = owner?.(c.id)?.key ?? c.id;
+    let color = owners.get(key);
+    if (!color) {
+      color = CUT_COLORS.find((x) => !used.has(x)) ?? CUT_COLORS[hash(key) % CUT_COLORS.length]!;
+      owners.set(key, color);
+      used.add(color);
+    }
+    out.set(c.id, color);
   }
   return out;
 }

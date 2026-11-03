@@ -254,6 +254,26 @@ function wordSide(parts: readonly Part[], p: number, w: Words): SideSentence {
 }
 
 const lowerFirst = (s: string) => (s ? s[0]!.toLowerCase() + s.slice(1) : s);
+
+/**
+ * An engine summary in the card's words, for a card that came without its sentences (design QA G30): a name in curly
+ * quotes, times as the editor shows them ("0:05", not "0:05.0"; "6 s", not "6.0 s").
+ */
+export function tidySummary(s: string): string {
+  return s
+    .replace(/(^|[\s(])'([^']+)'(?=$|[\s,.:;)])/g, "$1“$2”")
+    .replace(/(\d:\d{2})\.0+\b/g, "$1")
+    .replace(/\b(\d+)\.0+(?= ?s\b)/g, "$1");
+}
+
+/** What a card's side says it did: its sentence ("Moved it to start at 0:20"), else the engine's summary, tidied. */
+export const sideText = (s: ConflictSide): string => s.text ?? tidySummary(s.summary);
+
+/** A card's subject from an engine title with no clip told: its quoted name ("'Intro' timing" → “Intro”), else the title. */
+const subjectOfTitle = (title: string): string => {
+  const m = /^['“]([^'”]+)['”]/.exec(title);
+  return m ? `“${m[1]}”` : tidySummary(title);
+};
 /** "Your move" reads "your move" mid-sentence ("Kept your move of …"), as do "Yours" and "Both"; a name keeps its capital. */
 const midSentence = (s: string) => s.replace(/^(Yours|Your|Both)\b/, (x) => x.toLowerCase());
 
@@ -287,7 +307,7 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
   const isYou = (s: ConflictSide) => s.author.kind === "human" && !!s.author.isYou;
   const mineName = nameOf(c.mine.author), theirsName = nameOf(c.theirs.author);
   const ordered = mineName === theirsName && (c.mine.where ?? "") === (c.theirs.where ?? "");
-  const subject = c.clip ? `“${c.clip}”` : c.title;
+  const subject = c.clip ? `“${c.clip}”` : subjectOfTitle(c.title);
   const both = w.bothChangesTo(c.clip);
   const whatOf = (s: ConflictSide) => s.what ?? w.whatEdit;
   const sideLabel = (s: ConflictSide, n: string) =>
@@ -305,7 +325,7 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
     const close = c.mine.at != null && c.theirs.at != null && Math.abs(c.mine.at - c.theirs.at) <= 2 * 60_000;
     const shown = c.provisional === "both" ? null : midSentence(nm(c.provisional === "mine" ? "mine" : "theirs"));
     return {
-      title: c.clip || did || each ? w.conflictTwice(subject, who) : c.title,
+      title: w.conflictTwice(subject, who),
       lead: c.reason ?? (did ? w.conflictTwiceLead(who, did, close) : each ? w.conflictTwiceEach(who, each[0]!, each[1]!) : w.pickLeadFor(shown, c.canKeepBoth)),
       name: { mine: nm("mine"), theirs: nm("theirs"), both: w.both },
       keep: { mine: earlier === "mine" ? w.keepEarlier : w.keepLater, theirs: earlier === "theirs" ? w.keepEarlier : w.keepLater, both: w.keepBoth },
@@ -322,7 +342,8 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
   // "you" mid-sentence; the other side by name
   const subjectOf = (s: ConflictSide, n: string) => (isYou(s) ? w.you.toLowerCase() : n);
   const a = subjectOf(c.mine, mineName), b = subjectOf(c.theirs, theirsName);
-  const title = !c.mine.did || !c.theirs.did ? c.title : c.mine.did === c.theirs.did ? w.conflictBoth(subject, a, b, c.mine.did) : w.conflictEach(subject, a, c.mine.did, b, c.theirs.did);
+  // without what each side did (a card from before the sentences), "“Intro”: you and Director both changed it"
+  const title = !c.mine.did || !c.theirs.did ? w.conflictBoth(subject, a, b, w.didChange) : c.mine.did === c.theirs.did ? w.conflictBoth(subject, a, b, c.mine.did) : w.conflictEach(subject, a, c.mine.did, b, c.theirs.did);
   const shownSide = c.provisional === "both" ? null : c.provisional === "theirs" ? midSentence(name.theirs) : midSentence(name.mine);
   return {
     title,

@@ -2,6 +2,8 @@
 // never git's. A host can pass its own copy (for another language) to <CartonProvider words>.
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** A label that ends a sentence: its full stop, unless it ends in an ellipsis ("…”", never "…”."; design QA G21). */
+const stop = (label: string) => (/…[”"’']?$/.test(label) ? label : `${label}.`);
 
 export const words = {
   // §0.1 nouns
@@ -101,19 +103,12 @@ export const words = {
   keepLater: "Keep later",
   showingNow: "In the timeline",
   // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
-  seePreview: "Preview",
   yourEdit: "Your edit",
   theirEdit: (name: string) => `${name}'s edit`,
-  seePreviewOf: (side: string) => `Preview: ${side}`,
   showOnTimeline: "Show on timeline",
   // The floating stack of cards: collapsed to a pill; a card set aside stays reachable from it, never decided
   conflictsPill: (n: number) => plural(n, "conflict", "conflicts"),
-  hideConflicts: "Hide conflicts",
   setAside: "Not now",
-  setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
-  setAsideList: (n: number) => `Set aside (${n})`,
-  showAgain: "Show again",
-  conflictsWaiting: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
 
   // Credits
   creditsFor: (clip: string) => `Credits for ${clip}`,
@@ -207,7 +202,7 @@ export const words = {
   // A teammate's cut, viewed (DESIGN §6.3): what you can do with it, above its History
   foldIntoCut: (cut: string) => `Fold into ${cut}…`,
   newCutFromIt: "New cut from it",
-  teammateCut: (label: string) => `You're looking at ${label}. You can fold it in or copy it as a new cut; it stays as its owner left it.`,
+  teammateCut: (label: string) => `You're looking at ${stop(label)} You can fold it in or copy it as a new cut; it stays as its owner left it.`,
 
   // History head and filter
   comments: "Comments",
@@ -280,7 +275,9 @@ export const words = {
   // The live row of an agent working: its mark ringed in green, for screen readers
   agentWorking: (agent: string) => `${agent} is working`,
   // The credits of the clip History is filtered to (PLAN 0.8, 9.2): "Added by You on Oct 30 · trimmed by Director"
-  creditVerb: { Added: "added", Timing: "retimed", Text: "text changed", Color: "color changed", Volume: "volume changed", Name: "renamed" } as Record<string, string>,
+  // A "Timing" credit is said by what its change did: trimmed, moved, or both; "timing changed" only when that isn't
+  // known (design QA G7: editors say "retimed" for a speed change). Trim, Move and TrimMove are those verbs.
+  creditVerb: { Added: "added", Timing: "timing changed", Trim: "trimmed", Move: "moved", TrimMove: "trimmed and moved", Change: "changed", Text: "text changed", Color: "color changed", Volume: "volume changed", Name: "renamed" } as Record<string, string>,
   creditPart: (verb: string, who: string, when: string) => `${verb} by ${who}${when ? ` ${when}` : ""}`,
   creditOn: (day: string) => `on ${day}`,
   creditAt: (time: string) => `at ${time}`,
@@ -317,7 +314,7 @@ export const words = {
   yourEditNow: "your edit now",
   changesLength: (n: number, length: string) => `${plural(n, "change", "changes")} · ${length}`,
   noChangesSince: (when: string) => `No changes since ${when}`,
-  sameAs: (label: string) => `Your edit is the same as ${label}.`,
+  sameAs: (label: string) => `Your edit is the same as ${stop(label)}`,
   restoreThisVersion: "Restore this version…",
   backToHistory: "History",
   // Workstream 4 (the Changes view between two versions, neither your edit; the back button's tooltip; a retry)
@@ -331,8 +328,8 @@ export const words = {
   ownedCut: (owner: string, cut: string) => `${owner}'s ${cut}`,
   sideOf: (who: string, what: string, clip: string) => `${who}'s ${what} of “${clip}”`,
   yourSideOf: (what: string, clip: string) => `Your ${what} of “${clip}”`,
-  lookingAt: (label: string) => `You're looking at ${label}.`,
-  lookingAtAnnounce: (label: string) => `Looking at ${label}. Esc to go back.`,
+  lookingAt: (label: string) => `You're looking at ${stop(label)}`,
+  lookingAtAnnounce: (label: string) => `Looking at ${stop(label)} Esc to go back.`,
   backAnnounce: "Back to your edit",
   backToExport: "Back to your edit to export it.",
   loadFailed: "Couldn't load this version. Try again.",
@@ -451,13 +448,13 @@ export const words = {
   // Toasts (DESIGN §6.7)
   undo: "Undo",
   redo: "Redo",
-  restoredToast: (label: string) => `Restored ${label}. Later changes are in History.`,
+  restoredToast: (label: string) => `Restored ${stop(label)} Later changes are in History.`,
   foldedToast: (n: number, from: string, into: string) => `Folded ${plural(n, "change", "changes")} from “${from}” into ${into}.`,
   switchToCut: (cut: string) => `Switch to ${cut}`,
   onCutNow: (cut: string) => `You're on “${cut}” now.`,
   cutUnchanged: (cut: string) => `${cut} is unchanged.`,
   switchBackTo: (cut: string) => `Switch back to ${cut}`,
-  keptToast: (label: string) => `Kept ${label}.`,
+  keptToast: (label: string) => `Kept ${stop(label)}`,
   tookOutToast: (label: string, n: number) => `Took out ${label} (${plural(n, "change", "changes")}).`,
   restoreUndone: "Restore undone.",
   foldUndone: "Fold undone.",
@@ -466,13 +463,13 @@ export const words = {
   foldedInto: (n: number | null, from: string, into: string) => (n ? `Folded ${plural(n, "change", "changes")} from ${from} into ${into}.` : `Folded ${from} into ${into}.`),
   foldedRestToast: (n: number | null) => (n ? `Folded in the rest: ${plural(n, "change", "changes")}.` : "Folded in the rest."),
   onCutRefNow: (cut: string) => `You're on ${cut} now.`,
-  onCutMadeFrom: (cut: string, from: string) => `You're on “${cut}”, made from ${from}.`,
+  onCutMadeFrom: (cut: string, _from: string) => `You're on “${cut}” now.`,
   restoreRedone: "Restore redone.",
   foldRedone: "Fold redone.",
   pickUndone: (back: string | null) => (back ? `Pick undone. ${back} is back.` : "Pick undone."),
   pickRedone: "Pick redone.",
   turnBack: (label: string) => `${label} is back.`,
-  tookOut: (label: string) => `Took out ${label}.`,
+  tookOut: (label: string) => `Took out ${stop(label)}`,
   stepDone: (which: "undo" | "redo") => (which === "undo" ? "Undone." : "Redone."),
   tookOutAgain: (label: string) => `Took out ${label} again.`,
   // a toast's Undo (or Redo) after something else landed on top: nothing is done (the worker checked)
