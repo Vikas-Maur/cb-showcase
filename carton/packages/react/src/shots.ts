@@ -1,4 +1,4 @@
-// Watch the changes (§9): the shot diff laid out like a side-by-side text diff, and the math behind Play changes and
+// WatchTheChanges (§9): the shot diff laid out like a side-by-side text diff, and the math behind Play changes and
 // the aligned A/B toggle. Pure functions over core's shots() and lcs() output, so they are tested without a DOM.
 
 import type { DiffSummary, Shot, ShotDiff } from "./model.ts";

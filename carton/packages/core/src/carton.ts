@@ -22,11 +22,13 @@ import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type F
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
+import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
   Actor,
   CartonEvent,
   ChangeId,
   Choices,
+  ChangeRow,
   ConflictCard,
   CommitResult,
   ConfirmedChange,
@@ -316,8 +318,19 @@ export interface Carton {
   diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean }): Promise<DiffResult>;
   /** Watch the changes: the shot diff alone. */
   shots(a: StateRef | string, b?: StateRef | string): Promise<ShotDiff>;
-  /** History: versions of a cut, newest first; `summary`: each says what it did in plain words. */
-  log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean }): Promise<Version[]>;
+  /**
+   * History: versions of a cut, newest first; `summary`: each says what it did in plain words. `rows` (with `summary`):
+   * also every change it made as the app's change rows (`changeList`: editor words, where each is in the edit).
+   */
+  log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean; rows?: boolean }): Promise<Version[]>;
+  /**
+   * The records each version of a cut touched (UX redesign PLAN 0.8), oldest first: read from what each change declared
+   * when it was saved (its `paths`, and a compacted change's own ops), never from a diff, so History's "Only “clip”"
+   * filter answers at 10k versions without rebuilding a state. Versions as `log()` lists them (a fold-some is one, its
+   * left-out records not touched; a withdraw row none). `record` (`timelineItems/c1`): only the versions that touched
+   * it. `after`/`upTo`: seqs bounding the range (after < seq ≤ upTo).
+   */
+  touched(opts?: { cut?: string; record?: PathKey; after?: number; upTo?: number }): Promise<{ seq: number; change: ChangeId; author: Actor | null; at: number; records: readonly PathKey[] }[]>;
   /** Name a version ("Sent to client, Monday"). */
   /** Name a version; `author`: who named it (default: this handle's actor). */
   name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
@@ -1506,7 +1519,7 @@ class CartonImpl implements Carton {
     await this.#refresh();
     return this.#h.maker(cut) ?? null;
   }
-  async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
+  async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean; rows?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     await this.#refresh(cut);
@@ -1515,6 +1528,10 @@ class CartonImpl implements Carton {
       // a redo is a revert of an undo: marked, so a list shows it as a redo (laptop: `cb history` listed it as `revert`)
       const c = v.kind === "revert" && v.change ? this.#h.findChange(v.change) : null;
       if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
+      if (v.kind === "restore" && v.change) {
+        const of = this.#h.findChange(v.change)?.restoreOf;
+        if (of) v.restoreOf = of;
+      }
       const who = this.#who(v.author, v.change);
       // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
@@ -1526,7 +1543,7 @@ class CartonImpl implements Carton {
     let lo = versions[versions.length - 1]!.ref.seq;
     if (lo > 1 && completedAt(log, lo - 1)) lo--;
     let doc = E.fork(this.#h.stateOf(nodeId(cut, Math.max(0, lo - 1)))!, this.schema);
-    const words = new Map<number, { summary: string; details?: string[] }>();
+    const words = new Map<number, { summary: string; details?: string[]; rows?: ChangeRow[]; title?: Version["title"]; undoes?: ChangeId[] }>();
     const name = (id: string) => this.#h.cut(id)?.name;
     // "Folded 'Client review' into 'Main cut'": the cut folded in by name (a copy's lineage node has none)
     const foldOf = (m: ConfirmedChange, rest = false) => {
@@ -1542,6 +1559,8 @@ class CartonImpl implements Carton {
     // An undo or a redo of a restore or a fold says so, however often it went back and forth (baseline P3-2, regress
     // prod3 P3-D: the second ⌘Z after a restore read as a fresh edit): back along what each one undid or redid to the
     // restore or fold it began with; an odd number of steps took it back. Others read as what they did.
+    // (the app's words, `title`: what it undid or redid, structured)
+    let undoneAs: Version["title"] | undefined;
     const undid = (c: ConfirmedChange): string | undefined => {
       let n = 0, x = c;
       for (;;) {
@@ -1553,6 +1572,12 @@ class CartonImpl implements Carton {
       const rest = x.kind === "revert";
       const m = x.mergeOf ? x : x.kind === "partial-revert" ? find(x.reverts) : rest ? find(find(x.reverts)?.reverts) : undefined;
       const what = x.kind === "restore" ? "the restore" : m?.mergeOf ? `the fold of ${foldOf(m, rest)}` : "";
+      undoneAs = undefined;
+      if (n && what) {
+        const how = n % 2 ? "undo" : "redo";
+        const from = m?.mergeOf ? name(m.mergeOf.branchId) : undefined;
+        undoneAs = x.kind === "restore" ? { kind: `${how}-restore`, ...(x.restoreOf ? { of: x.restoreOf } : {}) } : { kind: `${how}-fold`, ...(from ? { cut: from } : {}) };
+      }
       return n && what ? `${n % 2 ? "Undid" : "Redid"} ${what}` : undefined;
     };
     let pairBase: Doc | null = null;
@@ -1567,39 +1592,99 @@ class CartonImpl implements Carton {
       // revert's together (described before the walk applies them: apply writes into the walk's state)
       // `n`: its changes, counted against that state too (a fold's and "fold in the rest"'s titles say it)
       let after: Doc, ops: readonly Op[], v: { summary: string; lines: string[] }, n = 0;
+      // the app's change rows (`rows`): the same ops against the same state, in editor words (UX redesign 0.1)
+      let rows: ChangeRow[] | undefined;
       if (pairBase) {
         after = E.apply(E.fork(doc, this.schema), c.ops, this.schema);
         ops = E.diff(pairBase, after, this.schema);
         v = E.describeVersion(ops, pairBase, this.schema);
+        if (opts.rows) rows = E.changeList(ops, pairBase, this.schema);
         n = records(ops, pairBase);
       } else {
         ops = c.ops;
         v = E.describeVersion(ops, doc, this.schema, c.intent);
+        if (opts.rows) rows = E.changeList(ops, doc, this.schema, { intent: c.intent });
         if (c.mergeOf || c.kind === "revert") n = records(ops, doc);
         after = E.apply(doc, c.ops, this.schema);
       }
-      let summary = v.summary, again: string | undefined;
+      let summary = v.summary, again: string | undefined, title: Version["title"] | undefined;
       const merged = pairBase ? find(c.reverts) : c.mergeOf ? c : undefined;
+      const cutOf = (m: ConfirmedChange) => (m.mergeOf ? name(m.mergeOf.branchId) : undefined);
       if (c.kind === "import") summary = "Imported the project"; // the whole project arriving: one line, not its first field
-      else if (merged && pairBase) summary = `${fold(merged)}: ${changes(n, records(merged.ops, pairBase))}`;
-      else if (merged) summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
-      else if (c.kind === "restore") summary = "Restored an earlier version";
-      else if ((c.kind === "undo" || c.kind === "revert") && (again = undid(c))) summary = again;
-      else if (c.kind === "revert") {
+      else if (merged && pairBase) {
+        const total = records(merged.ops, pairBase), from = cutOf(merged);
+        summary = `${fold(merged)}: ${changes(n, total)}`;
+        title = { kind: "fold", ...(from ? { cut: from } : {}), taken: n, total };
+      } else if (merged) {
+        const from = cutOf(merged);
+        summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
+        title = { kind: "fold", ...(from ? { cut: from } : {}), taken: n, total: n };
+      } else if (c.kind === "restore") {
+        summary = "Restored an earlier version";
+        title = { kind: "restore", ...(c.restoreOf ? { of: c.restoreOf } : {}) };
+      } else if ((c.kind === "undo" || c.kind === "revert") && (again = undid(c))) {
+        summary = again;
+        title = undoneAs;
+      } else if (c.kind === "revert") {
         // "Fold in the rest" reverts a partial fold's inverse
         const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;
-        if (m?.mergeOf) summary = `${fold(m, true)}: ${changes(n)}`;
+        if (m?.mergeOf) {
+          summary = `${fold(m, true)}: ${changes(n)}`;
+          const from = cutOf(m);
+          title = { kind: "rest", ...(from ? { cut: from } : {}), taken: n, total: n };
+        }
       }
       if (c.name) summary = c.name;
       const details = c.kind !== "import" && v.lines.length && (v.lines.length > 1 || v.lines[0] !== summary) ? v.lines : undefined;
-      if (summary || details) words.set(s, { summary, ...(details ? { details } : {}) });
+      const undoes = rows && c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
+      if (summary || details || rows) words.set(s, { summary, ...(details ? { details } : {}), ...(rows ? { rows } : {}), ...(rows && title ? { title } : {}), ...(undoes ? { undoes } : {}) });
       doc = after;
       pairBase = null;
     }
     return versions.map((v) => {
       const w = words.get(v.ref.seq);
-      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}) } : v;
+      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}), ...(w.rows ? { rows: w.rows } : {}), ...(w.title ? { title: w.title } : {}), ...(w.undoes ? { undoes: w.undoes } : {}) } : v;
     });
+  }
+  /** The records a change touched, by record (`coll/id`, a root field by name): from its declaration, once per change. */
+  #touchedBy = new WeakMap<ConfirmedChange, readonly PathKey[]>();
+  #recordsOf(c: ConfirmedChange): readonly PathKey[] {
+    let out = this.#touchedBy.get(c);
+    if (out) return out;
+    const keys = new Set<PathKey>();
+    const add = (segs: readonly string[]) => {
+      const [a, b] = segs;
+      if (a === undefined) return;
+      keys.add(this.schema.collections[unescapeSegment(a)] && b !== undefined ? `${a}/${b}` : a);
+    };
+    for (const p of c.paths ?? []) add(p.split("/"));
+    // a compacted change holds its run's ops under its own last declaration: its ops say what the run touched
+    if (c.squashedFrom !== undefined) for (const op of c.ops) if (op.op !== "remap") add(op.path.map((x) => escapeSegment(String(x))));
+    out = [...keys];
+    this.#touchedBy.set(c, out);
+    return out;
+  }
+  async touched(opts: { cut?: string; record?: PathKey; after?: number; upTo?: number } = {}) {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh(cut);
+    const log = this.#h.changes(cut);
+    const hi = Math.min(opts.upTo ?? log.length, log.length), lo = Math.max(0, opts.after ?? 0);
+    const out: { seq: number; change: ChangeId; author: Actor | null; at: number; records: readonly PathKey[] }[] = [];
+    for (let s = lo + 1; s <= hi; s++) {
+      const c = log[s - 1]!;
+      // no version: a withdraw row; a fold-some's fold (its version is the partial revert right after it)
+      if (c.withdrawn || c.squashedInto !== undefined || completedAt(log, s)) continue;
+      let records = this.#recordsOf(c);
+      if (s > 1 && completedAt(log, s - 1)) {
+        // a fold-some's version: what its fold touched, but what it left out
+        const out = new Set((c.rejected ?? []).map((p) => { const [a, b] = p.split("/"); return this.schema.collections[unescapeSegment(a!)] && b !== undefined ? `${a}/${b}` : a!; }));
+        records = this.#recordsOf(log[s - 2]!).filter((k) => !out.has(k));
+      }
+      if (opts.record !== undefined && !records.includes(opts.record)) continue;
+      out.push({ seq: s, change: c.id, author: this.#who(c.author, c.id), at: c.at, records });
+    }
+    return out;
   }
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
   #leftOutN = new Map<string, number>();
@@ -2070,7 +2155,18 @@ class CartonImpl implements Carton {
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, () => ({ doc: this.#h.restoreTarget(target()), author: this.#actor(opts.author), kind: "restore" }));
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
-    return this.#mutate(undefined, () => this.#h.restore(cut, target(), { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    // the restore records which version it brought back (`restoreOf`, a node id; not hashed), so History says which
+    // ("Restored the 11:02 am version", UX redesign 0.2); a held state (a pin's header) is none
+    return this.#mutate(
+      undefined,
+      () => {
+        const t = target();
+        const of = typeof t === "string" ? (/^[^\s~]+@\d+$/.test(t) ? t : null) : t && !t.pending?.length && typeof t.branchId === "string" ? nodeId(t.branchId, t.seq) : null;
+        if (!of || this.#h.confirmedById(opts.id)) return this.#h.restore(cut, t, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) });
+        return this.#h.commit(cut, { doc: this.#h.restoreTarget(t), author: this.#actor(opts.author), kind: "restore", allowEmpty: true, ...(opts.id ? { id: opts.id } : {}), extra: { restoreOf: this.#h.canon(of) } });
+      },
+      { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
+    );
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;

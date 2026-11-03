@@ -61,7 +61,7 @@ test(name("P3: the Fold dialog, the History row and the fold agree: a split left
   const m = await render(h(CartonProvider, { ui }, h(FoldInDialog, { fromCutId: v.id, intoCutId: main, onClose: () => {}, onDone: () => void done++ })));
   await waitFor(() => $$(m.container, ".carton-fold-change").length === 2, "two rows: the split and the rename");
   assert.match(m.container.textContent ?? "", /2 changes/);
-  const split = $$(m.container, ".carton-fold-change").find((r) => /Split 'clip\.mp4'/.test(r.textContent ?? ""))!;
+  const split = $$(m.container, ".carton-fold-change").find((r) => /Split “clip\.mp4”/.test(r.textContent ?? ""))!;
   await click($(split, "input[type=checkbox]"));
   await flush();
   await click(byText(m.container, "button", /^Fold in 1 of 2$/));
@@ -69,8 +69,7 @@ test(name("P3: the Fold dialog, the History row and the fold agree: a split left
   await m.unmount();
   await ui.refresh();
   const p = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 600 })));
-  await waitFor(() => /Folded 'Alt' into 'Main cut'/.test(p.container.textContent ?? ""), "the fold's row");
-  assert.match(p.container.textContent ?? "", /Folded 'Alt' into 'Main cut': 1 of 2 changes/);
+  await waitFor(() => /Folded in “Alt”/.test(p.container.textContent ?? ""), "the fold's row");
   assert.equal((await carton.log({ cut: main, limit: 1 }))[0]!.leftOutChanges, 1, "what cb history says it left out");
   await p.unmount();
   ui.dispose();
@@ -92,7 +91,7 @@ test(name("P3-11, P3-10: Compare and Watch the changes count the same changes; C
   const w = await render(h(CartonProvider, { ui }, h(WatchTheChanges, { a, b, inPlayer: true })));
   await waitFor(() => /changes ·/.test(w.container.textContent ?? ""), "Watch's summary");
   assert.match($(w.container, ".carton-watch-summary")!.textContent ?? "", /^2 changes · /, "the same count as Compare");
-  assert.match($(w.container, ".carton-watch-count")?.textContent ?? "", /^Section 1 of \d+$/, "the counter steps through sections");
+  assert.match($(w.container, ".carton-watch-count")?.textContent ?? "", /^1 of \d+$/, "the counter steps through sections");
   await w.unmount();
   ui.dispose();
 });
