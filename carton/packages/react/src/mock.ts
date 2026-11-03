@@ -169,6 +169,8 @@ export interface MockOptions {
   now?: number;
   /** Two of your newest changes still on their way (offline, "Not sent yet"). Default: false. */
   provisional?: boolean;
+  /** Carton UX v2's landmarks (Exported, Sent, Named, turns, Start, Before), as `landmarks()` answers. Default: none. */
+  landmarks?: boolean;
 }
 
 /** A CartonUi plus the knobs a gallery, test or benchmark needs. */
@@ -192,6 +194,8 @@ export interface MockUi extends CartonUi {
   setShotCount(n: number): void;
   /** How many times `changes`/`changesIn` computed a list (tests: only an open card asks). */
   readonly counts: { changes: number; changesIn: number; clipVersions: number };
+  /** Carton UX v2: turn the mock's landmarks on or off (topic "landmarks" fires). */
+  setLandmarks(on: boolean): void;
 }
 
 const MIN = 60_000;
@@ -711,6 +715,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       notify: (t) => hub.notify(t),
       me: people.alice,
       now: now0,
+      landmarks: !!opts.landmarks,
     }),
 
     addVersion,

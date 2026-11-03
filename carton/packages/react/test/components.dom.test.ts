@@ -124,8 +124,6 @@ test(name("narrow subscriptions: ghosts and presence never touch History; a sync
     ),
   );
   const hist = $(m.container, "#hist")!, people_ = $(m.container, "#people")!;
-  // (Carton UX v2: the landmarks and their pictures arrive after mount, one at a time: let them land first)
-  for (let i = 0; i < 40 && (await mutationsDuring(hist, () => act(() => new Promise<void>((r) => setTimeout(r, 30)))) > 0); i++);
   // 50 ghost moves: neither History nor the avatars change.
   const touched = await mutationsDuring(hist, async () => {
     const pm = await mutationsDuring(people_, async () => {

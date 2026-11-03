@@ -6,7 +6,7 @@
 export function addN2(S, { ux }) {
   // History's story (after/history-*.png), with the mock's landmarks: the fold an hour ago was exported (1080p for the
   // client), "Sent to client" was shared with Leo, each day's first version is its start, the restore's safety point
-  S["n2-history"] = ux();
+  S["n2-history"] = ux((ui) => ui.setLandmarks(true));
   // The same with nothing selected on the timeline (Go back… then opens with nothing picked)
-  S["n2-noclip"] = () => ({ ...ux()(), clip: null });
+  S["n2-noclip"] = () => ({ ...ux((ui) => ui.setLandmarks(true))(), clip: null });
 }

@@ -955,7 +955,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
   // a landmark's picture, made when the stage shows its version: held, viewed (not "before" it), or your edit while it
   // is that version (DESIGN-V2 §2.2); never while something plays or loads
-  useStagePictures({ marks, shownId: peek.holding ?? (shown ? (shown.kind === "version" ? (shown.versionId ?? null) : null) : viewing ? null : newestId), busy: playOn, capture: props.capturePicture ?? props.play?.picture });
+  // (what the stage shows, by the host's stage: a peek's version too, once it is on screen)
+  useStagePictures({ marks, shownId: shown ? (shown.kind === "version" ? (shown.versionId ?? null) : null) : viewing ? null : newestId, busy: playOn, capture: props.capturePicture ?? props.play?.picture });
 
   const renderRow = (i: number): ReactNode => {
     const r = rows?.[i];
@@ -1000,7 +1001,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       query: searching ? query : undefined,
       picking: !!pick,
       pickFrom: !!pick?.from && pick.from.id === v.id,
-      holding: peek.holding === v.id,
+      // "Holding" once the stage shows it (the host's stage: never while it still loads, as Viewing; design QA G1)
+      holding: peek.holding === v.id && viewedId === v.id,
     });
     // the same shape open or closed (the row, then its card or nothing), so opening the card keeps the row's own DOM
     if (!isOpen) return h(Fragment, null, row, null);
@@ -1129,7 +1131,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         ...filterChoices.flatMap((f) => [
           h(MenuItem, { key: f, checked: filter === f && !marksOnly, onSelect: () => (setMarksOnly(false), pickFilter(f)) }, words.filters[f]),
           // Landmarks, second after All versions (DESIGN-V2 §2.5): the story of the project in a screenful
-          f === "all" && typeof ui.landmarks === "function"
+          f === "all" && marks.ids.size > 0
             ? h(MenuItem, { key: "landmarks", checked: marksOnly, title: words.landmarksFilterHint, onSelect: () => (pickFilter("all"), setMarksOnly(true)) }, words.landmarksFilter)
             : null,
         ]),
@@ -1240,7 +1242,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     ),
     props.actions ?? null,
     // the search field, always shown under the cut bar (DESIGN-V2 §2.3), once there is something to find
-    typeof ui.find === "function" && !nothing ? h(SearchBox, { ref: search, onQuery: setQuery, onDown: toList }) : null,
+    typeof ui.find === "function" && !nothing ? h(SearchBox, { handle: search, onQuery: setQuery, onDown: toList }) : null,
     pick ? h(PickLine, { pick, onCompare: compareTo, onLeave: () => setPick(null) }) : null,
     filter !== "all" || marksOnly
       ? h(

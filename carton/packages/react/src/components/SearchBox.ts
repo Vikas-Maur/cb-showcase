@@ -6,7 +6,7 @@
 // runs from the second letter, 90 ms after the last key, the newest answer winning (an older one that comes back late
 // is dropped). An empty field warms the engine's index when it gets focus, so the first search is quick.
 
-import { createElement as h, Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createElement as h, Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useCartonUi, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { FindHit, FindHits } from "../model.ts";
@@ -63,9 +63,11 @@ export interface SearchBoxHandle {
 
 /**
  * The field. `onQuery` gets the text 90 ms after the last key (at once when it's cleared). Esc clears it; Esc in an
- * empty field goes on to the panel (a second Esc closes History, as before). ↓ goes to the list.
+ * empty field goes on to the panel (a second Esc closes History, as before). ↓ goes to the list. `handle` is filled
+ * with focus and clear for the panel (Ctrl+F, Clear search): a plain object, since the app's React (scripts/carton/
+ * react-shim.js, the editor's own) offers no useImperativeHandle.
  */
-export const SearchBox = forwardRef<SearchBoxHandle, { onQuery: (q: string) => void; onDown?: () => void; trailing?: ReactNode }>(function SearchBox(p, ref) {
+export function SearchBox(p: { onQuery: (q: string) => void; onDown?: () => void; trailing?: ReactNode; handle?: { current: SearchBoxHandle | null } }) {
   const ui = useCartonUi();
   const words = useWords();
   const [value, setValue] = useState("");
@@ -84,7 +86,12 @@ export const SearchBox = forwardRef<SearchBoxHandle, { onQuery: (q: string) => v
     setValue("");
     send("", true);
   }, [send]);
-  useImperativeHandle(ref, () => ({ focus: () => input.current?.focus({ preventScroll: true }), clear }), [clear]);
+  const handle = p.handle;
+  useEffect(() => {
+    if (!handle) return;
+    handle.current = { focus: () => input.current?.focus({ preventScroll: true }), clear };
+    return () => void (handle.current = null);
+  }, [handle, clear]);
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Escape" && value) {
       e.preventDefault();
@@ -125,7 +132,7 @@ export const SearchBox = forwardRef<SearchBoxHandle, { onQuery: (q: string) => v
     value ? h("button", { type: "button", className: "carton-search-x", "aria-label": words.clearFind, "data-carton-tip": words.clearFind, onClick: () => (clear(), input.current?.focus({ preventScroll: true })) }, h(Icon, { name: "x", size: 11 })) : null,
     p.trailing ?? null,
   );
-});
+}
 
 const fold = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 

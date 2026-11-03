@@ -19,7 +19,7 @@ const noon48 = () => {
   d.setHours(12, 48, 0, 0);
   return d.getTime();
 };
-const story = (o: { versions?: number } = {}) => createMockUi({ versions: o.versions ?? 8, now: noon48() });
+const story = (o: { versions?: number } = {}) => createMockUi({ versions: o.versions ?? 8, now: noon48(), landmarks: true });
 const row = (root: HTMLElement, text: string | RegExp) => $$(root, ".carton-version").find((r) => (typeof text === "string" ? r.textContent?.includes(text) : text.test(r.textContent ?? ""))) ?? null;
 const wait = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 const menuOf = async (root: HTMLElement, text: string) => {
@@ -382,7 +382,7 @@ test(name("typing in the search field touches nothing in the list until the sear
 });
 
 test(name("12,000 versions with landmarks, searched and filtered to landmarks: only the rows on screen are in the DOM"), async () => {
-  const ui = createMockUi({ versions: 12_000, seed: 3 });
+  const ui = createMockUi({ versions: 12_000, seed: 3, landmarks: true });
   const m = await render(wrap(ui, h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 }))));
   await flush();
   const max = Math.ceil(600 / 32) + 1 + 2 * 6;

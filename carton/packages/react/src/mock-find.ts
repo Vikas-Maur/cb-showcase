@@ -18,6 +18,8 @@ export interface MockFindState {
   notify(topic: "landmarks" | "history"): void;
   me: Actor;
   now: number;
+  /** Landmarks on at first (`setLandmarks` turns them on or off). */
+  landmarks: boolean;
 }
 
 const fold = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -40,6 +42,7 @@ export function mockFind(st: MockFindState) {
   const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
   const who = (a: Actor) => actorLabel(a, st.actor, "You");
   const pictures = new Map<string, string>();
+  let marking = st.landmarks;
   // the landmarks a session recorded (Exported, Sent): by version id
   const recorded = new Map<string, { kind: Landmark["kind"]; label?: string; by?: Actor }[]>();
   let made = 0;
@@ -61,6 +64,7 @@ export function mockFind(st: MockFindState) {
   };
 
   const landmarks = async (o: { kinds?: readonly Landmark["kind"][]; limit?: number } = {}): Promise<readonly Landmark[]> => {
+    if (!marking) return [];
     seed();
     const all = st.all();
     const out: Landmark[] = [];
@@ -195,5 +199,9 @@ export function mockFind(st: MockFindState) {
     }
     return { ...out, same: 14 };
   };
-  return { find, landmarks, restoreClip, bringBackChoices, landmarkPicture, saveLandmarkPicture, mark };
+  const setLandmarks = (on: boolean) => {
+    marking = on;
+    st.notify("landmarks");
+  };
+  return { find, landmarks, restoreClip, bringBackChoices, landmarkPicture, saveLandmarkPicture, mark, setLandmarks };
 }

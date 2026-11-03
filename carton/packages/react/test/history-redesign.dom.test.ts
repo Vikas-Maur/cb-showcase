@@ -195,8 +195,6 @@ test(name("each filter's empty list says what would appear there"), async () => 
 
 test(name("rows: Now on the newest, prompts in quotes, a named version, a group of your changes, a fold's 2 of 3, each agent's mark, one start row"), async () => {
   const ui = story();
-  // (the rows' own anatomy, without Carton UX v2's landmarks, which tag some of them: history-v2.dom.test.ts has those)
-  delete (ui as { landmarks?: unknown }).landmarks;
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 2000 })));
   await flush();
   const claude = row(m.container, "Tighten the intro")!;

@@ -48,14 +48,14 @@ if (process.argv.includes("--cell")) {
 // ------------------------------------------------------------ the runner
 const runs = Number(arg("--runs", "3"));
 const only = (arg("--only", "idle,list,live,play") ?? "").split(",");
-// (Carton UX v2 search, N2: not in the default set; --only find)
-if (only.includes("find")) cells.push({ kind: "find", n: 12_000, word: "interview" });
 const cells = [];
 if (only.includes("idle")) cells.push({ kind: "idle", seconds: 5 });
 if (only.includes("list"))
   for (const [n, full] of [[10_000, false], [100_000, false], [10_000, true]]) cells.push({ kind: "list", n, full });
 if (only.includes("live")) cells.push({ kind: "live", seconds: 8, vps: 10, burst: 5 });
 if (only.includes("play")) for (const changes of [26, 2000]) cells.push({ kind: "play", changes, seconds: 8 });
+// (Carton UX v2 search, N2: not in the default set; --only find)
+if (only.includes("find")) cells.push({ kind: "find", n: 12_000, word: "interview" });
 
 mkdirSync(dirname(out), { recursive: true });
 for (let r = 0; r < runs; r++)

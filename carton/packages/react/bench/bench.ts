@@ -206,7 +206,7 @@ async function play(n: number, seconds: number) {
  */
 async function find(n: number, word: string) {
   await hookPreact();
-  const ui = createMockUi({ versions: n, seed: 1 });
+  const ui = createMockUi({ versions: n, seed: 1, landmarks: true });
   let findMs = 0;
   const find0 = ui.find!.bind(ui);
   ui.find = async (q, o) => {
