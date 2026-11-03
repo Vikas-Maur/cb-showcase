@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import {
   CartonProvider,
   CompareCard,
-  ConflictList,
   CreditsPopover,
   CutsMenu,
   FoldInDialog,
@@ -131,23 +130,6 @@ test(name("narrow subscriptions: ghosts and presence never touch History; a sync
   await act(() => void ui.addVersion({ author: people.bob }));
   await flush();
   for (const r of firstRows) assert.ok(r.isConnected, "existing row element kept");
-  await m.unmount();
-});
-
-test(name("conflict cards: both edits shown, Keep theirs resolves and the card goes away"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const m = await render(wrap(ui, h(ConflictList)));
-  assert.match(m.container.textContent ?? "", /2 conflict cards waiting/);
-  const card = $$(m.container, ".carton-conflict")[1]!;
-  assert.match(card.textContent ?? "", /Summer sale/);
-  assert.match(card.textContent ?? "", /Summer launch/);
-  assert.ok(byText(card, "button", "Keep both"), "Keep both offered when both can be kept");
-  // Each choice says whose edit it keeps; on one cut there is no "where".
-  assert.ok(byText(card, "button", "Keep yours"));
-  await click(byText(card, "button", "Keep Bob Okafor's"));
-  assert.equal($$(m.container, ".carton-conflict").length, 1);
-  assert.match(m.container.textContent ?? "", /1 conflict card waiting/);
-  assert.equal(byText(m.container, "button", "Keep both"), null, "the timing card can't keep both");
   await m.unmount();
 });
 

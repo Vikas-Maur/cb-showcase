@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -42,13 +42,14 @@ function confirmations(ui) {
     }
     return r;
   };
+  // A conflict card's pick names what was kept, as the card named it (docs/carton-ux DESIGN §6.7): "Kept Claude Code's
+  // move of “Interview B”." No Undo on it yet (PLAN 5.3): a pick of the side already shown commits nothing, so the
+  // editor's undo would take back an earlier change instead.
   const resolve = ui.resolve.bind(ui);
   ui.resolve = async (id, choice) => {
     const c = ui.conflicts().find((x) => x.id === id);
     await resolve(id, choice);
-    if (!c) return;
-    const who = choice === "both" ? null : actorLabel((choice === "mine" ? c.mine : c.theirs).author, ui.actor.bind(ui), words.you);
-    toasts.show(choice === "both" ? `Kept both · ${c.title}` : `Kept ${who === words.you ? "yours" : `${who}'s`} · ${c.title}`);
+    if (c) toasts.show(keptText(c, choice, ui.actor.bind(ui)));
   };
 }
 
@@ -471,10 +472,14 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
+  // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the side's timeline, read-only, with the card's clip in view,
+  // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
+  // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
+  // "conflict"}) reaches the editor: the worker's view() (Workstream 0, PLAN 0.5) and the stage frame that shows its
+  // label (Workstream 1). Then this goes, and the card calls ui.view itself.
   const onPreview = useCallback(async (conflict, side, label) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
-    if (!ref) return;
-    // the side's timeline, read-only, with the card's clip in view, so the difference is on screen
+    if (!ref) throw new Error(words.loadFailed);
     await conn.ui.openPreview(ref, label);
     if (conflict.item) bridge.reveal(conflict.item);
   }, [conn, bridge]);

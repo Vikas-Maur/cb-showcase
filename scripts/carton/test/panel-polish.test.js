@@ -74,15 +74,22 @@ test("P2-4: Fold in says what went where, and offers to switch to the cut it wen
   assert.equal(T.toasts.value, null);
 });
 
-test("P2-4: a conflict card's pick says whose edit was kept", opt, async () => {
+test("P2-4: a conflict card's pick says whose change was kept, as the card named it (docs/carton-ux DESIGN §6.7)", opt, async () => {
   const ui = fakeUi();
   T.confirmations(ui);
+  const [plain] = ui.conflicts();
+  ui.conflicts = () => [{ ...plain, clip: "W6", mine: { ...plain.mine, what: "move" }, theirs: { ...plain.theirs, what: "move" } }];
   await ui.resolve("c1", "theirs");
-  assert.equal(T.toasts.value.text, "Kept Claude Code's · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's move of “W6”.");
   await ui.resolve("c1", "mine");
-  assert.equal(T.toasts.value.text, "Kept yours · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept your move of “W6”.");
   await ui.resolve("c1", "both");
-  assert.equal(T.toasts.value.text, "Kept both · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept both changes to “W6”.");
+  // a host that gives the card no sentences: who, still
+  ui.conflicts = () => [plain];
+  await ui.resolve("c1", "theirs");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's edit.");
+  assert.ok(!T.toasts.value.action, "no Undo yet (PLAN 5.3): a pick of the side shown commits nothing to undo");
 });
 
 // A teammate as Live.view() sends one (sync/live.js peerActor).
