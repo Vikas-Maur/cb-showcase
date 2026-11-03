@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, TeammateCutActions, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -173,13 +173,16 @@ function useFit(ref, preferred) {
 }
 
 /**
- * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
- * Fold in: all, some or none of it), then the versions, Compare with current, and "Watch the changes" in their place.
+ * History in the side panel: the cut it shows, with the cuts menu (switch, a switch that waits for an agent's turn, New
+ * cut, Rename, "Fold in changes from a cut…", which opens Fold in: from a cut into a cut, all, some or none of it); on a
+ * teammate's cut, what you can do with it (fold it into yours, or copy it as a new cut: UX redesign PLAN 6.2); then
+ * the versions, Compare with current, and "Watch the changes" in their place.
  */
 function HistorySide({ bridge }) {
   const cuts = useCuts();
   const [watch, setWatch] = useState(null);
   const [fold, setFold] = useState(null);
+  const openFold = useCallback((from, into) => setFold({ from: from.id, into: into.id }), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
   // Back from Watch the changes: focus goes to the version list, not to <body>.
@@ -210,7 +213,8 @@ function HistorySide({ bridge }) {
       h(WatchTheChanges, { a: watch.a, b: watch.b, inPlayer: true, onFrame }));
   }
   return h("div", { ref: box, className: "carton-sidebar-history" },
-    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) })),
+    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: openFold })),
+    h(TeammateCutActions, { onFoldIn: openFold }),
     h(HistoryPanel, { currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }

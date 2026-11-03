@@ -235,6 +235,13 @@ export interface Cut {
   readonly updatedAt: number;
   /** "Shared" cuts sync through the server; the others live on this computer. */
   readonly shared?: boolean;
+  /** Who made its newest version (the cuts menu's "Director · 2 h ago", DESIGN §6.3), when known. */
+  readonly updatedBy?: Actor;
+  /**
+   * Its colour dot (DESIGN §4.1): every cut but Main has one, the same in the title bar's chip, the cuts menu and the
+   * History cut bar. None for Main cut. A host that leaves it out gets `cutColor()`'s (cuts.ts) from the id.
+   */
+  readonly color?: string;
 }
 
 /** The three status words of §0.1 / §13, plus "not shared" (nothing is shown). */
@@ -400,11 +407,28 @@ export interface FoldChange {
    * the same id fold in together, or stay left out together.
    */
   readonly leftOut?: string;
+  /** When that earlier partial fold left it out (ms since the epoch): "Left out on Oct 30". */
+  readonly leftOutAt?: number;
+  /**
+   * The change as a change row (PLAN 0.1, DESIGN §6.4): its place in the edit, the kind of clip and what happened, for
+   * the Fold dialog's rows. `summary` stays the sentence; without this the row shows the sentence alone.
+   */
+  readonly change?: Change;
+}
+
+/** How the two cuts of a fold are related (DESIGN §6.4's line): one was made from the other, at `at`. */
+export interface FoldMade {
+  /** "from": the cut folded in was made from the cut it goes into; "into": the other way round. */
+  readonly which: "from" | "into";
+  /** When it was made (ms since the epoch). */
+  readonly at: number;
 }
 
 export interface FoldPlan {
   readonly from: Cut;
   readonly into: Cut;
+  /** How the cuts are related, when one was made from the other ("since it was made from Main cut at 12:20 pm"). */
+  readonly made?: FoldMade;
   readonly changes: readonly FoldChange[];
   readonly conflicts: readonly Conflict[];
   /** Soft-validator warnings on the result: overlaps, gaps, missing media (§4.1). */

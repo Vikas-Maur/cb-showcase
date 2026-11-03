@@ -284,6 +284,10 @@ export interface MenuButtonProps {
   /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
   ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
+  /** Filled with a function that opens the menu (focus goes into it): a host can open it from elsewhere (the cuts menu). */
+  openRef?: { current: (() => void) | null };
+  /** A class on the menu itself. */
+  menuClassName?: string;
 }
 
 /** A button that opens a menu below it. */
@@ -304,6 +308,7 @@ export function MenuButton(p: MenuButtonProps) {
     setOpen(false);
     btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
+  if (p.openRef) p.openRef.current = () => setOpen(true);
   return h(
     "div",
     { className: "carton-menu-anchor", "data-align": p.align ?? "start" },
@@ -328,7 +333,7 @@ export function MenuButton(p: MenuButtonProps) {
       },
       p.trigger,
     ),
-    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current] }, p.children(close))) : null,
+    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current], className: p.menuClassName }, p.children(close))) : null,
   );
 }
 

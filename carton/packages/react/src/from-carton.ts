@@ -26,6 +26,7 @@ import type {
   UndoEntry,
   Version as CoreVersion,
 } from "@carton/core";
+import { cutColors } from "./cuts.ts";
 import { TopicHub } from "./hub.ts";
 import { itemFilter } from "./item-filter.ts";
 import type {
@@ -693,8 +694,21 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         head: head ? `${c.id}@${head.ref.seq}` : `${c.id}@0`,
         updatedAt: head?.at ?? c.at ?? 0,
         shared: c.sequencer.kind !== "local",
+        // who made its newest version (the cuts menu's "Director · 2 h ago", PLAN 6.1)
+        ...(head?.author ? { updatedBy: ui(head.author) } : {}),
       };
-      out.push(prev && sameCut(prev, next) ? prev : next);
+      out.push(next);
+    }
+    // Every cut but Main its colour dot (PLAN 6.1): your cuts in the order they were made, a teammate's its owner's
+    const colors = cutColors(out, (id) => {
+      const owner = visible.find((c) => c.id === id)?.owner;
+      return owner && !mine.has(owner) ? ui({ kind: "human", id: owner }) : undefined;
+    });
+    for (let i = 0; i < out.length; i++) {
+      const color = colors.get(out[i]!.id);
+      const next = color ? { ...out[i]!, color } : out[i]!;
+      const prev = cuts.find((x) => x.id === next.id);
+      out[i] = prev && sameCut(prev, next) ? prev : next;
     }
     if (out.length !== cuts.length || out.some((c, i) => c !== cuts[i])) {
       cuts = out;
@@ -1179,6 +1193,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return p;
   };
 
+  /**
+   * How a fold's two cuts are related, for the dialog's line (PLAN 6.3): one made from the other (its fork point is on
+   * the other's line), when. Read from the cuts as last listed; nothing when neither was made from the other.
+   */
+  const madeOf = (fromId: string, intoId: string): { made?: FoldPlan["made"] } => {
+    const rec = (id: string) => records.find((c) => c.id === id);
+    const forkedFrom = (id: string) => rec(id)?.forkOf?.slice(0, rec(id)!.forkOf!.lastIndexOf("@"));
+    const f = rec(fromId), i = rec(intoId);
+    if (f?.at != null && forkedFrom(fromId) === intoId) return { made: { which: "from", at: f.at } };
+    if (i?.at != null && forkedFrom(intoId) === fromId) return { made: { which: "into", at: i.at } };
+    return {};
+  };
+
   // Cards of the last fold plan, by path: the fold's choices and "Keep both" read the real cards, not placeholders.
   const planCards = new Map<string, ConflictCard>();
   // What earlier partial folds of the plan's cut left out (UI audit P1-4): each partial fold's inverse change → its rows.
@@ -1292,7 +1319,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
-        out.push({ id, summary: engine.describe(ops, doc, schema, null, names).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
+        out.push({ id, summary: engine.describe(ops, doc, schema, null, names).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change, leftOutAt: p.at });
       }
       if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
@@ -1380,7 +1407,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       planJoined.clear();
       planNew = false;
       planFor = planKey(fromId, intoId);
-      const base = { from, into, changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
+      const base = { from, into, ...madeOf(fromId, intoId), changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
       if (r.status === "up-to-date") {
         const rest = await leftOutRows(fromId, intoId);
         return rest.length ? { ...base, changes: rest } : base;
@@ -1754,7 +1781,7 @@ function mapSync(status: string, waiting: number): SyncStatus {
 }
 
 function sameCut(a: Cut, b: Cut): boolean {
-  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared;
+  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared && a.color === b.color && a.updatedBy?.key === b.updatedBy?.key;
 }
 
 function samePublished(a: Published | null, b: Published | null): boolean {

@@ -41,7 +41,24 @@ export {
 } from "./hooks.ts";
 export { Avatar, ActorName, HoverMore, Button, Dialog, MenuButton, MenuItem, MenuList, MenuSeparator, MenuLabel, InlineName } from "./components/ui.ts";
 export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./components/HistoryPanel.ts";
-export { CutsMenu, type CutsMenuProps } from "./components/CutsMenu.ts";
+export { CutsMenu, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";
+// The cuts' shared parts (PLAN 6.1, 2.2): colours, names in sentences, the queued switch, and opening the menu from the chip
+export {
+  CUT_COLORS,
+  cutColor,
+  cutColors,
+  cutRef,
+  isMainCut,
+  homeCut,
+  rememberHome,
+  switchWhenDone,
+  queuedSwitch,
+  queuedSwitchError,
+  subscribeQueuedSwitch,
+  cancelQueuedSwitch,
+  openCutsMenu,
+  type QueuedSwitch,
+} from "./cuts.ts";
 export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";

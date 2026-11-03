@@ -231,6 +231,8 @@ export const words = {
   viewOnly: "View only",
   cutWho: (who: string, when: string) => `${who} · ${when}`,
   now: "now",
+  // A moment in a short list (the cuts menu, the Fold dialog's rows): "now", "4 min ago", "2 h ago", "11:02 am", "yesterday", "Oct 30"
+  yesterdayShort: "yesterday",
   workingNow: "working now",
   newCutFromYourEdit: "New cut from your edit",
   foldInFromCut: "Fold in changes from a cut…",
@@ -240,6 +242,17 @@ export const words = {
   workingOnCut: (agent: string, cut: string) => `${agent} is working on ${cut}, and agents work on the cut you're on.`,
   switchWhenDone: "Switch when it finishes",
   switchNow: "Switch now",
+  // A switch waiting for an agent's turn to end (PLAN 6.1): said under the cut bar until it runs, with a way out
+  switchQueued: (cut: string, agent: string) => `Switches to ${cut} when ${agent} finishes.`,
+  switchQueuedRow: (agent: string) => `Switches when ${agent} finishes`,
+  dontSwitch: "Don't switch",
+  // More than 12 cuts: a search field at the top of the menu
+  findCut: "Find a cut",
+  noCutMatches: "No cut has that name.",
+  // A teammate's cut, viewed (DESIGN §6.3): what you can do with it, above its History
+  foldIntoCut: (cut: string) => `Fold into ${cut}…`,
+  newCutFromIt: "New cut from it",
+  teammateCut: (label: string) => `You're looking at ${label}. You can fold it in or copy it as a new cut; it stays as its owner left it.`,
 
   // History head and filter
   comments: "Comments",
@@ -368,6 +381,18 @@ export const words = {
   foldUndoLine: "Ctrl+Z takes the whole fold back.",
   foldInN: (n: number) => `Fold in ${plural(n, "change", "changes")}`,
   alreadyHas: (into: string, from: string) => `${into} already has everything from “${from}”.`,
+  // The dialog's line with names as cutRef() gives them (Main cut bare, any other cut in curly quotes): the one made from
+  // the other, or neither (PLAN 6.3)
+  foldLine: (into: string, from: string, parent: string, when: string) => `${into} gets what changed on ${from} since it was made from ${parent} ${when}.`,
+  // A moment after a noun ("made from Main cut at 12:20 pm"), from clock()'s "12:20 pm", "yesterday at 4:10 pm", "Oct 30 at 4:10 pm"
+  atMoment: (clock: string, day: "today" | "yesterday" | "other") => (day === "today" ? `at ${clock}` : day === "yesterday" ? clock : `on ${clock}`),
+  foldLinePlain: (into: string, from: string) => `${into} gets what changed on ${from}.`,
+  // Only what an earlier partial fold left out is left to fold (DESIGN §6.4, after/fold-rest.png)
+  foldRestLine: (n: number, day: string) => `${plural(n, "change was", "changes were")} left out when you folded this cut in on ${day}. ${n === 1 ? "It" : "They"} can come in now.`,
+  foldRestLinePlain: (n: number) => `${plural(n, "change was", "changes were")} left out when you folded this cut in. ${n === 1 ? "It" : "They"} can come in now.`,
+  // A conflict's sides in the dialog: "Main cut's: starts at 0:18" · who
+  cutsSide: (cut: string, what: string) => `${cut}'s: ${what}`,
+  bothCutsChanged: (title: string) => `Both cuts changed ${title}. Pick one:`,
 
   // Toasts (DESIGN §6.7)
   undo: "Undo",
