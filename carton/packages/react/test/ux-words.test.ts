@@ -129,10 +129,10 @@ test("0.4: a person's run of edits is one row, at most 10 min apart; a named ver
   // the start rows merge into one, at the bottom, with no menu (its own row kind)
   const start = rows.at(-1) as Extract<HistoryRow, { kind: "start" }>;
   assert.deepEqual([start.kind, start.imported, start.id], ["start", false, "root"]);
-  // an open group lists its versions under it, as children
+  // an open group lists its older versions under it, as children: its newest is its own row (design QA G10)
   const open = groupHistory(all, () => false, { group: true, open: (k) => k === top.key });
-  assert.deepEqual(keys(open).slice(1, 4), ["[m5,m4]", "m5", "m4"]);
-  assert.ok(open.slice(2, 4).every((x) => x.kind === "version" && x.child));
+  assert.deepEqual(keys(open).slice(1, 4), ["[m5,m4]", "m4", "[leo2,leo1]"]);
+  assert.ok(open[2]!.kind === "version" && open[2]!.child);
   // without `group`, the day groups alone, as before
   assert.equal(groupHistory(all, () => false).filter((x) => x.kind === "version").length, all.length);
   // an imported project's start: "History starts here"

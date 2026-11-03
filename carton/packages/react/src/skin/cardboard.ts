@@ -250,6 +250,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-clip-credits-name){margin-bottom:2px;font-weight:500;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-history-list){outline:none;padding-bottom:8px;scrollbar-width:thin;scrollbar-color:#ffffff1f transparent}
 :where(${S}) :where(.carton-vrow){padding:0 4px}
+/* each row is its own layer (translateY), and a later row draws over an earlier one: the hovered row on top, so a
+   tooltip that reaches below it (Undo this turn's two lines) is never under the next row (design QA G6) */
+:where(${S}) :where(.carton-vrow:hover){z-index:1}
 /* a row (56 px): who, what, when; then who · how many changes */
 :where(${S}) :where(.carton-version){position:relative;display:grid;grid-template-columns:22px minmax(0,1fr) auto;grid-template-rows:18px 16px;align-content:center;column-gap:8px;row-gap:3px;
   padding:0 12px;border-radius:8px;cursor:default;transition:background-color var(--cb-fast)}

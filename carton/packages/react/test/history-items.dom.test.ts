@@ -50,7 +50,8 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   assert.equal($$(m.container, ".carton-version")[0]!.getAttribute("aria-expanded"), "true");
   // every change, one change row each, from the engine (PLAN 0.1: changesIn), in timeline order, with its place
   const items = $$(m.container, ".carton-card-version .carton-change-words").map((li) => li.textContent);
-  assert.deepEqual(items, ["Moved “A” 2 s later (now starts at 0:02)", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
+  // (a move's "(now starts at 0:02)" is the row's own time again, so it goes: design QA G14)
+  assert.deepEqual(items, ["Moved “A” 2 s later", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
   assert.deepEqual($$(m.container, ".carton-card-version .carton-change-time").map((t) => t.textContent), ["0:02", "0:05", "0:10"]);
   // the rows below make room: the next row starts below the card
   const vrows = $$(m.container, ".carton-vrow");
