@@ -189,6 +189,55 @@ export interface OpenCompare {
   readonly request: string;
 }
 
+// ------------------------------------------------------------ Carton UX v2 (N1): Compare in the editor
+
+/** How the stage shows the two sides (DESIGN-V2 §1.3): two players, a wipe, or a flip (hold B). */
+export type CompareMode = "side" | "wipe" | "flip";
+
+/**
+ * One side of a comparison, named once (DESIGN-V2 §1.7: the chip, the players' labels and the panel's range line say
+ * the same). `left` is the other version or the other cut; `right` is what the editor's timeline shows (your edit, or
+ * the cut you're on, whenever it is one of the two).
+ */
+export interface CompareEnd {
+  /** The state (History's `Version.ref`, of any cut). */
+  readonly ref: string;
+  /** In a sentence: "“Sent to client”", "your edit", "Main cut", "“30s Instagram cut”", "Leo's Main cut". */
+  readonly label: string;
+  /** Its player's bold part and what follows: "Sent to client" · "yesterday at 4:10 pm"; "Your edit now". */
+  readonly title: string;
+  readonly detail?: string;
+  /** The cut it is on (`Cut.id`), when known. */
+  readonly cutId?: string;
+  /** Your edit now: the newest state of the cut you're on (the editor shows it, read-only while comparing). */
+  readonly you?: boolean;
+  /** History's row, when it is one of the current cut's versions. */
+  readonly versionId?: string;
+}
+
+/** What is being compared (`CartonUi.comparing()`): its two sides, the mode shown, and who opened it. */
+export interface Comparing {
+  readonly left: CompareEnd;
+  readonly right: CompareEnd;
+  readonly mode: CompareMode;
+  /** The two sides are on different cuts: the count says "differences", the sentences where a clip is (§1.12). */
+  readonly acrossCuts: boolean;
+  /** An agent opened it (`OpenCompare.byName`): its toast named it, and History closes again on exit if it opened it. */
+  readonly by?: string;
+}
+
+/** `openCompare`'s options. */
+export interface OpenCompareOptions {
+  /** Start in this mode (else the one last picked; the stage's width rule wins, §1.3). */
+  readonly mode?: CompareMode;
+  /** Put both players here: seconds on the right side's time (a card's ⇆ Side by side, at the spot it was playing). */
+  readonly at?: number;
+  /** An agent's request (`OpenCompare`): who asked, in words; the page opens it only when the person is idle (§1.13). */
+  readonly by?: string;
+  /** An agent's request id: each is shown once. */
+  readonly request?: string;
+}
+
 /** What kind of clip a change is about, shown in Cardboard's own timeline colours (DESIGN §5.1). */
 export type ClipKind = "video" | "title" | "caption" | "audio" | "image" | "code" | "project";
 /** What happened to it: the change row's corner mark (green +, red −, amber dot). */
@@ -716,4 +765,21 @@ export interface CartonUi {
   landmarkPicture?(key: string): Promise<string | null>;
   /** Keep a landmark's picture (a `data:image/jpeg` URL, at most 64 KB), made from the stage the first time it shows. */
   saveLandmarkPicture?(key: string, jpeg: string): Promise<void>;
+
+  // Carton UX v2 (N1): Compare in the editor. The host's (the app's page: scripts/carton/compare.js), not the worker's:
+  // optional, and a host without them keeps the panel's own Changes view.
+  /**
+   * Compare two states on the stage, the timeline and the panel (DESIGN-V2 §1). `from` and `to` are refs of any cut
+   * (History's `Version.ref`; a `Cut.id` is that cut's head; `null`/absent `to` is your edit now). The sides are put
+   * the right way round (§1.1): your edit, or the cut you're on, goes right; of two versions of one cut the older goes
+   * left. Opening it ends viewing; opening it again replaces the comparison. Resolves once it is shown (the stage
+   * swapped); rejects when a side can't be loaded, and nothing changed then.
+   */
+  openCompare?(from: string, to?: string | null, opts?: OpenCompareOptions): Promise<void>;
+  /** Done comparing (Esc, the chip's ✕, ← History): your edit again, on the cut you were on. */
+  closeCompare?(): Promise<void>;
+  /** What is compared, or null. Its changes: `onCompare`. */
+  comparing?(): Comparing | null;
+  /** Told when `comparing()` changes. */
+  onCompare?(f: () => void): () => void;
 }

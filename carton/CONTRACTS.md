@@ -454,6 +454,24 @@ or no holder: an `open` never starts a helper).
   (refs as History's `Version.ref`; a cut id is that cut's head). N1's `openCompare` in the renderer opens Compare on it;
   a page shows each `request` once.
 
+## Carton UX v2, N1: Compare in the editor
+
+Owner: N1 (`feat/ux2-n1`). N2 (History's find UI: "Compare with…" pick mode, §4.2's Compare button) calls this; N1's
+own entries (See them, Compare with your edit, Shift+click, the cuts menu's Compare, the agent's `cb compare --show`)
+go through it too.
+
+- `CartonUi.openCompare?(from, to?, opts?) → Promise<void>` (`@carton/react` model.ts), the page's own (the app's
+  `scripts/carton/compare.js`; the worker doesn't serve it). `from`, `to`: refs of any cut (History's `Version.ref`), a
+  `Cut.id` for that cut's head; `to` null or absent is your edit now. Sides go the right way round (DESIGN-V2 §1.1):
+  your edit or the cut you're on is the right side, else the older version (or the first picked cut) is the left.
+  `opts`: `{ mode?, at?, by?, request? }` (`OpenCompareOptions`). It ends viewing; a second call replaces the
+  comparison. Absent (a host without Compare, the gallery's mock): keep the panel's Changes view.
+- `closeCompare?()`, `comparing?() → Comparing | null` (`{ left, right, mode, acrossCuts, by? }`, each side a
+  `CompareEnd`: `ref`, `label`, `title`, `detail?`, `cutId?`, `you?`, `versionId?`), `onCompare?(f) → off`.
+- History while comparing: the side panel shows Compare's change list in place of `HistoryPanel` (the host decides;
+  `HistoryPanel` needs nothing new). `HistoryPanel`'s existing `onCompare(a, b)` prop is how the host routes its
+  entries to `openCompare`.
+
 ## Using it
 
 ```ts
