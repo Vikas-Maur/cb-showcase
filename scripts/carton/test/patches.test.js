@@ -191,6 +191,10 @@ test("Carton on: the cut chip sits before the aspect ratio, the icons before Rep
   assert.equal(count(tabs, "n.jsx(__cbCartonCutChip,"), 1, "the chip once");
   assert.equal(count(tabs, "n.jsx(__cbCartonStrip,"), 1, "the icons once");
   assert.ok(tabs.includes("function __cbCartonCutChip(") && tabs.includes("function __cbCartonStrip("), "with their code");
+  // QA G4: the editor controls' row may shrink, so the chip (min-w-0 shrink) gives way before the window's buttons do
+  assert.equal(count(plain, 'className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"'), 1, "the row's class, once");
+  assert.equal(count(tabs, 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"'), 1, "the row may shrink");
+  assert.equal(count(tabs, "flex shrink-0 items-center gap-[8px] self-center"), 0);
   // Bt is the aspect ratio chip and Ut Report an issue, as the strip names them
   assert.ok(/Bt=\(\{value:e\}\)=>\{[\s\S]{0,1600}"aria-label":"Aspect ratio"/.test(plain) || plain.includes('"data-analytics":"strip-aspect-ratio"'), "Bt is the aspect ratio's");
   assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");

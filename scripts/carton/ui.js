@@ -401,7 +401,7 @@ export function chipOf(ui) {
   if (!cut) return null;
   // comparing (N1): the chip's second part is "⇆ Comparing “Sent to client” with your edit ✕"
   const cmp = ui.comparing?.();
-  if (cmp) return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: { label: comparingLabel(cmp), compare: true } };
+  if (cmp) return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: null, comparing: { label: comparingLabel(cmp) } };
   const v = viewingOf(ui);
   // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
   return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: upFirst(v.label) } : null };
@@ -782,7 +782,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     const key = JSON.stringify([r.panel, r.live, r.share, r.chip]);
     if (key === r.sent) return;
     r.sent = key;
-    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null });
+    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null, comparing: r.chip?.comparing ?? null });
   }, [bridge]);
   useEffect(() => {
     Object.assign(report.current, { panel, live: summaryKey ? JSON.parse(summaryKey) : null, share });

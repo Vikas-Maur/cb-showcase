@@ -16,7 +16,10 @@
 // open and which cut it is on, which comes back here.
 // The report: `panel` ("history", "comments" or null), `live` (a shared project's summary, or null), `share` (the Share
 // dialog is open), `cut` ({name, dot}: dot is a CSS colour for any cut but Main, null for Main), `viewing` ({label}, or
-// null). An older report is a bare panel name: no chip then.
+// null), `comparing` ({label}, or null: Compare in the editor). An older report is a bare panel name: no chip then.
+// A narrow window (QA G4): the chip is the one part of the editor's controls that gives way (patch-carton.js lets that
+// row shrink), so the window's own buttons are never pushed out; below 1000 px, while the chip has its second part, the
+// cut shows as its dot or scissors only, its name in the tooltip.
 module.exports = String.raw`
 const __cbCartonStripIcons = {
   // a stack of versions, not the clock the chat's own "chat history" button uses beside it (UI audit P2-14)
@@ -27,7 +30,7 @@ const __cbCartonStripIcons = {
   caret: ["M7 10l5 5 5-5"],
   eye: ["M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z", "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"],
   x: ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
-  // comparing (UX v2, N1): ⇆
+  // comparing (Compare in the editor, UX v2 N1): ⇆
   compare: ["M4 8h13", "M14 5l3 3-3 3", "M20 16H7", "M10 13l-3 3 3 3"],
 };
 const __cbCartonSvg = (id, className, strokeWidth = 1.75) => n.jsx("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": !0, className, children: __cbCartonStripIcons[id].map((d, i) => n.jsx("path", { d }, i)) }, id);
@@ -59,18 +62,20 @@ function __cbCartonStripButton({ id, label, pressed, live }) {
 }
 // Narrow windows: the strip keeps History only (Share opens from the History panel's head there), so it adds half as
 // much to a title bar whose tabs already run short (UI audit P3-6). The status then shows on History's icon. The cut
-// chip stays, its name cut off at 150 px instead of 220 px (PLAN 2.3).
-const __cbCartonNarrow = "(max-width: 1180px)";
-function __cbCartonUseNarrow() {
-  const [narrow, setNarrow] = c.useState(() => typeof matchMedia === "function" && matchMedia(__cbCartonNarrow).matches);
+// chip stays, its name cut off at 150 px instead of 220 px (PLAN 2.3), and below 1000 px it gives the room to its second
+// part (QA G4).
+const __cbCartonNarrow = "(max-width: 1180px)", __cbCartonTight = "(max-width: 1000px)";
+function __cbCartonUseMedia(query) {
+  const [on, setOn] = c.useState(() => typeof matchMedia === "function" && matchMedia(query).matches);
   c.useEffect(() => {
     if (typeof matchMedia !== "function") return undefined;
-    const q = matchMedia(__cbCartonNarrow), f = () => setNarrow(q.matches);
+    const q = matchMedia(query), f = () => setOn(q.matches);
     q.addEventListener?.("change", f);
     return () => q.removeEventListener?.("change", f);
-  }, []);
-  return narrow;
+  }, [query]);
+  return on;
 }
+const __cbCartonUseNarrow = () => __cbCartonUseMedia(__cbCartonNarrow);
 const __cbCartonReport = (panel) => (panel && typeof panel === "object" ? panel : { panel, live: null });
 function __cbCartonStrip({ panel }) {
   const p = __cbCartonReport(panel);
@@ -81,40 +86,56 @@ function __cbCartonStrip({ panel }) {
     narrow ? null : n.jsx(__cbCartonStripButton, { id: "share", label: "Share", pressed: !!p.share, live }, "share"),
   ] });
 }
-// The cut chip. Its words are fixed here (this bundle has no @carton/react): the cut's name and the viewing label come
-// whole from the page, cut off with an ellipsis and shown whole in the tooltip and to screen readers.
+// The chip's second part: what the stage shows instead of your edit, and the ✕ that brings your edit back. The first
+// state the report carries is shown. Each is one entry: the report's field (a {label}), its icon, what a screen reader
+// hears before the label, its ✕'s words and command, and its tint. Another state (Compare's "⇆ Comparing … ✕") is one
+// more entry here, and its icon in __cbCartonStripIcons.
+const __cbCartonChipParts = [
+  // Compare in the editor (UX v2 N1): "⇆ Comparing “Sent to client” with your edit ✕" (its label says "Comparing")
+  { field: "comparing", icon: "compare", said: "", back: "Done comparing (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
+  { field: "viewing", icon: "eye", said: "Looking at ", back: "Back to my edit (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
+];
+const __cbCartonChipPart = (p) => {
+  for (const s of __cbCartonChipParts) if (p[s.field] && typeof p[s.field].label === "string") return { ...s, label: p[s.field].label };
+  return null;
+};
+// The cut chip. Its words are fixed here (this bundle has no @carton/react): the cut's name and the second part's label
+// come whole from the page, cut off with an ellipsis and shown whole in the tooltip and to screen readers.
 function __cbCartonCutChip({ panel }) {
   const p = __cbCartonReport(panel);
-  const narrow = __cbCartonUseNarrow();
+  const narrow = __cbCartonUseNarrow(), tight = __cbCartonUseMedia(__cbCartonTight);
   const cut = p.cut && typeof p.cut.name === "string" ? p.cut : null;
   if (!cut) return null;
-  const viewing = p.viewing && typeof p.viewing.label === "string" ? p.viewing : null;
+  const part = __cbCartonChipPart(p);
+  // below 1000 px with a second part: the cut is its mark only (QA G4)
+  const markOnly = tight && !!part;
   const clip = (max) => ({ minWidth: 0, maxWidth: max, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
-  const back = viewing?.compare ? "Done comparing (Esc)" : "Back to my edit (Esc)";
-  // data-no-drag: the title bar drags the window; the viewing label isn't a button, so it says so itself
-  return n.jsxs("div", { "data-no-drag": !0, "data-carton-cut-chip": "", "data-viewing": viewing ? "" : void 0, className: "flex shrink-0 items-center overflow-hidden rounded-ui-sm", style: { boxShadow: "inset 0 0 0 1px rgba(255,255,255," + (viewing ? "0.12)" : "0.08)") }, children: [
+  // data-no-drag: the title bar drags the window; the second part's label isn't a button, so it says so itself.
+  // min-w-0 shrink: the chip gives way first in a narrow window (its marks and ✕ never do).
+  return n.jsxs("div", { "data-no-drag": !0, "data-carton-cut-chip": "", ...(part ? { ["data-" + part.field]: "" } : {}), className: "flex min-w-0 shrink items-center overflow-hidden rounded-ui-sm", style: { boxShadow: "inset 0 0 0 1px rgba(255,255,255," + (part ? "0.12)" : "0.08)") }, children: [
     n.jsxs("button", {
       type: "button",
       "aria-haspopup": "menu",
       "aria-label": "Cut: " + cut.name + ". Switch cuts",
       title: cut.name,
       "data-carton-cut": cut.dot ? "other" : "main",
+      "data-mark-only": markOnly ? "" : void 0,
       onClick: () => I({ action: "carton-cuts" }),
-      className: w(C, "gap-1.5 px-2 text-white/85 hover:bg-white/[0.06] hover:text-white"),
-      style: viewing ? { borderRadius: 0 } : void 0,
+      className: w(C, "min-w-0 gap-1.5 px-2 text-white/85 hover:bg-white/[0.06] hover:text-white"),
+      style: part ? { borderRadius: 0 } : void 0,
       children: [
         cut.dot ? n.jsx("span", { "aria-hidden": !0, "data-carton-cut-dot": "", style: { width: 8, height: 8, flex: "none", borderRadius: 999, background: cut.dot } }, "dot") : __cbCartonSvg("cut", "size-3.5 shrink-0"),
-        // narrow and viewing: both parts must fit beside the tabs at 960 px, the label shortened first (DESIGN §9)
-        n.jsx("span", { style: clip(narrow ? (viewing ? 120 : 150) : 220), children: cut.name }, "name"),
-        __cbCartonSvg("caret", "size-2.5 shrink-0 text-white/40", 2.4),
+        // narrow with a second part: both parts must fit beside the tabs, the label shortened first (DESIGN §9)
+        markOnly ? null : n.jsx("span", { style: clip(narrow ? (part ? 120 : 150) : 220), children: cut.name }, "name"),
+        markOnly ? null : __cbCartonSvg("caret", "size-2.5 shrink-0 text-white/40", 2.4),
       ],
     }, "cut"),
     // no live region here: the editor's page announces viewing once (DESIGN §7), not this page too
-    viewing ? n.jsxs("span", { "data-carton-viewing": "", title: viewing.label, className: "flex h-7 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: "rgba(138,180,255,0.11)", color: "#d6e4ff", boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
-      __cbCartonSvg(viewing.compare ? "compare" : "eye", "size-3.5 shrink-0"),
-      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: viewing.compare ? viewing.label : [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
-      n.jsx("button", { type: "button", "aria-label": back, title: back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: "carton-back" }), className: w(C, "size-[22px] justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
-    ] }, "view") : null,
+    part ? n.jsxs("span", { ["data-carton-" + part.field]: "", title: part.label, className: "flex h-7 min-w-0 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: part.tint, color: part.ink, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
+      __cbCartonSvg(part.icon, "size-3.5 shrink-0"),
+      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [n.jsx("span", { className: "sr-only", children: part.said }, "s"), part.label] }, "label"),
+      n.jsx("button", { type: "button", "aria-label": part.back, title: part.back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: part.action }), className: w(C, "size-[22px] shrink-0 justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
+    ] }, part.field) : null,
   ] });
 }
 `;

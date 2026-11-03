@@ -622,7 +622,10 @@ test("laptop, final candidate P1-1: a save that fails in the page is told (at mo
   const err = new RangeError("Invalid time value");
   t.c.saveFailed(err);
   t.c.saveFailed(err);
-  assert.deepEqual(told, ["Your last change couldn't be saved. It's on screen, but it isn't in the project yet."], "once, not on every edit");
+  assert.deepEqual(told, ["Your last change wasn't saved. Do it again, or reopen the project."], "once, not on every edit");
+  // QA G8: DESIGN §6.7's words, the same as @carton/react's (this bundle can't import them)
+  const { words } = await import(require("url").pathToFileURL(require("path").join(__dirname, "../../../carton/packages/react/src/words.ts")).href);
+  assert.equal(told[0], words.saveFailed);
   // a save lands (its echo): the next failure is told again
   t.c.saveMeta({ id: "p1", stateUpdatedAt: 150 }, { ownedFields: ["tracks", "timelineItems"] });
   await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 150, carton: true });
@@ -944,4 +947,16 @@ test("PLAN 1.3: See it moves the playhead to the clip without selecting it", asy
   t.store.raw({ timelineItems: [{ id: "clip-a", startTime: 4.5, endTime: 8 }], selectTimelineItem: (id) => did.push(["select", id]), setPlaybackPosition: (s) => did.push(["seek", s]) });
   assert.equal(t.c.reveal("clip-a", { select: false }), true);
   assert.deepEqual(did, [["seek", 4.5]]);
+});
+
+// QA G24: Share's title ("Share “Weekend reel”") is the editor's own project name, read from its store as each dialog
+// opens (scripts/carton/ui.js ShareHost): Cardboard's initializeEditor sets it before the editor renders, and its
+// rename (setProjectName) changes it; never a name kept from an earlier opening.
+test("QA G24: the pages' projectName is the editor store's, renamed with it", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.setState({ projectName: "Weekend reel" });
+  assert.equal(t.c.projectName, "Weekend reel");
+  t.setState({ projectName: "Weekend reel v2" });
+  assert.equal(t.c.projectName, "Weekend reel v2", "a rename shows at the next opening");
 });

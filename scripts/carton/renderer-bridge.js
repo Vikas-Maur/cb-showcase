@@ -99,8 +99,9 @@ module.exports = String.raw`window.__carton = (() => {
   };
   // Laptop, final candidate P1-1: every save of a project failed in the page ("Invalid time value", before anything
   // reached the worker) and nobody was told. Cardboard logs a failed save and goes on; now the person is told too, at
-  // most every 20 s, and again after a save that landed.
-  const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
+  // most every 20 s, and again after a save that landed. DESIGN §6.7's words, with the next step (QA G8): @carton/react's
+  // words.saveFailed, written out here as this bundle can't import it (renderer-bridge.test.js keeps the two the same).
+  const SAVE_FAILED = "Your last change wasn't saved. Do it again, or reopen the project.";
   // PLAN 1.6: Export asked while viewing, and your edit didn't come back (a version played again meanwhile, a failure)
   const EXPORT_BACK_FAILED = "Export didn't open: your edit didn't come back. Press Esc, then try again.";
   let saveFailedAt = 0;
