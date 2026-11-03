@@ -114,7 +114,8 @@ export function attachCompare(ui, o) {
     const mine = () => data === d;
     const doc = (ref) => (typeof bridge.compareDoc === "function" ? bridge.compareDoc(projectId, ref).catch(() => null) : Promise.resolve(null));
     Promise.all([
-      ui.changes(c.left.ref, c.right.ref),
+      // across cuts, the rows say where a clip is ("Only in Main cut: …"), not what someone did (§1.12; N0's words)
+      ui.changes(c.left.ref, c.right.ref, { between: c.acrossCuts ? "cuts" : "versions" }),
       typeof ui.shotDiff === "function" ? ui.shotDiff(c.left.ref, c.right.ref).catch(() => null) : null,
     ]).then(([changes, diff]) => {
       if (!mine()) return;
@@ -658,11 +659,17 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
     window.addEventListener("keydown", onKey, true);
     const modal = () => !!document.querySelector('[role="dialog"][aria-modal="true"], [role="menu"], [data-radix-popper-content-wrapper]');
     const elsewhere = () => !!((typeof ui.viewing === "function" && ui.viewing()) || ui.pendingView?.() || ui.comparing?.());
+    // what the page did, told to the worker for cb's line (N0's compareAnswer: within 10 s; DESIGN-V2 §5.3)
+    const answer = (ask, status, why) => {
+      if (!ask.request) return;
+      Promise.resolve(bridge.call?.("compareAnswer", [{ projectId, request: ask.request, status, ...(why ? { why } : {}) }])).catch(() => {});
+    };
     const idle = () => !pressed && Date.now() - lastKey >= IDLE_KEYS_MS && !modal() && !bridge.playing && !elsewhere();
     const open = (ask) => {
       const by = ask.byName || ask.by?.name || "An agent";
       const wasClosed = panelRef.current !== "history";
       ui.openCompare?.(ask.from, ask.to, { by, request: ask.request }).then(() => {
+        answer(ask, "opened");
         // History opens to the change list if it was closed, and closes again on exit if the agent opened it (§1.13)
         if (wasClosed) {
           openPanel?.("history");
@@ -675,12 +682,13 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
           });
         }
         toast?.(`${words.openedComparison(by)} ${words.escToGoBack}.`, null, null, "compare");
-      }, () => toast?.(words.compareFailed, null, "warning"));
+      }, () => { answer(ask, "refused", "not-here"); toast?.(words.compareFailed, null, "warning"); });
     };
-    const offer = (ask) => {
+    const offer = (ask, why) => {
       const by = ask.byName || ask.by?.name || "An agent";
       const sides = sidesOf(ui, ask.from, ask.to);
-      if (!sides) return;
+      if (!sides) return answer(ask, "refused", "not-here");
+      answer(ask, "offered", why);
       toast?.(words.comparisonReady(by, sides.left.label, sides.right.label), { label: words.openIt, run: () => open(ask) }, null, "compare", { sticky: true });
     };
     function tryWaiting() {
@@ -697,10 +705,14 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
       if (seen.has(key)) return;
       seen.add(key);
       if (waiting) { clearTimeout(waiting.timer); waiting = null; }
-      if (elsewhere() || bridge.playing || modal()) return offer(ask);
+      // a side this computer doesn't have (a teammate's version not here yet): cb says so
+      if (!sidesOf(ui, ask.from, ask.to)) return answer(ask, "refused", "not-here");
+      if (elsewhere()) return offer(ask, "viewing");
+      if (bridge.playing) return offer(ask, "playing");
+      if (modal()) return offer(ask, "busy");
       if (idle()) return open(ask);
       // mid-edit: wait for idle up to 8 s, then offer
-      waiting = { ask, timer: setTimeout(() => { const w = waiting; waiting = null; if (w) offer(w.ask); }, WAIT_MS) };
+      waiting = { ask, timer: setTimeout(() => { const w = waiting; waiting = null; if (w) offer(w.ask, "busy"); }, WAIT_MS) };
       const poll = setInterval(() => { if (!waiting) clearInterval(poll); else tryWaiting(); }, 250);
     });
     return () => {

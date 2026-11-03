@@ -76,7 +76,7 @@ async function mount(o = {}) {
   if (o.rows !== false) { ui.changes = async () => ROWS; ui.shotDiff = async () => ({ a: [{ start: 0, end: 6, sig: 1 }, { start: 6, end: 9, sig: 2 }, { start: 9, end: 13, sig: 9 }, { start: 13, end: 20, sig: 3 }], b: [{ start: 0, end: 5, sig: 7 }, { start: 5, end: 9, sig: 8 }, { start: 9, end: 16, sig: 3 }], matches: [[3, 2]], aLabel: "a", bLabel: "b" }); }
   const PROJECT = "p-cmp-" + ++seq;
   const cmds = new Set(), evs = new Set(), servers = new Map(), blocked = new Set(), backs = new Set(), notices = new Set(), timeline = new Set();
-  const did = { previews: [], holds: 0, seeks: [], plays: 0, reports: [], aside: [], docs: [] };
+  const did = { previews: [], holds: 0, seeks: [], plays: 0, reports: [], aside: [], docs: [], answers: [] };
   window.__cartonTimelineMark = () => {};
   window.__cartonStageMode = (v) => { did.stage = v; };
   let playing = false, t = 2;
@@ -91,6 +91,7 @@ async function mount(o = {}) {
         return null;
       }
       if (method === "liveStatus") return { shared: false };
+      if (method === "compareAnswer") { did.answers.push(arg); return null; }
       return undefined;
     },
     onEvent: (f) => (evs.add(f), () => evs.delete(f)),
@@ -337,6 +338,7 @@ test("N1 §1.13: the agent's request opens Compare when the person is idle, with
     assert.equal(m.page().comparing().by, "Director");
     assert.equal(m.toast()?.querySelector(".carton-toast-text")?.textContent, "Director opened a comparison. Esc to go back.");
     assert.ok(m.list(), "History opened to its list");
+    assert.deepEqual(m.did.answers.at(-1), { projectId: m.bridge.projectId, request: "r1", status: "opened" }, "the worker told (cb's line)");
     // the same request again: shown once
     await m.key("Escape");
     await act(async () => { m.bridge.fire(ask("r1", ref)); await sleep(40); });
@@ -350,6 +352,7 @@ test("N1 §1.13: the agent's request opens Compare when the person is idle, with
     assert.equal(m.page().comparing(), null, "what the person looks at stays");
     const t = m.toast();
     assert.match(t.querySelector(".carton-toast-text").textContent, /^Director has a comparison ready: .+ with your edit\.$/);
+    assert.deepEqual(m.did.answers.at(-1), { projectId: m.bridge.projectId, request: "r2", status: "offered", why: "viewing" });
     await m.click([...t.querySelectorAll("button")].find((b) => b.textContent === "Open"));
     await m.settle(60);
     assert.ok(m.page().comparing(), "Open opens it");
