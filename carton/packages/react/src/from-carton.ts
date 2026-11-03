@@ -27,6 +27,7 @@ import type {
   Version as CoreVersion,
 } from "@carton/core";
 import { TopicHub } from "./hub.ts";
+import { itemFilter } from "./item-filter.ts";
 import type {
   Actor,
   CartonUi,
@@ -51,6 +52,9 @@ import type {
   UndoTurn,
   Version,
   VersionKind,
+  Viewing,
+  ViewTarget,
+  Working,
 } from "./model.ts";
 import { diffSummary } from "./shots.ts";
 
@@ -111,6 +115,12 @@ export interface CartonUiHandle extends CartonUi {
    * id, included). `Conflict.id` is opaque: map a resolved card back with this, never by parsing the id.
    */
   cardFor<C extends ConflictCard = ConflictCard>(conflictId: string): C | undefined;
+  /**
+   * An agent turn holding the timeline started (PLAN 0.7), or ended (null): the host knows (Cardboard's main process
+   * sees an in-app turn start and end). `actors` are the ids its edits are recorded by (a Director turn's
+   * `director/<chat>/<turn>`), so its versions count as its edits; `label` is its prompt.
+   */
+  setWorking(turn: { actor: CoreActor; label: string; since?: number; cut?: string; actors?: readonly string[] } | null): void;
   /** Resolves when the first load finished. */
   readonly ready: Promise<void>;
   /** Resolves when nothing is scheduled or running (refreshes, summaries, checks): for tests and hosts that wait. */
@@ -318,7 +328,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // Oldest first, changed in place. The indexes are kept incrementally, so an append costs O(rows after it), not
   // O(History): a burst of confirmations on a 100k History stays cheap.
   const rows: Row[] = [];
-  const named: number[] = [], turns: number[] = [];
+  const named: number[] = [], turns: number[] = [], mine: number[] = [];
   const pos = new Map<string, number>();
   let revision = 0;
   let disposed = false;
@@ -335,11 +345,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     start = Math.max(0, Math.min(start, rows.length));
     while (named.length && named[named.length - 1]! >= start) named.pop();
     while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    while (mine.length && mine[mine.length - 1]! >= start) mine.pop();
     for (let i = start; i < rows.length; i++) {
       const v = rows[i]!.v;
       pos.set(v.id, i);
-      if (v.name) named.push(i);
+      // a person's named versions: an agent turn is named after its prompt (a turn, not a named version)
+      if (v.name && v.kind !== "turn") named.push(i);
       if (v.kind === "turn") turns.push(i);
+      if (v.author.kind === "human" && v.author.isYou) mine.push(i);
     }
     changed(Math.min(changedFrom, rows.length));
   };
@@ -494,6 +507,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     pos.clear();
     named.length = 0;
     turns.length = 0;
+    mine.length = 0;
     reindexFrom(0, first);
     hub.notify("history");
   };
@@ -597,8 +611,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     hub.notify("history");
   };
 
-  const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
+  // "Only “clip”" (PLAN 0.8): the versions that touched a clip, from the per-version index (clipVersions)
+  const items = itemFilter({ ask: (item) => handle.clipVersions(item), pos: (id) => pos.get(id), revision: () => revision, changed: () => hub.notify("history") });
+  const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
   const history: HistorySource = {
+    status: (f) => (typeof f === "object" ? items.status(f.item) : { loading: false }),
     all: () => rows.map((r) => r.v),
     // The bridge reads only the rows from the first change on (R2-8): an append copies the tail, not History.
     slice: (from) => {
@@ -745,6 +762,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     }
   };
   let preview: Preview | null = null;
+  let viewing: Viewing | null = null;
+  let working: Working | null = null;
 
   const publishPeers = () => {
     const next = [...peerMap.values()].map((x) => x.peer);
@@ -1293,8 +1312,29 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     undoTurn: () => undo,
     published: () => published,
     preview: () => preview,
+    viewing: () => viewing,
+    working: () => working,
     me: () => me,
     actor: (key) => actors.get(key),
+
+    async changes(_a, _b) {
+      throw new Error("not implemented: changes (PLAN 0.1)");
+    },
+    async changesIn(_versionId) {
+      throw new Error("not implemented: changesIn (PLAN 0.1)");
+    },
+    async undoTurnOf(_versionId) {
+      throw new Error("not implemented: undoTurnOf (PLAN 0.6)");
+    },
+    async clipVersions(_itemId) {
+      throw new Error("not implemented: clipVersions (PLAN 0.8)");
+    },
+    async view(_target: ViewTarget | null) {
+      throw new Error("not implemented: view (PLAN 0.5)");
+    },
+    setWorking(_turn) {
+      throw new Error("not implemented: setWorking (PLAN 0.7)");
+    },
 
     async compare(a, b) {
       const [d, da, db] = await Promise.all([shotDiff(a, b), carton.checkout(a), carton.checkout(b)]);
@@ -1393,6 +1433,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       pos.clear();
       named.length = 0;
       turns.length = 0;
+      mine.length = 0;
+      items.clear();
       reindexFrom(0);
       publishConflicts();
       publishGhosts();

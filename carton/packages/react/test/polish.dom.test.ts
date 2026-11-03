@@ -150,7 +150,8 @@ test(name("P2-7: the preview banner names the version by its time and author, no
   rect(plain, { top: 0, bottom: 52 });
   plain.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   await flush();
-  assert.match(ui.preview()?.label ?? "", /^the version from \d{1,2}:\d{2}(\s?[AP]M)? \(.+\)$/);
+  // one label for a version (PLAN 0.9): who and when, always with am/pm
+  assert.match(ui.preview()?.label ?? "", /^(Your|.+'s) edit from \d{1,2}:\d{2} [ap]m$/);
   await m.unmount();
 });
 
@@ -301,7 +302,7 @@ test(name("P2-17: the reader keeps their place in a grouped History while versio
 test(name("P2-5: the Compare card lists what changed, five at once, the rest on Show more"), async () => {
   const ui = createMockUi({ versions: 30 });
   const changes = ["Moved 'Intro' 0:02.0 → 0:04.0", "Changed 'W1' text \"Hi\" → \"Hello world\"", "Trimmed 'Outro' end 6.0 s → 4.5 s", "Added caption 'Sale'", "Deleted video 'B-roll'", "Changed 'Intro' volume 100 → 80", "Moved 'CTA' 0:30.0 → 0:31.0"];
-  const comparison = { ...(await ui.compare("main@3", "main@30")), changes };
+  const comparison = { ...(await ui.compare("main@3", "main@30")), changes, changeCount: changes.length };
   const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@30", comparison })));
   await flush();
   const card = $(m.container, ".carton-compare")!;
@@ -312,7 +313,7 @@ test(name("P2-5: the Compare card lists what changed, five at once, the rest on 
   await click(byText(card, "button", "Show fewer"));
   assert.equal($$(card, ".carton-compare-change").length, 5);
   // the same two versions
-  const same = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@3", comparison: { ...comparison, changes: [], diff: { shots: 0, seconds: 0, total: 10 } } })));
+  const same = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@3", comparison: { ...comparison, changes: [], changeCount: 0, diff: { shots: 0, seconds: 0, total: 10 } } })));
   await flush();
   assert.equal($(same.container, ".carton-compare-diff")!.textContent, "No differences");
   assert.equal($(same.container, ".carton-compare-changes"), null);

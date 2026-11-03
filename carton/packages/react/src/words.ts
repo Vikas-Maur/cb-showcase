@@ -213,6 +213,207 @@ export const words = {
   justNow: "just now",
   loading: "Loading…",
   failed: "Something went wrong. Try again.",
+
+  // ------------------------------------------------------------------------------------------------------------------
+  // The redesign's words (DESIGN §8, PLAN 0.3). Counted in "changes" everywhere; "version" only for a folded day.
+  // A version is named by versionLabel() (format.ts) and a moment by clock(): these take their results.
+
+  // Title bar
+  backToMyEdit: "Back to my edit",
+  backToMyEditKey: "Back to my edit (Esc)",
+  versionHistory: "Version history (Ctrl+Shift+H)",
+  share: "Share",
+  hereNames: (names: readonly string[]) => `${names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`} ${names.length === 1 ? "is" : "are"} here`,
+  offlineNotSent: (n: number) => (n ? `Offline: ${plural(n, "change", "changes")} not sent yet` : "Offline"),
+
+  // Cuts menu
+  fromTeammates: "From teammates",
+  viewOnly: "View only",
+  cutWho: (who: string, when: string) => `${who} · ${when}`,
+  now: "now",
+  workingNow: "working now",
+  newCutFromYourEdit: "New cut from your edit",
+  foldInFromCut: "Fold in changes from a cut…",
+  renameCutNamed: (name: string) => `Rename “${name}”`,
+  openHistory: "Open History",
+  agentsWorkHere: "Agents work on the cut you're on.",
+  workingOnCut: (agent: string, cut: string) => `${agent} is working on ${cut}, and agents work on the cut you're on.`,
+  switchWhenDone: "Switch when it finishes",
+  switchNow: "Switch now",
+
+  // History head and filter
+  comments: "Comments",
+  show: "Show",
+  filters: { all: "All versions", named: "Named versions", turns: "Agent turns", mine: "Your changes" } as Record<"all" | "named" | "turns" | "mine", string>,
+  onlyClip: (clip: string) => `Only “${clip}”`,
+  onlyClipHint: "The clip selected on the timeline",
+  removeFilter: "Show all versions",
+  clipSince: (when: string) => `Versions since ${when} only`,
+  filterEmpty: { all: "No versions yet.", named: "No named versions yet. Name one to find it again.", turns: "No agent turns yet. When an agent edits, its turn shows here.", mine: "No changes of yours yet." } as Record<"all" | "named" | "turns" | "mine", string>,
+  clipEmpty: (clip: string) => `No versions changed “${clip}” yet.`,
+
+  // Rows
+  nowRow: "Now",
+  viewingMark: "Viewing",
+  working: "Working",
+  changes: (n: number) => plural(n, "change", "changes"),
+  changesOf: (n: number, of: number) => `${n} of ${plural(of, "change", "changes")}`,
+  namedBy: (who: string) => `Named by ${who}`,
+  notSentYet: "Not sent yet",
+  notSentHint: "This version gets its final place in History once it's sent.",
+  availableOnceSent: "Available once it's sent",
+  projectCreated: "Project created",
+  historyStartsHere: "History starts here",
+  startOn: (title: string, day: string) => `${title} · ${day}`,
+  groupOpen: (n: number) => `Show these ${plural(n, "change", "changes")}`,
+
+  // Days
+  dayVersions: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
+  newest: "Newest",
+
+  // An agent working
+  changesSoFar: (n: number) => `${plural(n, "change", "changes")} so far`,
+  keepEditing: (agent: string) => `Keep editing. ${agent} sees your changes when its turn ends.`,
+
+  // Empty and loading
+  historyEmptyTitle: "Your edit's history starts here",
+  historyEmptyBody: "Every change, yours or an agent's, is saved as a version. Look back at any of them, play what changed, or restore one. Nothing is lost.",
+  cutStarted: (cut: string, when: string) => `${cut} · started ${when}`,
+
+  // Version card
+  changesSince: (n: number) => `Your edit has ${plural(n, "change", "changes")} since this`,
+  seeThem: "See them",
+  andMore: (n: number) => `and ${n} more`,
+  playAll: "Play all",
+  playThisChange: "Play this change",
+  beforeHint: "Hold to see how it was before (or press B)",
+  restoreEllipsis: "Restore…",
+  undoThisTurn: "Undo this turn",
+  undoThisTurnHint: (n: number) => `Takes out only ${n === 1 ? "this change" : `these ${n} changes`}. Later changes stay.`,
+  changesIn: (label: string) => `Changes in ${label}`,
+  noPosition: "—",
+
+  // Row menu
+  playItsChanges: "Play its changes",
+  compareWithYourEdit: "Compare with your edit",
+  renameEllipsis: "Rename…",
+  newCutFromVersion: "New cut from this version…",
+  restoreMenuHint: "Go back to this version. Later changes stay in History.",
+
+  // Restore confirmation
+  restoreQuestion: (label: string) => `Restore ${label}?`,
+  restoreBody: (n: number) =>
+    n
+      ? `Your edit goes back to how it was then. The ${plural(n, "change", "changes")} made since ${n === 1 ? "is" : "are"} undone. ${n === 1 ? "It stays" : "They stay"} in History, and Ctrl+Z brings ${n === 1 ? "it" : "them"} back.`
+      : "Your edit goes back to how it was then. Ctrl+Z brings it back.",
+  seeThe: (n: number) => `See the ${n}`,
+
+  // Name and new cut
+  newCutTitle: "New cut from this version",
+  newCutSwitch: (cut: string) => `You'll switch to it. ${cut} stays as it is.`,
+  makeCut: "Make cut",
+
+  // Changes view
+  changesSinceTitle: (when: string) => `Changes since ${when}`,
+  changesFromTo: (from: string, to: string) => `From ${from} to ${to}`,
+  changesBetween: (from: string, to: string) => `Changes from ${from} to ${to}`,
+  yourEditNow: "your edit now",
+  changesLength: (n: number, length: string) => `${plural(n, "change", "changes")} · ${length}`,
+  noChangesSince: (when: string) => `No changes since ${when}`,
+  sameAs: (label: string) => `Your edit is the same as ${label}.`,
+  restoreThisVersion: "Restore this version…",
+  backToHistory: "History",
+
+  // Viewing
+  beforeOf: (label: string) => `Before ${label}`,
+  ownedCut: (owner: string, cut: string) => `${owner}'s ${cut}`,
+  sideOf: (who: string, what: string, clip: string) => `${who}'s ${what} of “${clip}”`,
+  yourSideOf: (what: string, clip: string) => `Your ${what} of “${clip}”`,
+  lookingAt: (label: string) => `You're looking at ${label}.`,
+  lookingAtAnnounce: (label: string) => `Looking at ${label}. Esc to go back.`,
+  backAnnounce: "Back to your edit",
+  backToExport: "Back to your edit to export it.",
+  loadFailed: "Couldn't load this version. Try again.",
+  readOnlyRole: "You can watch and comment on this project, not edit it.",
+
+  // Conflict card
+  bothDid: (clip: string, other: string, verb: string) => `“${clip}”: you and ${other} both ${verb} it`,
+  pickLead: "Pick the one to keep. Until you pick, yours is in the timeline.",
+  yours: "Yours",
+  theirs: (name: string) => `${name}'s`,
+  both: "Both",
+  yourEarlier: "Your earlier change",
+  yourLater: "Your later change",
+  seeIt: "See it",
+  seeingIt: "Seeing it",
+  keepTheirs: (name: string) => `Keep ${name}'s`,
+  onTimeline: "On timeline",
+  notNow: "Not now",
+  conflictsToPick: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
+  stillWorking: (agent: string) => `${agent} is still working. Pick now, or when it's done.`,
+  changedAgain: (agent: string) => `${agent} changed it again. Pick again.`,
+
+  // Fold dialog
+  foldInChanges: "Fold in changes",
+  foldFrom: "From",
+  foldIntoWord: "into",
+  youreOnIt: "you're on it",
+  foldWhat: (into: string, from: string, made: string) => `${into} gets what changed on “${from}” since it was made from ${made}.`,
+  cantLeaveOut: "Can't be left out: it's a setting for the whole project",
+  leftOutOn: (day: string) => `Left out on ${day}`,
+  leftOutTogether: "These were left out together, so they come in together.",
+  bothCutsDid: (verb: string, clip: string) => `Both cuts ${verb} “${clip}”. Pick one:`,
+  pickOneFor: (clip: string) => `Pick one for “${clip}”`,
+  leftOutLine: (n: number, from: string) => `${plural(n, "change is", "changes are")} left out. ${n === 1 ? "It stays" : "They stay"} on “${from}”, and you can fold ${n === 1 ? "it" : "them"} in later.`,
+  foldUndoLine: "Ctrl+Z takes the whole fold back.",
+  foldInN: (n: number) => `Fold in ${plural(n, "change", "changes")}`,
+  alreadyHas: (into: string, from: string) => `${into} already has everything from “${from}”.`,
+
+  // Toasts (DESIGN §6.7)
+  undo: "Undo",
+  redo: "Redo",
+  restoredToast: (label: string) => `Restored ${label}. Later changes are in History.`,
+  foldedToast: (n: number, from: string, into: string) => `Folded ${plural(n, "change", "changes")} from “${from}” into ${into}.`,
+  switchToCut: (cut: string) => `Switch to ${cut}`,
+  onCutNow: (cut: string) => `You're on “${cut}” now.`,
+  cutUnchanged: (cut: string) => `${cut} is unchanged.`,
+  switchBackTo: (cut: string) => `Switch back to ${cut}`,
+  keptToast: (label: string) => `Kept ${label}.`,
+  tookOutToast: (label: string, n: number) => `Took out ${label} (${plural(n, "change", "changes")}).`,
+  restoreUndone: "Restore undone.",
+  foldUndone: "Fold undone.",
+  saveFailed: "Your last change wasn't saved. Do it again, or reopen the project.",
+  restoreFailed: "Couldn't restore this version. Try again.",
+
+  // Share and Join
+  shareTitle: (project: string) => `Share “${project}”`,
+  shareLead: "Edit together, live, with the whole history. Teammates get preview copies of your video; the originals stay on this computer.",
+  sharingServer: "Sharing server",
+  sharingServerHint: "The address whoever runs your sharing server gave you.",
+  change: "Change",
+  yourName: "Your name",
+  yourNameHint: "Teammates see this beside your changes.",
+  shareProject: "Share project",
+  people: "People",
+  roles: { owner: "Owner", editor: "Can edit", commenter: "Can comment", viewer: "Can watch" } as Record<"owner" | "editor" | "commenter" | "viewer", string>,
+  hereNowLine: "Here now",
+  lastHereYesterday: "Last here yesterday",
+  invite: "Invite",
+  copyLink: "Copy link",
+  copied: "Copied",
+  anyoneCanJoin: "Anyone with this link can join and edit.",
+  sending: (n: number) => `Sending ${plural(n, "change", "changes")}`,
+  offlineLine: (n: number) => `You're offline. Keep editing: ${plural(n, "change is", "changes are")} saved here and ${n === 1 ? "is" : "are"} sent when you're back.`,
+  joinTitle: "Join a shared project",
+  joinLead: "Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it.",
+  inviteLink: "Invite link",
+  joinAs: (name: string) => `You'll join as ${name}.`,
+  joinAndOpen: "Join and open",
+
+  // Stage
+  offlineChip: (n: number) => `Offline · ${plural(n, "change", "changes")} not sent yet`,
+  clipsOnTheirWay: (n: number, from: string) => `${plural(n, "clip is", "clips are")} still on ${n === 1 ? "its" : "their"} way from ${from}`,
+  clipsOfflineUntil: (names: string) => `${names} show as Offline until they arrive. Nothing was removed.`,
 };
 
 export type Words = typeof words;

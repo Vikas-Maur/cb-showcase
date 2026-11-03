@@ -45,13 +45,13 @@ test(name("sync status words: Syncing · Up to date · Offline: N edits waiting,
 });
 
 test(name("History renders a window of a 10k list, marks checkpoints, named and waiting versions"), async () => {
-  const ui = createMockUi({ versions: 10_000 });
+  const ui = createMockUi({ versions: 10_000, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: "main@10000" })));
   const rows = $$(m.container, "[role=option]");
   assert.ok(rows.length > 5 && rows.length < 40, `${rows.length} rows in the DOM for 10,004 versions`);
   assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Waiting to sync/.test(r.textContent ?? "")));
-  assert.ok(rows.some((r) => r.dataset.kind === "turn" && /Checkpoint/.test(r.textContent ?? "") && /tighter intro/.test(r.textContent ?? "")));
-  assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client, Monday/.test(r.textContent ?? "")));
+  assert.ok(rows.some((r) => r.dataset.kind === "turn" && /Checkpoint/.test(r.textContent ?? "") && /Tighten the intro/.test(r.textContent ?? "")));
+  assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client/.test(r.textContent ?? "")));
   // The list's full height is there for the scrollbar: 10k versions over several days are grouped by day (UI audit
   // P2-17), every day but the newest folded to its named versions and turns, so the height is the rows shown.
   const inner = $(m.container, ".carton-vlist > div")!;
@@ -223,7 +223,7 @@ test(name("undo turn, published cut status and credits"), async () => {
   assert.ok(byText(m.container, "button", "Undo Director: tighter intro"));
   assert.match(m.container.textContent ?? "", /Newer edits exist/);
   assert.match(m.container.textContent ?? "", /Director › Explore/);
-  assert.match(m.container.textContent ?? "", /Credits for B-roll city/);
+  assert.match(m.container.textContent ?? "", /Credits for B-roll 3/);
   await click(byText(m.container, "button", "Undo Director: tighter intro"));
   const undo = byText(m.container, "button", "Undo turn") as HTMLButtonElement;
   assert.ok(undo?.disabled, "nothing left to undo");
@@ -296,7 +296,7 @@ test(name("R1-13: switching Watch the changes to the current side closes its pre
 });
 
 test(name("R1-14: Enter and arrows typed in the naming field belong to the field, not the list"), async () => {
-  const ui = createMockUi({ versions: 30 });
+  const ui = createMockUi({ versions: 30, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined && r.dataset.named === undefined)!;
   await click(row.querySelector(".carton-version-more"));
@@ -313,7 +313,7 @@ test(name("R1-14: Enter and arrows typed in the naming field belong to the field
 });
 
 test(name("R1-15: the context-menu key opens the active version's actions; still-syncing rows can't be opened"), async () => {
-  const ui = createMockUi({ versions: 30 });
+  const ui = createMockUi({ versions: 30, provisional: true });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   const list = $(m.container, "[role=listbox]")!;
   await key(list, "ArrowDown"); // the newest: still waiting to sync

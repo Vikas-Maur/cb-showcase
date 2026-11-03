@@ -41,10 +41,24 @@ export interface Version {
   readonly at: number;
   readonly author: Actor;
   readonly kind: VersionKind;
-  /** One plain sentence: describe()'s first line, e.g. "Trimmed 'Intro' end 6.0 s → 5.0 s". */
+  /**
+   * One sentence in editor words (DESIGN §8 "Change sentences"): "Trimmed “Intro”, now ends at 0:05", "Restored the
+   * 11:02 am version", "Folded in “30s cut”", "Made this cut from Main cut at 12:20 pm". Empty until described (the
+   * rows on screen are described first). Never an id or a hash.
+   */
   readonly summary: string;
-  /** describe()'s other lines, shown on demand. */
+  /** Every change the version made, one sentence each, when the summary doesn't say it all. */
   readonly details?: readonly string[];
+  /**
+   * How many changes it made, counted as everywhere (core's `countChanges`): "1 change", a turn's "4 changes" (what the
+   * whole turn changed). Known once described; a fold that left some out counts what it took ("2 of 3 changes" with
+   * `leftOut`).
+   */
+  readonly changes?: number;
+  /** A partial fold: how many changes it left out ("2 of 3 changes": `changes` of `changes + leftOut`). */
+  readonly leftOut?: number;
+  /** The ref its changes start from (the version before it; a turn's: before its first version): `changes(base, ref)` is what it did. */
+  readonly base?: string;
   /** A name the user gave it: "Sent to client, Monday". */
   readonly name?: string;
   /** A Director turn: its label (the prompt, shortened) and how many edits it made. */
@@ -63,10 +77,115 @@ export interface Version {
    * can't be previewed, restored or made into a cut (laptop, build 915eb36: restoring it emptied the project).
    */
   readonly empty?: boolean;
+  /**
+   * The start of History (PLAN 0.4): the cut's first version ("Started the cut"), the project's history start, or the
+   * import. History shows them as one row: "Project created", or "History starts here" for an imported project.
+   */
+  readonly start?: "created" | "imported";
 }
 
-/** Which rows History shows. */
-export type HistoryFilter = "all" | "named" | "turns";
+/**
+ * Which rows History shows (DESIGN §6.1's filter menu): All versions, Named versions, Agent turns, Your changes, and
+ * Only “clip” (`{ item }`: the versions that touched one clip, PLAN 0.8). A filter that reads an index the source
+ * hasn't loaded yet counts 0 until it has (`HistorySource.status`), then History's topic fires.
+ */
+export type HistoryFilter = "all" | "named" | "turns" | "mine" | { readonly item: string };
+
+/** How far a filter's rows are known (PLAN 0.8): loading, or covering only the versions since `since`. */
+export interface FilterStatus {
+  /** The filter's index is still being read: its count is 0 for now. */
+  readonly loading: boolean;
+  /** Only versions from this time on could be checked: the filter says so ("Today's versions only"). */
+  readonly since?: number;
+}
+
+/** The versions that touched one clip (PLAN 0.8), from the per-version index of the records each version touched. */
+export interface ClipVersions {
+  /** Version ids (History's ids), newest first. */
+  readonly ids: readonly string[];
+  /** Set when only the versions from then on could be checked (no index for older ones). */
+  readonly since?: number;
+}
+
+/** What kind of clip a change is about, shown in Cardboard's own timeline colours (DESIGN §5.1). */
+export type ClipKind = "video" | "title" | "caption" | "audio" | "image" | "code" | "project";
+/** What happened to it: the change row's corner mark (green +, red −, amber dot). */
+export type ChangeKind = "add" | "remove" | "change";
+
+/**
+ * One change between two versions (PLAN 0.1, DESIGN §5.1): a row of a version's card, the Changes view, the Fold
+ * dialog and a toast. One per change as core's `countChanges` counts them (a record each, a split one, a title's own
+ * media entry with its title, a ripple's shift none), so `changes(a, b).length` is the count every other place shows.
+ */
+export interface Change {
+  /** Stable within one answer and across answers for the same record: the record's key (`timelineItems/c1`), or a root field's name. */
+  readonly key: string;
+  /** One sentence in editor words, verb first, the clip by name in curly quotes, positions as 0:09 (DESIGN §8). Never an id or a hash. */
+  readonly text: string;
+  readonly kind: ChangeKind;
+  readonly clip: ClipKind;
+  /** The timeline item it is about, when it is one: a host can select it ("Show on timeline"). */
+  readonly itemId?: string;
+  /** Where it is in the edit, in seconds: its start in b (in a for a removal). None for a change with no place (frame rate, aspect ratio). */
+  readonly at?: number;
+  /** Where its span ends (seconds, same side as `at`): Play plays [at − 1, end + 1]. */
+  readonly end?: number;
+  /** Who made it, when known (a version's own changes; a range on one cut, from the per-version index). */
+  readonly author?: Actor;
+  /** When it was made (ms since the epoch), with `author`. */
+  readonly when?: number;
+}
+
+/** What `view()` shows on the stage (PLAN 0.5): a History version, how it was before one, a conflict's side, or a cut. */
+export type ViewingKind = "version" | "before" | "conflict" | "cut";
+
+/**
+ * Viewing (DESIGN §4.2): the editor shows something other than your edit. One label, built in one place, so the chip,
+ * the frame and the row never disagree.
+ */
+export interface Viewing {
+  /** The state shown (a ref History and the host can rebuild). */
+  readonly ref: string;
+  readonly kind: ViewingKind;
+  /**
+   * "Director's “Add captions…”", "Before Director's “Add captions…”", "Leo's Main cut", "Claude Code's move of
+   * “Interview B”", "“Sent to client”", "Your edit from 12:41 pm".
+   */
+  readonly label: string;
+  /** "12:20 pm · Director": the chip's short form, when the label doesn't fit. */
+  readonly short: string;
+  /** The History row viewed (kind "version" and "before"): its row gets the mark. */
+  readonly versionId?: string;
+  /** The card (kind "conflict") and the side shown. */
+  readonly conflictId?: string;
+  readonly side?: ConflictChoice;
+  /** The cut viewed (kind "cut"). */
+  readonly cutId?: string;
+  /** An edit was tried while viewing (the edit-attempt toast and the frame's pulse, PLAN 1.4). */
+  readonly blockedEdit?: boolean;
+}
+
+/** What to view: `ui.view(target)`; `ui.view(null)` is back to your edit. */
+export type ViewTarget =
+  /** A History row by id, or any ref (a comment's "See it as it was"), with its label when it isn't a row. */
+  | { readonly kind: "version"; readonly versionId?: string; readonly ref?: string; readonly label?: string }
+  /** How it was before a row's changes (a turn: before its first version), or before a ref (the Changes view's older side, with its label). */
+  | { readonly kind: "before"; readonly versionId?: string; readonly ref?: string; readonly label?: string }
+  | { readonly kind: "conflict"; readonly conflictId: string; readonly side: ConflictChoice }
+  | { readonly kind: "cut"; readonly cutId: string };
+
+/** An agent working (PLAN 0.7, DESIGN §6.1): an in-app turn holding the timeline. Null otherwise. */
+export interface Working {
+  readonly actor: Actor;
+  /** The turn's prompt, as its row's title. */
+  readonly label: string;
+  /** Changes it made so far: "2 changes so far". */
+  readonly edits: number;
+  /** When the turn started (ms since the epoch). */
+  readonly since: number;
+  /** The cut it works on (agents work on the cut you're on). */
+  readonly cutId?: string;
+}
 
 /**
  * History as an indexed, append-mostly sequence. A list of 10k+ versions is never copied: the list asks for the rows
@@ -79,6 +198,11 @@ export interface HistorySource {
   at(filter: HistoryFilter, index: number): Version | undefined;
   /** Index of a version under a filter, or -1. Used to keep the list's place when rows arrive above it. */
   indexOf(filter: HistoryFilter, id: string): number;
+  /**
+   * How far a filter's rows are known (PLAN 0.8): `{ item }` is read from an index, async; the others are always
+   * known (`{ loading: false }`). Optional: a source without it knows every filter it counts.
+   */
+  status?(filter: HistoryFilter): FilterStatus;
   /**
    * Every version, oldest first, without side effects (at() may start work, like describing the row). The bridge
    * (remote.ts) diffs it by identity to send only what changed. Optional: without it the bridge reads at().
@@ -151,6 +275,8 @@ export interface ConflictSide {
   readonly at?: number;
   /** The cut this side's edit is on, when the two sides are on different cuts (a fold): "30s Instagram cut". */
   readonly where?: string;
+  /** What this side did, as a noun for the viewing label ("Claude Code's move of “Interview B”"): "move", "trim", "change". */
+  readonly what?: string;
 }
 
 /** A conflict card (§7): both edits are kept, and the person picks. */
@@ -173,6 +299,8 @@ export interface Conflict {
   readonly sig?: string;
   /** The clip the card is about, when it is one: a host can select it on its timeline ("Show on timeline"). */
   readonly item?: string;
+  /** That clip's name, for the viewing label and the title ("“Interview B”: you and Claude Code both moved it"). */
+  readonly clip?: string;
 }
 
 /** One side of a Compare card (§9, generalizing the recovery picker). */
@@ -251,11 +379,11 @@ export interface Published {
   readonly url?: string;
 }
 
-/** Read-only preview mode (§9, R2-16): Compare, A/B or a version opened from History. */
+/** The state the editor shows when it isn't your edit (§9, R2-16). Deprecated: `Viewing` (PLAN 0.5) says the same, with its kind. */
 export interface Preview {
   readonly ref: string;
   readonly label: string;
-  /** The first edit attempt in a preview sets this, and the banner offers "Return to current to edit". */
+  /** The first edit attempt while viewing sets this (the edit-attempt toast offers "Back to my edit"). */
   readonly blockedEdit?: boolean;
 }
 
@@ -332,7 +460,9 @@ export type Topic =
   | "conflicts"
   | "undo"
   | "published"
-  | "preview";
+  | "preview"
+  | "viewing"
+  | "working";
 
 /** Everything a component can ask for. Reads that cost real work are async and on demand. */
 export interface CartonUi {
@@ -346,6 +476,7 @@ export interface CartonUi {
   conflicts(): readonly Conflict[];
   undoTurn(): UndoTurn | null;
   published(): Published | null;
+  /** Deprecated: `viewing()`. */
   preview(): Preview | null;
   /** The actor for "you", so lists can say "You". */
   me(): Actor;
@@ -370,8 +501,39 @@ export interface CartonUi {
   nameVersion(versionId: string, name: string): Promise<void>;
   undo(turnId: string): Promise<FoldResult>;
   publish(cutId: string): Promise<void>;
-  /** Open a read-only preview of a ref, or close it with null. */
+  /**
+   * Deprecated alias of `view({ kind: "version", ref, label })` / `view(null)` (PLAN 0.5), kept one release for the
+   * components that still call it.
+   */
   openPreview(ref: string | null, label?: string): void;
+  /** What the editor shows when it isn't your edit (PLAN 0.5), or null: your edit. Topic "viewing" ("preview" fires too). */
+  viewing(): Viewing | null;
+  /**
+   * Show a version, how it was before one, a conflict's side or a teammate's cut on the stage, or come back to your
+   * edit (null). Resolves once the state is set; rejects when it can't be loaded ("Couldn't load this version. Try
+   * again."), and the editor stays on your edit. The host's `onPreview` is still the one way the editor swaps.
+   */
+  view(target: ViewTarget | null): Promise<void>;
+  /** An agent working on the timeline (PLAN 0.7), or null. Topic "working". */
+  working(): Working | null;
+  /**
+   * Every change from `a` to `b` (PLAN 0.1), in timeline order, as change rows: one per change as `countChanges`
+   * counts them, so `.length` is the count shown everywhere. Cached per (a, b). Plain data across `remote.ts`.
+   */
+  changes(a: string, b: string): Promise<readonly Change[]>;
+  /** What one History row did (a turn: all of it), with each change's author and time: the version card's rows. */
+  changesIn(versionId: string): Promise<readonly Change[]>;
+  /**
+   * Undo one agent turn (PLAN 0.6): takes out only that turn's changes, any turn, not only the newest; later edits
+   * stay. A later change to the same thing becomes a conflict card (`conflicts`). PLAN 0.6's `ui.undoTurn(versionId)`,
+   * named apart from the `undoTurn()` getter (your undo group's newest turn), which keeps its meaning.
+   */
+  undoTurnOf(versionId: string): Promise<FoldResult>;
+  /**
+   * The versions that touched one clip (PLAN 0.8), from the per-version index written at save: History's "Only “clip”"
+   * filter (`{ item }`). Never diffs every version.
+   */
+  clipVersions(itemId: string): Promise<ClipVersions>;
   /**
    * "See it": a ref of the cut with one side of a card kept, for openPreview (the side shown now is head itself; the
    * other a held state with that side applied). Null when the card is gone. Optional: a host without it shows no
