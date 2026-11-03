@@ -261,6 +261,51 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-history[data-scrolled] > .carton-panel-head){box-shadow:0 1px 0 #ffffff12}
 :where(${S}) :where(.carton-history-error){padding:0 12px 8px;text-wrap:pretty}
 
+/* ---------------------------------------------------------------- the change row and the change map (DESIGN §5.1) */
+:where(${S}) :where(.carton-changes){display:flex;flex-direction:column;outline:none}
+:where(${S}) :where(.carton-change){position:relative;display:grid;grid-template-columns:auto 34px 18px minmax(0,1fr) 22px;align-items:start;column-gap:6px;padding:5px 6px;margin:0 -6px;
+  border-radius:6px;font-size:12.5px;line-height:17px;outline:none;transition:background-color var(--cb-fast)}
+:where(${S}) :where(.carton-change:not(:has(> .carton-change-lead))){grid-template-columns:34px 18px minmax(0,1fr) 22px}
+:where(${S}) :where(.carton-change[data-selectable]){cursor:pointer}
+:where(${S}) :where(.carton-change:hover, .carton-change[data-active]){background:#ffffff0a}
+:where(${S}) :where(.carton-change:focus-visible){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
+:where(${S}) :where(.carton-change[data-playing]){background:#ffffff12}
+:where(${S}) :where(.carton-change[data-muted] .carton-change-words){color:var(--cb-fg-4);text-decoration:line-through;text-decoration-color:#ffffff40}
+:where(${S}) :where(.carton-change-lead){display:flex;align-items:center;min-height:17px}
+:where(${S}) :where(.carton-change-time){color:var(--cb-fg-3);font-variant-numeric:tabular-nums;white-space:nowrap}
+:where(${S}) :where(.carton-change-chip){position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-top:-1px;border-radius:5px;
+  background:#3a3a3a;color:#fff}
+:where(${S}) :where(.carton-change-chip .carton-icon){stroke-width:2}
+:where(${S}) :where(.carton-change-chip[data-clip=video]){background:#2680d9}
+:where(${S}) :where(.carton-change-chip[data-clip=title]){background:#4f4096}
+:where(${S}) :where(.carton-change-chip[data-clip=caption]){background:#5d4db3}
+:where(${S}) :where(.carton-change-chip[data-clip=audio]){background:#1c7054}
+:where(${S}) :where(.carton-change-chip[data-clip=image]){background:#a347d1}
+:where(${S}) :where(.carton-change-chip[data-clip=code]){background:#b5405f}
+:where(${S}) :where(.carton-change-badge){position:absolute;right:-3px;bottom:-3px;display:flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;
+  font-size:9px;line-height:9px;font-weight:700;box-shadow:0 0 0 1.5px var(--cb-card)}
+:where(${S}) :where(.carton-change-chip[data-kind=add] .carton-change-badge){background:var(--cb-ok);color:#06240f}
+:where(${S}) :where(.carton-change-chip[data-kind=remove] .carton-change-badge){background:var(--cb-danger);color:#2a0b0b}
+:where(${S}) :where(.carton-change-chip[data-kind=change] .carton-change-badge){background:var(--cb-warn)}
+:where(${S}) :where(.carton-change-text){min-width:0;color:var(--cb-fg-1);overflow-wrap:anywhere}
+:where(${S}) :where(.carton-change-tag){margin-left:6px;padding:0 5px;border-radius:4px;background:#ffffff0f;color:var(--cb-fg-3);font-size:11px;white-space:nowrap}
+:where(${S}) :where(.carton-change-who){display:block;margin-top:1px;font-size:11.5px;line-height:15px;color:var(--cb-fg-4)}
+:where(${S}) :where(.carton-change-play){display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin-top:-3px;border:0;border-radius:5px;background:none;
+  color:var(--cb-fg-1);cursor:pointer;opacity:0;transition:opacity var(--cb-fast),background-color var(--cb-fast)}
+:where(${S}) :where(.carton-change:hover .carton-change-play, .carton-change:focus-visible .carton-change-play, .carton-change[data-playing] .carton-change-play, .carton-change[data-active] .carton-change-play){opacity:1}
+:where(${S}) :where(.carton-change-play:hover){background:#ffffff14}
+:where(${S}) :where(.carton-change-progress){grid-column:1 / -1;position:relative;height:2px;margin-top:5px;border-radius:2px;background:#ffffff14;overflow:hidden}
+:where(${S}) :where(.carton-change-progress-fill){position:absolute;inset:0;background:var(--cb-fg-1);transform-origin:left;transform:scaleX(0);will-change:transform}
+:where(${S}) :where(.carton-map){position:relative;height:18px;margin:2px 0 8px}
+:where(${S}) :where(.carton-map-track){position:absolute;left:0;right:0;top:6px;height:6px;border-radius:9px;background:#2c2c2c}
+:where(${S}) :where(.carton-map-tick){position:absolute;top:2px;width:4px;height:14px;margin-left:-2px;border-radius:2px;background:var(--cb-warn)}
+:where(${S}) :where(.carton-map-tick[data-kind=add]){background:var(--cb-ok)}
+:where(${S}) :where(.carton-map-tick[data-kind=remove]){background:var(--cb-danger)}
+:where(${S}) :where(.carton-map-tick[data-lit]){box-shadow:0 0 0 2px var(--cb-card),0 0 0 3.5px var(--cb-fg-1);z-index:1}
+:where(${S}) :where(.carton-map-playhead){position:absolute;inset:-1px 0;pointer-events:none;will-change:transform;z-index:2}
+:where(${S}) :where(.carton-map-playhead)::before{content:"";position:absolute;left:-1px;top:0;bottom:0;width:2px;border-radius:2px;background:var(--cb-fg-1)}
+:where(${S}) :where(.carton-map-playhead[hidden]){display:none}
+
 /* ---------------------------------------------------------------- avatars and presence */
 :where(${S}) :where(.carton-avatar){--carton-actor:#999;display:inline-flex;align-items:center;justify-content:center;flex:none;border-radius:50%;
   background:var(--carton-actor);color:#141414;font-weight:600;letter-spacing:-.02em;line-height:1;user-select:none}
@@ -461,28 +506,20 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-fold-warnings li){margin-top:4px;padding-left:20px;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-later){max-width:300px;font-size:12px;line-height:17px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-fold-later[data-tone=warning]){color:#fcd77f}
-/* STUB (Workstream 3 owns the change row's look; this goes when feat/ux-3-history lands): time · kind of clip · sentence · who */
-:where(${S}) :where(.carton-change-row){display:grid;grid-template-columns:34px 18px minmax(0,1fr);gap:0 8px;align-items:start;padding:8px 10px}
-:where(${S}) :where(.carton-change-row[data-lead]){grid-template-columns:16px 34px 18px minmax(0,1fr)}
-:where(${S}) :where(.carton-change-row[data-plain]){grid-template-columns:minmax(0,1fr)}
-:where(${S}) :where(.carton-change-row[data-plain][data-lead]){grid-template-columns:16px minmax(0,1fr)}
-:where(${S}) :where(.carton-change-lead){display:flex;align-items:flex-start;min-height:18px}
-:where(${S}) :where(.carton-change-at){font-size:12.5px;line-height:18px;color:var(--cb-fg-3);font-variant-numeric:tabular-nums}
-:where(${S}) :where(.carton-change-kind){position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;color:#fff;background:#3a3a3a}
-:where(${S}) :where(.carton-change-kind[data-clip=video]){background:#2f7de1}
-:where(${S}) :where(.carton-change-kind[data-clip=title]){background:#5b3fb5}
-:where(${S}) :where(.carton-change-kind[data-clip=caption]){background:#7b4bd6}
-:where(${S}) :where(.carton-change-kind[data-clip=audio]){background:#1f9d5a}
-:where(${S}) :where(.carton-change-kind[data-clip=image]){background:#b63fa8}
-:where(${S}) :where(.carton-change-kind[data-clip=code]){background:#d1457e}
-:where(${S}) :where(.carton-change-mark){position:absolute;right:-4px;bottom:-4px;width:11px;height:11px;border-radius:50%;font-size:9px;line-height:11px;font-weight:700;text-align:center;
-  box-shadow:0 0 0 1.5px var(--cb-dialog)}
-:where(${S}) :where(.carton-change-kind[data-change=add] .carton-change-mark){background:#22c55e;color:#052e14}
-:where(${S}) :where(.carton-change-kind[data-change=remove] .carton-change-mark){background:#f87171;color:#3b0a0a}
-:where(${S}) :where(.carton-change-kind[data-change=change] .carton-change-mark){background:#fbbd23}
-:where(${S}) :where(.carton-change-body){display:flex;flex-direction:column;gap:1px;min-width:0}
-:where(${S}) :where(.carton-change-text){font-size:12.5px;line-height:18px;color:var(--cb-fg-1);overflow-wrap:anywhere}
-:where(${S}) :where(.carton-change-meta){font-size:11.5px;line-height:16px;color:var(--cb-fg-4)}
+/* the Fold dialog's rows on the shared change row (Workstream 3's): its tick box or lock first, lines under it */
+:where(${S}) :where(.carton-fold-list .carton-change){margin:0;padding:8px 10px 0;column-gap:8px;cursor:inherit}
+:where(${S}) :where(.carton-fold-list .carton-change:hover){background:none}
+:where(${S}) :where(.carton-fold-list .carton-change-lead){min-width:16px}
+:where(${S}) :where(.carton-fold-list .carton-change-play-space){display:none}
+:where(${S}) :where(.carton-fold-lines){display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:1px 10px 8px 102px}
+:where(${S}) :where(.carton-fold-change:not([data-lead]) .carton-fold-lines){padding-left:78px}
+:where(${S}) :where(.carton-fold-change[data-plain] .carton-fold-lines){padding-left:34px}
+:where(${S}) :where(.carton-fold-change[data-plain]:not([data-lead]) .carton-fold-lines){padding-left:10px}
+:where(${S}) :where(.carton-fold-who){font-size:11.5px;line-height:16px;color:var(--cb-fg-4)}
+/* a row the view model gave no change row for: the sentence alone, with who */
+:where(${S}) :where(.carton-fold-plain){display:grid;grid-template-columns:16px minmax(0,1fr);gap:0 8px;align-items:start;padding:8px 10px 0}
+:where(${S}) :where(.carton-fold-plain:not(:has(> .carton-change-lead))){grid-template-columns:minmax(0,1fr)}
+:where(${S}) :where(.carton-fold-plain .carton-change-text){display:flex;flex-direction:column;gap:1px;font-size:12.5px;line-height:18px}
 :where(${S}) :where(.carton-join-dialog){width:min(440px, calc(100vw - 32px))}
 :where(${S}) :where(.carton-join-lead){font-size:13px;line-height:19px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-fold-missing){padding:10px 12px;border-radius:8px;background:var(--cb-sunken);font-size:13px;line-height:19px;color:var(--cb-fg-1);text-wrap:pretty}

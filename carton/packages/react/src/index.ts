@@ -9,7 +9,7 @@ export type * from "./model.ts";
 export { TopicHub } from "./hub.ts";
 export { words, type Words } from "./words.ts";
 export { duration, seconds, when, exactTime, shortDate, clock, clockOfDay, clockTime, versionLabel, versionShort, shortPrompt, timecode, type LabelContext, type ClockWords } from "./format.ts";
-export { actorColor, actorLabel, actorDetail, actorChain, initials } from "./actors.ts";
+export { actorColor, actorLabel, actorDetail, actorChain, agentOf, initials } from "./actors.ts";
 export { alignRows, diffSummary, mapTime, playlist, segmentAt, rowRange, columns, type Row, type Segment, type Column } from "./shots.ts";
 export { VirtualList, windowRange, type VirtualListProps } from "./virtual.ts";
 export { Icon, type IconName } from "./icons.ts";
@@ -41,6 +41,9 @@ export {
 } from "./hooks.ts";
 export { Avatar, ActorName, HoverMore, Button, Dialog, MenuButton, MenuItem, MenuList, MenuSeparator, MenuLabel, InlineName } from "./components/ui.ts";
 export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./components/HistoryPanel.ts";
+// The shared change row and change map (docs/carton-ux DESIGN §5.1; Workstreams 3, 4 and 6 use them)
+export { ChangeRow, ChangeList, setChangeProgress, CLIP_ICON, type ChangeRowProps, type ChangeListProps } from "./components/ChangeRow.ts";
+export { ChangeMap, moveMapPlayhead, mapLength, type ChangeMapProps } from "./components/ChangeMap.ts";
 export { CutsMenu, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";
 // The cuts' shared parts (PLAN 6.1, 2.2): colours, names in sentences, the queued switch, and opening the menu from the chip
 export {

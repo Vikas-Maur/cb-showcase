@@ -159,26 +159,31 @@ export function FoldInDialog(p: FoldInDialogProps) {
           h("span", { className: "carton-fold-lock", role: "img", "aria-label": words.cantLeaveOut, title: words.cantLeaveOut }, h(Icon, { name: "lock", size: 10 }))
         : h("input", { type: "checkbox", className: "carton-check", checked: !out, "aria-label": c.summary, onChange: () => toggle(c.id), onClick: (e: { stopPropagation(): void }) => e.stopPropagation() });
     const who = actorLabel(c.author, ui.actor.bind(ui), words.you);
-    const meta = [who, briefWhen(c.at, now, { now: words.justNow, yesterdayShort: words.yesterdayShort }, locale)].filter(Boolean).join(" · ");
-    const extra: ReactNode[] = [];
-    if (c.locked) extra.push(h("span", { key: "lock", className: "carton-fold-note" }, words.cantLeaveOut));
-    if (c.leftOut)
-      extra.push(h("span", { key: "left", className: "carton-fold-tag", title: words.leftOutTogether }, c.leftOutAt != null ? words.leftOutOn(shortDate(c.leftOutAt, locale)) : words.foldLeftOutEarlier));
+    // under the sentence: who and when (a fold spans days: "Director · 2 h ago", "Director · Oct 30"), why a row is
+    // locked, and when an earlier partial fold left it out
+    const lines = [
+      h("span", { key: "who", className: "carton-fold-who" }, [who, briefWhen(c.at, now, { now: words.justNow, yesterdayShort: words.yesterdayShort }, locale)].filter(Boolean).join(" · ")),
+      c.locked ? h("span", { key: "lock", className: "carton-fold-note" }, words.cantLeaveOut) : null,
+      c.leftOut ? h("span", { key: "left", className: "carton-fold-tag", title: words.leftOutTogether }, c.leftOutAt != null ? words.leftOutOn(shortDate(c.leftOutAt, locale)) : words.foldLeftOutEarlier) : null,
+    ];
     const body = c.change
-      ? h(ChangeRow, { change: { ...c.change, text: c.summary }, lead: box, meta }, ...extra)
-      : // no change row from the view model: the sentence alone, with who
-        h("div", { className: "carton-change-row", "data-plain": "", "data-lead": box ? "" : undefined }, box ? h("span", { className: "carton-change-lead" }, box) : null, h("span", { className: "carton-change-body" }, h("span", { className: "carton-change-text" }, c.summary), h("span", { className: "carton-change-meta" }, meta), ...extra));
+      ? h(ChangeRow, { change: { ...c.change, text: c.summary }, lead: box, muted: out })
+      : // no change row from the view model: the sentence alone
+        h("div", { className: "carton-fold-plain", role: "listitem" }, box ? h("span", { className: "carton-change-lead" }, box) : null, h("span", { className: "carton-change-text" }, h("span", { className: "carton-change-words" }, c.summary)));
     return h(
-      "li",
+      "div",
       {
         key: c.id,
         className: "carton-fold-change",
         "data-left": out ? "" : undefined,
         "data-locked": c.locked ? "" : undefined,
+        "data-plain": c.change ? undefined : "",
+        "data-lead": box ? "" : undefined,
         // the whole row toggles, as a label would (the box is the control screen readers use)
         onClick: canSplit && !c.locked ? () => toggle(c.id) : undefined,
       },
       body,
+      h("div", { className: "carton-fold-lines" }, ...lines),
     );
   };
 
@@ -251,7 +256,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                   : null,
             )
           : null,
-        h("div", { className: "carton-fold-box" }, total ? h("ul", { className: "carton-fold-list" }, ...plan.changes.map(row)) : null, ...plan.conflicts.map(pickRow)),
+        h("div", { className: "carton-fold-box" }, total ? h("div", { className: "carton-fold-list", role: "list", "aria-label": words.foldChanges(total) }, ...plan.changes.map(row)) : null, ...plan.conflicts.map(pickRow)),
       ),
       plan.warnings.length
         ? h(

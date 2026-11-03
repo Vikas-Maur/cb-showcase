@@ -222,8 +222,8 @@ test(name("fold in (PLAN 6.3): from/into, the line, change rows, a lock, leave o
   assert.equal($(dialog, ".carton-fold-later")!.textContent, "Pick one for “Interview B”", "the button says why it waits");
   // a row: time in the edit, the kind of clip, the sentence, who
   const rows = $$(dialog, ".carton-fold-change");
-  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-at")?.textContent), ["0:00", "0:03", "0:12", "—"]);
-  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-kind")?.getAttribute("data-clip")), ["video", "title", "video", "project"]);
+  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-time")?.textContent), ["0:00", "0:03", "0:12", "—"]);
+  assert.deepEqual(rows.map((r) => r.querySelector(".carton-change-chip")?.getAttribute("data-clip")), ["video", "title", "video", "project"]);
   assert.match(rows[0]!.textContent ?? "", /Director · 2 h ago/);
   // a project setting can't be left out: a lock, and the line says why
   assert.equal($$(dialog, "input[type=checkbox]").length, 3);
