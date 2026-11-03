@@ -128,7 +128,6 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
         : h(
             "div",
             { className: "carton-version-title" },
-            v.kind === "turn" ? h("span", { className: "carton-version-kind" }, words.checkpoint) : null,
             // cut off at the panel's width: the whole name on hover (P2-16)
             h("span", { className: "carton-version-text", onMouseEnter: tipIfCut }, title),
           ),
@@ -242,7 +241,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   }, [ui]);
 
   // What the stage says it shows (P2-7, PLAN 0.9): the version's one label ("Your edit from 12:41 pm", "Director's
-  // “Add captions…”", "“Sent to client”"), never a change's summary ("Previewing Changed 'W5' font size…").
+  // “Add captions…”", "“Sent to client”"), never a change's summary ("You're looking at Changed 'W5' font size…").
   const locale = useLocale();
   const previewLabel = useCallback((v: Version) => versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true }), [ui, locale]);
   const open = useCallback(

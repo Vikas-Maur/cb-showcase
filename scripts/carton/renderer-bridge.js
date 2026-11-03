@@ -69,7 +69,8 @@ module.exports = String.raw`window.__carton = (() => {
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
-  const PREVIEW = "Previewing an earlier version. Return to current to edit.";
+  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3; PLAN 1.4 makes it the toast)
+  const PREVIEW = "You're looking at an earlier version. Go back to your edit (Esc) to change it.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
   // (laptop, final candidate P2-1: a project with no aspect ratio, which an undo right after a recovery made, crashed
   // the tab: the layouts panel splits it. Cardboard's own load gives such a project its default, 16:9; so does this)
@@ -237,7 +238,7 @@ module.exports = String.raw`window.__carton = (() => {
       // An undo or redo under way answers with the project it wrote: this event waits for it (replayed after it if
       // the answer didn't hold it), rather than fetching the same project again.
       if (stepping === ev.id) { if (!deferred || (ev.stateUpdatedAt ?? 0) >= (deferred.ev.stateUpdatedAt ?? 0)) deferred = { host, ev }; return { adopted: false, timeline: undefined }; }
-      // A preview stays as it is; "Return to current" takes head.
+      // A preview stays as it is; "Back to my edit" takes head.
       if (st.cartonPreview) { stale = true; return { adopted: false, timeline: undefined }; }
       // The echo of our own save: the editor already shows it, only its base moves.
       if (sent && sent.id === ev.id && sent.rev === ev.stateUpdatedAt) {
@@ -383,7 +384,7 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
     // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
-    // with its "Previewing an earlier version. Return to current to edit." over the timeline (store.refuse is its guard,
+    // with its refusal (Cardboard's words: an earlier version is shown, go back to edit) over the timeline (store.refuse is its guard,
     // me()). Baseline P3-9, final re-check N3: the editor opened inside the read-only preview and dropped what was typed.
     // True when refused; never with Carton off or outside a preview.
     refuse() {

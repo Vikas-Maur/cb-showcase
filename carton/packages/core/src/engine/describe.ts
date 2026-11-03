@@ -2,9 +2,9 @@
 // "Trimmed 'Intro' end 6.0 s → 5.0 s". Never prints more than four parts per record.
 import { POS } from "../types.ts";
 import type { FieldSpec, Schema } from "../schema.ts";
-import type { ConflictCard, Doc, Intent, Op, Path, PathKey, Rec, RemapMaps, RemapOp } from "../types.ts";
+import type { ChangeRow, ConflictCard, Doc, Intent, Op, Path, PathKey, Rec, RemapMaps, RemapOp } from "../types.ts";
 import { getIn, specAt } from "./doc.ts";
-import { EMPTY, deepEqual, unescapeSegment } from "./json.ts";
+import { EMPTY, deepEqual, pathKey, unescapeSegment } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
 
 type PlainOp = Exclude<Op, RemapOp>;
@@ -571,15 +571,360 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
   return out;
 }
 
+// ---------------------------------------------------------------- change rows in editor words (UX redesign 0.1, 0.2)
+//
+// The app's one sentence table (docs/carton-ux DESIGN §8 "Change sentences"): every History row, version card, Changes
+// view, Fold dialog row and toast says a change this way. Verb first; the clip by its name in curly quotes; positions in
+// the edit as the editor's timecodes ("0:09"), differences in whole or tenth seconds ("2 s later"); never an id or a
+// hash. `describe()` keeps its exact, technical lines for `cb` and agents ("Trimmed 'Intro' end 6.0 s → 5.0 s").
+
+/** A position in the edit as a timecode, to the nearest second: 9 → "0:09", 75.4 → "1:15", 3725 → "1:02:05". */
+export function timecode(s: number): string {
+  const t = Number.isFinite(s) && s > 0 ? Math.round(s) : 0;
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), x = t % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`;
+}
+const curly = (s: string) => `“${s}”`;
+/**
+ * A field in an editor's words: its label, else its own name spaced out ("fontSize" → "font size"), never a dotted
+ * path or an element's key.
+ */
+function editorField(schema: Schema, path: Path): string {
+  const f = fieldWords(schema, path);
+  if (f.labelled) return f.words;
+  const last = String(path.length > 2 ? path[2] : path[0] ?? "");
+  return last.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").toLowerCase();
+}
+/** A difference in seconds: 2 → "2 s", 0.45 → "0.5 s", 1.25 → "1.3 s". */
+const secs = (d: number) => {
+  const r = Math.round(Math.abs(d) * 10) / 10;
+  return `${Number.isInteger(r) ? r : r.toFixed(1)} s`;
+};
+const cap = (x: string) => (x ? x[0]!.toUpperCase() + x.slice(1) : x);
+// size-like fields read as bigger or smaller (DESIGN §8: "Made “W2” bigger (font size 100 → 222)")
+const SIZE = /(?:^|\s)(?:size|scale|zoom|width|height)$/;
+
+export interface ChangeWordsOptions {
+  intent?: Intent | null;
+  /** As describe()'s: the doc records are named from when these ops are one row of a larger set (`namingDoc`). */
+  names?: Doc;
+  /** A field's value in the host's words (as describeCard's): Cardboard's volume "80%", speed "2×", a media's file name. */
+  value?: (key: string, value: unknown, doc: Doc | undefined) => string | undefined;
+}
+
+/**
+ * Every change `ops` make to `base`, one row each as `countChanges` counts them, in editor words, with where each is in
+ * the edit (PLAN 0.1, 0.2). A ripple's remap is no row of its own (the records it shifts have no ops); a record a docDiff
+ * shifted (no remap recorded) is its own row, as `countChanges` counts it.
+ */
+export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: ChangeWordsOptions = {}): ChangeRow[] {
+  const tl = schema.timeline;
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const { nameDoc, label } = labeller(plain, base, schema, opts.names);
+  const groups = groupOps(plain, schema);
+  const K = tl ? schema.collections[tl.collection]?.key : undefined;
+  // tracks this change adds: a clip moved onto one went "to a new track"
+  const addedLanes = new Set<unknown>();
+  if (tl) for (const [, g] of groups) if (g.coll === tl.lanes && g.ops.some((op) => op.path.length === 2 && op.op === "insert")) addedLanes.add(g.id);
+  const movedOnto = new Set<unknown>();
+  const toTrack = (id: unknown) => {
+    if (addedLanes.has(id)) {
+      movedOnto.add(id);
+      return "a new track";
+    }
+    const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
+    return t ? `track ${curly(label(tl!.lanes, t))}` : "another track";
+  };
+  const num = (x: number) => (Number.isInteger(x) ? String(x) : String(+x.toFixed(2)));
+  const words = (key: string, v: unknown, doc: Doc): string | null => {
+    const host = opts.value?.(key, v, doc);
+    if (host !== undefined) return host.replace(/^'(.*)'$/, "“$1”");
+    if (typeof v === "number") return num(v);
+    if (typeof v === "string") return curly(v.length > 40 ? v.slice(0, 37) + "…" : v);
+    if (typeof v === "boolean") return v ? "on" : "off";
+    return null;
+  };
+  const nounOf = (coll: string, rec: Rec | undefined): string | undefined => {
+    const cs = schema.collections[coll]!;
+    if (tl && coll === tl.lanes) return cs.noun ?? "track";
+    const own = rec ? cs.nounOf?.(rec) : undefined;
+    // a clip is named alone ("Removed “B-roll 3”"); a title, caption or code graphic, a track or media by what it is
+    if (tl && coll === tl.collection) return own || undefined;
+    return own || cs.noun || undefined;
+  };
+  const called = (coll: string, rec: Rec | undefined) => {
+    const n = nounOf(coll, rec);
+    return `${n ? `${n} ` : ""}${curly(label(coll, rec))}`;
+  };
+  const place = (coll: string | null, rec: Rec | undefined): { at?: number; end?: number } => {
+    if (!tl || coll !== tl.collection || !rec) return {};
+    const s = rec[tl.start], e = rec[tl.end];
+    return typeof s === "number" && Number.isFinite(s) ? { at: s, ...(typeof e === "number" && Number.isFinite(e) ? { end: e } : {}) } : {};
+  };
+
+  /**
+   * A record's field changes as one sentence: the first part names it ("Moved “Intro” 2 s later (now starts at
+   * 0:02)"), the others are its ("changed its volume to 80%"); `name` is how it is called (a split's part: "its right
+   * part"). `after` gets the changed values.
+   */
+  const fieldSentence = (coll: string, ops: readonly PlainOp[], before: Rec | undefined, doc: Doc, name: string, after: Rec): { text: string; verb: string } | null => {
+    const cs = schema.collections[coll]!;
+    const f = new Map<string, PlainOp>();
+    for (const op of ops) if (op.path.length === 3) f.set(op.path[2] as string, op);
+    const first: string[] = [], rest: string[] = [];
+    let verb = "Changed %s";
+    const say = (whole: string, its: string, v?: string) => {
+      if (!first.length) {
+        first.push(whole);
+        if (v) verb = v;
+      } else rest.push(its);
+    };
+    let todo: readonly PlainOp[] = ops;
+    const phrases = cs.phrases;
+    if (phrases) {
+      const said = new Set<string>();
+      for (const op of ops) {
+        const p = phrases[op.path[2] as string];
+        if (!p) continue;
+        const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
+        const fresh = op.path.length === 3 && !gone && getIn(doc, op.path, schema) === undefined;
+        const t = gone ? p.cleared : fresh ? p.set : (p.changed ?? p.set);
+        if (!said.has(t)) say(t.replace("%s", name), lower(t.replace("%s", "it")), t);
+        said.add(t);
+      }
+      todo = todo.filter((op) => !phrases[op.path[2] as string]);
+    }
+    if (tl && coll === tl.lanes && f.get(POS)) {
+      say(`Reordered ${name}`, "reordered it", "Reordered %s");
+      todo = todo.filter((op) => op !== f.get(POS));
+    }
+    if (tl && coll === tl.collection && before) {
+      const s = f.get(tl.start), e = f.get(tl.end), ln = f.get(tl.lane), src = f.get(tl.source);
+      const used = new Set([s, e, ln, src, f.get(tl.sourceEnd)].filter(Boolean));
+      const os = before[tl.start] as number, oe = before[tl.end] as number;
+      const ns = s ? (s as { value: number }).value : os, ne = e ? (e as { value: number }).value : oe;
+      const track = ln ? toTrack((ln as { value: unknown }).value) : "";
+      if (s && e && Math.abs(ns - os - (ne - oe)) < 1e-4 && Math.abs(ns - os) > 1e-4) {
+        const d = ns - os;
+        say(`Moved ${name} ${secs(d)} ${d > 0 ? "later" : "earlier"}${track ? ` to ${track}` : ""} (now starts at ${timecode(ns)})`, `moved it ${secs(d)} ${d > 0 ? "later" : "earlier"}${track ? ` to ${track}` : ""}`, "Moved %s");
+      } else {
+        if (s && e) say(`Trimmed ${name}, now ${timecode(ns)} to ${timecode(ne)}`, `trimmed it to ${timecode(ns)}–${timecode(ne)}`, "Trimmed %s");
+        else if (e) say(`Trimmed ${name}, now ends at ${timecode(ne)}`, `trimmed it to end at ${timecode(ne)}`, "Trimmed %s");
+        else if (s) say(`Trimmed ${name}, now starts at ${timecode(ns)}`, `trimmed it to start at ${timecode(ns)}`, "Trimmed %s");
+        else if (src && typeof before[tl.source] === "number") {
+          const d = (src as { value: number }).value - (before[tl.source] as number);
+          say(`Slipped ${name} ${secs(d)} ${d > 0 ? "later" : "earlier"} in its footage`, `slipped it ${secs(d)} ${d > 0 ? "later" : "earlier"} in its footage`, "Slipped %s");
+        }
+        if (track) say(`Moved ${name} to ${track}`, `moved it to ${track}`, "Moved %s");
+      }
+      todo = todo.filter((op) => !used.has(op));
+    }
+    // an element of a keyed list by its own name or type ("blur"), else its key when that isn't an id, else nothing
+    const elem = (op: PlainOp) => {
+      const v = (op.op === "insert" ? op.value : getIn(doc, op.path, schema)) as Rec | undefined;
+      const own = v && typeof v === "object" ? [v.name, v.type, v.label].find((x) => typeof x === "string" && x) : undefined;
+      if (typeof own === "string") return ` ${curly(own.length > 40 ? own.slice(0, 37) + "…" : own)}`;
+      const spec = specAt(schema, op.path.slice(0, 3)), k = op.path.at(-1);
+      return (spec?.kind === "keyed" && isIdKey(spec.key)) || opaque("", k) || typeof k !== "string" ? "" : ` ${curly(k)}`;
+    };
+    const isCaption = !!before && cs.nounOf?.(before) === "caption";
+    for (const op of todo) {
+      const field = editorField(schema, op.path);
+      const list = editorField(schema, op.path.slice(0, 3));
+      const key = op.path.slice(2).filter((x) => typeof x === "string").join(".");
+      // a keyed list set whole where there was none: its elements added
+      const spec = op.op === "set" && op.path.length === 3 && Array.isArray(op.value) && op.value.length ? specAt(schema, op.path) : undefined;
+      const was = spec?.kind === "keyed" ? getIn(doc, op.path, schema) : null;
+      if (spec?.kind === "keyed" && (was === undefined || (Array.isArray(was) && !was.length))) {
+        for (const v of (op as { value: Rec[] }).value) {
+          const e = elem({ op: "insert", path: [...op.path, String(v?.[spec.key] ?? "")], value: v } as PlainOp);
+          say(`Added ${list}${e} to ${name}`, `added ${list}${e}`, "Changed %s");
+        }
+        continue;
+      }
+      if (op.op === "insert") say(`Added ${list}${elem(op)} to ${name}`, `added ${list}${elem(op)}`);
+      else if (op.op === "remove") say(`Removed ${list}${elem(op)} from ${name}`, `removed ${list}${elem(op)}`);
+      else if (op.path.at(-1) === POS) say(`Reordered the ${list} of ${name}`, `reordered its ${list}`);
+      else if (op.op === "unset") say(`Cleared the ${field} of ${name}`, `cleared its ${field}`, `Cleared the ${field} of %s`);
+      else {
+        const old = getIn(doc, op.path, schema), v = op.value;
+        if (opaque(op.path[2], v) || opaque(op.path[2], old) || opaque(op.path.at(-1), v)) {
+          // an id or a hash is never shown: its field alone, or the host's words for it (a media's file name)
+          const host = opts.value?.(key, v, doc);
+          const to = host !== undefined ? ` to ${host.replace(/^'(.*)'$/, "“$1”")}` : "";
+          say(`Changed the ${field} of ${name}${to}`, `changed its ${field}${to}`, `Changed the ${field} of %s`);
+          continue;
+        }
+        // the field the record is named by (a title's text, a caption's, a name): "Changed “Hello” to “Hello world”"
+        if (op.path.length === 3 && typeof v === "string" && before) {
+          const now = label(coll, { ...before, [op.path[2] as string]: v }), then = label(coll, before);
+          if (now !== then) {
+            if (isCaption) say(`Changed caption to ${curly(now)}`, `changed it to ${curly(now)}`, "Changed %s");
+            else if (op.path[2] === "name") say(`Renamed ${curly(then)} to ${curly(now)}`, `renamed it to ${curly(now)}`, "Renamed %s");
+            else say(`Changed ${curly(then)} to ${curly(now)}`, `changed it to ${curly(now)}`, "Changed %s");
+            continue;
+          }
+        }
+        // a structure set whole (a clip's first color grade): its labelled leaves that changed, each in its own words
+        if (isObj(v) && !Array.isArray(v)) {
+          const was = leaves(old), now = leaves(v);
+          const lbl = cs.labels ?? {};
+          let any = false;
+          for (const [k, x] of now) {
+            const full = `${key}.${k}`, l = lbl[full.replace(/\.[^.]*~[^.]*/g, "")] ?? lbl[full];
+            if (!l || deepEqual(was.get(k), x)) continue;
+            const wx = words(full, x, doc);
+            if (wx === null) continue;
+            any = true;
+            if (was.get(k) === undefined) say(`Set the ${l} of ${name} to ${wx}`, `set its ${l} to ${wx}`);
+            else say(`Changed the ${l} of ${name} to ${wx}`, `changed its ${l} to ${wx}`);
+          }
+          if (any) continue;
+        }
+        const w = words(key, v, doc);
+        if (typeof v === "number" && typeof old === "number" && SIZE.test(field) && v !== old) {
+          const how = v > old ? "bigger" : "smaller", w0 = words(key, old, doc) ?? num(old);
+          say(`Made ${name} ${how} (${field} ${w0} → ${w ?? num(v)})`, `made it ${how} (${field} ${w0} → ${w ?? num(v)})`, `Made %s ${how}`);
+        } else if (old === undefined) say(w === null ? `Set the ${field} of ${name}` : `Set the ${field} of ${name} to ${w}`, w === null ? `set its ${field}` : `set its ${field} to ${w}`, `Set the ${field} of %s`);
+        else say(w === null ? `Changed the ${field} of ${name}` : `Changed the ${field} of ${name} to ${w}`, w === null ? `changed its ${field}` : `changed its ${field} to ${w}`, `Changed the ${field} of %s`);
+      }
+    }
+    if (!first.length) return null;
+    if (rest.length > 3) rest.splice(2, rest.length - 2, `and ${rest.length - 2} more changes`);
+    void after;
+    return { text: [first[0]!, ...rest].join(", "), verb };
+  };
+
+  const out: ChangeRow[] = [];
+  const split = new Map<string, Split | null>();
+  for (const sp of findSplits(groups, base, schema, label)) {
+    split.set(sp.key, sp);
+    for (const p of sp.parts) split.set(p.key, null);
+  }
+  for (const k of heldParts(groups, base, schema, opts.names).keys()) split.set(k, null);
+  for (const [gk, g] of groups) {
+    const sp = split.get(gk);
+    if (sp === null) continue; // a split's part, or a part held by another record: told with it
+    // the record's path key, escaped as everywhere else (`touched`, cards, the Fold dialog's rows)
+    const key = g.coll ? pathKey([g.coll, g.id as string]) : gk;
+    if (sp) {
+      const name = curly(label(sp.coll, sp.rec));
+      const said: string[] = [`Split ${name} at ${and(sp.at.map(timecode))}`];
+      const drops = new Set((tl!.splitDrops ?? EMPTY).filter((f) => sp.rec[f] !== undefined && sp.parts.every((p) => p.rec[f] === undefined)));
+      sp.parts.forEach(({ rec, ideal }, i) => {
+        const id = rec[schema.collections[sp.coll]!.key] as string;
+        const ops: PlainOp[] = [];
+        for (const f of new Set([...Object.keys(rec), ...Object.keys(ideal)])) {
+          const v = rec[f], was = ideal[f];
+          const timing = f === tl!.start || f === tl!.end || f === tl!.source || f === tl!.sourceEnd || f === tl!.lane;
+          const plainV = (x: unknown) => x === null || typeof x !== "object";
+          if (timing) {
+            if (!close(v, was)) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          } else if (was === undefined) {
+            if (v !== undefined) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          } else if (v === undefined) {
+            if (plainV(was) && !drops.has(f)) ops.push({ op: "unset", path: [sp.coll, id, f] });
+          } else if (plainV(v) && plainV(was) && v !== was) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+        }
+        if (!ops.length) return;
+        const doc = { ...base, [sp.coll]: [...((base[sp.coll] as Rec[] | undefined) ?? EMPTY), ideal] };
+        const part = `its ${sp.parts.length === 2 ? (i ? "right" : "left") : (PART[i] ?? `${i + 1}th`)} part`;
+        const l = fieldSentence(sp.coll, ops, ideal, doc, part, rec);
+        if (l) said.push(lower(l.text));
+      });
+      out.push({ key, text: said.join(", "), kind: "change", coll: sp.coll, id: String(sp.rec[K!]), rec: sp.rec, ...place(sp.coll, sp.rec), verb: "Split %s", one: name });
+      continue;
+    }
+    if (!g.coll) {
+      // a root field (the project's): "Changed the aspect ratio to 9:16", "Named the project “Dragon short”"
+      const op = g.ops[0]!;
+      const old = getIn(base, op.path, schema);
+      const fw = fieldWords(schema, op.path);
+      const what = `the ${editorField(schema, op.path)}`;
+      const v = (op as { value?: unknown }).value;
+      const w = words(op.path.join("."), v, base);
+      let text: string;
+      if (g.ops.length > 1 || op.op === "unset") text = op.op === "unset" && g.ops.length === 1 ? `Cleared ${what}` : `Changed ${what}`;
+      else if (opaque(op.path.at(-1), v) || opaque(op.path.at(-1), old)) text = `${old === undefined ? "Set" : "Changed"} ${what}`;
+      else if (old === undefined && fw.labelled && typeof v === "string" && fw.words.endsWith(" name")) text = `Named the ${fw.words.slice(0, -" name".length)} ${curly(v.length > 40 ? v.slice(0, 37) + "…" : v)}`;
+      else text = w === null ? `${old === undefined ? "Set" : "Changed"} ${what}` : `${old === undefined ? "Set" : "Changed"} ${what} to ${w}`;
+      out.push({ key, text, kind: "change", coll: null });
+      continue;
+    }
+    const before = getIn(base, [g.coll, g.id as string], schema) as Rec | undefined;
+    const whole = g.ops.find((op) => op.path.length === 2);
+    const id = String(g.id);
+    if (whole?.op === "insert") {
+      const r = whole.value as Rec;
+      out.push({ key, text: `Added ${called(g.coll, r)}`, kind: "add", coll: g.coll, id, rec: r, ...place(g.coll, r), verb: "Added %s", one: called(g.coll, r) });
+      continue;
+    }
+    if (whole) {
+      out.push({ key, text: `Removed ${called(g.coll, before)}`, kind: "remove", coll: g.coll, id, ...(before ? { rec: before } : {}), ...place(g.coll, before), verb: "Removed %s", one: called(g.coll, before) });
+      continue;
+    }
+    // the record as it is after: its place in the edit is where it is now
+    const after: Rec = { ...(before ?? {}) };
+    for (const op of g.ops) if (op.path.length === 3 && (op.op === "set" || op.op === "unset")) after[op.path[2] as string] = op.op === "set" ? op.value : undefined;
+    const name = tl && g.coll === tl.lanes ? called(g.coll, before) : curly(label(g.coll, before));
+    const l = fieldSentence(g.coll, g.ops, before, base, name, after);
+    // a record whose ops say nothing an editor reads (a field nobody labels): still a change, so the counts agree
+    out.push({ key, text: l?.text ?? `Changed ${name}`, kind: "change", coll: g.coll, id, rec: after, ...place(g.coll, after), verb: l?.verb ?? "Changed %s", one: name });
+  }
+  // a track added only for the clips moved onto it is said by their rows ("Moved “W6” to a new track")
+  if (movedOnto.size) for (const r of out) if (r.kind === "add" && tl && r.coll === tl.lanes && movedOnto.has(r.id)) r.minor = true;
+  return out;
+}
+
+/**
+ * Several change rows in one line, a version's title in History: the row itself when there is one, else grouped by
+ * what was done ("Moved “a” and “b”, trimmed “c”"; several of a kind by their count, "Added 3 captions"), at most three
+ * groups ("…, and 2 more changes"). A minor row (a track made for the clips moved onto it) is said by theirs.
+ */
+export function changeSummary(rows: readonly ChangeRow[], schema: Schema): string {
+  const ls = rows.some((r) => !r.minor) ? rows.filter((r) => !r.minor) : rows;
+  if (ls.length <= 1) return ls[0]?.text ?? "";
+  const nounOf = (r: ChangeRow) => {
+    if (!r.coll) return "change";
+    const cs = schema.collections[r.coll];
+    const own = cs?.nounOf && r.rec ? cs.nounOf(r.rec) : undefined;
+    return own ?? cs?.noun ?? (r.coll === schema.timeline?.lanes ? "track" : "item");
+  };
+  const groups: { verb?: string; text?: string; n: number; byNoun: Map<string, string[]> }[] = [];
+  for (const r of ls) {
+    const v = r.verb && r.one ? r.verb : undefined;
+    let g = v ? groups.find((x) => x.verb === v) : undefined;
+    if (!g) groups.push((g = { ...(v ? { verb: v } : { text: r.text }), n: 0, byNoun: new Map() }));
+    g.n++;
+    if (v) {
+      const k = nounOf(r) ?? "item";
+      (g.byNoun.get(k) ?? g.byNoun.set(k, []).get(k)!).push(r.one!);
+    }
+  }
+  const parts = groups.map((g) => {
+    if (!g.verb) return g.text!;
+    const one = g.byNoun.size === 1;
+    const what = [...g.byNoun].map(([noun, xs]) => (xs.length === 1 ? xs[0]! : one && xs.length === 2 ? `${xs[0]} and ${xs[1]}` : `${xs.length} ${plural(noun)}`));
+    return g.verb.replace("%s", and(what));
+  });
+  if (parts.length > 3) {
+    const rest = groups.slice(2).reduce((n, g) => n + g.n, 0);
+    parts.splice(2, parts.length - 2, `and ${rest} more change${rest === 1 ? "" : "s"}`);
+  }
+  return cap(parts.map((w, i) => (i ? lower(w) : w)).join(", "));
+}
+
 // ---------------------------------------------------------------- conflict cards in words
 
 /** A conflict card in plain words (§7): what it is about, and what each side did differently. */
 export interface CardWords {
-  /** "'Dragon-take2.mp4' timing", "'Intro' opacity", "Project name". */
+  /** "“Dragon-take2.mp4” timing", "“Intro” opacity", "Project name". */
   title: string;
-  /** What core's `ours` side did: "Moved 1.5 s → 3.0 s", "Removed". */
+  /** What core's `ours` side did, in the change sentences' words (UX redesign 0.2): "Moved it to start at 0:03", "Removed". */
   ours: string;
   theirs: string;
+  /** The record's name ("Dragon-take2.mp4"), when it has one: a viewing label says "Claude Code's move of “…”". */
+  name?: string;
   /** Why the two don't combine, when the engine's reason is words for an editor. */
   reason?: string;
 }
@@ -623,12 +968,12 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
   const name = coll && rec ? (schema.label?.(coll, rec, doc) ?? (typeof rec.name === "string" && rec.name ? rec.name : undefined)) : undefined;
   const part = group ? (group === "time" ? "timing" : group) : rest.length ? (rest.at(-1) === POS ? "order" : fieldWords(schema, path).words) : "";
   const cap = (x: string) => (x ? x[0]!.toUpperCase() + x.slice(1) : x);
-  const title = coll ? `${name ? `'${name}'` : cap(noun)}${part ? ` ${part}` : ""}` : cap(part || card.path);
+  const title = coll ? `${name ? `“${name}”` : cap(noun)}${part ? ` ${part}` : ""}` : cap(part || card.path);
 
   const isTimeline = !!tl && coll === tl.collection;
   const laneName = (id: unknown) => {
     const t = tl && doc ? (getIn(doc, [tl.lanes, id as string], schema) as Rec | undefined) : undefined;
-    return t ? `track '${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
+    return t ? `track “${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}”` : "another track";
   };
   // A field's words: its label (or its nearest labelled parent's), else its path when the collection labels nothing.
   const labelOf = (key: string): string | null => {
@@ -643,16 +988,16 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
   const num = (x: number) => (Number.isInteger(x) ? String(x) : String(+x.toFixed(2)));
   const valueWords = (key: string, v: unknown): string | null => {
     const host = opts.value?.(key, v, doc);
-    if (host !== undefined) return host;
+    if (host !== undefined) return host.replace(/^'(.*)'$/, "“$1”");
     if (typeof v === "number") return num(v);
-    if (typeof v === "string") return JSON.stringify(v.length > 40 ? v.slice(0, 37) + "…" : v);
+    if (typeof v === "string") return `“${v.length > 40 ? v.slice(0, 37) + "…" : v}”`;
     if (typeof v === "boolean") return v ? "on" : "off";
     return null; // an object or a list: "changed"
   };
   const fieldPart = (key: string, v: unknown): string | null => {
     if (isIdKey(key)) {
       const host = opts.value?.(key, v, doc);
-      return host === undefined ? null : `${labelOf(key) ?? key} ${host}`;
+      return host === undefined ? null : `${labelOf(key) ?? key} ${host.replace(/^'(.*)'$/, "“$1”")}`;
     }
     const l = labelOf(key);
     if (!l) return null;
@@ -660,23 +1005,24 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
     const w = valueWords(key, v);
     return w === null ? `${l} changed` : `${l} ${w}`;
   };
-  // A clip's times on one side, against the base: "Moved 1.5 s → 3.0 s", "Trimmed end 4.5 s → 6.0 s".
+  // A clip's times on one side, against the base, as the change sentences say them (UX redesign 0.2): "Moved it to
+  // start at 0:03", "Trimmed it to end at 0:06".
   const timeWords = (v: Record<string, unknown>, b: Record<string, unknown> | undefined): string | null => {
     if (!tl) return null;
     const s = v[tl.start], e = v[tl.end];
     const bs = b?.[tl.start], be = b?.[tl.end];
     if (typeof s !== "number" || typeof e !== "number") return null;
-    if (typeof bs !== "number" || typeof be !== "number") return `${whole && !b ? "Added at" : "At"} ${fmtT(s)}–${fmtT(e)}`;
+    if (typeof bs !== "number" || typeof be !== "number") return `${whole && !b ? "Added it at" : "At"} ${timecode(s)} to ${timecode(e)}`;
     const ds = s - bs, de = e - be;
     if (Math.abs(ds) < EPS && Math.abs(de) < EPS) {
       const src = v[tl.source], bsrc = b?.[tl.source];
-      if (typeof src === "number" && typeof bsrc === "number" && Math.abs(src - bsrc) > EPS) return `Slipped source in ${fmtS(bsrc)} → ${fmtS(src)}`;
-      return `Left at ${fmtT(s)}–${fmtT(e)}`;
+      if (typeof src === "number" && typeof bsrc === "number" && Math.abs(src - bsrc) > EPS) return `Slipped its footage to start ${secs(src)} in`;
+      return `Left it at ${timecode(s)} to ${timecode(e)}`;
     }
-    if (Math.abs(ds - de) < EPS) return `Moved ${fmtT(bs)} → ${fmtT(s)}`;
-    if (Math.abs(ds) < EPS) return `Trimmed end ${fmtS(be)} → ${fmtS(e)}`;
-    if (Math.abs(de) < EPS) return `Trimmed start ${fmtS(bs)} → ${fmtS(s)}`;
-    return `Retimed ${fmtT(bs)}–${fmtT(be)} → ${fmtT(s)}–${fmtT(e)}`;
+    if (Math.abs(ds - de) < EPS) return `Moved it to start at ${timecode(s)}`;
+    if (Math.abs(ds) < EPS) return `Trimmed it to end at ${timecode(e)}`;
+    if (Math.abs(de) < EPS) return `Trimmed it to start at ${timecode(s)}`;
+    return `Set it to play ${timecode(s)} to ${timecode(e)}`;
   };
   const TIME = new Set(tl ? [tl.start, tl.end, tl.source, tl.sourceEnd] : []);
   // What one side holds, as far as it differs from the other side (else from the base). Against a removed side, what
@@ -713,6 +1059,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
     title,
     ours: side(card.ours, card.theirs),
     theirs: side(card.theirs, card.ours),
+    ...(name ? { name } : {}),
     ...(card.reason && !ENGINE_REASONS.has(card.reason) ? { reason: card.reason } : {}),
   };
 }

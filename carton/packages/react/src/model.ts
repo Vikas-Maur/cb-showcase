@@ -59,6 +59,11 @@ export interface Version {
   readonly leftOut?: number;
   /** The ref its changes start from (the version before it; a turn's: before its first version): `changes(base, ref)` is what it did. */
   readonly base?: string;
+  /**
+   * The agent turn it is part of (PLAN 0.4): a turn's versions share it, and its newest is the turn's row (kind "turn").
+   * History shows the turn as that one row (`groupHistory` folds the others under it).
+   */
+  readonly run?: string;
   /** A name the user gave it: "Sent to client, Monday". */
   readonly name?: string;
   /** A Director turn: its label (the prompt, shortened) and how many edits it made. */
@@ -336,7 +341,7 @@ export interface Comparison {
    */
   readonly changes?: readonly string[];
   /**
-   * How many changes, counted as History, `cb history`, the Fold dialog and Watch the changes count them: a record each,
+   * How many changes, counted as History, `cb history`, the Fold dialog and WatchTheChanges count them: a record each,
    * a split one (core's `countChanges`; laptop re-check P3-11). Lines in `changes` can be more (a ripple's own line).
    */
   readonly changeCount?: number;
@@ -445,7 +450,7 @@ export interface ShotDiff {
   readonly aLabel: string;
   readonly bLabel: string;
   /**
-   * How many changes from a to b, counted as Compare and History count them (laptop re-check P3-11). Watch the changes
+   * How many changes from a to b, counted as Compare and History count them (laptop re-check P3-11). WatchTheChanges
    * says it; its counter steps through the sections of the edit that differ, which can be fewer or more.
    */
   readonly changes?: number;
@@ -540,6 +545,6 @@ export interface CartonUi {
    * Preview.
    */
   conflictRef?(conflictId: string, side: ConflictChoice): Promise<string | null>;
-  /** The host saw an edit attempt during a preview: the banner then explains and offers "Return to current to edit". */
+  /** The host saw an edit attempt while viewing: the stage then explains and offers "Back to my edit". */
   blockEdit(): void;
 }

@@ -54,7 +54,7 @@ test("#1: a cut another process makes (no edit yet) or renames shows in the cut 
   }
 });
 
-test("#2: a split is one change in the Fold dialog, 'Split 'clip.mp4' at 2.0 s', left out whole", async () => {
+test("#2: a split is one change in the Fold dialog, 'Split “clip.mp4” at 0:02', left out whole", async () => {
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), cutName: "Main cut" }, actor: alice });
   const ui = fromCarton(carton, { me: alice });
   try {
@@ -75,7 +75,7 @@ test("#2: a split is one change in the Fold dialog, 'Split 'clip.mp4' at 2.0 s',
     await ui.settled();
     const plan = await ui.planFold(alt.id, main);
     const words = plan.changes.map((c) => c.summary).sort();
-    assert.deepEqual(words, ["Changed 'other.mp4' name \"other.mp4\" → \"Outro\"", "Split 'clip.mp4' at 2.0 s"], "one row for the split: " + JSON.stringify(words));
+    assert.deepEqual(words, ["Renamed “other.mp4” to “Outro”", "Split “clip.mp4” at 0:02"], "one row for the split: " + JSON.stringify(words));
     const split = plan.changes.find((c) => c.summary.startsWith("Split"))!;
     assert.equal(split.author.name, "Alice", "credited to who split it");
 
@@ -86,7 +86,7 @@ test("#2: a split is one change in the Fold dialog, 'Split 'clip.mp4' at 2.0 s',
     // folded in later (Fold in the rest): one row again, and the parts come in
     await ui.settled();
     const rest = await ui.planFold(alt.id, main);
-    assert.deepEqual(rest.changes.map((c) => c.summary), ["Split 'clip.mp4' at 2.0 s"], "the row left out is still one row");
+    assert.deepEqual(rest.changes.map((c) => c.summary), ["Split “clip.mp4” at 0:02"], "the row left out is still one row");
   } finally {
     ui.dispose();
     await carton.close();
@@ -146,7 +146,7 @@ test("N-1: a title deleted with its own media entry is one row in the Fold dialo
     await carton.commit({ ops: [{ op: "remove", path: ["items", "w2"] }, { op: "remove", path: ["media", "tm2"] }] });
     await ui.settled();
     const plan = await ui.planFold(alt.id, main);
-    assert.deepEqual(plan.changes.map((c) => c.summary), ["Deleted text 'W2'"], "one row, the title's");
+    assert.deepEqual(plan.changes.map((c) => c.summary), ["Removed “W2”"], "one row, the title's");
     assert.deepEqual(await ui.fold(alt.id, main, { choices: {}, leaveOut: [plan.changes[0]!.id] }), { ok: true });
     const head = (await carton.head(main)).doc;
     assert.deepEqual([(head.items as Rec[]).map((r) => r.id).sort(), (head.media as Rec[]).map((r) => r.id).sort()], [["w1", "w2"], ["tm1", "tm2"]], "left out together");

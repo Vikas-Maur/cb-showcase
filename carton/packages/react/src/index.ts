@@ -51,7 +51,7 @@ export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_M
 // The Changes view, Play and Before (docs/carton-ux PLAN 4): in place of History's list, and for a version's card.
 export { ChangesView, longLabel, CHANGES_VIRTUAL_OVER, type ChangesViewProps } from "./components/ChangesView.ts";
 export { usePlayChanges, PlayAllButton, BeforeButton, playKeys, HOLD_MS, type PlayHost, type PlayTarget, type PlayOptions, type Playback, type PlayStatus, type BeforeControl } from "./components/Play.ts";
-export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
+export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, defaultClipKind, sideNoun, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
 export { itemFilter, type ItemFilter } from "./item-filter.ts";
 // Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.

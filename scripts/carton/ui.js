@@ -4,7 +4,7 @@
 //   rule, resize handle, header). The title bar's History and Share icons open it (patch-carton.js routes them as
 //   carton:command to this page) and show which one is open (this page reports it back: bridge.reportPanel).
 // - CartonStage: a layer over the stage (the preview's column, above the timeline, left of the chat): the conflict
-//   cards' floating stack in its bottom-right corner, with "See it", and the preview banner ("Return to current").
+//   cards' floating stack in its bottom-right corner, with "See it", and the viewing banner ("Back to my edit").
 // Neither takes keys but its own (Esc closes the panel while focus is in it), so the stage, the timeline's keyboard,
 // Ctrl+Z and the chat work as before.
 // Carton runs in the library worker. There @carton/react's view model is served to each page (serveUi over the
@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -23,14 +23,14 @@ import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 const toasts = { value: null, seq: 0, subs: new Set(), show(text, action, tone) { this.set({ id: ++this.seq, text, action, ...(tone ? { tone } : {}) }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
 // what the bridge tells (scripts/carton/renderer-bridge.js notice: a save that failed, an undo refused)
 const tellFailure = (text) => toasts.show(text, null, "warning");
-const clockTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 function confirmations(ui) {
   const versionByRef = (ref) => (ui.history().all?.() ?? []).find((v) => v.ref === ref);
   const restore = ui.restore.bind(ui);
   ui.restore = async (ref) => {
     const v = versionByRef(ref);
     await restore(ref);
-    toasts.show(v?.name ? `Restored “${v.name}”. It's saved as a new version.` : v ? `Restored the version from ${clockTime(v.at)}. It's saved as a new version.` : "Restored. It's saved as a new version.");
+    // a version named one way everywhere (UX redesign 0.9: its name, an agent's prompt, or "your edit from 12:41 pm")
+    toasts.show(words.restoredToast(v ? versionLabel(v, { actor: ui.actor.bind(ui) }) : "an earlier version"));
   };
   const fold = ui.fold.bind(ui);
   ui.fold = async (from, into, opts) => {
@@ -59,6 +59,13 @@ function connect(projectId, bridge) {
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
   r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
+  // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
+  // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
+  const view = r.ui.view.bind(r.ui);
+  r.ui.view = async (target) => {
+    await view(target);
+    return bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
+  };
   confirmations(r.ui);
   return { ...r, close: off };
 }

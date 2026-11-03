@@ -23,7 +23,6 @@ export const words = {
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
   historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No agent turns yet.",
-  checkpoint: "Checkpoint",
   // Day headers in a long History (UI audit P2-17)
   today: "Today",
   yesterday: "Yesterday",
@@ -34,8 +33,8 @@ export const words = {
   showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
   hideChanges: (n: number) => (n === 1 ? "Hide the change" : "Hide the changes"),
   turnEdits: (n: number) => plural(n, "edit", "edits"),
-  provisional: "Waiting to sync",
-  provisionalHint: "This version gets its final place in History once it reaches the server.",
+  provisional: "Not sent yet",
+  provisionalHint: "This version gets its final place in History once it's sent.",
   restore: "Restore",
   preview: "Preview",
   create: "Create",
@@ -100,7 +99,7 @@ export const words = {
   laterEdit: (who: string | null, at?: string) => `${who ? `${who}'s` : "Your"} later edit${at ? ` (${at})` : ""}`,
   keepEarlier: "Keep earlier",
   keepLater: "Keep later",
-  showingNow: "Showing now",
+  showingNow: "In the timeline",
   // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
   seePreview: "Preview",
   yourEdit: "Your edit",
@@ -114,7 +113,7 @@ export const words = {
   setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
   setAsideList: (n: number) => `Set aside (${n})`,
   showAgain: "Show again",
-  conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
+  conflictsWaiting: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
 
   // Credits
   creditsFor: (clip: string) => `Credits for ${clip}`,
@@ -156,15 +155,14 @@ export const words = {
   before: "Before",
   pause: "Pause",
 
-  // Read-only preview (§9, R2-16)
-  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
-  previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // Viewing (§9, R2-16; DESIGN §4.2): what the stage shows when it isn't your edit
+  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "You're looking at your edit from 12:41 pm".
+  previewing: (label: string) => `You're looking at ${label.replace(/^Your\b/, "your")}`,
   // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
   versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
-  readOnly: "Read-only",
-  returnToCurrent: "Return to current to edit",
-  returnToCurrentKey: "Return to current (Esc)",
-  previewBlocked: "This is a preview, so edits don't apply here.",
+  returnToCurrent: "Back to my edit",
+  returnToCurrentKey: "Back to my edit (Esc)",
+  previewBlocked: "Go back to your edit to change it.",
 
   // Times
   justNow: "just now",
