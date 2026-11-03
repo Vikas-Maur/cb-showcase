@@ -277,6 +277,14 @@ export interface ConflictSide {
   readonly where?: string;
   /** What this side did, as a noun for the viewing label ("Claude Code's move of “Interview B”"): "move", "trim", "change". */
   readonly what?: string;
+  /**
+   * What this side did, as a change sentence about the card's clip (DESIGN §8: "(a conflict side) Moved it to start at
+   * 0:07"): "Made it smaller (font size 80)", "Removed it". The card shows it in place of `summary` when given; the two
+   * sides' sentences never read the same. Never an id.
+   */
+  readonly text?: string;
+  /** The same as a verb phrase for the card's title: "moved it", "changed its font size" ("you and Claude Code both moved it"). */
+  readonly did?: string;
 }
 
 /** A conflict card (§7): both edits are kept, and the person picks. */
@@ -291,6 +299,8 @@ export interface Conflict {
   readonly theirs: ConflictSide;
   /** "Keep both" is offered when both can live side by side (a new track, or alternatives). */
   readonly canKeepBoth: boolean;
+  /** What "Keep both" makes, in words, when the host can say: "Leo's music on a new track under yours". */
+  readonly both?: string;
   /** Why a card instead of a merge, when it isn't plain: "The result would end before it starts". */
   readonly reason?: string;
   /** The choice already shown in the edit while undecided (§7: provisional = your side). */
