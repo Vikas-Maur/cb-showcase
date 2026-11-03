@@ -1,0 +1,453 @@
+{
+ "tool": "cf-lab-laptop",
+ "version": 2,
+ "build": {
+  "commit": "68dd0493264c",
+  "branch": "HEAD",
+  "dirty": false,
+  "untracked": false,
+  "builtAt": "2026-11-02T02:51:54.207Z",
+  "transportDeadLink": true
+ },
+ "startedAt": "2026-11-03T00:23:29.268Z",
+ "finishedAt": "2026-11-03T00:27:44.533Z",
+ "host": "https://carton-lab-r2.vikasmaur10.workers.dev",
+ "projectId": "laptop-20261102020754",
+ "config": {
+  "createdAt": "2026-11-02T02:07:56.944Z",
+  "expiresAt": "2026-11-04T02:07:56.944Z"
+ },
+ "run": "9d4cd88c",
+ "args": {
+  "uploadMB": 100,
+  "downloadMiB": 16,
+  "edits": 60,
+  "intervalMs": 1000,
+  "holeMs": 45000,
+  "holeEdits": 5,
+  "uploadEditMs": 3000,
+  "shaped": {
+   "kbps": 1000,
+   "delayMs": 100,
+   "edits": 20,
+   "holeMs": 0
+  },
+  "maxMinutes": 20,
+  "partMiB": null,
+  "concurrency": null,
+  "skip": [],
+  "transport": null
+ },
+ "env": {
+  "node": "v24.19.0",
+  "platform": "win32",
+  "arch": "x64",
+  "osRelease": "10.0.26300",
+  "cpus": 12,
+  "cpuModel": "12th Gen Intel(R) Core(TM) i5-12450HX",
+  "memGB": 17
+ },
+ "steps": {
+  "probe": {
+   "dnsMs": [
+    547,
+    0,
+    0
+   ],
+   "tcpConnectMs": {
+    "n": 5,
+    "p50": 361,
+    "p90": 626,
+    "p99": 626,
+    "max": 626,
+    "mean": 411,
+    "values": [
+     351,
+     626,
+     361,
+     365,
+     353
+    ]
+   },
+   "tlsHandshakeMs": {
+    "n": 5,
+    "p50": 130,
+    "p90": 298,
+    "p99": 298,
+    "max": 298,
+    "mean": 190,
+    "values": [
+     298,
+     130,
+     115,
+     113,
+     294
+    ]
+   },
+   "healthMs": [
+    1302,
+    247,
+    188,
+    129,
+    162,
+    157,
+    142,
+    128,
+    150,
+    146
+   ],
+   "healthWarmMs": {
+    "n": 9,
+    "p50": 150,
+    "p90": 188,
+    "p99": 247,
+    "max": 247,
+    "mean": 161,
+    "values": [
+     247,
+     188,
+     129,
+     162,
+     157,
+     142,
+     128,
+     150,
+     146
+    ]
+   },
+   "healthFailed": 0,
+   "cloudflare": {
+    "colo": "SIN",
+    "loc": "IN",
+    "http": "http/1.1",
+    "tls": "TLSv1.3"
+   },
+   "wsConnectMs": [
+    504,
+    1242,
+    1411,
+    695,
+    1257
+   ],
+   "stepMs": 15732,
+   "loopLagMs": {
+    "p50": 16.1,
+    "p99": 25.1,
+    "max": 42.8
+   }
+  },
+  "sync": {
+   "failed": "replica A never got up to date (syncing)",
+   "stepMs": 45024,
+   "loopLagMs": {
+    "p50": 16.1,
+    "p99": 25.6,
+    "max": 48.6
+   }
+  },
+  "offline": {
+   "failed": "replica C (through the local proxy) never got up to date (syncing)",
+   "edits": 0,
+   "lost": 0,
+   "lostIds": [],
+   "unsettled": 0,
+   "absorbed": 0,
+   "rejected": 0,
+   "conflictCards": 0,
+   "editsWithConflictCards": 0,
+   "duplicateRows": 0,
+   "orderMismatches": 0,
+   "missingPerReplica": {
+    "A": 0,
+    "C": 0
+   },
+   "sameState": true,
+   "heads": {
+    "A": 0,
+    "C": 0
+   },
+   "clientStats": {
+    "A": {
+     "pushMsgs": 0,
+     "changesSent": 0,
+     "rejects": 0,
+     "acks": 0,
+     "duplicates": 0,
+     "rebases": 0,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    },
+    "C": {
+     "pushMsgs": 0,
+     "changesSent": 0,
+     "rejects": 0,
+     "acks": 0,
+     "duplicates": 0,
+     "rebases": 0,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    }
+   },
+   "proxy": {
+    "conns": 1,
+    "upBytes": 878,
+    "downBytes": 853,
+    "heldMaxBytes": 0,
+    "errors": []
+   },
+   "stepMs": 45024,
+   "loopLagMs": {
+    "p50": 16.1,
+    "p99": 25.2,
+    "max": 39.5
+   }
+  },
+  "upload": {
+   "sizeBytes": 100000000,
+   "hashMs": 109,
+   "liveSyncError": "replica B wasn't up to date in time (syncing)",
+   "ms": 51765,
+   "mbps": 15.5,
+   "partSize": 8388608,
+   "parts": 12,
+   "partsSent": 12,
+   "bytesSent": 100000000,
+   "deduped": false,
+   "resumedParts": 0,
+   "liveSync": {
+    "everyMs": 3000,
+    "convergenceMs": {
+     "n": 0,
+     "p50": null,
+     "p90": null,
+     "p99": null,
+     "max": null,
+     "mean": null,
+     "values": []
+    },
+    "otherHoldsItMs": {
+     "n": 0,
+     "p50": null,
+     "p90": null,
+     "p99": null,
+     "max": null,
+     "mean": null,
+     "values": []
+    },
+    "ownConfirmMs": {
+     "n": 0,
+     "p50": null,
+     "p90": null,
+     "p99": null,
+     "max": null,
+     "mean": null,
+     "values": []
+    },
+    "unseenPairs": 0,
+    "edits": 0,
+    "lost": 0,
+    "lostIds": [],
+    "unsettled": 0,
+    "absorbed": 0,
+    "rejected": 0,
+    "conflictCards": 0,
+    "editsWithConflictCards": 0,
+    "duplicateRows": 0,
+    "orderMismatches": 0,
+    "missingPerReplica": {
+     "A": 0,
+     "B": 0
+    },
+    "sameState": true,
+    "heads": {
+     "A": 0,
+     "B": 0
+    },
+    "clientStats": {
+     "A": {
+      "pushMsgs": 0,
+      "changesSent": 0,
+      "rejects": 0,
+      "acks": 0,
+      "duplicates": 0,
+      "rebases": 0,
+      "reconnects": 1,
+      "withdraws": 0,
+      "envelopesSent": 0,
+      "envelopesReceived": 0
+     },
+     "B": {
+      "pushMsgs": 0,
+      "changesSent": 0,
+      "rejects": 0,
+      "acks": 0,
+      "duplicates": 0,
+      "rebases": 0,
+      "reconnects": 1,
+      "withdraws": 0,
+      "envelopesSent": 0,
+      "envelopesReceived": 0
+     }
+    }
+   },
+   "stepMs": 51883,
+   "loopLagMs": {
+    "p50": 16,
+    "p99": 25.6,
+    "max": 46.3
+   }
+  },
+  "dedup": {
+   "hashMs": 106,
+   "ms": 803,
+   "mbps": 0,
+   "partSize": 8388608,
+   "parts": 12,
+   "partsSent": 0,
+   "bytesSent": 0,
+   "deduped": true,
+   "resumedParts": 0,
+   "stepMs": 912,
+   "loopLagMs": {
+    "p50": 16.1,
+    "p99": 24.5,
+    "max": 24.5
+   }
+  },
+  "download": {
+   "statMs": 918,
+   "bytes": 16777216,
+   "ms": 5723,
+   "firstByteMs": 825,
+   "mbps": 23.5,
+   "mbpsAfterFirstByte": 27.4,
+   "matchesWhatWasSent": true,
+   "readerEvents": [],
+   "stepMs": 6660,
+   "loopLagMs": {
+    "p50": 15.8,
+    "p99": 25.7,
+    "max": 32.5
+   }
+  },
+  "shaped": {
+   "link": {
+    "kbps": 1000,
+    "delayMsEachWay": 100
+   },
+   "failed": "replica D (shaped link) never got up to date (syncing)",
+   "edits": 0,
+   "lost": 0,
+   "lostIds": [],
+   "unsettled": 0,
+   "absorbed": 0,
+   "rejected": 0,
+   "conflictCards": 0,
+   "editsWithConflictCards": 0,
+   "duplicateRows": 0,
+   "orderMismatches": 0,
+   "missingPerReplica": {
+    "A": 0,
+    "D": 0
+   },
+   "sameState": true,
+   "heads": {
+    "A": 0,
+    "D": 0
+   },
+   "clientStats": {
+    "A": {
+     "pushMsgs": 0,
+     "changesSent": 0,
+     "rejects": 0,
+     "acks": 0,
+     "duplicates": 0,
+     "rebases": 0,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    },
+    "D": {
+     "pushMsgs": 0,
+     "changesSent": 0,
+     "rejects": 0,
+     "acks": 0,
+     "duplicates": 0,
+     "rebases": 0,
+     "reconnects": 1,
+     "withdraws": 0,
+     "envelopesSent": 0,
+     "envelopesReceived": 0
+    }
+   },
+   "proxy": {
+    "conns": 1,
+    "upBytes": 898,
+    "downBytes": 857,
+    "heldMaxBytes": 707,
+    "errors": []
+   },
+   "stepMs": 90022,
+   "loopLagMs": {
+    "p50": 16,
+    "p99": 25.4,
+    "max": 45.2
+   }
+  }
+ },
+ "failures": [
+  {
+   "step": "sync",
+   "error": "replica A never got up to date (syncing)"
+  },
+  {
+   "step": "offline",
+   "error": "replica C (through the local proxy) never got up to date (syncing)"
+  },
+  {
+   "step": "shaped",
+   "error": "replica D (shaped link) never got up to date (syncing)"
+  }
+ ],
+ "bytes": {
+  "up": 100000000,
+  "down": 16777216
+ },
+ "replicaA": {
+  "timeline": [
+   {
+    "atMs": 3,
+    "ev": "status",
+    "detail": "connecting"
+   },
+   {
+    "atMs": 973,
+    "ev": "status",
+    "detail": "syncing"
+   },
+   {
+    "atMs": 1738,
+    "ev": "error",
+    "detail": "internal: keyframe keyframes/main/64/a694408808aa8b542be2465edc54eb83d0a69a78fde6289cda300e2f0e49fede is missing from the blob store"
+   }
+  ],
+  "stats": {
+   "pushMsgs": 0,
+   "changesSent": 0,
+   "rejects": 0,
+   "acks": 0,
+   "duplicates": 0,
+   "rebases": 0,
+   "reconnects": 1,
+   "withdraws": 0,
+   "envelopesSent": 0,
+   "envelopesReceived": 0
+  }
+ },
+ "totalMs": 255267
+}

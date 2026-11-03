@@ -1,0 +1,37 @@
+[00:00] Carton lab, laptop client. Host https://carton-lab-r2.vikasmaur10.workers.dev, project laptop-20261102020754. Results: D:\cbwork\cflab\cf-lab-results-20261103-002329.json
+[00:00] This takes about 5-10 minutes on a typical home connection, never more than 20 minutes, and sends about 105 MB. Ctrl+C stops it and keeps what was measured.
+[00:00] probe: starting (limit 90 s)
+[00:15] probe: Cloudflare SIN (IN); TCP connect p50 361 ms; health p50 150 ms; WebSocket connect 504, 1242, 1411, 695, 1257 ms
+[00:15] sync: starting (limit 240 s)
+[01:00] sync: FAILED: replica A never got up to date (syncing)
+[01:00] offline: starting (limit 195 s)
+[01:45] offline: FAILED: replica C (through the local proxy) never got up to date (syncing)
+[01:45] upload: starting (limit 900 s)
+[01:59] upload: 8% (8 of 100 MB, 5.1 Mbit/s)
+[02:02] upload: 16% (17 of 100 MB, 8.1 Mbit/s)
+[02:04] upload: 25% (25 of 100 MB, 10.8 Mbit/s)
+[02:10] upload: 33% (34 of 100 MB, 10.9 Mbit/s)
+[02:10] upload: 41% (42 of 100 MB, 13.5 Mbit/s)
+[02:17] upload: 50% (50 of 100 MB, 12.6 Mbit/s)
+[02:23] upload: 67% (67 of 100 MB, 14.2 Mbit/s)
+[02:27] upload: 75% (75 of 100 MB, 14.6 Mbit/s)
+[02:28] upload: 83% (84 of 100 MB, 15.6 Mbit/s)
+[02:35] upload: 91% (92 of 100 MB, 14.7 Mbit/s)
+[02:36] upload: 100% (100 of 100 MB, 15.9 Mbit/s)
+[02:37] upload: 100 MB in 51.8 s, 15.5 Mbit/s (12 parts of 8 MiB)
+[02:37] dedup: starting (limit 90 s)
+[02:38] dedup: the same 100 MB again: already there, 0 bytes sent, 0.8 s (+ 0.1 s hashing)
+[02:38] download: starting (limit 90 s)
+[02:45] download: 16 MiB in 5.7 s, 23.5 Mbit/s (first byte 825 ms after 918 ms for the manifest); same bytes as sent: yes
+[02:45] shaped: starting (limit 200 s)
+[04:15] shaped: FAILED: replica D (shaped link) never got up to date (syncing)
+Summary
+  network     Cloudflare SIN (IN), round trip ~361 ms, health p50 150 ms
+  live sync   replica A never got up to date (syncing)
+  offline     replica C (through the local proxy) never got up to date (syncing)
+  upload      100 MB in 51.8 s (15.5 Mbit/s); again: 0 bytes sent
+  download    16 MiB in 5.7 s (23.5 Mbit/s), same bytes yes
+  problems    sync: replica A never got up to date (syncing); offline: replica C (through the local proxy) never got up to date (syncing); shaped: replica D (shaped link) never got up to date (syncing)
+  data used   about 117 MB
+Done in 4 min. Please send back this file:
+  D:\cbwork\cflab\cf-lab-results-20261103-002329.json
