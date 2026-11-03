@@ -531,7 +531,11 @@ What changes with it on:
   switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click opens History
   with its cuts menu open, the keyboard in it (arrows, Enter, Esc). While the editor shows something other than your
   own edit (an earlier version opened, a teammate's cut), the chip grows a second part saying what ("👁 The version
-  from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. With Carton off there is no chip.
+  from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. In a narrow window the chip is what gives way, never the
+  window's own buttons: the editor controls beside the tabs may shrink now (they kept their full width and could push
+  the minimise, maximise and close buttons out at 960 px), the chip's name and label shorten first, and under 1000 px
+  while viewing the cut shows as its dot or scissors alone, its name in the tooltip. With Carton off there is no chip,
+  and nothing else in that row shrinks.
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. History opens a
   full-height panel beside the agent's chat, in the chat's look (drag its edge to resize), with two tabs, History and
   Comments; the same icon closes it, and shows as pressed while it is open. Share opens a dialog (below). Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
@@ -681,8 +685,8 @@ What changes with it on:
   both: the clip's own when the file or `.carton\media.json` has them, else the project's own date (no clip is older
   than its project); a title also gets what Cardboard's own titles have. A project already saved that way (one an
   earlier build recovered) gets them as Cardboard reads it, and its next save writes them. If a save still fails in
-  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check): "Your
-  last change couldn't be saved. It's on screen, but it isn't in the project yet." A refused undo says so the same way.
+  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check), and
+  says what to do: "Your last change wasn't saved. Do it again, or reopen the project." A refused undo says so the same way.
 - **Undo never empties a project.** Ctrl+Z (or `cb undo`) right after recovering such a project undid the Restore,
   back into the state the bug left (a name, and no aspect ratio, tracks, clips or media), and the open tab crashed
   ("This tab hit a snag"). Now an undo, redo or revert that would leave the project with nothing in it is refused
@@ -920,11 +924,19 @@ with Carton off none of it runs at all.
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
 - **Shared**: the dialog shows the status by its title ("Up to date", "Sending 3 changes", "Offline"), then People:
-  You (with the name teammates see and your role), and everyone here now with what they're doing ("Here now · editing
-  captions"; someone idle is faded). Offline, an amber line says your changes are kept here and sent when you're back.
+  You (drawn as History draws you, "Y", with the name teammates see and your role), and everyone here now with what
+  they're doing ("Here now · editing captions"; someone idle is faded) and what they may do ("Can edit", "Can comment":
+  each app tells its own role with its presence; an older app's teammate shows none). A teammate's agent (or a
+  subagent it started) is listed under them as theirs, with its own mark: "Leo's Director · Working on “Add a title
+  card”". Offline, an amber line
+  says your changes are kept here and sent when you're back; when sync can't go on for another reason, that one line
+  says why instead ("Can't sync: the sharing server needs an update. Your changes are saved here."), the server's own
+  message only in its tooltip.
 - **Invite** (the owner): who can do what ("Can edit", "Can comment", "Can watch", from a menu), the link, and Copy
-  link, which makes the link for that role the first time (one per role, not one each time the dialog opens), shows it
-  and copies it; "Anyone with this link can join and edit." Links expire; none can be made offline, and it says so.
+  link. The link for the role picked is made as the dialog opens and shown in its field, and kept for the next
+  openings while it surely works (an hour at most, and never past a minute before the invite expires; one whose expiry
+  the server's token doesn't say is made anew); "Anyone with this link can join and edit." Links expire; none can be
+  made offline, and it says so.
   **Join** from the Dashboard: a "Join a shared project" tile beside "New project" (Carton on only) opens a dialog with
   the invite link, "You'll join as Leo. Change" (or your name, the first time), and one button, Join and open: the
   project arrives in the library with its history, opens in a tab of its own, and the dialog closes; its clips play
@@ -941,8 +953,8 @@ with Carton off none of it runs at all.
   says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
   listed, faded. In a narrow window the title bar keeps only the History icon (Share is in the History panel's head),
   with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
-  dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
-  message), access refused, the host out of reach.
+  dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", the host's own
+  message in the tooltip), access refused, the host out of reach.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that

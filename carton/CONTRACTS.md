@@ -525,3 +525,11 @@ lineage (a fold and a `.cbproj` edge carry it; a retime of a split clip is a car
 budget is 32 KB: about 1.9 KB for the work still to come, and each raise is written up like this one. Still about 35
 times smaller than Automerge's 1.14 MB gz of WASM (PLAN §19's figure). Verified: the proposal's numbers were re-measured
 by a separate agent (`gfv-scratch/carton/verify-size/`).
+
+**A toast's Undo: History shows the top, Carton checks it (2026-11-03, `fix/ux-size`).** UX redesign 5.3's `expect`
+on undo and redo (a toast's Undo takes back only the change it made, else `StackMoved`, code `STACK_MOVED`) was checked
+in History's `planUndo`/`planRedo`, with `StackMoved` in `common.ts`, and took the bundle to 32,100, over the budget.
+History now takes a `check` (`TopCheck`) instead, shown the stack's newest entry at the same place (inside the write,
+after a retried id is answered, on the stack the step already read), and `undo`/`redo` pass their options through to
+the plan; `expect`'s check and `StackMoved` are Carton's (`carton.ts`). The bundle is 31,994. A check of Carton's own
+reading the stack before History would have left History as before 5.3 (31,990) but read the stack twice per toast step.

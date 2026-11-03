@@ -267,7 +267,7 @@ test("PLAN 2.3: in a narrow window Share joins History's head, and opens the dia
 });
 
 test("PLAN 8.1: a shared project's Share: its status by the title, People, and the owner's Invite with Copy link", opt, async () => {
-  const live = { shared: true, host: "https://share.example.com", account: "vikas", name: "Vikas", role: "owner", status: "up-to-date", pending: 0, peers: [{ actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, cut: "main", activity: "Editing captions", idle: false }], problem: null };
+  const live = { shared: true, host: "https://share.example.com", account: "vikas", name: "Vikas", role: "owner", status: "up-to-date", pending: 0, peers: [{ actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, cut: "main", activity: "Editing captions", idle: false, role: "editor" }], problem: null };
   const m = await mount(undefined, { live });
   const copied = [];
   const calls = [];
@@ -280,14 +280,17 @@ test("PLAN 8.1: a shared project's Share: its status by the title, People, and t
     assert.match(d.querySelector(".carton-share-status")?.textContent ?? "", /^Up to date$/);
     assert.equal(d.querySelector(".carton-share-status")?.getAttribute("data-state"), "upToDate");
     const rows = [...d.querySelectorAll(".carton-share-person")].map((r) => [r.querySelector(".carton-share-name")?.textContent, r.querySelector(".carton-share-sub")?.textContent, r.querySelector(".carton-share-role")?.textContent ?? null]);
-    assert.deepEqual(rows, [["You", "Vikas · here now", "Owner"], ["Leo", "Here now · editing captions", null]]);
+    assert.deepEqual(rows, [["You", "Vikas · here now", "Owner"], ["Leo", "Here now · editing captions", "Can edit"]]);
     assert.match(d.textContent, /Anyone with this link can join and edit\./);
+    // QA G24: the link is made as the dialog opens, and shown: never an empty field to "Copy link to make one"
+    assert.deepEqual(calls, [{ projectId: PROJECT, role: "editor" }], "one link made, for the role picked");
+    assert.equal(d.querySelector(".carton-share-link")?.value, "https://share.example.com/#join=p-chip.ct1.abc", "and shown");
+    assert.equal(d.querySelector(".carton-share-link")?.getAttribute("placeholder"), null);
     const copy = [...d.querySelectorAll("button")].find((b) => b.textContent === "Copy link");
     assert.ok(copy, "Copy link");
     await act(async () => { copy.click(); await sleep(20); });
-    assert.deepEqual(calls, [{ projectId: PROJECT, role: "editor" }], "one link made, for the role picked");
+    assert.equal(calls.length, 1, "copied: the link made at opening");
     assert.deepEqual(copied, ["https://share.example.com/#join=p-chip.ct1.abc"]);
-    assert.equal(d.querySelector(".carton-share-link")?.value, copied[0], "and shown");
     assert.ok([...d.querySelectorAll("button")].some((b) => b.textContent === "Copied"));
     // copied again: no second link
     await act(async () => { [...d.querySelectorAll("button")].find((b) => /Cop/.test(b.textContent)).click(); await sleep(20); });

@@ -65,8 +65,11 @@ test("share with history: the cut goes to the host with its versions, and the pr
 
 test("invite and join: Bob joins from the link in his own library and gets the project with its history", t, async () => {
   need("the share");
-  ({ link } = await alice.call("carton.liveInvite", { projectId: id, role: "editor" }));
+  const made = await alice.call("carton.liveInvite", { projectId: id, role: "editor" });
+  ({ link } = made);
   assert.match(link, /^http:\/\/127\.0\.0\.1:\d+\/#join=/);
+  // when it stops working, as its token says (the Share dialog keeps a link only until then: review of fix/ux2-b)
+  assert.ok(typeof made.expiresAt === "number" && made.expiresAt > Date.now() + 60_000 && made.expiresAt < Date.now() + 31 * 86_400_000, JSON.stringify(made.expiresAt));
   const j = await bob.call("carton.liveJoin", { link, name: "Bob" });
   assert.equal(j.projectId, id);
   const want = S.textOf(await S.projectOf(alice, id)).fontSize;
@@ -125,6 +128,12 @@ test("presence: what Alice is doing shows on Bob's computer, and goes when she s
   await alice.call("carton.livePresence", { projectId: id, state: { activity: "Editing captions" } });
   const peer = await S.until(() => bob.events().filter((e) => e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]?.find((p) => p.activity === "Editing captions"), 10_000, "alice's presence at bob");
   assert.equal(peer.actor.id, "Alice");
+  // QA G3: with what each may do, as their invite says (Alice shared it; Bob joined from an editor's invite)
+  assert.equal(peer.role, "owner", JSON.stringify(peer));
+  await bob.call("carton.livePresence", { projectId: id, state: { activity: "Trimming" } });
+  const bobAt = await S.until(() => alice.events().filter((e) => e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]?.find((p) => p.activity === "Trimming"), 10_000, "bob's presence at alice");
+  assert.deepEqual([bobAt.actor.id, bobAt.role], ["Bob", "editor"], JSON.stringify(bobAt));
+  await bob.call("carton.livePresence", { projectId: id, state: null });
   await alice.call("carton.livePresence", { projectId: id, state: null });
   await S.until(() => { const last = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]; return last && !last.some((p) => p.actor.id === "Alice"); }, 10_000, "alice gone at bob");
 });

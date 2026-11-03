@@ -26,7 +26,7 @@ import * as host from "./host.js";
 import * as store from "./store.js";
 // views.js first: its onOpen starts a project's View (the holder) before Live looks for it.
 import { viewOf } from "./views.js";
-import { Live, caughtUp } from "./live.js";
+import { Live, caughtUp, roleOf } from "./live.js";
 import * as media from "./media.js";
 import "./cbproj.js";
 
@@ -479,7 +479,9 @@ extend({
         const inv = await host.createInvite({ host: cfg.host, projectId, token, role, ttlMs });
         // Carton UX v2 (N0): a link made is a Sent landmark (DESIGN-V2 §2.1), off the answer's path
         void Promise.resolve(api.carton?.(projectId)).then((lc) => lc?.carton.mark?.("sent", { label: role === "viewer" ? "Shared a link to watch" : "Shared a link to edit", ...(api.actorOf ? { by: api.actorOf("person") } : {}) })).catch(() => {});
-        return { link: host.inviteLink(cfg.host, projectId, inv), role };
+        // with when it stops working, when its token says (the Share dialog keeps a link only until then)
+        const expiresAt = host.inviteExpiry(inv);
+        return { link: host.inviteLink(cfg.host, projectId, inv), role, ...(expiresAt ? { expiresAt } : {}) };
       },
       /** Join a shared project from an invite link: a new project in this library, synced from the host. */
       async liveJoin({ link, name }) {
@@ -599,12 +601,15 @@ extend({
         const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId));
         return p ? { url: await media.toolUrl(bundlePath, projectId, p), ...p } : null;
       },
-      /** The person's presence while they edit (the pages send it at most once a second; null when idle). */
+      /**
+       * The person's presence while they edit (the pages send it at most once a second; null when idle), told as them:
+       * their account, name, and the role their invite gave them (teammates' Share shows it: QA G3).
+       */
       async livePresence({ projectId, state }) {
         const bundlePath = api.bundleOf(projectId);
         const live = bundlePath ? await lives.get(bundlePath) : null;
-        const p = person(bundlePath, projectId);
-        live?.presence(state, p && { id: p.id, name: p.name });
+        const cfg = bundlePath && projectId ? store.readConfig(bundlePath, projectId) : null;
+        live?.presence(state, cfg && { id: cfg.account, name: cfg.name ?? cfg.account, ...(roleOf(cfg.role) ? { role: cfg.role } : {}) });
         return { ok: !!live };
       },
     };
