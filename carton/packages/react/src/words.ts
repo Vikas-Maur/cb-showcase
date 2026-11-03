@@ -356,6 +356,7 @@ export const words = {
   conflictEach: (subject: string, a: string, didA: string, b: string, didB: string) => `${subject}: ${a} ${didA} and ${b} ${didB}`,
   conflictTwice: (subject: string, who: string | null) => `${subject}: two of ${who ? `${who}'s` : "your"} changes disagree`,
   conflictTwiceLead: (who: string | null, did: string, close: boolean) => `${who ?? "You"} ${did} twice, from two places${close ? ", at nearly the same time" : ""}.`,
+  conflictTwiceEach: (who: string | null, first: string, then: string) => `${who ?? "You"} ${first} in one place and ${then} in another.`,
   /** `shown`: the side in the timeline now, mid-sentence ("yours", "Claude Code's", "your later change"); null: both. */
   pickLeadFor: (shown: string | null, canKeepBoth: boolean) =>
     `${canKeepBoth ? "Pick one to keep, or keep both." : "Pick the one to keep."} Until you pick, ${shown === null ? "both are" : `${shown} is`} in the timeline.`,

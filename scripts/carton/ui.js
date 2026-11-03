@@ -483,12 +483,14 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
   // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
   // "conflict"}) reaches the editor: the worker's view() (Workstream 0, PLAN 0.5) and the stage frame that shows its
-  // label (Workstream 1). Then this goes, and the card calls ui.view itself.
-  const onPreview = useCallback(async (conflict, side, label) => {
+  // label (Workstream 1). Then this goes, and the card calls ui.view itself. `live()`: still wanted once loaded (the
+  // card wasn't left, decided or set aside meanwhile), else nothing is shown.
+  const onPreview = useCallback(async (conflict, side, label, live = () => true) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
+    if (!live()) return;
     if (!ref) throw new Error(words.loadFailed);
     await conn.ui.openPreview(ref, label);
-    if (conflict.item) bridge.reveal(conflict.item);
+    if (live() && conflict.item) bridge.reveal(conflict.item);
   }, [conn, bridge]);
   const onReveal = useCallback((conflict) => { if (conflict.item) bridge.reveal(conflict.item); }, [bridge]);
   const [panelOpen, setPanelOpen] = useState(sidePanel.value != null);

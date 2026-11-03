@@ -156,3 +156,23 @@ test("fromCarton: a reported card's sides carry their sentences, the clip's name
   assert.equal(c.clip, "W6", "the head names the clip");
   ui.dispose();
 });
+
+test("review #6: two texts that start alike read apart: by their end, else whole", () => {
+  const start = "Our summer launch campaign starts next Monday. ";
+  const t = S({ path: "media/m-title-7f3/data/content", base: "Old", ours: start + "Save 20%", theirs: start + "Save 30%" });
+  assert.deepEqual([t.ours.text, t.theirs.text], ["Changed it to “…campaign starts next Monday. Save 20%”", "Changed it to “…campaign starts next Monday. Save 30%”"]);
+  const mid = "x".repeat(60);
+  const u = S({ path: "media/m-title-7f3/data/content", base: "Old", ours: mid + "A" + mid, theirs: mid + "B" + mid });
+  assert.notEqual(u.ours.text, u.theirs.text, "a difference in the middle: the whole text");
+  const short = S({ path: "media/m-title-7f3/data/content", base: "Old", ours: "Summer sale, all week long and then some more", theirs: "Summer launch" });
+  assert.equal(short.ours.text, "Changed it to “Summer sale, all week long and then s…”", "the start, when it already tells them apart");
+});
+
+test("review #7: one person's two different changes say what each was, never 'twice'", () => {
+  const at = (h: number, m: number) => new Date(2026, 10, 3, h, m).getTime();
+  const w = conflictWords(card({ clip: "Intro", mine: side(people.alice, { at: at(10, 5), did: "removed it" }), theirs: side(people.alice, { at: at(10, 4), did: "moved it" }) }), nameOf);
+  assert.equal(w.title, "“Intro”: two of your changes disagree");
+  assert.equal(w.lead, "You moved it in one place and removed it in another.");
+  const bob = conflictWords(card({ clip: "Intro", mine: side(people.bob, { at: 1, did: "trimmed it" }), theirs: side(people.bob, { at: 2, did: "moved it" }) }), nameOf);
+  assert.equal(bob.lead, "Bob Okafor trimmed it in one place and moved it in another.");
+});

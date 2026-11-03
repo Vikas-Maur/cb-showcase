@@ -7,7 +7,7 @@
 // - During the other side's agent turn, one more line; a pick made on values that changed since asks again (`sig`).
 // Words come from conflict-words.ts, so the card, its toast and the viewing label agree. Nothing is decided silently.
 
-import { createElement as h, memo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { createElement as h, memo, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { clockTime, when } from "../format.ts";
 import { actorLabel } from "../actors.ts";
 import { conflictWords } from "../conflict-words.ts";
@@ -30,9 +30,11 @@ export interface ConflictCardProps {
   /**
    * "See it" through the host: show a side on the stage under `label` ("Claude Code's move of “Interview B”").
    * Deprecated with `openPreview`: Cardboard's stage passes it until `ui.view({ kind: "conflict" })` reaches the editor
-   * (Workstream 0's view(), Workstream 1's frame). Without it the card calls `ui.view` itself.
+   * (Workstream 0's view(), Workstream 1's frame). Without it the card calls `ui.view` itself. `live()` turns false
+   * once that See it is stale (a newer one, Not now, deciding, the card gone): a host that is still loading the side
+   * then doesn't show it.
    */
-  onPreview?: (side: ConflictChoice, label: string) => unknown;
+  onPreview?: (side: ConflictChoice, label: string, live: () => boolean) => unknown;
   /** "On timeline": select the card's clip on the timeline and move the playhead there, without viewing. */
   onReveal?: (conflict: Conflict) => void;
   /** "Not now": the card waits, undecided (the stack folds it into its pill and sends it to the back of the queue). */
@@ -85,31 +87,63 @@ function StageCard(p: ConflictCardProps) {
   const seeing: ConflictChoice | null =
     viewing?.kind === "conflict" ? (viewing.conflictId === c.id ? (viewing.side ?? null) : null) : seen && seen.id === c.id && onStage?.label === seen.label ? seen.side : null;
   const [seeFailed, setSeeFailed] = useState(false);
+  // Back to your edit, from what the stage shows now (not what this render saw).
   const back = async () => {
     setSeen(null);
-    if (viewing) await ui.view(null);
-    else ui.openPreview(null);
+    if (ui.viewing()) await ui.view(null);
+    else if (ui.preview()) ui.openPreview(null);
   };
+  // This card's side `k` is what the stage shows now.
+  const onStageNow = (k: ConflictChoice) => {
+    const v = ui.viewing();
+    if (v?.kind === "conflict") return v.conflictId === c.id && v.side === k;
+    return (v ?? ui.preview())?.label === cw.label[k];
+  };
+  // A See it under way goes stale once a newer one starts, Not now or Keep is pressed, or the card goes: what it loads
+  // then must not take the stage (review of feat/ux-7-conflicts #5).
+  const seeGen = useRef(0);
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+      seeGen.current++;
+    },
+    [],
+  );
   const see = async (k: "mine" | "theirs") => {
     setSeeFailed(false);
+    const g = ++seeGen.current;
+    const live = () => g === seeGen.current && alive.current;
     try {
       if (seeing === k) return await back();
       if (p.onPreview) {
-        await p.onPreview(k, cw.label[k]);
-        setSeen({ id: c.id, side: k, label: cw.label[k] });
+        await p.onPreview(k, cw.label[k], live);
+        if (live()) setSeen({ id: c.id, side: k, label: cw.label[k] });
       } else await ui.view({ kind: "conflict", conflictId: c.id, side: k });
+      // stale meanwhile, and it showed anyway: back to your edit (only from this side, never from what you went to since)
+      if (!live() && onStageNow(k)) await back();
     } catch {
-      setSeeFailed(true);
+      if (live()) setSeeFailed(true);
     }
   };
 
-  // Deciding comes back from a side being seen first, so the stage shows your edit with the pick in it.
+  // Deciding comes back from a side being seen first, so the stage shows your edit with the pick in it. One decision at
+  // a time: a second Enter while the first is under way does nothing (review #2: it made a second version).
+  const keeping = useRef(false);
   const [keep, busy, failed] = useAction(async (choice: ConflictChoice) => {
-    if (seeing) await back().catch(() => undefined);
-    await ui.resolve(c.id, choice);
-    setHeld(null);
+    if (keeping.current) return;
+    keeping.current = true;
+    seeGen.current++;
+    try {
+      if (seeing) await back().catch(() => undefined);
+      await ui.resolve(c.id, choice);
+      setHeld(null);
+    } finally {
+      keeping.current = false;
+    }
   });
   const notNow = () => {
+    seeGen.current++;
     if (seeing) void back().catch(() => undefined);
     p.onDismiss?.();
   };
@@ -117,24 +151,28 @@ function StageCard(p: ConflictCardProps) {
   // yours first; one person's two changes in the order they were made
   const order: ConflictChoice[] = [cw.first, cw.first === "mine" ? "theirs" : "mine", ...(c.canKeepBoth ? (["both"] as const) : [])];
   const radios = useRef<Partial<Record<ConflictChoice, HTMLElement | null>>>({});
+  // The keys a side acts on are the card's alone: Cardboard's own window listeners never see them (review #3: its Enter
+  // opens the selected title's text editor and doesn't check defaultPrevented; final N3 in History).
   const onGroupKey = (e: KeyboardEvent) => {
+    if ((e.target as HTMLElement).getAttribute("role") !== "radio") return;
     const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
+    if (!step && e.key !== " " && e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
     if (step) {
-      e.preventDefault();
       const next = order[(order.indexOf(pick) + step + order.length) % order.length]!;
       choose(next);
       radios.current[next]?.focus();
-    } else if (e.key === " " && (e.target as HTMLElement).getAttribute("role") === "radio") {
-      e.preventDefault();
-      choose((e.target as HTMLElement).dataset.choice as ConflictChoice);
-    } else if (e.key === "Enter" && (e.target as HTMLElement).getAttribute("role") === "radio") {
-      e.preventDefault();
-      void keep(pick);
-    }
+    } else if (e.key === " ") choose((e.target as HTMLElement).dataset.choice as ConflictChoice);
+    else if (!e.repeat) void keep(pick);
   };
   // Esc in the card: back from a side being seen, then "Not now" (innermost first, as the panel's Esc). Taken here, so
-  // the stage's own Esc never sees it twice.
+  // the stage's own Esc never sees it twice. Enter and Space on the card's buttons are theirs too.
   const onCardKey = (e: KeyboardEvent) => {
+    if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).tagName === "BUTTON") {
+      e.stopPropagation();
+      return;
+    }
     if (e.key !== "Escape" || e.defaultPrevented) return;
     if (!seeing && !p.onDismiss) return;
     e.preventDefault();

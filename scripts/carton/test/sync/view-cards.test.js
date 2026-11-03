@@ -57,6 +57,8 @@ const call = async (client, method, ...args) => {
   throw new Error("no answer to " + method);
 };
 const view = (c) => c && { mine: c.mine.summary, theirs: c.theirs.summary, mineYou: !!c.mine.author.isYou, mineKind: c.mine.author.kind, theirsName: c.theirs.author.name, theirsKind: c.theirs.author.kind, provisional: c.provisional };
+// each side's change sentence and noun (docs/carton-ux PLAN 7.1), which go round with the side's value
+const sentences = (c) => c && { mine: c.mine.text, theirs: c.theirs.text, mineWhat: c.mine.what, theirsWhat: c.theirs.what };
 const fieldAt = async (lc, id, f) => (await lc.carton.head()).doc.timelineItems.find((r) => r.id === id)?.[f];
 const agentNotices = async (actor) => (await services.notices({ bundlePath: bundle, actor })).flatMap((n) => (n.cards ?? []).map((c) => ({ path: c.path, ours: c.ours, theirs: c.theirs })));
 const humanRows = async (lc) => (await lc.store.range("notices", { prefix: ["@human"] })).flatMap((r) => r.value.cards ?? []);
@@ -88,6 +90,7 @@ async function clash(lc, actorId, item, field, mine, theirs, extra = {}) {
   out.one = { res: a.res, agentCards: a.agentCards, head: { fontSize: await fieldAt(lc, TEXT, "fontSize"), text: await fieldAt(lc, TEXT, "textContent") } };
   out.one.agentNotice = await agentNotices("director/c1/t1");
   out.one.live = view(shown("before").find((c) => c.path === a.path));
+  out.one.sentences = sentences(shown("before").find((c) => c.path === a.path));
   await open("later");
   const card = shown("later").find((c) => c.path === a.path);
   out.one.later = view(card);
@@ -254,6 +257,10 @@ test("the person's panel shows it at once and when opened later, the person's wa
   const want = { mine: "150", theirs: "170", mineYou: true, mineKind: "human", theirsName: "Director", theirsKind: "agent", provisional: "mine" };
   assert.deepEqual(out.one.live, want, "an open panel, at once: yours is 150 and showing; Director's is 170");
   assert.deepEqual(out.one.later, want, "a panel opened later: the same");
+  // each side's sentence is its own value's: yours 150, the Director's 170 (they went round with the summaries)
+  const s = out.one.sentences;
+  assert.match(s?.mine ?? "", /\bfont size 150\b/, JSON.stringify(s));
+  assert.match(s?.theirs ?? "", /\bfont size 170\b/, JSON.stringify(s));
 });
 
 test("taking the agent's value commits it as the person's choice; the card closes on both sides", opt, () => {

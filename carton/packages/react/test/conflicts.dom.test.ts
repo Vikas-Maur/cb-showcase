@@ -2,7 +2,7 @@
 // side did; its sides are a radio group that only picks; "See it" views a side (kind "conflict") and nothing else
 // does; one primary button names the pick; no two buttons on a card read the same; one card at a time with "1/2 ›",
 // "Not now" into the pill; a line during the other side's agent turn; a pick on values that changed since asks again.
-import { $, $$, React, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, ConflictList, ConflictStack } from "../src/index.ts";
@@ -361,5 +361,109 @@ test(name("7.3: a pick on one card never carries to another card that is still o
   await click($(m.container, ".carton-conflict-next"));
   assert.equal(checked(card()), "mine");
   assert.equal($(card(), ".carton-conflict-again"), null);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- review of feat/ux-7-conflicts (one round)
+
+test(name("review #2: Enter held or pressed again while a Keep is under way decides once"), async () => {
+  const ui = createMockUi({ versions: 5 });
+  ui.setConflicts([interviewB()]);
+  let calls = 0;
+  let finish: () => void = () => undefined;
+  ui.resolve = async () => {
+    calls++;
+    await new Promise<void>((r) => (finish = r));
+  };
+  const m = await render(wrap(ui, h(ConflictStack)));
+  await flush();
+  const radio = $(m.container, "[role=radio][tabindex='0']")!;
+  await key(radio, "Enter");
+  await key(radio, "Enter");
+  await act(() => {
+    radio.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true }));
+  });
+  finish();
+  await flush();
+  assert.equal(calls, 1);
+  await m.unmount();
+});
+
+test(name("review #3: the keys the card acts on never reach the editor's own window listeners"), async () => {
+  const ui = createMockUi({ versions: 5 });
+  ui.setConflicts([interviewB()]);
+  ui.resolve = async () => undefined;
+  const m = await render(wrap(ui, h(ConflictStack)));
+  await flush();
+  const seen: string[] = [];
+  const editor = (e: KeyboardEvent) => seen.push(e.key);
+  window.addEventListener("keydown", editor);
+  try {
+    for (const k of ["ArrowDown", "ArrowUp", " ", "Enter"]) await key($(m.container, "[role=radio][tabindex='0']"), k);
+    await key($(m.container, ".carton-conflict-side[data-side=theirs] .carton-see"), "Enter");
+    await key($(m.container, ".carton-conflict-actions .carton-btn[data-variant=primary]"), " ");
+    assert.deepEqual(seen, [], "Cardboard's Enter would open the selected title's editor");
+    // keys the card doesn't act on still reach the editor (Ctrl+Z, the editor's letters)
+    await key($(m.container, "[role=radio][tabindex='0']"), "z");
+    assert.deepEqual(seen, ["z"]);
+  } finally {
+    window.removeEventListener("keydown", editor);
+  }
+  await m.unmount();
+});
+
+for (const host of [false, true])
+  test(name(`review #4: leaving a card whose side is on the stage brings your edit back (${host ? "host's See it" : "ui.view"})`), async () => {
+    const ui = createMockUi({ versions: 5 });
+    ui.setConflicts([interviewB(), interviewB({ id: "c-other", path: "items/other/#time", clip: "Outro" })]);
+    const onPreview = host ? (c: Conflict, side: ConflictChoice, label: string) => ui.openPreview(`see:${c.id}:${side}`, label) : undefined;
+    const sent = spyResolve(ui);
+    const m = await render(wrap(ui, h(ConflictStack, onPreview ? { onPreview } : {})));
+    await flush();
+    const see = () => $(m.container, ".carton-conflict-side[data-side=theirs] .carton-see")!;
+    await click(see());
+    assert.ok(ui.preview(), "the first card's side is on the stage");
+    await click($(m.container, ".carton-conflict-next"));
+    assert.equal(ui.preview(), null, "› to the next card: your edit again");
+    assert.equal(see().textContent, "See it");
+    await click($(m.container, ".carton-conflict-next"));
+    assert.equal(see().textContent, "See it", "back on the first card: nothing of it is on the stage");
+    await click(see());
+    ui.setConflicts([interviewB({ id: "c-other", path: "items/other/#time", clip: "Outro" })]);
+    await flush();
+    assert.equal(ui.preview(), null, "the card decided elsewhere: its side leaves the stage");
+    await click($(m.container, ".carton-conflict-actions .carton-btn[data-variant=primary]"));
+    assert.deepEqual(sent, [["c-other", "mine"]]);
+    await m.unmount();
+  });
+
+test(name("review #5: a See it still loading when the card is set aside never takes the stage"), async () => {
+  const ui = createMockUi({ versions: 5 });
+  ui.setConflicts([interviewB()]);
+  let finish: () => void = () => undefined;
+  const onPreview = async (c: Conflict, side: ConflictChoice, label: string, live: () => boolean) => {
+    await new Promise<void>((r) => (finish = r));
+    if (live()) ui.openPreview(`see:${c.id}:${side}`, label);
+  };
+  const m = await render(wrap(ui, h(ConflictStack, { onPreview })));
+  await flush();
+  await click($(m.container, ".carton-conflict-side[data-side=theirs] .carton-see"));
+  await click(byText(m.container, "button", "Not now"));
+  finish();
+  await flush();
+  assert.equal(ui.preview(), null, "the host was told it is stale");
+  // a host that shows it anyway: the card takes it back off the stage
+  await click($(m.container, ".carton-stack-pill"));
+  const stubborn = async (c: Conflict, side: ConflictChoice, label: string) => {
+    await new Promise<void>((r) => (finish = r));
+    ui.openPreview(`see:${c.id}:${side}`, label);
+  };
+  await m.rerender(wrap(ui, h(ConflictStack, { onPreview: stubborn })));
+  await flush();
+  await click($(m.container, ".carton-conflict-side[data-side=theirs] .carton-see"));
+  await click(byText(m.container, "button", "Not now"));
+  finish();
+  await flush();
+  assert.equal(ui.preview(), null);
   await m.unmount();
 });

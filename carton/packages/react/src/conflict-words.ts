@@ -122,7 +122,10 @@ export function cardSentences(card: ConflictCard, schema: Schema, doc?: Doc, val
     return labels && Object.keys(labels).length ? null : key;
   };
   const num = (x: number) => (Number.isInteger(x) ? String(x) : String(+x.toFixed(2)));
-  const quote = (s: string) => `“${s.length > 40 ? s.slice(0, 37) + "…" : s}”`;
+  // Text in curly quotes, cut to 40 characters: its start, or (when two sides' starts read the same) its end, or all
+  // of it (review of feat/ux-7-conflicts #6: two titles differing only at the end read alike).
+  let cut: "start" | "end" | "none" = "start";
+  const quote = (s: string) => `“${s.length <= 40 || cut === "none" ? s : cut === "start" ? s.slice(0, 37) + "…" : "…" + s.slice(-37)}”`;
   const valueWords = (key: string, v: unknown): string | null => {
     const host = value?.(key, v, doc);
     if (host !== undefined) return host.replace(/^'(.*)'$/s, "“$1”");
@@ -201,10 +204,20 @@ export function cardSentences(card: ConflictCard, schema: Schema, doc?: Doc, val
     return [p ?? { k: "changed" }];
   };
 
-  const ours = sideParts(card.ours, card.theirs), theirs = sideParts(card.theirs, card.ours);
-  // the same words for both: try again with tenths, then hundredths of a second
-  let o = wordSide(ours, 0, w), t = wordSide(theirs, 0, w);
-  for (let p = 1; p <= 2 && o.text === t.text; p++) (o = wordSide(ours, p, w)), (t = wordSide(theirs, p, w));
+  // The same words for both: try again with tenths, then hundredths of a second, then with text's end, then all of it.
+  let o: SideSentence | null = null, t: SideSentence | null = null;
+  for (const c of ["start", "end", "none"] as const) {
+    cut = c;
+    const ours = sideParts(card.ours, card.theirs), theirs = sideParts(card.theirs, card.ours);
+    for (let p = 0; p <= 2 && (!o || o.text === t!.text); p++) (o = wordSide(ours, p, w)), (t = wordSide(theirs, p, w));
+    if (o!.text !== t!.text) break;
+    o = null;
+  }
+  if (!o || !t) {
+    cut = "start";
+    const ours = sideParts(card.ours, card.theirs), theirs = sideParts(card.theirs, card.ours);
+    (o = wordSide(ours, 0, w)), (t = wordSide(theirs, 0, w));
+  }
   return { ...(clip ? { clip } : {}), ours: o, theirs: t };
 }
 
@@ -285,12 +298,15 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
     const earlier: "mine" | "theirs" = c.mine.at != null && c.theirs.at != null ? (c.mine.at <= c.theirs.at ? "mine" : "theirs") : c.provisional === "mine" ? "mine" : "theirs";
     const who = isYou(c.mine) ? null : mineName;
     const nm = (k: "mine" | "theirs") => (k === earlier ? (who ? w.theirEarlier(who) : w.yourEarlier) : who ? w.theirLater(who) : w.yourLater);
-    const did = c.mine.did && c.mine.did === c.theirs.did ? c.mine.did : (c.mine.did ?? c.theirs.did);
+    // the same thing twice ("You changed its text twice"), or each change as it was, earlier first ("You moved it in one
+    // place and removed it in another"); never "twice" for two different things (review #7)
+    const did = c.mine.did && c.mine.did === c.theirs.did ? c.mine.did : null;
+    const each = !did && c.mine.did && c.theirs.did ? (earlier === "mine" ? [c.mine.did, c.theirs.did] : [c.theirs.did, c.mine.did]) : null;
     const close = c.mine.at != null && c.theirs.at != null && Math.abs(c.mine.at - c.theirs.at) <= 2 * 60_000;
     const shown = c.provisional === "both" ? null : midSentence(nm(c.provisional === "mine" ? "mine" : "theirs"));
     return {
-      title: c.clip || did ? w.conflictTwice(subject, who) : c.title,
-      lead: c.reason ?? (did ? w.conflictTwiceLead(who, did, close) : w.pickLeadFor(shown, c.canKeepBoth)),
+      title: c.clip || did || each ? w.conflictTwice(subject, who) : c.title,
+      lead: c.reason ?? (did ? w.conflictTwiceLead(who, did, close) : each ? w.conflictTwiceEach(who, each[0]!, each[1]!) : w.pickLeadFor(shown, c.canKeepBoth)),
       name: { mine: nm("mine"), theirs: nm("theirs"), both: w.both },
       keep: { mine: earlier === "mine" ? w.keepEarlier : w.keepLater, theirs: earlier === "theirs" ? w.keepEarlier : w.keepLater, both: w.keepBoth },
       label: { mine: w.orderedSideOf(nm("mine"), c.clip), theirs: w.orderedSideOf(nm("theirs"), c.clip), both },

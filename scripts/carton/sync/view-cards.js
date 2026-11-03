@@ -193,6 +193,11 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
     present(ui, handle, lc, panelsNow) {
       raws.set(handle, ui.resolve);
       const base = ui.conflicts, turned = new WeakMap();
+      // What a side says (its summary, and its change sentence, verb and noun: docs/carton-ux PLAN 7.1) goes round with
+      // its value; the author and time stay where they are (review of feat/ux-7-conflicts #1: only the summary went
+      // round, so "Yours" read the agent's sentence and "Keep Claude Code's" kept the value shown under "Yours").
+      const said = ({ summary, text, did, what }) => ({ summary, ...(text !== undefined ? { text } : {}), ...(did !== undefined ? { did } : {}), ...(what !== undefined ? { what } : {}) });
+      const unsaid = ({ summary: _s, text: _t, did: _d, what: _w, ...rest }) => rest;
       let lastIn = null, lastOut = null;
       // Stable identities: the same list and the same cards give the same objects (hooks compare by identity).
       ui.conflicts = () => {
@@ -202,7 +207,7 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
         lastOut = list.map((c) => {
           if (!isAgent(handle.cardFor(c.id))) return c;
           let t = turned.get(c);
-          if (!t) turned.set(c, (t = { ...c, mine: { ...c.mine, summary: c.theirs.summary }, theirs: { ...c.theirs, summary: c.mine.summary }, provisional: "mine" }));
+          if (!t) turned.set(c, (t = { ...c, mine: { ...unsaid(c.mine), ...said(c.theirs) }, theirs: { ...unsaid(c.theirs), ...said(c.mine) }, provisional: "mine" }));
           return t;
         });
         return lastOut;
