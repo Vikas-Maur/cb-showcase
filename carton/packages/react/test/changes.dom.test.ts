@@ -126,9 +126,18 @@ test(name("Play all on your edit: nothing viewed, the rows light in order, the p
   assert.notDeepEqual(lit(), first, "the lit row is where you are");
   const coarse = [...renders.entries()].filter(([n]) => /ChangeRow/.test(n)).reduce((a, [, k]) => a + k, 0);
   assert.ok(coarse > 0 && coarse < 150, `${coarse} row renders over 150 frames: only when the lit row moved`);
-  // Space pauses (the list has focus), and goes on
+  // the lit row's own button reads Pause, and pauses: the place is kept
+  const own = $(root, ".carton-change[data-lit] .carton-change-play")!;
+  assert.equal(own.getAttribute("aria-label"), "Pause");
+  await click(own);
+  assert.ok(byText(root, "button", "Play all"), "paused");
+  assert.equal($$(root, ".carton-change[data-lit]").length, 1, "still lit where it paused");
+  // Space (the list has focus, and it stops there) goes on
+  let reached = 0;
+  m.container.parentElement!.addEventListener("keydown", () => reached++);
   await key($(root, "[role=listbox]"), " ");
-  assert.ok(byText(root, "button", "Play all") || byText(root, "button", "Pause"));
+  assert.ok(byText(root, "button", "Pause"), "playing again");
+  assert.equal(reached, 0, "Cardboard's own Space never sees it");
   assert.equal(ui.viewing(), null);
   await m.unmount();
 });

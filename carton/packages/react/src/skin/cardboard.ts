@@ -422,6 +422,8 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-preview-blocked){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ---------------------------------------------------------------- the Changes view, Play and Before (DESIGN §5, PLAN 4) */
+/* the Changes view takes History's place whole, under the tabs: the cut bar above the list goes while it is open */
+:where(${S}) :where(.carton-sidebar-history:has(> .carton-history[data-changes]) > .carton-sidebar-cuts){display:none}
 :where(${S}) :where(.carton-changes){display:flex;flex-direction:column;flex:1 1 0;min-height:0;height:100%;background:var(--cb-panel);outline:none}
 :where(${S}) :where(.carton-changes-nav){flex:none;display:flex;align-items:center;height:36px;padding:2px 10px 0 6px}
 :where(${S}) :where(.carton-changes-nav .carton-btn){height:28px;padding:0 10px 0 8px;font-size:12.5px;border-radius:7px;color:var(--cb-fg-2)}

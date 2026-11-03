@@ -144,7 +144,7 @@ export function ChangesView(p: ChangesViewProps) {
       id: `${listId}-c${i}`,
       showAuthor: authors,
       lit: play.lit.has(i),
-      playing: play.one === i && play.status === "playing",
+      playing: play.lit.has(i) && play.status === "playing",
       active: i === active,
       now,
       onPlay: () => play.playRow(i),

@@ -294,8 +294,9 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const playAll = useCallback(() => void begin(null), [begin]);
   const playRow = useCallback(
     (row: number) => {
+      // the lit row's own button is the transport's: Pause, and on again
       const s = player.state;
-      if (one === row && s.step >= 0) return s.playing ? player.pause() : player.resume();
+      if (s.step >= 0 && (one === row || s.rows.includes(row))) return s.playing ? player.pause() : player.resume();
       void begin(row);
     },
     [player, begin, one],
