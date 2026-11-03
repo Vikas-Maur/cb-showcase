@@ -141,9 +141,12 @@ const history: CommandSpec = {
     { name: "cut", type: "string", description: "cut name or id (default: the current cut)" },
     { name: "limit", type: "number", description: "how many versions (default 20)" },
     { name: "stats", type: "boolean", description: "also count tracks, items and duration per version" },
+    { name: "find", type: "string", description: "only versions whose name, agent prompt, author, clips (by name) or title and caption text contain this, with what matched" },
+    { name: "landmarks", type: "boolean", description: "only the versions people remember: exported, sent, shared, published, each day's start, safety points before a restore, agent turns, named versions" },
   ],
   async run(ctx, a) {
     const { carton } = ctx.project;
+    if (a.find !== undefined || a.landmarks) throw new UsageError("not implemented yet: --find, --landmarks");
     const cut = await resolveCut(carton, a.cut);
     const limit = Math.max(1, Math.min(Number(a.limit ?? 20), 1000));
     const versions = await carton.log({ cut: cut.id, limit });
@@ -325,11 +328,15 @@ const credits: CommandSpec = {
 const restore: CommandSpec = {
   path: ["restore"],
   gitAlias: ["revert"],
-  summary: "Restore a version: its state saved as a new version on the current cut",
+  summary: "Restore a version: its state saved as a new version on the current cut. --clip brings back one clip as it was then, and leaves everything else as it is now",
   args: [{ name: "version", description: "<cut>@<seq> from `cb history`, or a header ref", required: true }],
-  options: [],
+  options: [
+    { name: "clip", type: "string", description: "bring back only this clip (its name or id), as it was in that version; a clip deleted since comes back" },
+    { name: "remove", type: "boolean", description: "with --clip: the clip wasn't in that version, so bringing it back as it was removes it" },
+  ],
   write: true,
   async run(ctx, a) {
+    if (a.clip !== undefined) throw new UsageError("not implemented yet: --clip");
     const v = await resolveVersion(ctx.project.carton, String(a.version));
     await refuseEmpty(ctx.project.carton, v, "restore");
     const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` }, { actor: ctx.actor });
@@ -377,9 +384,13 @@ const compare: CommandSpec = {
   gitAlias: ["diff"],
   summary: "What changed from one version to another, in plain words (default <b>: the current head)",
   args: [{ name: "a", description: "from version", required: true }, { name: "b", description: "to version (default: head)" }],
-  options: [{ name: "shots", type: "boolean", description: "also the shot diff (Watch the changes)" }],
+  options: [
+    { name: "shots", type: "boolean", description: "also the shot diff (Watch the changes)" },
+    { name: "show", type: "boolean", description: "also open this comparison in the editor (Compare, side by side), for the person to see" },
+  ],
   async run(ctx, a) {
     const { carton } = ctx.project;
+    if (a.show) throw new UsageError("not implemented yet: --show");
     const va = await resolveVersion(carton, String(a.a));
     const vb = a.b ? await resolveVersion(carton, String(a.b)) : undefined;
     const d = await carton.diff(va, vb, { shots: !!a.shots });

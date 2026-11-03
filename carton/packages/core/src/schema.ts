@@ -114,6 +114,11 @@ export interface CollectionDef {
    */
   partOf?: { collection: string; field: string };
   /**
+   * The words a person typed into a record, for Find (Carton UX v2): a title's text, a caption's words, a voiceover's
+   * script. Not its name (the schema's `label` says that). Optional; never read by History.
+   */
+  words?: (record: Rec) => readonly string[];
+  /**
    * Editors' words for fields in descriptions, by their dotted path in the record with keyed-array element keys left
    * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
    */

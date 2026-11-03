@@ -31,13 +31,15 @@ import type {
 } from "./model.ts";
 
 type SmallTopic = Exclude<Topic, "history">;
-const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview", "viewing", "working"];
+const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview", "viewing", "working", "landmarks"];
 
 /** Async methods the client may call on the served view model. */
 const METHODS = [
   "compare", "credits", "shotDiff", "planFold", "switchCut", "newCut", "renameCut", "fold",
   "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit", "conflictRef",
   "view", "changes", "changesIn", "undoTurnOf", "clipVersions",
+  // Carton UX v2 (N0)
+  "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture",
 ] as const;
 type Method = (typeof METHODS)[number];
 
@@ -54,7 +56,8 @@ export type ClientMessage =
   | { t: "want"; ids: string[] };
 
 const read = (ui: CartonUi, t: SmallTopic): unknown =>
-  t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : t === "viewing" ? ui.viewing() : t === "working" ? ui.working() : ui.preview();
+  // landmarks: a signal only (read them with landmarks())
+  t === "landmarks" ? null : t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : t === "viewing" ? ui.viewing() : t === "working" ? ui.working() : ui.preview();
 
 /** Every actor a value mentions, so the client can name subagents' agents. */
 function actorsIn(value: unknown, out: Set<string>, list: Actor[], ui: CartonUi, depth = 0) {
@@ -183,7 +186,7 @@ const isMine = (v: Version) => v.author.kind === "human" && !!v.author.isYou;
 export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; receive(m: ServerMessage): void; ready: Promise<void> } {
   const hub = new TopicHub<Topic>();
   const actors = new Map<string, Actor>();
-  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null, viewing: null, working: null };
+  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null, viewing: null, working: null, landmarks: null };
   let me: Actor = { key: "human/unknown", kind: "human", name: "You", isYou: true };
   // Changed in place: memoized rows keep their objects, and the indexes are kept incrementally.
   let rows: Version[] = [];
@@ -325,6 +328,12 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     changesIn: (id) => call("changesIn", id),
     undoTurnOf: (id) => call("undoTurnOf", id),
     clipVersions: (item, o) => call("clipVersions", item, ...(o ? [o] : [])),
+    // Carton UX v2 (N0)
+    find: (text, o) => call("find", text, ...(o ? [o] : [])),
+    landmarks: (o) => (o ? call("landmarks", o) : call("landmarks")),
+    restoreClip: (ref, item, o) => call("restoreClip", ref, item, ...(o ? [o] : [])),
+    landmarkPicture: (key) => call("landmarkPicture", key),
+    saveLandmarkPicture: (key, jpeg) => call("saveLandmarkPicture", key, jpeg),
   };
 
   const receive = (m: ServerMessage) => {

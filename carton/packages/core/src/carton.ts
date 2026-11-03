@@ -21,6 +21,9 @@ import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } fro
 import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
+import type { FindOptions, FindResult } from "./find.ts";
+import type { Landmark, LandmarkOptions, MarkOptions, RecordedLandmarkKind } from "./landmarks.ts";
+import type { BringBackOptions, BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -314,9 +317,13 @@ export interface Carton {
    */
   leftOut(from: string, opts?: { into?: string }): Promise<{ change: ChangeId; ref: StateRef; at: number; author: Actor | null; rejected: PathKey[] }[]>;
 
-  /** Compare: ops and plain-language changes from `a` to `b` (default `b`: current head), with the shot diff. */
-  diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean }): Promise<DiffResult>;
-  /** Watch the changes: the shot diff alone. */
+  /**
+   * Compare: ops and plain-language changes from `a` to `b` (default `b`: current head), with the shot diff. `a` and `b`
+   * may be versions of any two cuts (Carton UX v2: "Main cut @41" against "30s Instagram cut @7", a teammate's cut): a
+   * cut id is that cut's head, read fresh. `rows`: also the app's change rows and their count (`DiffResult.rows`).
+   */
+  diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean; rows?: boolean }): Promise<DiffResult>;
+  /** Watch the changes: the shot diff alone (any two cuts, as `diff`). */
   shots(a: StateRef | string, b?: StateRef | string): Promise<ShotDiff>;
   /**
    * History: versions of a cut, newest first; `summary`: each says what it did in plain words. `rows` (with `summary`):
@@ -331,6 +338,34 @@ export interface Carton {
    * it. `after`/`upTo`: seqs bounding the range (after < seq ≤ upTo).
    */
   touched(opts?: { cut?: string; record?: PathKey; after?: number; upTo?: number }): Promise<{ seq: number; change: ChangeId; author: Actor | null; at: number; records: readonly PathKey[] }[]>;
+  /**
+   * Find (Carton UX v2): the versions of a cut whose name, turn prompt, author, touched clips (by name, then and after)
+   * or set title and caption text contain `text` (any case, accents ignored), newest first, each with what it matched
+   * and a short snippet. The index is built on the first call and kept; later calls read only rows saved since. An
+   * empty `text` builds the index and matches nothing (a find box can warm it on focus).
+   */
+  find(text: string, opts?: FindOptions): Promise<FindResult>;
+  /**
+   * Landmarks (Carton UX v2): the versions people remember, newest first: exported, sent, shared, Published, each day's
+   * session start, safety points before a restore, a fold in, an undo of a turn or a bring-back, agent turns and named
+   * versions (`landmarks.ts`). A version can be several landmarks.
+   */
+  landmarks(opts?: LandmarkOptions): Promise<Landmark[]>;
+  /**
+   * Record a landmark the history can't know by itself (exported, sent, shared, the session start), on this machine
+   * only (local `ephemeral` table, never exported or synced). Off the save path: one small store write. Null: `once:
+   * "day"` found one today.
+   */
+  mark(kind: RecordedLandmarkKind, opts?: MarkOptions): Promise<Landmark | null>;
+  /**
+   * Bring back one clip (Carton UX v2): `record` (`timelineItems/c1`, or `[collection, id]`) as it was at `ref`, with
+   * its own parts (`partOf`) and what it needs that is gone since (its track, its media), saved as a new version on top
+   * (kind `restore`, `restoreOf` and `restoreRecord` set): everything else stays as it is now. A clip deleted since
+   * comes back; one that wasn't there then is removed only with `remove: true` (else `NotInVersion`). On a shared cut
+   * it is queued like any change, and a teammate's newer edit of it becomes a card, as restore's. Takes a stable `id`
+   * as restore does.
+   */
+  restoreClip(ref: StateRef | string, record: PathKey | readonly string[], opts?: BringBackOptions): Promise<CommitResult & { brought: BroughtBack }>;
   /** Name a version ("Sent to client, Monday"). */
   /** Name a version; `author`: who named it (default: this handle's actor). */
   name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
@@ -1689,6 +1724,18 @@ class CartonImpl implements Carton {
     }
     return out;
   }
+  async find(_text: string, _opts: FindOptions = {}): Promise<FindResult> {
+    throw new Error("not implemented: find");
+  }
+  async landmarks(_opts: LandmarkOptions = {}): Promise<Landmark[]> {
+    throw new Error("not implemented: landmarks");
+  }
+  async mark(_kind: RecordedLandmarkKind, _opts: MarkOptions = {}): Promise<Landmark | null> {
+    throw new Error("not implemented: mark");
+  }
+  async restoreClip(_ref: StateRef | string, _record: PathKey | readonly string[], _opts: BringBackOptions = {}): Promise<CommitResult & { brought: BroughtBack }> {
+    throw new Error("not implemented: restoreClip");
+  }
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
   #leftOutN = new Map<string, number>();
   #leftOutChanges(cut: string, v: Version): number {
@@ -1708,7 +1755,7 @@ class CartonImpl implements Carton {
     await this.#refresh(into);
     return this.#h.leftOut(into, from).map((c) => ({ change: c.id, ref: { branchId: into, seq: c.seq, pending: [] }, at: c.at, author: this.#who(c.author, c.id), rejected: [...(c.rejected ?? [])] }));
   }
-  async diff(a: StateRef | string, b?: StateRef | string, opts: { shots?: boolean } = {}): Promise<DiffResult> {
+  async diff(a: StateRef | string, b?: StateRef | string, opts: { shots?: boolean; rows?: boolean } = {}): Promise<DiffResult> {
     const cur = this.#h.current;
     await this.#whole();
     await this.#refresh();

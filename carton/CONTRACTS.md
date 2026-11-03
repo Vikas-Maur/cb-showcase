@@ -385,6 +385,75 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   process's compaction squashed into rows it hasn't taken in yet reads its history again when it takes them in (applying
   the squash on top of what it holds would lose what the run undid).
 
+## Carton UX v2, N0: find, landmarks, bring back one clip, compare across cuts, Compare on request
+
+Owner: N0 (`feat/ux2-n0`). N1 (Compare in the editor) and N2 (History's find UI) code against this. Nothing here is in
+the history bundle (`packages/core/src/history/` is untouched; `node scripts/size.mjs` is unchanged by it).
+
+**Core (`@carton/core`).** New modules beside `carton.ts`: `find.ts`, `landmarks.ts`, `bring-back.ts`.
+- `carton.find(text, { cut?, limit = 50, before?, fields? }) → { matches, total, versions }`. A version matches when
+  its name (`name`), the prompt its agent turn was named from (`prompt`: a named version made by an agent turn), who
+  made it (`person`), a clip it touched by name, as it was before and after (`clip`, from the per-version `touched`
+  index), or title and caption text it set (`text`, the schema's new optional `CollectionDef.words(record)`) contains
+  `text`: any case, accents ignored. Newest first; each `FindMatch` has `field` (the best: name, prompt, clip, text,
+  person), `fields`, a `snippet` (at most about 80 characters, `…` where cut, never an id) with `hit: [lo, hi)`, and for a
+  clip or text match the `record` and `recordName`. The index is per cut, built on the first call by one forward walk
+  over the cut's rows, kept, and extended by the rows saved since on each later call (a compaction or a rebuild of
+  the cut starts it again). `find("")` builds it and matches nothing. Never on the save or open path.
+- `carton.landmarks({ cut?, kinds?, before?, limit = 200 }) → Landmark[]`, newest first. Kinds: `exported`, `sent`,
+  `shared`, `published`, `session`, `safety`, `turn`, `named`. Recorded ones (`exported`, `sent`, `shared`, `session`)
+  come from `carton.mark(kind, { ref?, cut?, label?, by?, at?, once?: "day" })`, which writes one row to the local
+  `ephemeral` table (`["landmark", cut, seq, kind, at]`: never exported with history, never synced). The rest are read
+  from the history, nothing written: `named` (a version's name, not a turn's), `turn` (an agent turn's newest
+  version, its label the turn's name), `published` (a Published cut's version, on the cut it came from), `safety` (the
+  version just before a restore, a fold in, an undo of a turn or a bring-back that this replica made; `before`, `after`).
+  `team`: true for `named`, `turn` and `published` (they come from what syncs), false for the rest (this person's own).
+  `picture`: `pictureKey(ref)`, `<cut>@<seq>`: one picture per version.
+- `carton.restoreClip(ref, record, { cut?, author?, id?, remove? }) → CommitResult & { brought }`: the clip
+  (`timelineItems/<id>` or `[coll, id]`) as it was at `ref`, saved as a new version on top that changes nothing else
+  (kind `restore`, with `restoreOf`, `restoreRecord`, `restoreName` on a local cut; a shared cut queues it like any
+  change, and a teammate's newer edit of the clip becomes a card, as restore's do). It covers the clip's record (all its
+  fields: keyframes, captions, effects), its own parts (`partOf`: a title's text entry), and what it needs that is gone
+  since (its track, its media file), as they were then. A clip deleted since comes back. One that wasn't there then is
+  removed only with `remove: true`; else `NotInVersion` (`code: "NOT_IN_VERSION"`, its message in editor words) and
+  nothing changes. `NoSuchClip` (`NO_SUCH_CLIP`) when neither version has it. `brought: { record, name, how: changed |
+  added | removed | same, parts, of }`; `same`: nothing saved (confirmed, empty). A stable `id` as restore's (a retry
+  answers the first). `log({ summary: true, rows: true })` titles it `{ kind: "bring-back", of, record, name }`; its
+  summary for `cb` is "Brought back 'Intro' from an earlier version".
+- **Compare across cuts.** `diff(a, b, { shots?, rows? })`, `shots(a, b)` and `checkout` take versions of any two cuts
+  (a shared cut's, a teammate's tracking cut's); a cut id is that cut's head, read fresh. `rows: true` adds
+  `DiffResult.rows` (`changeList`) and `count` (`countChanges`).
+
+**Local (`@carton/local`).** WriteOps `{kind: "restoreClip", ref, record, cut?, remove?, head?}` (core's restoreClip
+under the request's id) and `{kind: "open", view: "compare", from, to}`: the holder calls its
+`ViewPrinter.openView(view, by)` and answers `{status: "confirmed", opened}` (how many editor windows were told; 0: none,
+or no holder: an `open` never starts a helper).
+
+**`cb` and MCP (`@carton/cli-mcp`).**
+- `cb history --find <text>`: the matches, newest first, one line each: version, when, who, what matched (`name`,
+  `prompt`, `clip “Intro”`, `text`, `person`) and the snippet. `--json`: `{ matches, total }`.
+- `cb history --landmarks`: the landmarks, newest first: version, when, kind, words.
+- `cb restore <version> --clip <name or id> [--remove]`: "Brought back 'Intro' from main@41 (2 h ago)".
+- `cb compare <a> [b] --show`: what `cb compare` prints, and the comparison opens in the editor ("Opened a comparison
+  in the editor: …"); with no editor window open, it says so and prints the comparison alone. Refs: `<cut>@<seq>`, a
+  cut's name alone (its head: `cb compare "30s Instagram cut" main`), `head`, a header.
+- MCP: `timeline_find`, `timeline_landmarks`, `timeline_restore_clip`, `timeline_compare` (with `show`).
+
+**The app (`scripts/carton`).**
+- `CartonUi` (`@carton/react` model.ts, optional methods, served by the worker through `serveUi` as the rest of the
+  History panel): `find(text, opts) → FindHits` (hits by History row id), `landmarks(opts) → Landmark[]` (topic
+  `landmarks` says when to read them again), `restoreClip(ref, itemId, { remove? }) → BringBack` (`made`, `how`,
+  `clipName`), `landmarkPicture(key) → data:image/jpeg URL | null`, `saveLandmarkPicture(key, jpegDataUrl)` (at most 64
+  KB; the worker keeps it as `<bundle>/.carton/pictures/<key>.jpg`; `fromCarton({ pictures })`).
+- The worker's `mark({ projectId, kind, label? })` (carton namespace): the renderer bridge calls it when an export
+  starts (`exported`, label the preset) and when a version is sent or shared; the worker marks `session` itself at the
+  first open of a project each day.
+- **The Compare event.** On `cb compare … --show`, the worker sends the pages a `carton:event`
+  `{ kind: "carton", id: <projectId>, topic: "compare", compare: OpenCompare }`, through the same channel the History
+  panel's messages and `cb cut switch` use. `OpenCompare`: `{ from, to, by: {kind, id, name?}, byName, at, request }`
+  (refs as History's `Version.ref`; a cut id is that cut's head). N1's `openCompare` in the renderer opens Compare on it;
+  a page shows each `request` once.
+
 ## Using it
 
 ```ts
