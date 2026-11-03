@@ -31,6 +31,10 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-find-empty-body){margin:0 0 6px;font-size:12.5px;line-height:18px;color:var(--cb-fg-3);text-wrap:pretty}
 :where(${S}) :where(.carton-find-empty .carton-btn){margin-top:8px;height:28px;padding:0 12px;font-size:12.5px;border-radius:7px}
 
+/* a past day's run of changes between two landmarks (§2.5): one quiet line under the landmark above it */
+:where(${S}) :where(.carton-run){padding-left:18px;font-weight:400;color:var(--cb-fg-4)}
+:where(${S}) :where(.carton-run[data-open]){color:var(--cb-fg-3)}
+
 /* ---------------------------------------------------------------- landmark rows (§2.1, §2.2) */
 :where(${S}) :where(.carton-version[data-landmark]:not([data-child])){grid-template-columns:44px minmax(0,1fr) auto}
 :where(${S}) :where(.carton-landmark-tile){grid-row:1 / span 2;align-self:center;display:flex;align-items:center;justify-content:center;width:44px;height:25px;overflow:hidden;

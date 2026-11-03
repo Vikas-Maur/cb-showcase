@@ -103,6 +103,9 @@ export interface HistoryPanelProps {
 
 type Row = HistoryRow | { readonly kind: "working"; readonly key: "working" };
 type DayHistoryRow = Extract<HistoryRow, { kind: "day" }>;
+type RunHistoryRow = Extract<HistoryRow, { kind: "run" }>;
+/** A past day's run of changes between two landmarks: one quiet line, a day header's height (DESIGN-V2 §2.5). */
+export const RUN_ROW_HEIGHT = 32;
 
 const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
 /** An agent's prompt, when the version is its turn (as versionLabel reads it). */
@@ -428,6 +431,19 @@ const DayRow = memo(function DayRow({ row, label, domId, active, onToggle, marke
   );
 });
 
+/** A past day's changes between two landmarks (DESIGN-V2 §2.5): "› 18 changes by You and Claude Code"; a click opens them in place. */
+const RunRow = memo(function RunRow({ row, domId, active, onToggle }: { row: RunHistoryRow; domId: string; active: boolean; onToggle: (key: string) => void }) {
+  const words = useWords();
+  const ui = useCartonUi();
+  const names = [...new Set(row.authors.map((a) => actorLabel(a, ui.actor.bind(ui), words.you)).filter(Boolean))];
+  return h(
+    "div",
+    { id: domId, role: "option", "aria-selected": active, "aria-expanded": row.open, className: "carton-day carton-run", "data-active": active ? "" : undefined, "data-open": row.open ? "" : undefined, onClick: () => onToggle(row.key) },
+    h("span", { className: "carton-day-mark", "aria-hidden": true }, h(Icon, { name: row.open ? "caretDown" : "caretRight", size: 12 })),
+    h("span", { className: "carton-day-label" }, words.runOf(row.count, names)),
+  );
+});
+
 /**
  * The clip History is filtered to: its kind chip and name, then its credits, oldest first ("Added by You on Oct 30 ·
  * trimmed by Director · moved by You at 12:41 pm"; the verbs from what each change did: credits.ts, design QA G7).
@@ -555,6 +571,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     // with no new version, so History's revision doesn't move
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hist, revision, fkey, count, status.loading, only]);
+  const today = dayNumber(now);
   const grouped = useMemo(() => {
     if (!versions) return null;
     const long = versions.length > COLLAPSE_OVER;
@@ -573,13 +590,15 @@ export function HistoryPanel(props: HistoryPanelProps) {
       return groupHistory(versions, (day) => own?.get(day) ?? shut.has(day), { anchor: () => false });
     }
     const marked = marks.ids.size ? marks.ids : null;
-    return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k), ...(marked ? { anchor: (v: Version) => !!v.name || marked.has(v.id), alone: (v: Version) => marked.has(v.id) } : {}) });
+    // a past day, open, reads as its landmarks and one line per run between them (DESIGN-V2 §2.5); never Today or the
+    // newest day, nor a filtered list (it lists what it matches)
+    const story = marked && filter === "all" && !only ? { runs: (day: number, newest: boolean) => !newest && day !== today } : {};
+    return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k), ...(marked ? { anchor: (v: Version) => !!v.name || marked.has(v.id), alone: (v: Version) => marked.has(v.id), ...story } : {}) });
     // `revision` too: a source's all() is one array it appends to in place (remote.ts, mock.ts)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [versions, revision, folds, openGroups, searching, marks, findFolds, findKey]);
+  }, [versions, revision, folds, openGroups, searching, marks, findFolds, findKey, today]);
   // the live row of an agent working on this cut, on top (in Today), in the lists that show turns
   const live = working && (!working.cutId || !cutId || working.cutId === cutId) && (filter === "all" || filter === "turns") ? working : null;
-  const today = dayNumber(now);
   const rows = useMemo<Row[] | null>(() => {
     if (!grouped) return null;
     if (!live) return grouped;
@@ -891,13 +910,13 @@ export function HistoryPanel(props: HistoryPanelProps) {
       if (e.key === "ArrowRight") {
         if (r?.kind === "day") {
           if (r.collapsed) toggleDay(r.day);
-        } else if (r?.kind === "group" && !r.open) toggleGroup(r.key);
-        else if (r?.kind !== "start" && r?.kind !== "working") openCard(key);
+        } else if ((r?.kind === "group" || r?.kind === "run") && !r.open) toggleGroup(r.key);
+        else if (r?.kind !== "start" && r?.kind !== "working" && r?.kind !== "run") openCard(key);
         return true;
       }
       if (e.key === "ArrowLeft") {
         if (openKey === key) closeCard();
-        else if (r?.kind === "group" && r.open) toggleGroup(r.key);
+        else if ((r?.kind === "group" || r?.kind === "run") && r.open) toggleGroup(r.key);
         else if (r?.kind === "day" && !r.collapsed) toggleDay(r.day);
         else if (r?.kind === "version" && r.child) {
           // from one of a group's versions, back to its group
@@ -929,6 +948,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     (i: number) => {
       const r = rows?.[i];
       if (r?.kind === "day") return toggleDay(r.day);
+      if (r?.kind === "run") return toggleGroup(r.key);
       if (r?.kind === "start" || r?.kind === "working") return;
       const key = keyAt(i);
       // Enter on a row while picking is that row as the second version
@@ -943,7 +963,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       setOpenKey((k) => (k === key ? null : key));
       setCardMode(null);
     },
-    [rows, toggleDay, keyAt, pick, versionAt, compareTo],
+    [rows, toggleDay, toggleGroup, keyAt, pick, versionAt, compareTo],
   );
   // The context-menu key on the active row opens its actions, anchored to the row.
   const onKeyMenu = useCallback(
@@ -995,7 +1015,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const heightOf = useCallback(
     (i: number) => {
       const r = rows?.[i];
-      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT;
+      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "run" ? RUN_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT;
     },
     [rows],
   );
@@ -1013,6 +1033,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     const domId = `${listId}-${key}`;
     if (r?.kind === "day") return h(DayRow, { row: r, label: dayLabel(r.day, today, locale, { today: words.today, yesterday: words.yesterday }), domId, active: key === activeKey, onToggle: toggleDay, marked: marks.ids.size > 0 && !searching });
     if (r?.kind === "start") return h(StartRow, { row: r, domId, active: key === activeKey });
+    if (r?.kind === "run") return h(RunRow, { row: r, domId, active: key === activeKey, onToggle: toggleGroup });
     if (r?.kind === "working") return live ? h(WorkingRow, { w: live, domId, active: key === activeKey }) : null;
     const v = versionAt(i);
     if (!v) return null;

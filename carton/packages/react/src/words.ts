@@ -613,6 +613,12 @@ export const words = {
   landmarksEmpty: "No landmarks yet. Exports, sends, named versions, agent turns and each day's start show here.",
   dayVersionsMarks: (n: number, marks: number) => `${plural(n, "version", "versions")} · ${plural(marks, "landmark", "landmarks")}`,
   peekHint: "Click to open · hold to peek",
+  // a past day's run between two landmarks (DESIGN-V2 §2.5): "18 changes by You and Claude Code"; four or more people
+  // are the first two and "2 others"
+  runOf: (n: number, names: readonly string[]) => {
+    const xs = names.length > 3 ? [...names.slice(0, 2), plural(names.length - 2, "other", "others")] : names;
+    return `${plural(n, "change", "changes")}${xs.length ? ` by ${xs.length < 2 ? xs[0] : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`}` : ""}`;
+  },
   holding: "Holding",
   holdingLabel: (label: string) => `${label} · holding`,
   peekShowing: (label: string) => `Showing ${label}. Release to go back.`,

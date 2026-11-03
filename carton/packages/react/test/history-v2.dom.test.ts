@@ -441,6 +441,57 @@ test(name("12,000 versions with landmarks, searched and filtered to landmarks: o
   await m.unmount();
 });
 
+// ------------------------------------------------------------------ design QA v2 G10: past days read as a story (§2.5)
+
+for (const n of [1_200, 12_000])
+  test(name(`G10: an opened past day lists its landmarks and one line per run (${n} versions); a click opens a run in place; it stays virtual`), async () => {
+    // (20 past midnight: Today holds a few versions, so yesterday's header is on screen)
+    const d = new Date();
+    d.setHours(0, 20, 0, 0);
+    const ui = createMockUi({ versions: n, seed: 3, now: d.getTime(), landmarks: true });
+    const m = await render(wrap(ui, h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 }))));
+    await waitFor(() => !!$(m.container, ".carton-version[data-landmark]"), "the landmarks");
+    const max = Math.ceil(600 / 32) + 1 + 2 * 6;
+    const count = () => $$(m.container, ".carton-vrow").length;
+    const days = () => $$(m.container, ".carton-day:not(.carton-run)");
+    // Today keeps its rows as they were (no runs); a long History's past days start folded
+    assert.equal($$(m.container, ".carton-run").length, 0, "Today is never folded into runs");
+    assert.equal(days()[1]!.getAttribute("data-collapsed"), "", "a long History's past days start folded");
+    await click(days()[1]);
+    await flush();
+    await waitFor(() => $$(m.container, ".carton-run").length > 0, "the day's runs");
+    const runs = $$(m.container, ".carton-run");
+    for (const r of runs) assert.match(r.textContent ?? "", /^\d[\d,]* changes? by [A-Z]/, `a run says how many and who: ${r.textContent}`);
+    assert.ok(runs.every((r) => !/human\/|agent\/|claude-|codex/.test(r.textContent ?? "")), "no ids or tool names");
+    // yesterday's rows between its runs are landmarks (and agent turns, which are landmarks too)
+    const vrows = $$(m.container, ".carton-vrow");
+    const between = vrows.slice(vrows.findIndex((x) => x.contains(days()[1]!)) + 1).filter((x) => !!$(x, ".carton-version"));
+    assert.ok(between.length > 0 && between.every((x) => !!$(x, ".carton-version[data-landmark]") || /Director|Claude Code/.test(x.textContent ?? "")), "landmarks (and agent turns) between the runs");
+    assert.ok(count() <= max, `${count()} rows in the DOM`);
+    // a click opens the run in place: its rows follow it, grouped; again closes it
+    const first = runs[0]!;
+    const before = count();
+    assert.equal(first.getAttribute("aria-expanded"), "false");
+    await click(first);
+    await flush();
+    const opened = $(m.container, ".carton-run[data-open]")!;
+    assert.ok(opened, "the run is open");
+    assert.equal(opened.getAttribute("aria-expanded"), "true");
+    const next = opened.closest(".carton-vrow")!.nextElementSibling;
+    assert.ok(next && $(next, ".carton-version") && !$(next, ".carton-version[data-landmark]"), "its first change follows it");
+    assert.ok(count() >= Math.min(before, max - 1) && count() <= max, `opened: ${count()} rows in the DOM`);
+    await click(opened);
+    await flush();
+    assert.equal($(m.container, ".carton-run[data-open]"), null, "closed again");
+    // a filter lists what it matches: no runs
+    await click($(m.container, ".carton-filter-btn"));
+    await click(item(m.container, "Agent turns"));
+    await flush();
+    assert.equal($$(m.container, ".carton-run").length, 0, "a filtered list has no runs");
+    assert.deepEqual([ui.counts.changes, ui.counts.changesIn], [0, 0], "nothing described: no card open");
+    await m.unmount();
+  });
+
 // ------------------------------------------------------------------ review of feat/ux2-n2 (GPT-6.1 Sol): the fixes
 
 const openGoBack = async (root: HTMLElement) => {

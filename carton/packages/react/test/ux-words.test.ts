@@ -106,7 +106,7 @@ test("0.9: no other place formats a version's time for display (one clock, in fo
 const H = 3_600_000, MIN = 60_000;
 const base = new Date(2026, 10, 3, 15, 0).getTime();
 const r = (id: string, t: number, over: Partial<Version> = {}) => ({ id, at: t, kind: "edit", summary: id, author: you, ref: id, seq: 0, changes: 1, ...over }) as unknown as Version;
-const keys = (rows: HistoryRow[]) => rows.map((x) => (x.kind === "group" ? `[${x.ids.join(",")}]` : x.kind === "day" ? "day" : x.kind === "start" ? `start(${x.ids.join(",")})` : x.id));
+const keys = (rows: HistoryRow[]) => rows.map((x) => (x.kind === "group" ? `[${x.ids.join(",")}]` : x.kind === "day" ? "day" : x.kind === "start" ? `start(${x.ids.join(",")})` : x.kind === "run" ? `run(${x.ids.join(",")})` : x.id));
 
 test("0.4: a person's run of edits is one row, at most 10 min apart; a named version or an agent's turn breaks it", () => {
   const all = [

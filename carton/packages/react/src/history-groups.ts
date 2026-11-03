@@ -47,6 +47,22 @@ export type HistoryRow =
       readonly now?: true;
     }
   | {
+      /**
+       * A past day's ordinary changes between two of its landmarks, one quiet line (DESIGN-V2 §2.5: "› 18 changes by You
+       * and Claude Code"). Opened, the rows it stands for follow it in place, grouped as any day's are.
+       */
+      readonly kind: "run";
+      /** `run:<oldest id>`: a past day's versions don't change, so neither does the key. */
+      readonly key: string;
+      /** Every version in it, newest first. */
+      readonly ids: readonly string[];
+      /** Who made them, each once, newest first. */
+      readonly authors: readonly Actor[];
+      /** How many changes: the sum of its versions' `changes` once all are known, else how many versions. */
+      readonly count: number;
+      readonly open: boolean;
+    }
+  | {
       /** The start of History, one row: "Project created", or "History starts here" for an imported project. No menu. */
       readonly kind: "start";
       readonly key: "start";
@@ -73,6 +89,11 @@ export interface GroupOptions {
   readonly anchor?: (v: Version) => boolean;
   /** A version that is always its own row (a landmark: a group never crosses one, DESIGN-V2 §2.6). Default: none. */
   readonly alone?: (v: Version) => boolean;
+  /**
+   * Whether an open day reads as a story (DESIGN-V2 §2.5): its landmarks (`alone`), and one `run` row for the changes
+   * between two of them; `open(key)` opens a run as it does a group. Default: no day. Needs `alone`.
+   */
+  readonly runs?: (day: number, newest: boolean) => boolean;
 }
 
 /** A version a group can hold: a person's plain edit, not named, not History's start. */
@@ -122,36 +143,26 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
     first = false;
     return { ...r, now: true };
   };
-  while (i >= starts) {
-    const day = dayOf(versions[i]!);
-    let j = i;
-    while (j >= starts && dayOf(versions[j]!) === day) j--;
-    const shut = collapsed(day, rows.length === 0);
-    const at = rows.length;
-    rows.push({ kind: "day", key: `day:${day}`, day, count: i - j, collapsed: shut, hidden: 0 });
-    let hidden = 0;
+  // a day's versions from index `i` down to (not including) `j`, as rows: agent turns, a person's runs, the rest
+  const emit = (i: number, j: number, out: HistoryRow[]) => {
     for (let k = i; k > j; k--) {
       const v = versions[k]!;
-      if (shut && !anchor(v)) {
-        hidden++;
-        continue;
-      }
       // an agent turn's versions (they share `run`): one row, its newest (PLAN 0.4)
-      if (opts.group && !shut && v.run) {
+      if (opts.group && v.run) {
         let m = k;
         while (m - 1 > j && versions[m - 1]!.run === v.run) m--;
         const turn: string[] = [];
         for (let q = k - 1; q >= m; q--) turn.push(versions[q]!.id);
-        rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k, ...(turn.length ? { turn } : {}) }));
+        out.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k, ...(turn.length ? { turn } : {}) }));
         k = m;
         continue;
       }
       // a person's run: newest first, back while the next older one is theirs, close enough, on this day
       let m = k;
-      if (opts.group && !shut && joins(v))
+      if (opts.group && joins(v))
         while (m - 1 > j && joins(versions[m - 1]!) && versions[m - 1]!.author.key === v.author.key && versions[m]!.at - versions[m - 1]!.at <= GROUP_GAP_MS) m--;
       if (m === k) {
-        rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k }));
+        out.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k }));
         continue;
       }
       const ids: string[] = [];
@@ -164,11 +175,61 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
       }
       const key = `group:${versions[m]!.id}`;
       const open = !!opts.open?.(key);
-      rows.push(flag({ kind: "group", key, id: v.id, index: n - 1 - k, ids, author: v.author, count: known ? sum : ids.length, open }));
+      out.push(flag({ kind: "group", key, id: v.id, index: n - 1 - k, ids, author: v.author, count: known ? sum : ids.length, open }));
       // (from the second: the group's own row shows its newest's sentence, so it isn't listed twice: design QA G10)
-      if (open) for (let q = k - 1; q >= m; q--) rows.push({ kind: "version", key: versions[q]!.id, id: versions[q]!.id, index: n - 1 - q, child: true });
+      if (open) for (let q = k - 1; q >= m; q--) out.push({ kind: "version", key: versions[q]!.id, id: versions[q]!.id, index: n - 1 - q, child: true });
       k = m;
     }
+  };
+  // a past day as a story (DESIGN-V2 §2.5): each landmark its own row (an agent turn's with its turn), and the rest
+  // between two of them one run row, even of one change (a quiet 32 px line in place of a 56 px row)
+  const story = (i: number, j: number) => {
+    for (let k = i; k > j; ) {
+      const v = versions[k]!;
+      let m = k;
+      if (alone!(v)) {
+        if (opts.group && v.run) while (m - 1 > j && versions[m - 1]!.run === v.run && !alone!(versions[m - 1]!)) m--;
+        emit(k, m - 1, rows);
+        k = m - 1;
+        continue;
+      }
+      while (m - 1 > j && !alone!(versions[m - 1]!)) m--;
+      {
+        const ids: string[] = [], authors: Actor[] = [], who = new Set<string>();
+        let sum = 0, known = true;
+        for (let q = k; q >= m; q--) {
+          const x = versions[q]!;
+          ids.push(x.id);
+          if (x.changes === undefined) known = false;
+          else sum += x.changes;
+          if (!who.has(x.author.key)) who.add(x.author.key), authors.push(x.author);
+        }
+        const key = `run:${versions[m]!.id}`;
+        const open = !!opts.open?.(key);
+        rows.push({ kind: "run", key, ids, authors, count: known ? sum : ids.length, open });
+        // (its rows are worked out only when it is open: a closed run costs one pass over its versions)
+        if (open) emit(k, m - 1, rows);
+      }
+      k = m - 1;
+    }
+  };
+  while (i >= starts) {
+    const day = dayOf(versions[i]!);
+    let j = i;
+    while (j >= starts && dayOf(versions[j]!) === day) j--;
+    const newest = rows.length === 0;
+    const shut = collapsed(day, newest);
+    const at = rows.length;
+    rows.push({ kind: "day", key: `day:${day}`, day, count: i - j, collapsed: shut, hidden: 0 });
+    let hidden = 0;
+    if (shut) {
+      for (let k = i; k > j; k--) {
+        const v = versions[k]!;
+        if (anchor(v)) rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k }));
+        else hidden++;
+      }
+    } else if (alone && opts.runs?.(day, newest)) story(i, j);
+    else emit(i, j, rows);
     if (hidden) rows[at] = { ...(rows[at] as Extract<HistoryRow, { kind: "day" }>), hidden };
     i = j;
   }
