@@ -446,3 +446,200 @@ test("PLAN 1.3, 7.1: a conflict's See it views its side through ui.view, the cli
     assert.equal(m.tab()?.querySelector(".carton-frame-text")?.textContent, "Claude Code's move of “Interview B”");
   } finally { await m.done(); }
 });
+
+// Design QA G1: the marks follow what the stage shows, never what it was asked. A version that can't be shown takes
+// everything back to your edit (the view model's viewing too), and Play says so in its card; one slow to come is
+// "Loading …" in the chip after 300 ms, with no frame and no row mark until it is on screen.
+test("design QA G1: a version the editor can't show: back to your edit, no mark anywhere, Play's error in its card", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const reports = [];
+  m.bridge.reportPanel = (_panel, _live, extra) => reports.push(extra);
+  m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref != null) throw new Error("checkout failed"); };
+  try {
+    await m.cmd("carton-history");
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    await m.click(older);
+    await m.click([...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent)));
+    await m.settle(80);
+    assert.ok(m.did.previews.some((r) => r != null), "the editor was asked to show it");
+    assert.equal(m.did.previews.at(-1), null, "and then your edit");
+    assert.equal(m.ui.viewing(), null, "the view model's viewing went too");
+    assert.equal(m.page().stageRef(), null, "the stage: your edit");
+    assert.equal(m.page().stageLoading(), null, "nothing loading");
+    assert.ok(!m.frame(), "no frame");
+    assert.equal(m.did.marks.at(-1)?.viewing, false, "no timeline frame (data-carton-viewing)");
+    assert.equal(m.side.querySelectorAll(".carton-version[data-viewing]").length, 0, "no row says Viewing");
+    assert.equal(reports.at(-1)?.viewing ?? null, null, "the chip has no viewing part");
+    // G20: Play's error is in its card, not at the panel's top
+    assert.equal(m.side.querySelector(".carton-card-version .carton-card-error")?.textContent, "Couldn't load this version. Try again.");
+    assert.ok(!m.side.querySelector(".carton-history-error"), "nothing at the panel's top");
+  } finally { await m.done(); }
+});
+
+test("design QA G1: a version slow to come: nothing marked at first, 'Loading …' in the chip after 300 ms, the marks once it shows", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const reports = [];
+  m.bridge.reportPanel = (_panel, _live, extra) => reports.push(extra);
+  let release = null;
+  m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref != null) await new Promise((r) => (release = r)); };
+  try {
+    await m.cmd("carton-history");
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    const olderId = older.id;
+    await m.click(older);
+    await m.click([...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent)));
+    await m.settle(60);
+    assert.ok(release, "the version is loading");
+    assert.ok(m.ui.viewing(), "the view model has labelled it");
+    assert.equal(m.page().stageRef(), null, "the stage still shows your edit");
+    assert.ok(!m.frame(), "so no frame");
+    assert.equal(m.side.querySelectorAll(".carton-version[data-viewing]").length, 0, "no row says Viewing yet");
+    assert.equal(reports.at(-1)?.viewing ?? null, null, "under 300 ms: nothing in the chip");
+    await m.settle(320);
+    const label = m.ui.viewing().label;
+    assert.deepEqual(reports.at(-1)?.viewing, { label: "Loading " + label.replace(/^Your\b/, "your"), loading: true }, "past 300 ms: Loading, with the spinner");
+    assert.ok(!m.frame(), "still no frame");
+    await act(async () => { release(); await sleep(30); });
+    await m.settle(40);
+    assert.ok(m.page().stageRef(), "on screen now");
+    assert.equal(m.page().stageLoading(), null);
+    assert.ok(m.frame(), "the frame");
+    assert.deepEqual([...m.side.querySelectorAll(".carton-version[data-viewing]")].map((r) => r.id), [olderId], "its row");
+    assert.deepEqual(reports.at(-1)?.viewing, { label: label[0].toUpperCase() + label.slice(1) }, "the chip names it");
+    // Esc from its open card: stops viewing first, and the card stays (G2); the next Esc closes the card
+    const card = m.side.querySelector(".carton-card-version");
+    await act(async () => { card.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(30); });
+    await m.settle(40);
+    assert.equal(m.ui.viewing(), null, "Esc: back to your edit");
+    assert.ok(!m.frame());
+    assert.ok(m.side.querySelector(".carton-card-version"), "the card stays open");
+    await act(async () => { m.side.querySelector(".carton-card-version").dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(30); });
+    await m.settle(40);
+    assert.ok(!m.side.querySelector(".carton-card-version"), "the next Esc closes the card");
+    assert.ok(m.side.querySelector(".carton-sidebar"), "and leaves the panel open");
+  } finally { await m.done(); }
+});
+
+test("design QA G1: viewAndSwap's last swap failing takes the view back to your edit, unless a newer view was asked", opt, async () => {
+  const run = async (latest) => {
+    let viewing = null;
+    const calls = [];
+    const view = async (t) => { calls.push(["view", t?.kind ?? null]); viewing = t ? { ref: "r-old", kind: t.kind } : null; };
+    const preview = async (ref) => { calls.push(["preview", ref]); if (ref === "r-old") throw new Error("checkout failed"); };
+    await assert.rejects(U.__forTests.viewAndSwap(view, () => viewing, preview, () => latest)({ kind: "version", versionId: "v1" }), /checkout failed/);
+    return { calls, viewing };
+  };
+  const mine = await run(true);
+  assert.deepEqual(mine.calls, [["view", "version"], ["preview", "r-old"], ["view", null], ["preview", null]], "back to your edit, then the failure");
+  assert.equal(mine.viewing, null);
+  const superseded = await run(false);
+  assert.deepEqual(superseded.calls, [["view", "version"], ["preview", "r-old"]], "a newer view: left alone");
+});
+
+// Review of fix/ux2-a: the marks name what is on screen when loads overlap. #1: a newer version still loading over an
+// older one never takes the row's mark (nor the chip's label); #2: a swap from the cache that lands before the view
+// model has labelled it never wears the label of the version before it; #3: a Play given up with Esc while it loads
+// doesn't start once the load lands.
+test("review of fix/ux2-a #1, #2: overlapping loads: the row's mark and the chip's label stay with what is on screen", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const reports = [];
+  m.bridge.reportPanel = (_panel, _live, extra) => reports.push(extra);
+  const marked = () => [...m.side.querySelectorAll(".carton-version[data-viewing]")].map((r) => r.id);
+  try {
+    await m.cmd("carton-history");
+    // three versions with rows of their own (not the newest, a group's, or the start)
+    const all = ui.history().all();
+    const own = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && !r.hasAttribute("data-group") && !r.hasAttribute("data-child") && r.getAttribute("data-kind") !== "start");
+    const older = own.map((r) => all.find((v) => v.id === r.id.slice(r.id.indexOf("-") + 1))).filter((v) => v && !v.provisional);
+    assert.ok(older.length >= 3, "three rows to view");
+    const [a, b] = [older[0], older[1]];
+    const rowOf = (v) => own.find((r) => r.id.slice(r.id.indexOf("-") + 1) === v.id)?.id;
+    await act(async () => { await m.page().view({ kind: "version", versionId: a.id, ref: a.ref }); });
+    await m.settle(40);
+    const aLabel = ui.viewing().label;
+    assert.deepEqual(marked(), [rowOf(a)], "A on screen, its row marked");
+    // #1: B slow to come
+    let release = null;
+    m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref === b.ref) await new Promise((r) => (release = r)); };
+    let done = null;
+    await act(async () => { done = m.page().view({ kind: "version", versionId: b.id, ref: b.ref }); await sleep(40); });
+    await m.settle(40);
+    assert.equal(ui.viewing().ref, b.ref, "the view model has moved on to B");
+    assert.deepEqual(marked(), [rowOf(a)], "the row's mark stays on A, still on screen");
+    assert.deepEqual(reports.at(-1)?.viewing, { label: aLabel[0].toUpperCase() + aLabel.slice(1) }, "the chip names A");
+    await act(async () => { release(); await done; });
+    await m.settle(40);
+    assert.deepEqual(marked(), [rowOf(b)], "B on screen: its row");
+    // #2: back to A, the stage swapping from the cache before the view model has labelled it
+    let answer = null;
+    const real = ui.view.bind(ui);
+    ui.view = async (t) => { if (t?.ref === a.ref) await new Promise((r) => (answer = r)); return real(t); };
+    m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); };
+    await act(async () => { done = m.page().view({ kind: "version", versionId: a.id, ref: a.ref }); await sleep(40); });
+    await m.settle(40);
+    assert.equal(m.page().stageRef(), a.ref, "A on screen at once");
+    assert.equal(ui.viewing().ref, b.ref, "the view model still says B");
+    // (A was labelled before: what was said for that very ref is its name)
+    assert.deepEqual(reports.at(-1)?.viewing, { label: aLabel[0].toUpperCase() + aLabel.slice(1) }, "the chip names A, never B");
+    assert.deepEqual(marked(), [rowOf(a)], "and A's row");
+    await act(async () => { answer(); await done; });
+    // a ref never labelled: a neutral label until the view model says, never the one before
+    const c = older[2];
+    ui.view = async (t) => { if (t?.ref === c.ref) await new Promise((r) => (answer = r)); return real(t); };
+    await act(async () => { done = m.page().view({ kind: "version", versionId: c.id, ref: c.ref }); await sleep(40); });
+    await m.settle(40);
+    assert.equal(m.page().stageRef(), c.ref);
+    assert.deepEqual(reports.at(-1)?.viewing, { label: "Another version" }, "not A's label");
+    assert.deepEqual(marked(), [rowOf(c)], "the row asked for, on screen");
+    await act(async () => { answer(); await done; });
+    await m.settle(40);
+    const cLabel = ui.viewing().label;
+    assert.deepEqual(reports.at(-1)?.viewing, { label: cLabel[0].toUpperCase() + cLabel.slice(1) }, "then its own label");
+    // Before of a version already named, landing from the cache first: "Before <its name>" at once, as the view model
+    // then says it
+    const base = c.base ?? all[all.findIndex((v) => v.id === c.id) - 1]?.ref;
+    ui.view = async (t) => { if (t?.kind === "before") await new Promise((r) => (answer = r)); return real(t); };
+    await act(async () => { done = m.page().view({ kind: "before", versionId: c.id, ref: base }); await sleep(40); });
+    await m.settle(40);
+    assert.equal(m.page().stageRef(), base, "how it was before C, on screen");
+    const early = reports.at(-1)?.viewing;
+    await act(async () => { answer(); await done; });
+    await m.settle(40);
+    assert.equal(ui.viewing().kind, "before");
+    assert.deepEqual(early, reports.at(-1)?.viewing, "the label it had at once is the view model's: " + JSON.stringify(early));
+    assert.deepEqual(marked(), [rowOf(c)], "C's row");
+  } finally { await m.done(); }
+});
+
+test("review of fix/ux2-a #3: Esc while Play's version loads: back to your edit, and Play doesn't start when it lands", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  let release = null;
+  m.bridge.preview = async (_p, ref) => { m.did.previews.push(ref); if (ref != null) await new Promise((r) => (release = r)); };
+  try {
+    await m.cmd("carton-history");
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    await m.click(older);
+    await m.click([...m.side.querySelectorAll(".carton-card-version .carton-btn")].find((b) => /Play all/.test(b.textContent)));
+    await m.settle(40);
+    assert.ok(release, "loading");
+    const card = m.side.querySelector(".carton-card-version");
+    await act(async () => { card.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(30); });
+    await m.settle(40);
+    assert.equal(m.ui.viewing(), null, "back to your edit");
+    await act(async () => { release(); await sleep(30); });
+    await m.settle(80);
+    assert.equal(m.ui.viewing(), null, "still your edit");
+    assert.equal(m.page().stageRef(), null);
+    assert.ok(m.side.querySelector(".carton-card-version"), "the card stays");
+    assert.equal(m.side.querySelector(".carton-card-version .carton-change[data-playing]"), null, "no change playing");
+    assert.ok([...m.side.querySelectorAll(".carton-card-version .carton-btn")].some((b) => /Play all/.test(b.textContent)), "Play all, not Pause");
+  } finally { await m.done(); }
+});

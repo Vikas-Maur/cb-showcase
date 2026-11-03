@@ -118,7 +118,7 @@ test(name("keys (DESIGN §7): → opens a card or a group, ← closes it, Space 
   await press(list, "ArrowDown"); // your six changes
   assert.match(activeRow()!.textContent ?? "", /6 changes/);
   await press(list, "ArrowRight");
-  assert.equal($$(m.container, ".carton-version[data-child]").length, 6, "→ on a group lists its versions");
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 5, "→ on a group lists its older versions (its newest is its own row: design QA G10)");
   await press(list, "ArrowDown");
   assert.equal(activeRow()!.dataset.child, "", "↓ goes into them");
   await press(list, "ArrowLeft");
@@ -133,7 +133,12 @@ test(name("keys (DESIGN §7): → opens a card or a group, ← closes it, Space 
   await waitFor(() => ui.viewing() !== null, "viewing the Director's turn");
   assert.equal(ui.viewing()!.kind, "version");
   assert.match(ui.viewing()!.label, /^Director's “Add captions…”$/);
-  // Esc: the card first (the panel around it never sees it), then the panel's own (stop viewing, close)
+  // Esc, one layer at a time (design QA G2): viewing stops first and the card stays, then the card closes (the panel
+  // around it never sees either), then the panel's own
+  await press(list, "Escape");
+  await waitFor(() => ui.viewing() === null, "Esc: back to your edit");
+  assert.ok($(m.container, ".carton-card-version"), "the card stays");
+  assert.equal(outer, 0);
   await press(list, "Escape");
   assert.equal($(m.container, ".carton-card-version"), null);
   assert.equal(outer, 0);
@@ -211,7 +216,8 @@ test(name("rows: Now on the newest, prompts in quotes, a named version, a group 
   assert.match($(row(m.container, "Folded in “30s cut”")!, ".carton-version-meta")!.textContent ?? "", /2 of 3 changes/);
   // the start: one row, at the bottom, with no menu
   const start = $(m.container, ".carton-start")!;
-  assert.match(start.textContent ?? "", /^Project created · /);
+  // under its own day's header: no date again (design QA G16)
+  assert.match(start.textContent ?? "", /^Project created\d/);
   assert.equal($(start, ".carton-version-more"), null);
   assert.equal($$(m.container, "[role=option]").at(-1), start);
   assert.doesNotMatch(m.container.textContent ?? "", /Started the cut|Checkpoint|Imported the project/);
@@ -299,7 +305,7 @@ test(name("your run of changes grows as you edit: its open card and its listed v
   assert.match($(group(), ".carton-version-meta")!.textContent ?? "", /3 changes/, "the new edit joined the row");
   assert.equal(group().getAttribute("aria-expanded"), "true", "its card is still open");
   assert.ok($(m.container, ".carton-card-version"));
-  assert.equal($$(m.container, ".carton-version[data-child]").length, 3, "and its versions still listed, the new one too");
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 2, "and its older versions still listed (the new one is the row's own)");
   await m.unmount();
 });
 
@@ -352,7 +358,7 @@ test(name("review #1: a group listed open, then hidden (its day folded, a filter
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
   await flush();
   await click($(m.container, ".carton-version[data-group] .carton-version-group"));
-  assert.equal($$(m.container, ".carton-version[data-child]").length, 6);
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 5);
   // fold Today (its header is the first row): the group goes; React would throw "Maximum update depth exceeded" here
   await click($$(m.container, ".carton-day")[0]!);
   await flush();
@@ -586,3 +592,4 @@ test(name("a version viewed: its row says so, with ✕ back to your edit, and no
   void key;
   await m.unmount();
 });
+

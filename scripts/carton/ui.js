@@ -227,16 +227,65 @@ function connect(projectId, bridge) {
   // still loading (the worker hasn't set viewing for it yet), so leaving can cancel it too.
   let viewSeq = 0, pending = null;
   r.ui.pendingView = () => pending?.target ?? null;
-  // What the editor was last told to show (a ref, or null: your edit): stageRef(). The stage's marks follow it, so a
-  // swap made at once (Play's and Before's, before the worker has labelled it: viewAndSwap) is never unmarked, and a
-  // return is unmarked at once (PLAN 1.1, with Workstream 4). onStage(f): told when it changes.
-  let stageRef = null;
+  // The stage: what the editor shows, and swap(), the one way this page changes it (the bridge's preview). The marks
+  // (the chip, the stage's frame, the timeline's frame) follow what it shows, never what it was asked (design QA G1):
+  // - swap(ref): asks the editor to show `ref` (null: your edit) and answers as the bridge does, so a caller sees a
+  //   failure. Your edit is marked at once: a return is never held up (PLAN 1.1). A version is marked once the bridge
+  //   has shown it: a slow load, or one that fails, never leaves your edit passing for it. Latest wins, as in the
+  //   bridge: once a newer swap is asked, an older one's answer changes nothing here.
+  // - stageRef(): the ref the editor shows (null: your edit).
+  // - stageView(): what that is, for the marks to name it (null for your edit): the view model's viewing once it has
+  //   said, else the last it said for that ref, else what was asked for it (its kind and row, no label yet). Never the
+  //   view model's newer viewing of another ref (review of fix/ux2-a #1, #2: a version still loading took the row's
+  //   mark and the chip's label while the one before it was still on screen).
+  // - stageLoading(): the ref a swap has been loading for more than 300 ms, else null: the chip's "Loading …".
+  // - onStage(f): told when either changes.
+  let stageRef = null, loading = null, swapSeq = 0, slow = 0;
   const stageSubs = new Set();
+  const setStage = (seq, ref, wait) => {
+    if (seq !== swapSeq) return;
+    clearTimeout(slow);
+    if (stageRef === ref && loading === wait) return;
+    stageRef = ref;
+    loading = wait;
+    for (const f of [...stageSubs]) f();
+  };
   const swap = (ref) => {
-    if (stageRef !== ref) { stageRef = ref; for (const f of [...stageSubs]) f(); }
-    return bridge.preview(projectId, ref);
+    const seq = ++swapSeq;
+    clearTimeout(slow);
+    if (ref == null) { setStage(seq, null, null); return bridge.preview(projectId, null); }
+    if (ref !== stageRef) slow = setTimeout(() => setStage(seq, stageRef, ref), 300);
+    return Promise.resolve(bridge.preview(projectId, ref)).then(
+      (x) => { setStage(seq, ref, null); return x; },
+      (e) => { setStage(seq, stageRef, null); throw e; },
+    );
+  };
+  const known = new Map();
+  const remember = (v) => {
+    known.delete(v.ref);
+    known.set(v.ref, v);
+    if (known.size > 32) known.delete(known.keys().next().value);
+  };
+  const offViewing = r.ui.subscribe("viewing", () => { const v = r.ui.viewing(); if (v && typeof v.ref === "string") remember(v); });
+  const asked = (t) => {
+    if (typeof t?.ref !== "string") return;
+    const was = known.get(t.ref);
+    // (a label said for this very ref and kind of view stays; asked as something else, it is that now)
+    if (was?.label && was.kind === t.kind && was.versionId === t.versionId) return;
+    // how it was before a version already named: "Before <its name>", as the view model says it (Before's flip lands
+    // from the cache before the view model answers)
+    let label = t.label ?? "";
+    if (!label && t.kind === "before" && t.versionId !== undefined)
+      for (const k of known.values()) if (k.kind === "version" && k.versionId === t.versionId && k.label) label = `Before ${k.label.replace(/^(Your|The)\b/, (w) => w.toLowerCase())}`;
+    remember({ ref: t.ref, kind: t.kind, ...(t.versionId !== undefined ? { versionId: t.versionId } : {}), label, short: label });
   };
   r.ui.stageRef = () => stageRef;
+  r.ui.stageView = () => {
+    if (stageRef == null) return null;
+    const v = r.ui.viewing();
+    return v && v.ref === stageRef ? v : (known.get(stageRef) ?? null);
+  };
+  r.ui.stageLoading = () => loading;
   r.ui.onStage = (f) => { stageSubs.add(f); return () => { stageSubs.delete(f); }; };
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
@@ -251,8 +300,9 @@ function connect(projectId, bridge) {
     const seq = ++viewSeq;
     pending = target ? { seq, target } : null;
     const mine = () => seq === viewSeq;
+    asked(target);
     try {
-      await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? swap(ref) : Promise.resolve()))(target);
+      await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? swap(ref) : Promise.resolve()), mine)(target);
     } finally {
       if (pending?.seq === seq) pending = null;
     }
@@ -262,7 +312,7 @@ function connect(projectId, bridge) {
     }
   };
   confirmations(r.ui, bridge);
-  return { ...r, close: off };
+  return { ...r, close: () => { off(); offViewing(); } };
 }
 
 /**
@@ -272,11 +322,15 @@ function connect(projectId, bridge) {
  * waits on nothing but the bridge's cache, which Play filled ahead (docs/carton-ux PLAN 4.3; review #7: every flip
  * waited a worker round trip first). If the worker can't load it, the stage goes back to what viewing() says; if it
  * settled on another state (a newer view since: the view model and the bridge are both latest-wins), the stage shows
- * that one.
+ * that one. If the editor can't show what the worker settled on (the last swap fails), both go back to your edit
+ * before the failure reaches the caller (Play's "Couldn't load this version"), so nothing goes on claiming it (design
+ * QA G1); `latest()`: whether this is still the newest view asked, so a failure never undoes a newer one.
  */
-function viewAndSwap(view, viewing, preview) {
+function viewAndSwap(view, viewing, preview, latest = () => true) {
   return async (target) => {
     const early = target === null ? preview(null) : typeof target?.ref === "string" ? preview(target.ref) : null;
+    // (awaited below: a failure while the worker answers isn't unhandled meanwhile)
+    early?.catch(() => {});
     try {
       await view(target);
     } catch (e) {
@@ -287,11 +341,19 @@ function viewAndSwap(view, viewing, preview) {
       throw e;
     }
     const settled = target ? (viewing()?.ref ?? null) : null;
-    if (early) {
-      await early;
-      if (settled === (target ? target.ref : null)) return;
+    try {
+      if (early) {
+        await early;
+        if (settled === (target ? target.ref : null)) return;
+      }
+      return await preview(settled);
+    } catch (e) {
+      if (settled !== null && latest()) {
+        await view(null).catch(() => {});
+        if (latest()) await preview(null).catch(() => {});
+      }
+      throw e;
     }
-    return preview(settled);
   };
 }
 
@@ -439,14 +501,27 @@ const homeCut = (cuts) => {
   const current = cuts.find((c) => c.current);
   return current && !current.readOnly ? current : cuts.find((c) => !c.readOnly && c.kind === "main") ?? cuts.find((c) => !c.readOnly) ?? null;
 };
-/** The chip's part of the title bar's report: {cut: {name, dot}, viewing: {label}}; null until the cuts are known. */
+/**
+ * The chip's part of the title bar's report: {cut: {name, dot}, viewing: {label, loading}}; null until the cuts are
+ * known. Its viewing part says what the stage shows (stageViewingOf; while the view model's label catches up with a
+ * swap, the one it has). While a version has been loading for more than 300 ms (connect()'s stageLoading), it says
+ * "Loading <it>" (loading: true, a spinner for the eye) and the stage has no frame yet (design QA G1).
+ */
 export function chipOf(ui) {
   const cuts = ui.cuts();
   const cut = homeCut(cuts);
   if (!cut) return null;
-  const v = viewingOf(ui);
-  // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
-  return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: upFirst(v.label) } : null };
+  const v = viewingOf(ui), wait = typeof ui.stageLoading === "function" ? ui.stageLoading() : null;
+  let viewing = null;
+  if (wait != null) viewing = { label: v?.ref === wait && v.label ? words.loadingView(v.label.replace(/^Your\b/, "your")) : words.loading, loading: true };
+  else {
+    // only what is on screen names it: until the view model has said what that is, a neutral label (review of
+    // fix/ux2-a #2: the version before it, by name, was the label meanwhile)
+    const s = stageViewingOf(ui), label = s ? s.label || words.anotherVersion : "";
+    // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
+    viewing = label ? { label: upFirst(label) } : null;
+  }
+  return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing };
 }
 /**
  * Back to your edit (the chip's ✕). A teammate's cut switched to: your own cut again. Anything else viewed: through
@@ -487,7 +562,11 @@ export function stageViewingOf(ui) {
   if (v?.kind === "cut" && !(typeof ui.viewing === "function" && ui.viewing())) return v;
   const shown = ui.stageRef();
   if (shown == null) return null;
-  return v && v.ref === shown ? v : { ref: shown, kind: v?.kind ?? "version", label: "", short: "" };
+  if (v && v.ref === shown) return v;
+  // the view model has moved on (a version still loading) or not caught up (a swap from the cache): what is on screen
+  // is connect()'s to say (stageView), with no label when nothing has said it yet
+  const s = typeof ui.stageView === "function" ? ui.stageView() : null;
+  return s ?? { ref: shown, kind: "version", label: "", short: "" };
 }
 export function listMarks(panel, v) {
   if (panel !== "history" || !v) return false;
@@ -822,6 +901,8 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     update();
     // "viewing": PLAN 0.5's topic, once the view model has it; "preview" and "cuts" until then
     const offs = ["cuts", "preview", "viewing"].map((t) => ui.subscribe(t, update));
+    // and the stage: the chip says what it shows, and "Loading …" while a version is slow to come (G1)
+    if (typeof ui.onStage === "function") offs.push(ui.onStage(update));
     return () => { for (const off of offs) off(); };
   }, [conn, ready, send]);
   useEffect(() => () => sidePanel.set(null), []);
@@ -875,7 +956,8 @@ function MediaNotice({ projectId, bridge }) {
         ? words.clipsOfflineUntil(quoted)
         : "This video plays from preview copies. Its originals stay on your teammate's computer.";
   return h("div", { className: "carton-media-notice", role: "status", "data-waiting": waiting.length && !arrived ? "" : undefined, onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); setClosed(true); } } },
-    h(Icon, { name: waiting.length && !arrived ? "cloudSlash" : "cloudCheck", size: 14 }),
+    // footage on its way: the hourglass, not Offline's cloud, a state of its own (design QA G23)
+    h(Icon, { name: waiting.length && !arrived ? "hourglass" : "cloudCheck", size: 14 }),
     h("span", { className: "carton-media-notice-text" }, title ? h("strong", { className: "carton-media-notice-title" }, title) : null, text),
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => setClosed(true) }));
 }

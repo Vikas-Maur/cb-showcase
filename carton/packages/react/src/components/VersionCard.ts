@@ -13,7 +13,7 @@ import { createElement as h, Fragment, useCallback, useEffect, useLayoutEffect, 
 import { versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Change, Version } from "../model.ts";
+import type { CartonUi, Change, Version } from "../model.ts";
 import { ChangeList, ChangeRow } from "./ChangeRow.ts";
 import { ChangeMap } from "./ChangeMap.ts";
 import { Button, cx } from "./ui.ts";
@@ -76,6 +76,8 @@ export interface VersionCardProps {
   before?: ReactNode;
   /** The version it plays is loading (viewing an older one): a spinner after 300 ms (DESIGN §9). */
   loading?: boolean;
+  /** Its Play couldn't load the version: said in the card, where Restore's and Undo this turn's failures go (DESIGN §9). */
+  playError?: string | null;
   /** ⋯: the row's menu, anchored to the button. */
   onMenu?: (anchor: HTMLElement) => void;
   /** Esc in the card, or an action done: the card closes (focus back to the list). */
@@ -89,6 +91,18 @@ export interface VersionCardProps {
   /** Bring back's "See it first": Compare this version with your edit at that clip (DESIGN-V2 §3.2). */
   onSeeFirst?: (version: Version, clip: ClipChoice) => void;
   id?: string;
+}
+
+/**
+ * Esc's "stop viewing" (DESIGN §7): when the editor shows anything but your edit, or is loading something for Play
+ * (the host's stage: scripts/carton/ui.js connect()), back to your edit; true when it was. The card and History's list
+ * both ask it before they close anything (design QA G2).
+ */
+export function stopViewing(ui: CartonUi): boolean {
+  const s = ui as CartonUi & { stageRef?: () => string | null; pendingView?: () => unknown };
+  if (!ui.viewing() && s.stageRef?.() == null && !s.pendingView?.()) return false;
+  void ui.view(null).catch(() => {});
+  return true;
 }
 
 const isAgent = (v: Version) => v.author.kind === "agent" || v.author.kind === "subagent";
@@ -181,7 +195,8 @@ export function VersionCard(p: VersionCardProps) {
     const el = root.current, at = document.activeElement;
     if (el && (!at || at === document.body || !at.isConnected || !el.contains(at))) el.focus({ preventScroll: true });
   }, [p.mode]);
-  // Esc closes the card (the innermost layer, DESIGN §7); ↓ from its buttons goes into the change rows
+  // Esc, one layer at a time (DESIGN §7): a step (Restore…, New cut) → what is viewed (back to your edit, as the
+  // edit-attempt toast and the chip's ✕ promise: design QA G2) → the card. ↓ from its buttons goes into the change rows.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
     if (e.key === "Escape") {
@@ -189,7 +204,7 @@ export function VersionCard(p: VersionCardProps) {
       e.preventDefault();
       e.stopPropagation();
       if (p.mode) leaveMode();
-      else p.onClose();
+      else if (!stopViewing(ui)) p.onClose();
       return;
     }
     if (e.key === "ArrowDown" && !t.closest(".carton-changes") && t.tagName !== "INPUT") {
@@ -301,7 +316,8 @@ export function VersionCard(p: VersionCardProps) {
                 : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
             p.loading ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
             v.empty ? null : (p.before ?? null),
-            p.readOnly
+            // (no Go back… while its Play runs: Restore… stays in ⋯, and Go back… comes back on Pause: design QA G18)
+            p.readOnly || (playing && !p.newest)
               ? null
               : p.newest
               ? turn
@@ -331,7 +347,7 @@ export function VersionCard(p: VersionCardProps) {
     },
     sinceLine,
     rows,
-    error ? h("p", { className: "carton-error carton-card-error", role: "alert", title: error.why }, error.text) : null,
+    error ? h("p", { className: "carton-error carton-card-error", role: "alert", title: error.why }, error.text) : p.playError ? h("p", { className: "carton-error carton-card-error", role: "alert" }, p.playError) : null,
     footer,
   );
 }
@@ -399,6 +415,8 @@ function NewCutForm(p: { cutName: string; busy: boolean; onSave: (name: string) 
       { className: "carton-card-actions" },
       h(Button, { type: "submit", variant: "primary", busy: p.busy, disabled: !value.trim() }, words.makeCut),
       h(Button, { variant: "ghost", onClick: p.onCancel }, words.cancel),
+      // left-aligned, as Restore's are (design QA G17)
+      h("span", { className: "carton-card-gap" }),
     ),
   );
 }

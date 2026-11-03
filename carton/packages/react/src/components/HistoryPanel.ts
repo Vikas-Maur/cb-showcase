@@ -10,19 +10,20 @@
 // A click or Enter on a row opens its card and never changes what the editor shows: only Play does (DESIGN §4.2).
 // A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
-import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { clock, clockOfDay, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Actor, CartonUi, Credits, FindHit, HistoryFilter, Landmark, Version, Working } from "../model.ts";
+import type { Actor, CartonUi, Credits, FindHit, HistoryFilter, Landmark, Version, Viewing, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, Button, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
 import { ChangesView } from "./ChangesView.ts";
+import { sentenceTail } from "./ChangeRow.ts";
 import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
 import { CutsMenu } from "./CutsMenu.ts";
-import { VersionCard, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
+import { VersionCard, stopViewing, type CardMode, type PlayRequest, type PlayState, type VersionCardProps } from "./VersionCard.ts";
 // Carton UX v2 (N2: DESIGN-V2 §2–§4): landmarks, search, hold to peek, Compare with… and the Compare button
 import { LandmarkTag, LandmarkTile, landmarkTitle, useLandmarks, useStagePictures } from "./LandmarkRow.ts";
 import { SearchBox, highlight, searchable, snippetOf, useFind, type SearchBoxHandle } from "./SearchBox.ts";
@@ -182,6 +183,8 @@ interface RowProps {
   naming: boolean;
   /** One of an open group's versions, listed under it. */
   child?: boolean;
+  /** Shown in a folded day (a named version, a turn): set in under the header, quieter (design QA G31). */
+  folded?: boolean;
   /** A person's run of changes (a group row): its versions' total changes, and whether its versions are listed. */
   group?: boolean;
   groupCount?: number;
@@ -202,6 +205,17 @@ interface RowProps {
   pickFrom?: boolean;
   /** Held to peek: its time column says "Holding". */
   holding?: boolean;
+}
+
+/**
+ * A row's title, cut off at the panel's width with the whole of it on hover (P2-16). A sentence that ends in its place
+ * in the edit ("Trimmed “Product close-up”, now ends at 0:05") is cut before that place, never inside its timecode:
+ * the place goes onto a line of its own, which isn't shown, when the whole doesn't fit (design QA G14).
+ */
+function titleOf(title: string, sentence: boolean): ReactNode {
+  const t = sentence ? sentenceTail(title) : null;
+  if (!t?.tail) return h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, title);
+  return h("span", { className: "carton-version-title", "data-tail": "", onMouseEnter: tipIfCut }, h("span", { className: "carton-version-head" }, t.head), h("span", { className: "carton-version-tail" }, t.tail));
 }
 
 // memo: a row re-renders only when its own version object or its own state changes. A new version arriving above it,
@@ -233,6 +247,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
             tabIndex: -1,
             "aria-label": words.backToMyEditKey,
             "data-carton-tip": words.backToMyEditKey,
+            "data-carton-tip-end": "",
             onClick: (e: MouseEvent) => {
               e.stopPropagation();
               p.onBack();
@@ -268,6 +283,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-landmark": mark ? mark.kind : undefined,
       "data-pick-from": p.pickFrom ? "" : undefined,
       "data-hold": p.holding ? "" : undefined,
+      "data-folded": p.folded ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
@@ -292,7 +308,10 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           Fragment,
           null,
           // cut off at the panel's width: the whole text on hover (P2-16)
-          h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, mark ? h(LandmarkTag, { kind: mark.kind }) : null, mark ? h("span", { className: "carton-landmark-title", "data-named": mark.kind === "named" ? "" : undefined }, p.query ? highlight(title, p.query) : title) : p.query ? highlight(title, p.query) : title),
+          // (a landmark: its tag, then its title; a search's row: the words marked; else A's title, its place kept whole)
+          mark || p.query
+            ? h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, mark ? h(LandmarkTag, { kind: mark.kind }) : null, mark ? h("span", { className: "carton-landmark-title", "data-named": mark.kind === "named" ? "" : undefined }, p.query ? highlight(title, p.query) : title) : highlight(title, p.query!))
+            : titleOf(title, !prompt && !named),
           p.picking && !p.pickFrom ? h("span", { className: "carton-version-pick", "aria-hidden": true }, h(Icon, { name: "compare", size: 12 }), words.compare) : null,
           when,
           p.child
@@ -342,7 +361,10 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   );
 });
 
-/** History's start, one row (PLAN 0.4): "Project created · Oct 28", or "History starts here" for an imported project. No menu, no card. */
+/**
+ * History's start, one row (PLAN 0.4): "Project created", or "History starts here" for an imported project. No menu, no
+ * card. It is always under its own day's header, so it doesn't say the date again (design QA G16).
+ */
 const StartRow = memo(function StartRow({ row, domId, active }: { row: Extract<HistoryRow, { kind: "start" }>; domId: string; active: boolean }) {
   const words = useWords();
   const locale = useLocale();
@@ -350,7 +372,7 @@ const StartRow = memo(function StartRow({ row, domId, active }: { row: Extract<H
     "div",
     { id: domId, role: "option", "aria-selected": active, className: "carton-version carton-start", style: { height: VERSION_ROW_HEIGHT }, "data-start": "", "data-active": active ? "" : undefined },
     h("span", { className: "carton-version-mark carton-mark-sign", "data-sign": "start", "aria-hidden": true }, h(Icon, { name: "flag", size: 12 })),
-    h("span", { className: "carton-version-title" }, words.startOn(row.imported ? words.historyStartsHere : words.projectCreated, shortDate(row.at, locale))),
+    h("span", { className: "carton-version-title" }, row.imported ? words.historyStartsHere : words.projectCreated),
     h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(row.at).toISOString(), short: clockOfDay(row.at, locale), more: exactTime(row.at, locale) }),
   );
 });
@@ -451,6 +473,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // so a head moving doesn't re-render the list.
   const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
   const viewing = useViewing();
+  const stageRef = useStageRef(ui);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [cardMode, setCardMode] = useState<CardMode>(null);
@@ -654,10 +677,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
     cardPlayRef.current.stop();
     setPlayReq(null);
   }, [openKey]);
-  // a version that couldn't be loaded says so, in History's words (review #6)
-  useEffect(() => {
-    if (cardPlay.error) setFailed(cardPlay.error);
-  }, [cardPlay.error]);
+  // a version that couldn't be loaded says so, in History's words (review #6), in its card (design QA G20)
+  const playError = playReq ? cardPlay.error : null;
   const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
   let litKey: string | null = null;
   for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
@@ -792,7 +813,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   }, [peek.holding]);
 
   // Keyboard (DESIGN §7): Enter / → open a row's card, a day or a group, ← closes it; Space plays (or pauses) the
-  // version's changes; F2 names it; Esc closes the card first (then the host's: stop viewing, close the panel).
+  // version's changes; F2 names it. Esc: stop viewing → close the card → close the panel (the host's), one at a time:
+  // viewing is the layer inside the card, so from an open card the first Esc is the one the toast and the chip's ✕
+  // promise, back to your edit, and the card stays (design QA G2).
   const onKey = useCallback(
     (e: KeyboardEvent<HTMLDivElement>, i: number): boolean => {
       const r = rows ? rows[i] : undefined;
@@ -800,7 +823,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       if (e.key === "Escape") {
         if (pick) return setPick(null), true;
         if (!openKey) return false;
-        closeCard();
+        if (!stopViewing(ui)) closeCard();
         return true;
       }
       if (i < 0 || !key) return false;
@@ -851,7 +874,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       }
       return false;
     },
-    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, pick, peek, peekable],
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, ui, pick, peek, peekable],
   );
   const onActivate = useCallback(
     (i: number) => {
@@ -927,10 +950,12 @@ export function HistoryPanel(props: HistoryPanelProps) {
     },
     [rows],
   );
-  const viewedId = viewing && (viewing.kind === "version" || viewing.kind === "before") ? (viewing.versionId ?? null) : null;
+  // the row of what the editor shows: never a version still loading, nor one that failed to (design QA G1, review #1)
+  const shown = stageRef === undefined ? viewing : stageRef === null ? null : viewing?.ref === stageRef ? viewing : ((ui as StageUi).stageView?.() ?? null);
+  const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
   // a landmark's picture, made when the stage shows its version: held, viewed (not "before" it), or your edit while it
-  // is that version (DESIGN-V2 §2.2); never while something plays
-  useStagePictures({ marks, shownId: peek.holding ?? (viewing ? (viewing.kind === "version" ? (viewing.versionId ?? null) : null) : newestId), busy: playOn, capture: props.capturePicture ?? props.play?.picture });
+  // is that version (DESIGN-V2 §2.2); never while something plays or loads
+  useStagePictures({ marks, shownId: peek.holding ?? (shown ? (shown.kind === "version" ? (shown.versionId ?? null) : null) : viewing ? null : newestId), busy: playOn, capture: props.capturePicture ?? props.play?.picture });
 
   const renderRow = (i: number): ReactNode => {
     const r = rows?.[i];
@@ -956,6 +981,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       viewing: !!viewedId && (v.id === viewedId || (!!group && group.ids.includes(viewedId))),
       naming: naming === v.id,
       child,
+      folded: !!dayOf && dayOf[i]! >= 0 && !!(rows![dayOf[i]!] as DayHistoryRow).collapsed,
       group: !!group,
       groupCount: group?.count,
       groupOpen: group?.open,
@@ -998,6 +1024,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         onPause: pause,
         playing,
         loading: playLoading === v.id,
+        playError: playReq?.key === key ? playError : null,
         before: beforeBtn,
         autoPlay: autoPlay === key,
         onSeek,
@@ -1124,11 +1151,11 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // (a search's or the Landmarks filter's narrowed list says nothing of History itself: the field stays while it loads)
   const nothing = allCount === 0 || (filter === "all" && !only && onlyStart);
   // a search or the Landmarks filter counts what it narrowed the list to (DESIGN-V2 §2.3, §2.5)
-  const shown = only ? (versions?.length ?? 0) : count;
+  const listed = only ? (versions?.length ?? 0) : count;
   // (a search on its way: the last results stay on screen, and "nothing found" waits for its answer)
   const findWaits = searching && (found.q !== query || found.status === "loading");
-  const empty = !status.loading && !findWaits && (shown === 0 || (filter === "all" && !only && onlyStart));
-  const loading = (status.loading && count === 0) || (findWaits && found.status !== "ready" && shown === 0);
+  const empty = !status.loading && !findWaits && (listed === 0 || (filter === "all" && !only && onlyStart));
+  const loading = (status.loading && count === 0) || (findWaits && found.status !== "ready" && listed === 0);
   // "“Intro”, the clip" first, when the newest hits name one clip (DESIGN-V2 §2.3)
   const clipHit = searching && found.status === "ready" ? (found.clips[0] ?? null) : null;
   // ← History from the Changes view: back on the row it came from (a run of changes: its group's row)
@@ -1203,6 +1230,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
                 "aria-expanded": !!filterMenu,
                 "data-active": filter !== "all" || filterMenu ? "" : undefined,
                 "data-carton-tip": filterMenu ? undefined : words.show,
+                "data-carton-tip-end": "",
                 onClick: openFilter,
               },
               h(Icon, { name: "filter", size: 16 }),
@@ -1236,7 +1264,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           clipHit.deleted ? null : h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId }, clipHit.name)) }, words.onlyThisClip),
         )
       : null,
-    searching && found.status === "ready" && shown ? h("p", { className: "carton-find-count", role: "status" }, words.findCount(found.total)) : null,
+    searching && found.status === "ready" && listed ? h("p", { className: "carton-find-count", role: "status" }, words.findCount(found.total)) : null,
     failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
     loading
       ? h(
@@ -1266,7 +1294,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
               key: fkey,
               className: "carton-history-list",
               label: words.history,
-              count: rows ? rows.length : shown,
+              count: rows ? rows.length : listed,
               rowHeight: VERSION_ROW_HEIGHT,
               heightOf,
               layoutKey: rows,
@@ -1305,6 +1333,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
     rowMenu,
     h("p", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
   );
+}
+
+/**
+ * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, stageView, onStage): the ref the editor
+ * shows (null: your edit), or undefined without a stage of the host's. A row reads "Viewing" only for what is on screen,
+ * never while your edit is still there as a version loads, nor for a newer version still loading over an older one, nor
+ * after one failed to load (design QA G1, review of fix/ux2-a #1). Without a host stage: the view model's viewing alone.
+ */
+type StageUi = CartonUi & { stageRef?: () => string | null; stageView?: () => Viewing | null; onStage?: (f: () => void) => () => void };
+const noStage = () => () => {};
+function useStageRef(ui: StageUi): string | null | undefined {
+  const subscribe = useCallback((f: () => void) => ui.onStage?.(f) ?? noStage(), [ui]);
+  const get = () => (typeof ui.stageRef === "function" ? ui.stageRef() : undefined);
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** The row a key went to when a person's run of changes grew (a group's key is its newest version's), or null. */

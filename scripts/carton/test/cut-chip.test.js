@@ -153,7 +153,13 @@ test("PLAN 2.1, real view model: a version opened read-only shows in the chip, a
 test("PLAN 2.1: while a version is viewed the chip has its label, and its ✕ (carton-back) brings your edit back", opt, async () => {
   const m = await mount();
   try {
+    // opened on the view model alone, the editor never told: the stage shows your edit, so the chip doesn't claim it
+    // (design QA G1); opened through the page's own connection (History, Comments), the editor swaps, and the chip says so
     await act(async () => { m.ui.openPreview("main@3", "the version from 2:14 PM (Codex)"); await sleep(20); });
+    assert.equal(last(m).viewing, null, "not on screen: no label");
+    const page = require(path.join(OUT, "carton-ui.cjs")).__forTests.conns.get(PROJECT).conn.ui;
+    await act(async () => { await page.openPreview("main@3", "the version from 2:14 PM (Codex)"); await sleep(20); });
+    assert.deepEqual(m.bridge.previews.at(-1), "main@3", "the editor shows it");
     assert.deepEqual(last(m).viewing, { label: "The version from 2:14 PM (Codex)" });
     await m.cmd("carton-back");
     assert.equal(m.ui.preview(), null, "back to your edit");
