@@ -125,6 +125,7 @@ test("conflictWords: one person's two changes read as earlier and later; a teamm
   assert.deepEqual(you.keep, { mine: "Keep later", theirs: "Keep earlier", both: "Keep both" });
   assert.equal(you.label.theirs, "Your earlier change to “Summer launch”");
   assert.equal(you.ordered, true);
+  assert.equal(you.first, "theirs", "the earlier change is listed first");
   const far = conflictWords(card({ clip: "X", mine: side(people.alice, { at: at(9, 0), did: "moved it" }), theirs: side(people.alice, { at: at(11, 0), did: "moved it" }) }), nameOf);
   assert.equal(far.lead, "You moved it twice, from two places.", "no 'nearly the same time' hours apart");
   const bob = conflictWords(card({ clip: "Intro", mine: side(people.bob, { at: 2000 }), theirs: side(people.bob, { at: 1000 }) }), nameOf);

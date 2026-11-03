@@ -188,12 +188,14 @@ test(name("7.1: two changes by one person read as the earlier and the later one,
   const card = $(m.container, ".carton-conflict")!;
   assert.equal($(card, ".carton-card-title")!.textContent, "“Summer launch”: two of your changes disagree");
   assert.equal($(card, ".carton-card-sub")!.textContent, "You changed its text twice, from two places, at nearly the same time.");
-  assert.deepEqual($$(card, ".carton-conflict-name").map((e) => e.textContent), ["Your later change", "Your earlier change"]);
-  assert.match($$(card, ".carton-conflict-who")[1]!.textContent ?? "", /^Your earlier change · 10:04\s?am$/i);
+  assert.deepEqual($$(card, ".carton-conflict-name").map((e) => e.textContent), ["Your earlier change", "Your later change"], "in the order they were made");
+  assert.match($$(card, ".carton-conflict-who")[0]!.textContent ?? "", /^Your earlier change · 10:04\s?am$/i);
   assert.equal(checked(card), "theirs");
   assert.equal(primary(card), "Keep earlier");
-  await click($$(card, ".carton-conflict-side")[0]);
+  await click($$(card, ".carton-conflict-side")[1]);
   assert.equal(primary(card), "Keep later");
+  await key(radios(card)[1], "ArrowUp");
+  assert.equal(primary(card), "Keep earlier", "↑ moves up the list as shown");
   await m.unmount();
 });
 

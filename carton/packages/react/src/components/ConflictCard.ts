@@ -114,7 +114,8 @@ function StageCard(p: ConflictCardProps) {
     p.onDismiss?.();
   };
 
-  const order: ConflictChoice[] = c.canKeepBoth ? ["mine", "theirs", "both"] : ["mine", "theirs"];
+  // yours first; one person's two changes in the order they were made
+  const order: ConflictChoice[] = [cw.first, cw.first === "mine" ? "theirs" : "mine", ...(c.canKeepBoth ? (["both"] as const) : [])];
   const radios = useRef<Partial<Record<ConflictChoice, HTMLElement | null>>>({});
   const onGroupKey = (e: KeyboardEvent) => {
     const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;

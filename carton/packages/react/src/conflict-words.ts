@@ -260,6 +260,8 @@ export interface ConflictCardWords {
   readonly see: Readonly<Record<"mine" | "theirs", string>>;
   /** The two sides are one person's, told apart by order: show each side's clock time, not "2 min ago". */
   readonly ordered: boolean;
+  /** The side listed first: yours, or for one person's two changes the earlier one. */
+  readonly first: "mine" | "theirs";
   /** Who the other side is, by name ("Claude Code"): the line during its turn, "changed it again". */
   readonly other: string;
 }
@@ -294,6 +296,7 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
       label: { mine: w.orderedSideOf(nm("mine"), c.clip), theirs: w.orderedSideOf(nm("theirs"), c.clip), both },
       see: { mine: w.seeSide(nm("mine")), theirs: w.seeSide(nm("theirs")) },
       ordered: true,
+      first: earlier,
       other: who ?? w.you,
     };
   }
@@ -313,6 +316,7 @@ export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Word
     label: { mine: sideLabel(c.mine, mineName), theirs: sideLabel(c.theirs, theirsName), both },
     see: { mine: w.seeSide(name.mine), theirs: w.seeSide(name.theirs) },
     ordered: false,
+    first: "mine",
     other: isYou(c.theirs) ? mineName : theirsName,
   };
 }
