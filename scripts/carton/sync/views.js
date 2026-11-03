@@ -197,6 +197,8 @@ export class View {
       // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
       showChange: (c, ms, o) => mz.showChange(c, ms, o),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
+      // Carton UX v2 (N0): `cb compare … --show` opens Compare in the editor windows that show the project
+      openView: (v, by) => (this.api.openView ? this.api.openView(this.projectId, v, by) : Promise.resolve({ opened: 0 })),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),
     };

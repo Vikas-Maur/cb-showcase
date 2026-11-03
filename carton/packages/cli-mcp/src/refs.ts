@@ -44,12 +44,62 @@ export async function resolveVersion(carton: Carton, text: string): Promise<Stat
   const at = t.lastIndexOf("@");
   const cutText = at > 0 ? t.slice(0, at).replace(/^["']|["']$/g, "") : "";
   const seqText = at >= 0 ? t.slice(at + 1) : t;
-  if (!/^\d+$/.test(seqText)) throw new UsageError(`"${text}" isn't a version: use <cut>@<seq> (as \`cb history\` shows) or a header ref`);
+  if (!/^\d+$/.test(seqText)) {
+    if (at < 0) {
+      const word = t.replace(/^["']|["']$/g, "");
+      // DESIGN-V2 §5.2: words in place of a reference: now, sent, exported, today, a version's name, a cut's name
+      const named = await namedVersion(carton, word);
+      if (named) return named;
+      // a cut's name (or id) alone is that cut's head (`cb compare "30s Instagram cut" main`)
+      const cut = await resolveCut(carton, word).catch(() => null);
+      if (cut) return (await carton.head(cut.id)).ref;
+    }
+    throw new UsageError(`"${text}" isn't a version: use <cut>@<seq> (as \`cb history\` shows), a cut's name, or a header ref`);
+  }
   const cut = await resolveCut(carton, cutText || undefined);
   const seq = Number(seqText);
   const head = await carton.head(cut.id);
   if (seq > head.ref.seq) throw new UsageError(`${cut.name}@${seq} doesn't exist yet (head is @${head.ref.seq})`);
   return { branchId: cut.id, seq };
+}
+
+/**
+ * The words that name a version on the current cut (DESIGN-V2 §5.2): `now` (head), `sent` (the newest Sent landmark,
+ * else the newest named version), `exported` (the newest export), `today` (how it was when today began: today's first
+ * Start, else the last version before today), or a version's name (any case). Null: none of these.
+ */
+async function namedVersion(carton: Carton, word: string): Promise<StateRef | null> {
+  const w = word.toLowerCase();
+  if (w === "now") return (await carton.head()).ref;
+  const ref = (seq: number): StateRef => ({ branchId: carton.cut, seq, pending: [] });
+  if (w === "sent" || w === "exported") {
+    const l = (await carton.landmarks({ kinds: [w], limit: 1 }))[0] ?? (w === "sent" ? (await carton.landmarks({ kinds: ["named"], limit: 1 }))[0] : undefined);
+    if (!l) throw new UsageError(w === "sent" ? "Nothing was sent or named on this cut yet (see `cb history --landmarks`)" : "Nothing was exported on this cut yet (see `cb history --landmarks`)");
+    return ref(l.ref.seq);
+  }
+  if (w === "today" || w === "this morning") {
+    const day = new Date(new Date().toDateString()).getTime();
+    const starts = (await carton.landmarks({ kinds: ["start"], limit: 1000 })).filter((l) => l.at >= day);
+    if (starts.length) return ref(starts[starts.length - 1]!.ref.seq);
+    const v = (await carton.log({ limit: 1000 })).find((x) => x.at < day);
+    return ref(v?.ref.seq ?? 0);
+  }
+  const versions = await carton.log({ limit: 5000 });
+  const v = versions.find((x) => x.name?.toLowerCase() === w);
+  return v ? ref(v.ref.seq) : null;
+}
+
+/**
+ * A version as `resolveVersion` reads it, and the cut it names when it was a cut alone (its head, which moves: an
+ * editor shows it live) or `head`.
+ */
+export async function resolveRef(carton: Carton, text: string): Promise<{ ref: StateRef | string; cut?: CutRecord }> {
+  const t = text.trim().replace(/^["']|["']$/g, "");
+  const ref = await resolveVersion(carton, text);
+  if (t === "head" || t === "HEAD") return { ref, cut: (await carton.cuts()).find((c) => c.id === carton.cut)! };
+  if (t.toLowerCase() === "now") return { ref, cut: (await carton.cuts()).find((c) => c.id === carton.cut)! };
+  if (!t.includes("@") && !/^\d+$/.test(t) && typeof ref !== "string" && !(await namedVersion(carton, t).catch(() => null))) return { ref, cut: (await carton.cuts()).find((c) => c.id === ref.branchId)! };
+  return { ref };
 }
 
 /** How a version prints: `main@<seq>` on the main cut, else `<cut name>@<seq>`. */

@@ -239,6 +239,12 @@ export interface Change extends Declaration {
    * version"). Not hashed; absent on restores made before it was kept, and on a shared cut's.
    */
   restoreOf?: NodeId;
+  /**
+   * A bring-back (Carton UX v2, N0: one clip as it was in `restoreOf`): the clip's record (`timelineItems/c1`) and its
+   * name then, so History says "Brought back “Intro” from …". Not hashed; a restore of a whole version has none.
+   */
+  restoreRecord?: PathKey;
+  restoreName?: string;
   /** Partial accept: the record paths it rejected ("fold in some of it"). */
   rejected?: PathKey[];
   /** A fold-in: last author per record it touched, so credits survive the merge. */
@@ -449,9 +455,15 @@ export interface Version {
    * folded in, by name; how many changes it took, of how many), the rest of a partial fold, a restore (the version it
    * restored: `of`, a node id, when known), or an undo or a redo of a restore or a fold.
    */
-  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore"; cut?: string; of?: NodeId; taken?: number; total?: number; rest?: boolean };
+  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore" | "bring-back"; cut?: string; of?: NodeId; taken?: number; total?: number; rest?: boolean; record?: PathKey; name?: string };
   /** A restore: the version it restored (a node id), when the restore recorded it. */
   restoreOf?: NodeId;
+  /**
+   * A bring-back of one clip (`restoreClip`, Carton UX v2): the clip (`timelineItems/c1`) and its name then. With
+   * `restoreOf`, the app says "Brought back “Intro” from Mon 4:10 pm"; `title` is `{kind: "bring-back", of, record, name}`.
+   */
+  restoreRecord?: PathKey;
+  restoreName?: string;
   /** An undo: the changes it undid (an agent turn's, for "Took out Director's …"; which of a turn's are undone already). */
   undoes?: ChangeId[];
   /**
@@ -590,6 +602,12 @@ export interface DiffResult {
   ops: Op[];
   describe: string[];
   shots?: ShotDiff;
+  /**
+   * With `diff(a, b, { rows: true })`: every change as the app's change rows (`changeList`, editor words), and how many
+   * changes that is (`countChanges`: the count History, Compare and Watch show). `a` and `b` may be on different cuts.
+   */
+  rows?: ChangeRow[];
+  count?: number;
 }
 
 // ------------------------------------------------------------------ undo (§8)
@@ -658,6 +676,8 @@ export type CartonEvent =
   | { type: "sync-error"; branchId: string; error: SyncError | null }
   /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
   | { type: "people" }
+  /** This handle recorded a landmark on a cut (`mark`, Carton UX v2): a list of them reads `landmarks()` again. */
+  | { type: "landmarks"; branchId: string }
   /**
    * The cuts changed: one made (with no edit yet too), renamed, gone, or its kind, protection or sync changed. By this
    * handle, by a sync, or by another process on the same store (told once this handle reads the store again: any read
