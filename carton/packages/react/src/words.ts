@@ -213,6 +213,59 @@ export const words = {
   justNow: "just now",
   loading: "Loading…",
   failed: "Something went wrong. Try again.",
+
+  // The title bar's cut chip (Carton UX redesign DESIGN §4.1, §8): where you are, on every project tab. Its own words
+  // are drawn by the tab strip (scripts/carton/strip-buttons.js); these are the editor page's for the same things.
+  titleBar: {
+    backToMyEdit: "Back to my edit",
+    backToMyEditKey: "Back to my edit (Esc)",
+    share: "Share",
+  },
+
+  // The Share dialog (DESIGN §6.6, §8), from the title bar's Share icon, in place of the Share tab.
+  shareDialog: {
+    title: (project: string | null) => (project ? `Share “${project}”` : "Share this project"),
+    lead: "Edit together, live, with the whole history. Teammates get preview copies of your video; its originals stay on this computer. Audio and still images go as they are.",
+    server: "Sharing server",
+    serverHint: "The address whoever runs your sharing server gave you.",
+    serverPlaceholder: "share.example.com",
+    change: "Change",
+    name: "Your name",
+    nameHint: "Teammates see this beside your changes.",
+    shareProject: "Share project",
+    sharing: "Sharing…",
+    people: "People",
+    you: "You",
+    hereNow: "here now",
+    hereNowDoing: (activity: string | null) => (activity ? `Here now · ${activity}` : "Here now"),
+    idle: "Here, not editing",
+    nobodyElse: "Nobody else is here right now.",
+    roles: { owner: "Owner", editor: "Can edit", commenter: "Can comment", viewer: "Can watch" } as Record<string, string>,
+    invite: "Invite",
+    whoCan: "Who can do what",
+    copyLink: "Copy link",
+    copied: "Copied",
+    linkPlaceholder: "Copy link to make one",
+    inviteLink: "Invite link",
+    anyoneCan: (role: string) => `Anyone with this link can join and ${role === "viewer" ? "watch" : role === "commenter" ? "comment" : "edit"}.`,
+    inviteOffline: "You can make a link when you're back online.",
+    status: { upToDate: "Up to date", offline: "Offline", syncing: "Syncing", sending: (n: number) => `Sending ${plural(n, "change", "changes")}` },
+    offlineLead: "You're offline.",
+    offlineMore: (n: number) => `Keep editing: ${n ? `${plural(n, "change is", "changes are")}` : "your changes are"} saved here and ${n === 1 ? "is" : "are"} sent when you're back.`,
+  },
+
+  // Join a shared project (DESIGN §6.6, §8): one dialog, one button, on the Dashboard and in the empty library.
+  joinDialog: {
+    title: "Join a shared project",
+    lead: "Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it.",
+    link: "Invite link",
+    joinAs: "You'll join as ",
+    joinAndOpen: "Join and open",
+    joining: "Joining…",
+    opening: "Opening…",
+    inLibrary: (name: string) => `“${name}” is in your library now.`,
+    open: "Open",
+  },
 };
 
 export type Words = typeof words;

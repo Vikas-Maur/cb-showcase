@@ -343,6 +343,8 @@ export interface DialogProps {
   /** Text for the close button. */
   closeLabel?: string;
   describedBy?: string;
+  /** Beside the title, before the close button: a status ("Up to date" in the Share dialog). */
+  aside?: ReactNode;
 }
 
 /** A modal dialog: focus moves in and is trapped, Escape closes, focus returns to where it was. */
@@ -396,6 +398,7 @@ export function Dialog(p: DialogProps) {
         "div",
         { className: "carton-dialog-head" },
         h("h2", { id: titleId, className: "carton-dialog-title" }, p.title),
+        p.aside ?? null,
         h(Button, { variant: "ghost", icon: "x", label: p.closeLabel ?? words.close, onClick: p.onClose, className: "carton-dialog-close" }),
       ),
       h("div", { className: "carton-dialog-body" }, p.children),

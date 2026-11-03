@@ -396,8 +396,58 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-fold-warnings p){display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#fcd77f}
 :where(${S}) :where(.carton-fold-warnings li){margin-top:4px;padding-left:20px;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-later){font-size:12px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-join-dialog){width:min(440px, calc(100vw - 32px))}
+:where(${S}) :where(.carton-join-dialog){width:min(480px, calc(100vw - 32px))}
 :where(${S}) :where(.carton-join-lead){font-size:13px;line-height:19px;color:var(--cb-fg-3);text-wrap:pretty}
+/* Share and Join dialogs (Carton UX redesign PLAN 8.1, 8.2): fields with their own error and focus borders (Cardboard's
+   stylesheet has none for these: AUDIT R3), People with roles, Invite in one row, the offline line in amber. */
+:where(${S}) :where(.carton-share-dialog){width:min(520px, calc(100vw - 32px))}
+:where(${S}) :where(.carton-share-dialog .carton-dialog-head, .carton-join-dialog .carton-dialog-head){padding:18px 16px 10px 20px}
+:where(${S}) :where(.carton-share-dialog .carton-dialog-title, .carton-join-dialog .carton-dialog-title){font-size:16px;line-height:22px}
+:where(${S}) :where(.carton-share-dialog .carton-dialog-foot, .carton-join-dialog .carton-dialog-foot){padding:14px 20px 18px}
+:where(${S}) :where(.carton-share-form){display:flex;flex-direction:column;gap:14px}
+:where(${S}) :where(.carton-share-lead){font-size:13px;line-height:19px;color:var(--cb-fg-3);text-wrap:pretty}
+:where(${S}) :where(.carton-field){display:flex;flex-direction:column;gap:6px}
+:where(${S}) :where(.carton-field-label){font-size:13px;line-height:18px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-field .carton-input){flex:none;height:34px}
+:where(${S}) :where(.carton-field .carton-input[aria-invalid=true]){border-color:color-mix(in srgb, var(--cb-danger) 60%, transparent)}
+:where(${S}) :where(.carton-field .carton-input:focus-visible){border-color:#ffffff59;box-shadow:0 0 0 3px #ffffff14}
+:where(${S}) :where(.carton-field-hint){font-size:12px;line-height:17px;color:var(--cb-fg-3);text-wrap:pretty}
+:where(${S}) :where(.carton-field-error){font-size:12px;line-height:17px;color:var(--cb-danger);text-wrap:pretty}
+:where(${S}) :where(.carton-known){display:flex;flex-wrap:wrap;align-items:baseline;gap:0 2px;font-size:13px;line-height:19px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-known-value){color:var(--cb-fg-1);font-weight:500}
+:where(${S}) :where(.carton-link){padding:0;margin-left:4px;border:0;background:none;color:var(--cb-fg-1);font:inherit;text-decoration:underline;
+  text-decoration-color:#ffffff4d;text-underline-offset:3px;cursor:pointer;border-radius:3px;outline:none}
+:where(${S}) :where(.carton-link:hover){text-decoration-color:currentColor}
+:where(${S}) :where(.carton-link:focus-visible){box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+:where(${S}) :where(.carton-share-foot-note){min-width:0}
+:where(${S}) :where(.carton-share-wait){min-height:120px}
+:where(${S}) :where(.carton-share-status){height:24px;padding:0 4px;font-size:13px}
+:where(${S}) :where(.carton-share-status[data-state=upToDate]){color:#86efac}
+:where(${S}) :where(.carton-share-live){display:flex;flex-direction:column;gap:14px}
+:where(${S}) :where(.carton-share-offline){display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;font-size:13px;line-height:19px;color:var(--cb-fg-1);
+  background:color-mix(in srgb, var(--cb-warn) 8%, transparent);border:1px solid color-mix(in srgb, var(--cb-warn) 28%, transparent)}
+:where(${S}) :where(.carton-share-offline > .carton-icon){margin-top:2px;color:var(--cb-warn)}
+:where(${S}) :where(.carton-share-offline strong){font-weight:600}
+:where(${S}) :where(.carton-share-section){display:flex;flex-direction:column;gap:8px}
+:where(${S}) :where(.carton-share-invite){padding-top:16px;border-top:1px solid #ffffff12}
+:where(${S}) :where(.carton-share-heading){font-size:13px;line-height:18px;font-weight:500;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-share-people){display:flex;flex-direction:column;gap:2px}
+:where(${S}) :where(.carton-share-person){display:flex;align-items:center;gap:12px;min-height:48px}
+:where(${S}) :where(.carton-share-person .carton-avatar[data-here]){box-shadow:0 0 0 2px var(--cb-dialog), 0 0 0 3.5px var(--cb-ok)}
+:where(${S}) :where(.carton-share-who){display:flex;flex-direction:column;flex:1;min-width:0}
+:where(${S}) :where(.carton-share-name){font-size:14px;line-height:20px;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-share-sub){font-size:12.5px;line-height:18px;color:var(--cb-fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-share-role){flex:none;font-size:13px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-share-none){font-size:12.5px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-share-invite-row){display:flex;align-items:center;gap:8px}
+:where(${S}) :where(.carton-share-invite-row .carton-input){height:34px;font-size:12.5px;text-overflow:ellipsis}
+:where(${S}) :where(.carton-share-invite-row .carton-btn){height:34px}
+:where(${S}) :where(.carton-share-role-pick){display:inline-flex;align-items:center;gap:8px;height:34px;padding:0 10px 0 12px;border:1px solid #ffffff1a;border-radius:8px;
+  background:var(--cb-sunken);color:var(--cb-fg-1);font:inherit;font-size:13px;font-weight:500;white-space:nowrap;cursor:pointer;outline:none}
+:where(${S}) :where(.carton-share-role-pick:hover){background:#ffffff0a}
+:where(${S}) :where(.carton-share-role-pick:focus-visible){box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+:where(${S}) :where(.carton-join-done){display:flex;flex-direction:column;gap:6px;font-size:14px;line-height:20px;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-share-snag){display:flex;flex-direction:column;align-items:flex-start;gap:10px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-tag){flex:none;height:16px;padding:0 5px;border:1px solid #ffffff1f;border-radius:4px;font-size:11px;line-height:14px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-missing){padding:10px 12px;border-radius:8px;background:var(--cb-sunken);font-size:13px;line-height:19px;color:var(--cb-fg-1);text-wrap:pretty}
 

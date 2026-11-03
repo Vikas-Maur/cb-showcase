@@ -1,5 +1,6 @@
-// The Share panel's "Live" section, rendered with React's server renderer (no app needed): when sync fails, the
-// person reads why, in plain words and with the host's own message (H-SV), instead of "Syncing" for ever.
+// The Share dialog (Carton UX redesign PLAN 8.1; it was the Share panel's "Live" section), rendered with React's server
+// renderer (no app needed): when sync fails, the person reads why, in plain words and with the host's own message
+// (H-SV), instead of "Syncing" for ever; and its form, People and Invite in editors' words.
 //   node --test scripts/carton/test/sync/ui.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -79,38 +80,72 @@ test("P1-8: invalid or expired invite, server busy, limit reached and unknown fa
 test("P2-8, P2-10: the Share form asks in editors' words, validates inline, and its role picker isn't an OS <select>", () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   const bridge = { call: async () => ({}), onEvent: () => () => {} };
-  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge, onShared() {} }));
+  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge, title: "Share “Weekend reel”", onShared() {}, onClose() {} }));
+  assert.match(form, /role="dialog"/);
+  assert.match(form, />Share “Weekend reel”</);
   assert.match(form, /Sharing server/);
+  assert.match(form, /The address whoever runs your sharing server gave you\./);
+  assert.match(form, /Teammates see this beside your changes\./);
+  assert.match(form, /class="carton-dialog-foot"[\s\S]*>Cancel<[\s\S]*>Share project</, "Cancel and Share project at the foot");
   assert.match(form, /novalidate/i, "inline messages, not the browser's 'Please fill out this field'");
   assert.doesNotMatch(form, /required/);
   assert.doesNotMatch(form, /Carton host|admin token|Owner invite|Alice/);
   assert.doesNotMatch(form, /Invite code/, "the code is asked for only when the server wants one");
-  assert.match(form, /whose originals stay on this computer/);
+  assert.match(form, /its originals stay on this computer/);
   const invite = render(React.createElement(ui.Invite, { projectId: "p", bridge, offline: false }));
   assert.doesNotMatch(invite, /<select/);
   assert.match(invite, /aria-haspopup="menu"/);
   assert.match(invite, /Can edit/);
+  assert.match(invite, />Copy link</);
+  assert.match(invite, /Anyone with this link can join and edit\./);
   // offline: no link can be made, and it says when it can
   const off = render(React.createElement(ui.Invite, { projectId: "p", bridge, offline: true }));
-  assert.match(off, /<button[^>]*disabled=""[^>]*>.*Create link/s);
+  assert.match(off, /<button[^>]*disabled=""[^>]*>.*Copy link/s);
   assert.match(off, /when you&#x27;re back online/);
+});
+
+test("PLAN 8.1: a sharing server once used is one line with Change; an address without https:// is the https one", () => {
+  globalThis.localStorage = { getItem: (k) => (k === "carton.host" ? "https://share.northlight.studio" : null), setItem() {} };
+  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {}, onClose() {} }));
+  assert.match(form, /<span class="carton-known-value">share\.northlight\.studio<\/span> <button type="button" class="carton-link">Change<\/button>/);
+  assert.doesNotMatch(form, /id="carton-share-host"/, "no field until Change");
+  assert.equal(ui.hostAddress("share.northlight.studio"), "https://share.northlight.studio");
+  assert.equal(ui.hostAddress(" http://127.0.0.1:8787 "), "http://127.0.0.1:8787");
+  assert.equal(ui.hostAddress(""), "");
+});
+
+test("PLAN 8.1: People: You with the name teammates see and your role, then everyone here with what they're doing", () => {
+  const st = { ...base, status: "up-to-date", name: "Vikas", role: "owner", peers: [
+    { actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, activity: "Editing captions", idle: false },
+    { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia" }, activity: null, idle: true },
+    { actor: { key: "agent/director/leo", kind: "agent", id: "director", name: "Director" }, activity: "Working on “Add a title card”", idle: false },
+  ] };
+  const out = render(React.createElement(ui.People, { st }));
+  const rows = [...out.matchAll(/<li class="carton-share-person"[^>]*>([\s\S]*?)<\/li>/g)].map((m) => m[1].replace(/<[^>]+>/g, "|").replace(/\|+/g, "|"));
+  assert.deepEqual(rows, ["|V|You|Vikas · here now|Owner|", "|L|Leo|Here now · editing captions|", "|M|Mia|Here, not editing|", "|D|Director|Here now · working on “Add a title card”|"]);
+  assert.match(out, /data-you=""/);
+  assert.match(out, /data-here=""/, "who is here wears the green ring");
+  assert.doesNotMatch(out, /Nobody else is here/);
+  assert.match(render(React.createElement(ui.People, { st: { ...st, peers: [] } })), /Nobody else is here right now\./);
 });
 
 test("P2-8: a known name is asked for once: Join and Share show it with Change", () => {
   globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Vikas" : null), setItem() {} };
   const bridge = { call: async () => ({}), onEvent: () => () => {} };
-  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge, onShared() {} }));
+  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge, onShared() {}, onClose() {} }));
   assert.match(form, /Teammates see you as <span[^>]*>Vikas<\/span>/);
   assert.doesNotMatch(form, /Your name/);
 });
 
-test("P2-12: offline says it once; the server's own words go to the tooltip, and nothing names the system", () => {
+test("P2-12, PLAN 8.1: offline says it once, in the amber line; the server's own words go to the tooltip, and nothing names the system", () => {
   const out = html({ ...base, status: "offline", pending: 3, host: "http://127.0.0.1:8790", problem: { code: "unreachable", words: "The sharing server can't be reached. Your edits wait here and go out when it's back.", detail: "couldn't connect to the host: offline, unreachable, or the connection dropped" } });
-  assert.equal((out.match(/can&#x27;t be reached|couldn&#x27;t connect/g) ?? []).length, 2, "the words once, the detail only in the title");
-  assert.doesNotMatch(out, /carton-sync-detail/);
-  assert.match(out, /title="couldn&#x27;t connect to the host/);
-  assert.match(out, /Teammates see you as Bob\./);
+  assert.match(out, /class="carton-share-offline" role="status" title="couldn&#x27;t connect to the host/, "the detail only in the title");
+  assert.match(out, /<strong>You&#x27;re offline\.<\/strong> Keep editing: 3 changes are saved here and are sent when you&#x27;re back\./);
+  assert.equal((out.match(/can&#x27;t be reached|couldn&#x27;t connect/g) ?? []).length, 1, "said once: the amber line, the detail in its title");
+  assert.doesNotMatch(out, /carton-sync-detail|role="alert"/);
+  assert.match(out, />Bob</, "You, with the name teammates see");
   assert.doesNotMatch(out, />[^<]*(Shared through|127\.0\.0\.1)[^<]*</, "the address isn't in the text");
+  assert.match(html({ ...base, status: "offline", pending: 1, problem: null }), /Keep editing: 1 change is saved here and is sent when you&#x27;re back\./);
 });
 
 test("review finding 3: an Invite or Open failure shows under its button, whatever field its words name", () => {
@@ -124,6 +159,6 @@ test("review finding 3: an Invite or Open failure shows under its button, whatev
 
 test("review finding 8: the Share form doesn't claim every original stays here: audio and stills go as they are", () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
-  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {} }));
-  assert.match(form, /preview copies of your video, whose originals stay on this computer; audio and still images go as they are/);
+  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {}, onClose() {} }));
+  assert.match(form, /Teammates get preview copies of your video; its originals stay on this computer\. Audio and still images go as they are\./);
 });
