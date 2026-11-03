@@ -64,7 +64,8 @@ test("PLAN 5.3: a restore's toast Undo takes back exactly the restore; Redo; som
     assert.ok(u.project, "the project it wrote, for the editor to adopt at once (Ctrl+Z's path)");
     // its Redo, by the undo's own version
     const r = await step("redo", u.made);
-    assert.deepEqual([r.status, r.told], ["confirmed", "redo-restore"], JSON.stringify(r));
+    // (a redo says nothing of what it was: the toast's own Redo knows it; only an undo reads it, cheaply)
+    assert.deepEqual([r.status, r.told], ["confirmed", undefined], JSON.stringify(r));
     assert.equal(await font(), f0);
 
     // an edit since: the toast's Undo now would take that back instead, so it does nothing

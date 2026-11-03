@@ -477,6 +477,7 @@ export const words = {
   tookOutAgain: (label: string) => `Took out ${label} again.`,
   // a toast's Undo (or Redo) after something else landed on top: nothing is done (the worker checked)
   stepMoved: (which: "undo" | "redo") => `Not ${which === "undo" ? "undone" : "redone"}: something changed since. History has every version.`,
+  stepMovedPart: (which: "undo" | "redo") => `Only part of it was ${which === "undo" ? "undone" : "redone"}: something changed since. History has every version.`,
   stepFailed: (which: "undo" | "redo") => `Couldn't ${which}. Try again.`,
   saveFailed: "Your last change wasn't saved. Do it again, or reopen the project.",
   restoreFailed: "Couldn't restore this version. Try again.",

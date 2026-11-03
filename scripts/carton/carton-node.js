@@ -1698,21 +1698,32 @@ export const cardboard14 = {
     // cut and change ids, oldest first): only while those are still the newest things this step would take back (or put
     // again) on that cut, newest first, is anything done; else nothing is written ("moved": a later edit, the person's
     // own or an agent's they started, is on top, and an Undo now would take that back instead). Ctrl+Z itself still
-    // takes the newest. The ids are the action's (fromCarton's `made`) or a step's own (this answer's `made`).
+    // takes the newest. The ids are the action's (fromCarton's `made`) or a step's own (this answer's `made`). Checked
+    // here first (nothing written when they aren't all on top), and each step again inside its own write (core's
+    // `expect`), so an edit landing between the check and a step is never the one taken back (review of WS5 #1).
     const onStack = async (lc, which, since, only) => {
       const { group, ...scope } = scopeOf(since);
       const n = only.changes.length;
       const top = await (which === "undo" ? lc.carton.undoStack(group, { ...scope, cut: only.cut, limit: n }) : lc.carton.redoStack(group, { ...scope, cut: only.cut, limit: n }));
       return top.length === n && top.every((e, i) => e.changeId === only.changes[n - 1 - i]);
     };
-    // What a Ctrl+Z or redo took back or put again, when it was a restore or a fold (PLAN 5.3: "Restore undone."
-    // [Redo]): core's own words for the version the step made (log's `title`, which follows an undo of a redo of a
-    // restore back to the restore), read for that one version, while head goes into project.json.
+    // What a Ctrl+Z took back, when it was a restore or a fold (PLAN 5.3: "Restore undone." [Redo]), read while head goes
+    // into project.json. Cheap: the version of the change it undid (its entry, `undid`), read alone, nothing described
+    // (the review of WS5 measured Ctrl+Z slower when every one read the undo's whole version in words). Only an undo of
+    // a revert (a redo, Fold in the rest) asks core's words for the undo's own version, which follow such a chain back
+    // to the restore or the fold. A redo says nothing: its toast's own Redo knows what it puts back.
     const STEPPED = /^(undo|redo)-(restore|fold)$/;
-    const toldOf = async (lc, cut, r) => {
-      if (r?.status !== "confirmed" || r.empty || !r.id) return null;
-      const [v] = await lc.carton.log({ cut, limit: 1, summary: true, rows: true });
-      return v?.change === r.id && STEPPED.test(v.title?.kind ?? "") ? v.title.kind : null;
+    const toldOf = async (lc, cut, which, r) => {
+      if (which !== "undo" || r?.status !== "confirmed" || r.empty || !r.id || typeof r.undid?.seq !== "number") return null;
+      const seq = r.undid.seq;
+      const [v] = await lc.carton.log({ cut, before: seq + 1, limit: 1 });
+      if (v?.ref?.seq !== seq) return null;
+      if (v.kind === "restore") return "undo-restore";
+      // a fold, and a fold-some (its fold and partial revert are one version, of kind merge)
+      if (v.kind === "merge") return "undo-fold";
+      if (v.kind !== "revert") return null;
+      const [u] = await lc.carton.log({ cut, limit: 1, summary: true, rows: true });
+      return u?.change === r.id && STEPPED.test(u.title?.kind ?? "") ? u.title.kind : null;
     };
     const step = async (which, projectId, since, only) => {
       const lc = await lcOf(projectId);
@@ -1727,23 +1738,31 @@ export const cardboard14 = {
       // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
       let r;
       const made = [];
-      // (an action that made several versions, a fold with what earlier partial folds left out, takes as many steps)
-      for (let i = 0; i < (valid ? only.changes.length : 1); i++) {
-        try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
+      // (an action that made several versions, a fold with what earlier partial folds left out, takes as many steps,
+      // newest first, each only if its version is the newest on the stack then: core's `expect`, inside the write)
+      const n = valid ? only.changes.length : 1;
+      for (let i = 0; i < n; i++) {
+        const stepOp = valid ? { ...op, expect: only.changes[n - 1 - i] } : op;
+        try { r = (bundlePath && (await here?.serveHere(bundlePath, stepOp, actor))) ?? (await lc.write(stepOp, { actor, gui: true })); }
         catch (e) {
           // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
           // page says so, and never falls back to Cardboard's own undo
           if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+          // something else landed on top since the check: this step changes nothing
+          if (e?.code === "STACK_MOVED") { r = { status: "moved" }; break; }
           throw e;
         }
         if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+        if (r?.status === "error" && r.code === "STACK_MOVED") { r = { status: "moved" }; break; }
         if ((r?.status !== "confirmed" && r?.status !== "pending") || !r.id || r.empty) break;
         made.push(r.id);
       }
+      // moved before anything was taken back: nothing to write out (moved part-way: the steps made are said, `made`)
+      if (r?.status === "moved" && !made.length) return { status: "moved", ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
       // local's write path answers a clash as `conflicts` (the cards)
       if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
       // what is left to undo and redo, and what the step was, read while head goes into project.json
-      const [project, can, told] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null), toldOf(lc, cut, r).catch(() => null)]);
+      const [project, can, told] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null), toldOf(lc, cut, which, r).catch(() => null)]);
       if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
       // `made`: the versions the step made (oldest first), what its toast's Redo or Undo takes back in turn
       return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}), ...(made.length ? { made: { cut, changes: made } } : {}), ...(told ? { told } : {}) };

@@ -18,7 +18,7 @@ import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/mes
 import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
+import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
@@ -1360,8 +1360,8 @@ class CartonImpl implements Carton {
             // the model may hold changes the store never got (a write that threw): drop them before anything else runs
             this.#confirmed.length = 0;
             this.#noops.length = 0;
-            // (an empty version is refused before anything changes: the model is as it was)
-            if (!(e instanceof EmptyVersion)) await this.#rebuild();
+            // (an empty version, or an undo whose stack moved, is refused before anything changes: the model is as it was)
+            if (!(e instanceof EmptyVersion) && !(e instanceof StackMoved)) await this.#rebuild();
             throw e;
           }
           if (ok) {
@@ -2177,24 +2177,31 @@ class CartonImpl implements Carton {
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRevert(cut, changeId, { author: this.#actor(opts.author), tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
-  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
+  /**
+   * ⌘Z for an actor group. `expect` (a change id): only if that is the newest entry of the stack, checked inside the
+   * write (a retry checks again), else `StackMoved` and nothing changes (UX redesign PLAN 5.3: a toast's Undo).
+   */
+  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId; expect?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
+    const expect = opts.expect !== undefined ? { expect: opts.expect } : {};
     this.#writable(cut);
     // P2-1: its entry (`cb undo` prints it) is labelled from the log it was planned on, a shared cut's pending tail too
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows]));
-    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope, ...expect }), [...this.#h.changes(cut), ...tail.rows]));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...expect, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
-  async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
+  /** Redo for an actor group; `expect` as undo's, for the redo stack's newest entry. */
+  async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId; expect?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
+    const expect = opts.expect !== undefined ? { expect: opts.expect } : {};
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows], true));
-    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope, ...expect }), [...this.#h.changes(cut), ...tail.rows], true));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...expect, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ retention (§5.4)

@@ -51,9 +51,12 @@ function stepper(bridge) {
   if (typeof bridge?.undoMade !== "function") return null;
   const other = (x) => (x === "undo" ? "redo" : "undo");
   const after = (which, op, kind, said, r) => {
-    if (r?.status === "moved") return toasts.show(words.stepMoved(which), null, "warning");
-    // refused: the bridge tells why (its notice); a clash: the conflict stack shows the cards, each saying why
-    if (r?.status === "refused" || r?.status === "conflicts") return toasts.set(null);
+    // moved part-way (an action of several versions, something landed between two of its steps): what was taken back
+    // can be put back
+    if (r?.status === "moved") return toasts.show(r.made ? words.stepMovedPart(which) : words.stepMoved(which), r.made ? action(other(which), other(op), kind, said, r.made) : null, "warning");
+    // refused: the bridge has said why (its notice, the toast now); a clash: the conflict stack shows the cards, each
+    // saying why. Either way this toast's part is done, and it closes unless the notice took its place (review of WS5 #2)
+    if (r?.status === "refused" || r?.status === "conflicts") return undefined;
     if (r?.status !== "confirmed" && r?.status !== "pending") return toasts.show(words.stepFailed(which), null, "warning");
     // core's own word for what an undo of a restore or a fold was (its log's title) wins over the page's guess
     const k = /restore$/.test(r.told ?? "") ? "restore" : /fold$/.test(r.told ?? "") ? "fold" : kind;
@@ -216,14 +219,15 @@ const keyboardFocus = (el) => { try { return !!el?.matches?.(":focus-visible"); 
 function Toast() {
   const [t, setT] = useState(toasts.value);
   const [hover, setHover] = useState(false), [focus, setFocus] = useState(false);
+  // the action running: { id, i } (the toast it runs for: a toast that takes its place is never shown busy, so the
+  // keyboard can move to its first button at once)
   const [busy, setBusy] = useState(null);
-  const box = useRef(null), inside = useRef(false);
+  const box = useRef(null), inside = useRef(false), running = useRef(false);
   useEffect(() => { toasts.subs.add(setT); return () => { toasts.subs.delete(setT); }; }, []);
   // A new toast: any action shown running was the last one's. Gone: nothing holds the next one (its element went, and
   // with it the pointer and the focus, without a leave or a blur). One that takes the place of another the keyboard was
   // in (its Undo pressed with Enter): the keyboard stays, on its first button, else nothing holds it.
   useLayoutEffect(() => {
-    setBusy(null);
     if (!t) { setHover(false); setFocus(false); inside.current = false; return; }
     const el = box.current;
     if (inside.current && el && !el.contains(document.activeElement)) {
@@ -232,7 +236,8 @@ function Toast() {
       else { inside.current = false; setFocus(false); }
     }
   }, [t?.id]);
-  const held = hover || focus || busy !== null;
+  const busyAt = busy && t && busy.id === t.id ? busy.i : null;
+  const held = hover || focus || busyAt !== null;
   useEffect(() => {
     if (!t || held) return undefined;
     const id = t.id, timer = setTimeout(() => { if (toasts.value?.id === id) toasts.set(null); }, toasts.ms);
@@ -241,10 +246,13 @@ function Toast() {
   if (!t) return null;
   const warn = t.tone === "warning";
   const run = (a, i) => {
-    if (busy !== null) return;
+    if (busyAt !== null) return;
     const id = t.id;
-    setBusy(i);
+    // the busy button is disabled, which takes the focus from it: the keyboard was here, and stays (review of WS5 #3)
+    running.current = true;
+    setBusy({ id, i });
     Promise.resolve().then(() => a.run()).catch(() => {}).finally(() => {
+      running.current = false;
       setBusy(null);
       // nothing took its place: done
       if (toasts.value?.id === id) toasts.set(null);
@@ -257,11 +265,11 @@ function Toast() {
     onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false),
     // the keyboard's focus only (a click focuses the button too: then the pointer's leaving lets it go)
     onFocus: (e) => { if (keyboardFocus(e.target)) { inside.current = true; setFocus(true); } },
-    onBlur: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) { inside.current = false; setFocus(false); } },
+    onBlur: (e) => { if (!running.current && !e.currentTarget.contains(e.relatedTarget)) { inside.current = false; setFocus(false); } },
   },
     h(Icon, { name: warn ? "warning" : t.icon === "undo" ? "undo" : "check", size: 14 }),
     h("span", { className: "carton-toast-text" }, t.text),
-    ...actions.map((a, i) => h(Button, { key: `${t.id}:${i}`, busy: busy === i, disabled: busy !== null && busy !== i, onClick: () => run(a, i) }, a.label)),
+    ...actions.map((a, i) => h(Button, { key: `${t.id}:${i}`, busy: busyAt === i, disabled: busyAt !== null && busyAt !== i, onClick: () => run(a, i) }, a.label)),
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
 }
 

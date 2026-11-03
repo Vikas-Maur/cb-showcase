@@ -35,10 +35,11 @@ export type WriteOp =
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
   /**
    * ⌘Z (undo) and its redo for an actor group (default: the author's). `app` and `since` (core's UndoScope): the app's
-   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`.
+   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`. `expect` (a
+   * change id): only that entry, or nothing (core's StackMoved, code STACK_MOVED): a toast's Undo (UX redesign PLAN 5.3).
    */
-  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
-  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean; expect?: ChangeId }
+  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean; expect?: ChangeId }
   | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
@@ -541,7 +542,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
     case "undo": case "redo": {
-      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}) };
+      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}), ...(typeof op.expect === "string" ? { expect: op.expect } : {}) };
       r = await carton[op.kind](op.group ?? author.group, { cut: op.cut, author, id: req.id, ...scope });
       break;
     }

@@ -104,7 +104,8 @@ function stepBridge() {
   const answers = { undo: [], redo: [] };
   const step = (which) => async (made) => {
     calls.push([which, made]);
-    return answers[which].shift() ?? { status: "confirmed", made: { cut: made.cut, changes: [which + calls.length] } };
+    const a = answers[which].shift();
+    return (typeof a === "function" ? a() : a) ?? { status: "confirmed", made: { cut: made.cut, changes: [which + calls.length] } };
   };
   return { calls, answers, undoMade: step("undo"), redoMade: step("redo") };
 }
@@ -128,13 +129,27 @@ test("PLAN 5.3: the restore toast's Undo takes back exactly the restore; then Re
   bridge.answers.undo.push({ status: "moved" });
   await T.toasts.value.action.run();
   assert.deepEqual([T.toasts.value.text, T.toasts.value.tone, T.toasts.value.action], ["Not undone: something changed since. History has every version.", "warning", undefined]);
-  // refused (the bridge tells why) or a clash (the conflict stack shows the cards): no toast of its own
+  // something landed between two of its steps: what was taken back can be put back
+  bridge.answers.undo.push({ status: "moved", made: madeOf("u-part") });
+  ui.restore = async () => ({ made: madeOf("c1", "c2") });
+  T.confirmations(ui, bridge);
+  await ui.restore("main@4");
+  await T.toasts.value.action.run();
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Only part of it was undone: something changed since. History has every version.", ["Redo"]]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls.at(-1), ["redo", madeOf("u-part")]);
+  // a clash (the conflict stack shows the cards): no toast of its own; the Toast closes this one (nothing took its place)
   ui.restore = async () => ({ made: madeOf("c2") });
   T.confirmations(ui, bridge);
   await ui.restore("main@4");
+  const restoredToast = T.toasts.value;
   bridge.answers.undo.push({ status: "conflicts", conflicts: [{}] });
-  await T.toasts.value.action.run();
-  assert.equal(T.toasts.value, null);
+  await restoredToast.action.run();
+  assert.equal(T.toasts.value, restoredToast, "nothing shown over it");
+  // refused: the bridge says why before it answers (its notice, a warning toast): that warning stays (review of WS5 #2)
+  bridge.answers.undo.push(() => { T.tellFailure("Can't undo that: the project would be left empty"); return { status: "refused", error: "Can't undo that: the project would be left empty" }; });
+  await restoredToast.action.run();
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.tone], ["Can't undo that: the project would be left empty", "warning"]);
   // a restore that made nothing it can name, or a host with no such undo (the gallery): no Undo
   ui.restore = async () => undefined;
   T.confirmations(ui, bridge);
@@ -295,6 +310,27 @@ test("PLAN 5.3: a hovered toast stays; it goes once the pointer leaves; an actio
     await React.act(async () => release());
     await wait(20);
     assert.equal(box(), null, "done, with nothing after it: gone");
+    // the keyboard on Undo (Enter): the busy button is disabled, which takes the focus from it (Chromium blurs it); the
+    // toast that takes its place gets the keyboard, on its first button, and holds while it has it (review of WS5 #3)
+    const realMatches = w.HTMLElement.prototype.matches;
+    w.HTMLElement.prototype.matches = function (sel) { return sel === ":focus-visible" ? true : realMatches.call(this, sel); };
+    try {
+      await React.act(async () => T.toasts.show("Restored “Sent to client”. Later changes are in History.", { label: "Undo", run: () => new Promise((r) => (release = r)).then(() => T.toasts.show("Restore undone.", { label: "Redo", run: () => {} }, null, "undo")) }));
+      const undo = box().querySelector("button");
+      await React.act(async () => undo.focus());
+      await React.act(async () => undo.click());
+      await React.act(async () => undo.blur());
+      await React.act(async () => release());
+      await wait(20);
+      const redo = box()?.querySelector("button");
+      assert.equal(redo?.textContent, "Redo");
+      assert.equal(w.document.activeElement, redo, "the keyboard is on Redo");
+      assert.equal(redo.disabled, false);
+      await wait(150);
+      assert.ok(box(), "and the toast it is in stays");
+    } finally {
+      w.HTMLElement.prototype.matches = realMatches;
+    }
   } finally {
     T.toasts.ms = was;
     T.toasts.set(null);
