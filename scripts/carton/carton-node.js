@@ -1550,9 +1550,9 @@ export const cardboard14 = {
       const lc = await lcOf(projectId);
       if (!lc) return null;
       const me = meOf(lc);
-      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids.
       // Cards and change rows in the editor's words: what each side did differently, a clip by its media's file name,
-      // volume in percent, speed as ×; never ids.
+      // volume in percent, speed as ×; never ids. A card's sides are change sentences too ("Moved it to start at 0:20",
+      // docs/carton-ux PLAN 7.1), in the same units.
       const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue });
       const ui = handle.ui ?? handle;
       const bundlePath = bundleOf(projectId);

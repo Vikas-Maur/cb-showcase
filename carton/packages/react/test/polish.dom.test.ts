@@ -105,10 +105,11 @@ test(name("P2-19, P2-1: Main's cut menu folds another cut in here; leaving New c
   const trigger = $(m.container, ".carton-menu-trigger")!;
   assert.equal(trigger.getAttribute("aria-label"), "Cut: Main cut");
   await click(trigger);
-  await click(byText(m.container, "[role=menuitem]", "Fold “30s Instagram cut” in here"));
-  assert.deepEqual(folds, [["cut-ig", "cut-main"]]);
+  // into the cut you're on (Main), from the cut changed most recently: the Director's
+  await click(byText(m.container, "[role=menuitem]", "Fold in changes from a cut…"));
+  assert.deepEqual(folds, [["cut-dir", "cut-main"]]);
   await click($(m.container, ".carton-menu-trigger"));
-  await click(byText(m.container, "[role=menuitem]", "New cut from here"));
+  await click(byText(m.container, "[role=menuitem]", "New cut from your edit"));
   const input = $(m.container, ".carton-menu-form input")!;
   assert.equal(document.activeElement, input);
   await key(input, "Escape");

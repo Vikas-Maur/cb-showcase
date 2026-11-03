@@ -280,6 +280,20 @@ test(name("Restore this version… says what it undoes first; Restore restores i
   await m.unmount();
 });
 
+test(name("on a teammate's cut the Changes view offers no Restore, as its History doesn't (PLAN 6.2)"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  await act(() => ui.switchCut("cut-bob-main"));
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const dir = $$(m.container, ".carton-version").find((r) => /Add captions to the interview/.test(r.textContent ?? ""))!;
+  await click(dir.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Compare with your edit"));
+  const root = $(m.container, ".carton-changes-view")!;
+  assert.ok(root, "the Changes view");
+  assert.equal(byText(root, "button", "Restore this version…"), null);
+  await m.unmount();
+});
+
 test(name("a long range is a virtual list: only the rows on screen exist, and Enter plays the active one"), async () => {
   const ui = createMockUi({ versions: 400, seed: 5 });
   const all = ui.history().all!();

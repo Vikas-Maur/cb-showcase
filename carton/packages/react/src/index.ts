@@ -44,10 +44,28 @@ export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./comp
 // The shared change row and change map (docs/carton-ux DESIGN §5.1; Workstreams 3, 4 and 6 use them)
 export { ChangeRow, ChangeList, setChangeProgress, CLIP_ICON, type ChangeRowProps, type ChangeListProps } from "./components/ChangeRow.ts";
 export { ChangeMap, moveMapPlayhead, mapLength, type ChangeMapProps } from "./components/ChangeMap.ts";
-export { CutsMenu, type CutsMenuProps } from "./components/CutsMenu.ts";
+export { CutsMenu, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";
+// The cuts' shared parts (PLAN 6.1, 2.2): colours, names in sentences, the queued switch, and opening the menu from the chip
+export {
+  CUT_COLORS,
+  cutColor,
+  cutColors,
+  cutRef,
+  isMainCut,
+  homeCut,
+  rememberHome,
+  switchWhenDone,
+  queuedSwitch,
+  queuedSwitchError,
+  subscribeQueuedSwitch,
+  cancelQueuedSwitch,
+  openCutsMenu,
+  type QueuedSwitch,
+} from "./cuts.ts";
 export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
+export { cardSentences, conflictWords, keptText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";
 export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_MAX_SPAN, PLAY_FLASH_MS, type PlayStep, type StepOptions, type SpanState, type Clock } from "./player.ts";

@@ -454,6 +454,11 @@ test("the panel report carries a shared project's live summary for the title bar
   t.c.reportPanel(null);
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(sent, [["carton:panel", { panel: "share", live }], ["carton:panel", { panel: null }]]);
+  // Carton UX redesign PLAN 2.1: and the cut chip's part (the cut, what is viewed, Share open)
+  sent.length = 0;
+  t.c.reportPanel("history", undefined, { share: true, cut: { name: "30s cut", dot: "#f59e0b" }, viewing: { label: "Leo's Main cut" } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent, [["carton:panel", { panel: "history", share: true, cut: { name: "30s cut", dot: "#f59e0b" }, viewing: { label: "Leo's Main cut" } }]]);
 });
 
 test("laptop, final candidate P2-1: a state with no aspect ratio is adopted with Cardboard's default (the layouts panel splits it); a refused undo is said, and Cardboard's own undo doesn't run", async () => {

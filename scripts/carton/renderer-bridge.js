@@ -399,6 +399,8 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // The project the editor shows (the stage's Carton layer follows it).
     get projectId() { return store?.state().projectId ?? null; },
+    // Its name, as the editor shows it (the Share dialog's title: Share “Weekend reel”).
+    get projectName() { return store?.state().projectName ?? null; },
     // Comments: a new comment is pinned at the playhead; a timecode clicked moves the playhead there.
     playhead() { return on && store ? store.state().currentTime ?? 0 : 0; },
     seek(t) { if (on && store && Number.isFinite(t)) store.state().setPlaybackPosition?.(t); },
@@ -425,9 +427,10 @@ module.exports = String.raw`window.__carton = (() => {
     // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
     // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
     onCommand: (f) => subscribe("carton:command", f),
-    // live: a shared project's summary for the strip (sync state, who is here), or nothing.
-    reportPanel(panel, live) {
-      if (on && store) Promise.resolve(store.invoke("carton:panel", live ? { panel: panel ?? null, live } : { panel: panel ?? null })).catch(() => {});
+    // live: a shared project's summary for the strip (sync state, who is here), or nothing. chip: the title bar's cut
+    // chip and Share icon (Carton UX redesign PLAN 2.1): {cut, viewing, share}, or nothing.
+    reportPanel(panel, live, chip) {
+      if (on && store) Promise.resolve(store.invoke("carton:panel", { panel: panel ?? null, ...(live ? { live } : {}), ...(chip ?? {}) })).catch(() => {});
     },
   };
 })();

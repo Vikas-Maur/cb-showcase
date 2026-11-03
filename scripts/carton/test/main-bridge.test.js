@@ -611,6 +611,23 @@ test("an in-app turn's end asks the worker to name its last version (the Directo
   assert.deepEqual(offAsked, []);
 });
 
+// Carton UX redesign PLAN 2.1: the editor page's report for the title bar (carton:panel), as main hands it to the strip
+// (scripts/carton/strip-buttons.js): only the fields the strip draws, text cut to a length, a colour only as #hex.
+test("PLAN 2.1: the title bar's report keeps the panel, live summary, Share, the cut and the viewing label, nothing else", () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  assert.equal(m.panel("history"), "history", "an older page's bare panel name, as it was");
+  assert.equal(m.panel(null), null);
+  const live = { state: "ok", words: "Up to date", people: [] };
+  assert.deepEqual(m.panel({ panel: "history", live, share: true, cut: { name: "30s Instagram cut", dot: "#f59e0b", extra: 1 }, viewing: { label: "Director's “Add captions…”", ref: "main@3" }, more: "x" }),
+    { panel: "history", live, share: true, cut: { name: "30s Instagram cut", dot: "#f59e0b" }, viewing: { label: "Director's “Add captions…”" } });
+  assert.deepEqual(m.panel({ panel: "elsewhere", cut: { name: "Main cut", dot: "red;background:url(x)" }, viewing: { label: "" } }),
+    { panel: null, live: null, share: false, cut: { name: "Main cut", dot: null }, viewing: null }, "a colour that isn't #hex isn't drawn, an empty label is no viewing");
+  assert.equal(m.panel({ cut: { name: "x".repeat(500) } }).cut.name.length, 200);
+  assert.equal(m.panel({ cut: { name: 42 } }).cut, null);
+  // the commands that open something taking keys in the editor's page hand it the keyboard
+  assert.deepEqual(["carton-cuts", "carton-share", "carton-history", "carton-back"].map(m.takesKeys), [true, true, false, false]);
+});
+
 test("UX redesign 0.7: an in-app turn shows its agent working on the project while it runs, and stops when it ends; the prompt is never logged", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [], logged = [];

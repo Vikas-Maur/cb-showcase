@@ -64,7 +64,7 @@ test(name("P3: the Fold dialog, the History row and the fold agree: a split left
   const split = $$(m.container, ".carton-fold-change").find((r) => /Split “clip\.mp4”/.test(r.textContent ?? ""))!;
   await click($(split, "input[type=checkbox]"));
   await flush();
-  await click(byText(m.container, "button", /^Fold in 1 of 2$/));
+  await click(byText(m.container, "button", /^Fold in 1 change$/));
   await waitFor(() => done === 1, "folded");
   await m.unmount();
   await ui.refresh();
@@ -88,3 +88,59 @@ test(name("P3-11: the Changes view lists the changes History counts, one row eac
   await c.unmount();
   ui.dispose();
 });
+
+// Review of feat/ux-6 (P2): two cards on one clip, or a card and a row of the same clip, are one change, as History counts
+// them; a clip left out takes its card's pick out with it.
+test(name("PLAN 6.3: the counted button counts a record once, however many of its cards and rows"), async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("Alt");
+  const set = (id: string, f: string, value: unknown) => ({ op: "set" as const, path: ["items", id, f], value });
+  // a: name and media changed on both cuts (two cards, one clip); b: a name on both (a card) and a trim on Alt (a row)
+  await carton.commit({ cut: v.id, ops: [set("a", "name", "Alt a"), set("a", "mediaItemId", "m9"), set("b", "name", "Alt b"), set("b", "mediaItemId", "m7")] });
+  await carton.commit({ cut: main, ops: [set("a", "name", "Main a"), set("a", "mediaItemId", "m8"), set("b", "name", "Main b")] });
+  await ui.refresh();
+  let done = 0;
+  const m = await render(h(CartonProvider, { ui }, h(FoldInDialog, { fromCutId: v.id, intoCutId: main, onClose: () => {}, onDone: () => void done++ })));
+  await waitFor(() => $$(m.container, ".carton-fold-pick").length >= 3, "three cards to pick");
+  assert.match($(m.container, ".carton-fold-legend")?.textContent ?? "", /^2 changes/, `two clips: ${$(m.container, ".carton-fold-legend")?.textContent}`);
+  const go = () => $$(m.container, ".carton-dialog-foot button").at(-1)!;
+  // the other cut's side on every card
+  for (const pick of $$(m.container, ".carton-fold-pick")) await click($$(pick, "[role=radio]")[1]);
+  assert.equal(go().textContent, "Fold in 2 changes");
+  await click(go());
+  await waitFor(() => done === 1, "folded");
+  await m.unmount();
+  const [f] = await carton.log({ cut: main, limit: 1, summary: true });
+  assert.match(f!.summary ?? "", /: 2 changes$/, `History says what the button said: ${f!.summary}`);
+  ui.dispose();
+});
+
+// UX redesign PLAN 6.3: the Fold dialog's counted button says what History will say of the fold. A conflict picked the
+// other cut's way is a change that comes in; keeping this cut's own is none. Both picks, over the real engine.
+for (const pick of ["theirs", "mine"] as const) {
+  test(name(`PLAN 6.3: "Fold in N changes" is the fold's own count (a conflict picked ${pick})`), async () => {
+    const { carton, ui } = await open();
+    const main = carton.cut;
+    const v = await carton.fork("Alt");
+    await carton.commit({ cut: v.id, ops: [{ op: "set", path: ["items", "a", "name"], value: "Alt name" }, { op: "set", path: ["items", "b", "name"], value: "Outro" }] });
+    await carton.commit({ cut: main, ops: [{ op: "set", path: ["items", "a", "name"], value: "Main name" }] });
+    await ui.refresh();
+    let done = 0;
+    const m = await render(h(CartonProvider, { ui }, h(FoldInDialog, { fromCutId: v.id, intoCutId: main, onClose: () => {}, onDone: () => void done++ })));
+    await waitFor(() => !!$(m.container, ".carton-fold-pick"), "the conflict to pick");
+    assert.equal($$(m.container, ".carton-fold-change").length, 1, "one change row (the rename of b) and the conflict on a");
+    assert.match($(m.container, ".carton-fold-legend")?.textContent ?? "", /^2 changes/, "the list: the row and the conflict");
+    const sides = $$(m.container, ".carton-fold-pick [role=radio]");
+    await click(sides[pick === "mine" ? 0 : 1]);
+    const go = $$(m.container, ".carton-dialog-foot button").at(-1)!;
+    const n = pick === "mine" ? 1 : 2;
+    assert.equal(go.textContent, `Fold in ${n} change${n === 1 ? "" : "s"}`);
+    await click(go);
+    await waitFor(() => done === 1, "folded");
+    await m.unmount();
+    const [f] = await carton.log({ cut: main, limit: 1, summary: true });
+    assert.match(f!.summary ?? "", new RegExp(`: ${n} changes?$`), `History says what the button said: ${f!.summary}`);
+    ui.dispose();
+  });
+}

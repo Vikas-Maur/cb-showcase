@@ -53,9 +53,11 @@ Cardboard's own team, which has the source, would use React directly with no cha
 | Component | What it shows |
 |---|---|
 | `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's), who and when down to the subagent, "Not sent yet" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with your edit (the Changes view, in place of the list; Shift+click or Shift+↑↓ on a second version for two), name, new cut from here, Restore. `play`: the host's player for Play and Before |
-| `CutsMenu` | Switch cuts, new cut from here, rename, fold into Main. Someone else's cuts are read-only and named by owner ("Bob's Main cut") |
-| `FoldInDialog` | What folding in brings, in plain words. Leave changes out (fold in some of it), pick on conflict cards first, "You can fold in the rest later". §13's missing-base text when the copy builds on a version you don't have |
-| `ConflictCard`, `ConflictList` | Both edits, who made each and which one shows now. Keep mine / Keep theirs / Keep both |
+| `CutsMenu` | Which cut you're on and every cut: a colour dot for each but Main (`cutColor`), who changed it last and when, teammates' cuts under "From teammates" marked View only. New cut from your edit, one "Fold in changes from a cut…" however many cuts, Rename, and "Agents work on the cut you're on." While an agent's turn holds the timeline a switch opens in place with "Switch when it finishes" (queued: `switchWhenDone`, run once at the turn's end, dropped by a switch by hand) and "Switch now". Scrolls past 8 cuts, a search past 12. `openCutsMenu(ui)` opens it with focus in it from elsewhere (the title bar's cut chip) |
+| `TeammateCutActions` | On a teammate's cut: "Fold into Main cut…" and "New cut from it" (no Restore); the cut bar shows Viewing ✕ back to your cut |
+| `FoldInDialog` | "Fold in changes": From and Into pickers, one line on what happens ("Main cut gets what changed on “30s cut” since it was made from Main cut at 12:20 pm."), every change as a change row (time in the edit, the kind of clip, the sentence, who) with a tick box, a lock on a project setting that can't be left out, "Left out on Oct 30" on what an earlier partial fold left out (those come in together), a conflict as an inline pick between the two cuts, and the counted button ("Fold in 3 changes": what History will count; "Fold in the rest"). The nothing-to-fold state, and §13's missing-base text when the copy builds on a version you don't have |
+| `ConflictCard`, `ConflictList` | What each side did to which clip, in words ("“Interview B”: you and Claude Code both moved it"; "Moved it to start at 0:20"), and which side the timeline shows. Sides as a radio group that only picks; See it views a side (`view({ kind: "conflict" })`, or the host's deprecated `onPreview`); one Keep that names the pick; the line during the other side's agent turn, and "Pick again" when its values changed. With `onPick` (the Fold dialog): the pre-redesign card, until the dialog's own pick rows |
+| `ConflictStack` | One card at a time with "1/2 ›"; "Not now" folds it into the "N conflicts to pick" pill and sends it to the back. Waits as the pill while the host folds it or the stage shows anything else; the pill brings your edit back |
 | `ChangesView` | Everything between two points, in words (docs/carton-ux DESIGN §5.4): "Changes since 12:20 pm" / "From Director's “Add captions to the interview” to your edit now", the change map, every change in timeline order (virtual past 50), Play all, Before while playing, and Restore this version… with what it undoes said first. ← History (Esc) |
 | `usePlayChanges`, `PlayAllButton`, `BeforeButton` | Play and Before over any list of changes (the Changes view, a version's card): ▶ on a change plays its spot ±1 s, Play all every spot in order, one row lit at a time; on your edit when the newer side is the cut's newest version, else viewing it. Before: hold (or B) to view the older side at the same moment, a click latches it. `PlayHost` is the host's player: `onFrame`, `seek`, `prefetch` (load Before's side ahead), `length` |
 | `CreditsPopover` | Who last changed each part of a clip ("Director › Explore") |
@@ -87,6 +89,13 @@ mockups' story (Main cut today, a 0:38 edit), so components can be built before 
 
 Version rows carry `changes` (how many), `leftOut` (a partial fold's), `base` (where their changes start), `run` (the
 turn they're part of) and `start`. Every sentence comes from core's `changeList` (one table, DESIGN §8).
+
+A conflict card's sides carry their change sentence about the card's clip (`ConflictSide.text`: "Moved it to start at
+0:20"), a verb phrase for its title (`did`: "moved it") and a noun for the viewing label (`what`: "move"); the card
+carries the clip's name (`clip`) and, when the host can say, what Keep both makes (`both`). `cardSentences(card, schema,
+doc, valueWords)` reads them from one of core's cards; `conflictWords(conflict, nameOf)` is everything a card says (title,
+lead, side names, Keep names, viewing labels), so the card, `view()`'s label and the pick's toast (`keptText`) agree.
+`summary` stays core's describeCard.
 
 ## Performance, by design
 

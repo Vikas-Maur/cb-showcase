@@ -35,7 +35,7 @@ async function rowMenu(p, text, exact = text === "Rough cut") {
 const menuItem = (p, text) => p.locator(".carton-menu-item", { hasText: text }).first();
 const tab = (p, name) => p.locator(`[role=tab][aria-label="${name}"]`).click();
 async function cutsMenu(p) { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); }
-async function foldFromIg(p) { await cutsMenu(p); await menuItem(p, "30s Instagram cut” in here").click(); await p.locator(".carton-fold .carton-fold-list, .carton-fold .carton-empty").first().waitFor(); await p.waitForTimeout(150); }
+async function foldFromIg(p) { await cutsMenu(p); await menuItem(p, "Fold in changes from a cut…").click(); await p.locator(".carton-fold .carton-fold-box, .carton-fold .carton-fold-nothing").first().waitFor(); await p.waitForTimeout(150); }
 async function scrollList(p, y) { await p.locator(".carton-history-list").evaluate((e, y) => { e.scrollTop = Math.min(y, e.scrollHeight); e.dispatchEvent(new Event("scroll")); }, y); await p.waitForTimeout(300); }
 // Workstream 4: the Changes view from a row's menu, Play all, Before held (a press with no release yet)
 async function changes(p, text = "Add captions to the interview") { await rowMenu(p, text); await menuItem(p, "Compare with your edit").click(); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }
@@ -81,15 +81,30 @@ const SHOTS = [
   P("cuts-open-one", "cuts-one", "Only Main cut exists; the cut switcher opened.", (p) => cutsMenu(p)),
   P("cuts-open-several", "history-few", "Four cuts (Main cut shared, 30s Instagram cut, Director's cut, Leo's Main cut read-only); the switcher opened.", (p) => cutsMenu(p)),
   P("cuts-open-long", "cuts-long", "cuts-long, the switcher opened (long names in the menu).", (p) => cutsMenu(p)),
-  P("cuts-new-form", "history-few", "Switcher → New cut from here: the name form inside the menu, \"Rough cut for Priya\" typed.", async (p) => { await cutsMenu(p); await menuItem(p, "New cut from here").click(); await p.keyboard.type("Rough cut for Priya"); await p.waitForTimeout(100); }),
-  P("cuts-rename-form", "history-few", "Switcher → Rename cut: the rename form inside the menu.", async (p) => { await cutsMenu(p); await menuItem(p, "Rename cut").click(); await p.waitForTimeout(100); }),
+  P("cuts-new-form", "history-few", "Switcher → New cut from here: the name form inside the menu, \"Rough cut for Priya\" typed.", async (p) => { await cutsMenu(p); await menuItem(p, "New cut from your edit").click(); await p.keyboard.type("Rough cut for Priya"); await p.waitForTimeout(100); }),
+  P("cuts-rename-form", "history-few", "Switcher → Rename “Main cut”: the rename form inside the menu.", async (p) => { await cutsMenu(p); await menuItem(p, "Rename “Main cut”").click(); await p.waitForTimeout(100); }),
   // Fold in (a dialog over the window)
   P("fold-all", "fold-all", "Switcher → Fold “30s Instagram cut” in here: 3 changes, all ticked.", (p) => foldFromIg(p), { target: "window" }),
   P("fold-some", "fold-all", "fold-all, then one change unticked: \"Fold in 2 of 3\".", async (p) => { await foldFromIg(p); await p.locator(".carton-fold-change input").nth(1).click(); await p.waitForTimeout(120); }, { target: "window" }),
   P("fold-conflict", "fold-conflict", "Fold with a conflict to pick (both sides name their cut) and a warning; Fold in disabled until picked.", (p) => foldFromIg(p), { target: "window" }),
-  P("fold-conflict-picked", "fold-conflict", "fold-conflict, then \"Keep yours (Main cut)\" picked.", async (p) => { await foldFromIg(p); await p.locator(".carton-fold .carton-card-actions .carton-btn").first().click(); await p.waitForTimeout(120); }, { target: "window" }),
+  P("fold-conflict-picked", "fold-conflict", "fold-conflict, then \"Keep yours (Main cut)\" picked.", async (p) => { await foldFromIg(p); await p.locator(".carton-fold [role=radio]").first().click(); await p.waitForTimeout(120); }, { target: "window" }),
   P("fold-leftout", "fold-leftout", "Fold again after a partial fold: two changes tagged \"Left out earlier\" (they go together).", (p) => foldFromIg(p), { target: "window" }),
   P("fold-nothing", "fold-nothing", "Fold when the other cut has nothing new.", (p) => foldFromIg(p), { target: "window" }),
+  // Cuts menu and Fold in, redesigned (PLAN 6.1–6.3): beside after/cuts-menu-*.png, cuts-menu-turn-*.png, fold-*.png
+  P("ws6-cuts-menu", "ws6-cuts", "History's cut button → the cuts menu: who and when per cut, dots, From teammates (View only), one Fold entry, the agents line.", (p) => cutsMenu(p)),
+  P("ws6-cuts-menu-turn", "ws6-cuts-turn", "Claude Code working on Main cut; the cuts menu, then a click on 30s Instagram cut: it opens in place with Switch when it finishes / Switch now.", async (p) => { await cutsMenu(p); await p.locator(".carton-cut-item", { hasText: "30s Instagram cut" }).click(); await p.waitForTimeout(150); }),
+  P("ws6-cuts-queued", "ws6-cuts-turn", "ws6-cuts-menu-turn, then Switch when it finishes: the queued line under the cut bar.", async (p) => { await cutsMenu(p); await p.locator(".carton-cut-item", { hasText: "30s Instagram cut" }).click(); await p.waitForTimeout(100); await p.getByRole("menuitem", { name: "Switch when it finishes" }).click(); await p.waitForTimeout(150); }),
+  P("ws6-cuts-many", "ws6-cuts-many", "15 cuts: the menu's list scrolls (past 8) and has a search (past 12).", (p) => cutsMenu(p)),
+  P("ws6-cuts-search", "ws6-cuts-many", "ws6-cuts-many, then \"trail\" typed in the search.", async (p) => { await cutsMenu(p); await p.locator(".carton-cuts-find").fill("trail"); await p.waitForTimeout(150); }),
+  P("ws6-cuts-new", "ws6-cuts", "The cuts menu → New cut from your edit: the name field.", async (p) => { await cutsMenu(p); await menuItem(p, "New cut from your edit").click(); await p.keyboard.type("30s Instagram cut v2"); await p.waitForTimeout(100); }),
+  P("ws6-teammate-cut", "ws6-teammate", "Leo's Main cut on screen: its dot and Viewing ✕ in the cut bar, Fold into Main cut… and New cut from it above its History.", null),
+  P("ws6-fold-all", "ws6-fold-all", "The cuts menu → Fold in changes from a cut…: From 30s Instagram cut into Main cut, 4 changes, the aspect ratio locked.", (p) => foldFromIg(p), { target: "dialog", perWidth: false }),
+  P("ws6-fold-some", "ws6-fold-all", "ws6-fold-all, then “Removed “Product close-up”” unticked.", async (p) => { await foldFromIg(p); await p.locator(".carton-fold-change input").nth(2).click(); await p.waitForTimeout(120); }, { target: "dialog", perWidth: false }),
+  P("ws6-fold-conflict", "ws6-fold-conflict", "A fold with a conflict to pick inline (both cuts moved “Interview B”), then 30s Instagram cut's picked.", async (p) => { await foldFromIg(p); await p.locator(".carton-fold [role=radio]").nth(1).click(); await p.waitForTimeout(120); }, { target: "dialog", perWidth: false }),
+  P("ws6-fold-conflict-unpicked", "ws6-fold-conflict", "The same, before the pick: the button waits and says why.", (p) => foldFromIg(p), { target: "dialog", perWidth: false }),
+  P("ws6-fold-rest", "ws6-fold-rest", "Only what a partial fold on Oct 30 left out: Fold in the rest.", (p) => foldFromIg(p), { target: "dialog", perWidth: false }),
+  P("ws6-fold-nothing", "ws6-fold-nothing", "Nothing to fold: Main cut already has everything.", (p) => foldFromIg(p), { target: "dialog", perWidth: false }),
+  P("ws6-fold-into", "ws6-fold-all", "ws6-fold-all, the Into picker opened: only your own cuts.", async (p) => { await foldFromIg(p); await p.locator(".carton-fold-cut").nth(1).click(); await p.waitForTimeout(150); }, { target: "dialog", perWidth: false }),
   // Comments
   P("comments-empty", "comments-empty", "History open, then the Comments tab; no comments yet.", (p) => tab(p, "Comments").then(() => p.waitForTimeout(200))),
   P("comments-some", "comments-some", "Comments tab with the comments mock's threads (exact, moved, outdated, general, resolved).", (p) => tab(p, "Comments").then(() => p.waitForTimeout(200))),
@@ -118,7 +133,7 @@ const SHOTS = [
   T("stage-conflict-both", "stage-conflict-both", "A card that offers Keep both (Leo Park's Director vs you).", null),
   T("stage-conflict-preview", "stage-conflict-preview", "'W6' timing card (Claude Code's side showing now), Preview clicked on your side: the banner says \"Previewing your edit\", the card stays.", async (p) => { await p.locator(".carton-stack .carton-see", { hasText: "Preview" }).first().click(); await p.waitForTimeout(250); }),
   T("stage-conflict-panel-open", "stage-conflict-panel-open", "Two cards while the History panel is open: the stack folds to its pill.", null, { perWidth: true }),
-  T("stage-toast-confirm", "toast-fold", "Current cut 30s Instagram cut; Switcher → Fold into Main cut → Fold in: the confirmation toast with its \"Switch to Main cut\" action.", async (p) => { await cutsMenu(p); await menuItem(p, "Fold into Main cut").click(); await p.locator(".carton-fold .carton-fold-list").waitFor(); await p.locator(".carton-fold .carton-btn", { hasText: "Fold in" }).last().click(); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(200); }, { panelOpen: true }),
+  T("stage-toast-confirm", "toast-fold", "Current cut 30s Instagram cut; Switcher → Fold into Main cut → Fold in: the confirmation toast with its \"Switch to Main cut\" action.", async (p) => { await cutsMenu(p); await menuItem(p, "Fold in changes from a cut…").click(); await p.locator(".carton-fold .carton-fold-list").waitFor(); await p.locator(".carton-fold .carton-btn", { hasText: "Fold in" }).last().click(); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(200); }, { panelOpen: true }),
   T("stage-toast-restore", "history-few", "Row ⋯ → Restore on \"Rough cut\": the confirmation toast (no action).", async (p) => { await rowMenu(p, "Rough cut"); await menuItem(p, "Restore").click(); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(200); }, { panelOpen: true }),
   T("stage-toast-warning", "stage-toast-warning", "The bridge tells a failed save: the warning toast.", async (p) => { await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(100); }),
   T("stage-live-offline", "stage-live-offline", "Shared project offline with 3 edits waiting: the live chip, bottom-left.", null),
@@ -171,6 +186,7 @@ try {
         await page.waitForTimeout(150);
         const path = join(out, file);
         if (shot.target === "window") await page.screenshot({ path, animations: "disabled" });
+        else if (shot.target === "dialog") await page.locator(".carton-dialog").screenshot({ path, animations: "disabled" });
         else if (shot.target === "titlebar") {
           const bar = await page.locator(".cap-titlebar").boundingBox();
           const x = Math.max(0, bar.width - 560);

@@ -292,6 +292,10 @@ export interface MenuButtonProps {
   /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
   ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
+  /** Filled with a function that opens the menu (focus goes into it): a host can open it from elsewhere (the cuts menu). */
+  openRef?: { current: (() => void) | null };
+  /** A class on the menu itself. */
+  menuClassName?: string;
 }
 
 /** A button that opens a menu below it. */
@@ -312,6 +316,7 @@ export function MenuButton(p: MenuButtonProps) {
     setOpen(false);
     btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
+  if (p.openRef) p.openRef.current = () => setOpen(true);
   return h(
     "div",
     { className: "carton-menu-anchor", "data-align": p.align ?? "start" },
@@ -336,7 +341,7 @@ export function MenuButton(p: MenuButtonProps) {
       },
       p.trigger,
     ),
-    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current] }, p.children(close))) : null,
+    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current], className: p.menuClassName }, p.children(close))) : null,
   );
 }
 
@@ -351,6 +356,8 @@ export interface DialogProps {
   /** Text for the close button. */
   closeLabel?: string;
   describedBy?: string;
+  /** Beside the title, before the close button: a status ("Up to date" in the Share dialog). */
+  aside?: ReactNode;
 }
 
 /** A modal dialog: focus moves in and is trapped, Escape closes, focus returns to where it was. */
@@ -404,6 +411,7 @@ export function Dialog(p: DialogProps) {
         "div",
         { className: "carton-dialog-head" },
         h("h2", { id: titleId, className: "carton-dialog-title" }, p.title),
+        p.aside ?? null,
         h(Button, { variant: "ghost", icon: "x", label: p.closeLabel ?? words.close, onClick: p.onClose, className: "carton-dialog-close" }),
       ),
       h("div", { className: "carton-dialog-body" }, p.children),

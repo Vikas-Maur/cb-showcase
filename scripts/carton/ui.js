@@ -1,8 +1,10 @@
 // carton-ui.js: Carton in Cardboard's editor (scripts/carton/build.js bundles it with @carton/react), in two places
 // editor-panel.js mounts:
-// - CartonSide: the History or Share panel, a full-height column beside the agent's chat sidebar, in its look (width,
-//   rule, resize handle, header). The title bar's History and Share icons open it (patch-carton.js routes them as
-//   carton:command to this page) and show which one is open (this page reports it back: bridge.reportPanel).
+// - CartonSide: the History or Comments panel, a full-height column beside the agent's chat sidebar, in its look
+//   (width, rule, resize handle, header), and the Share dialog (scripts/carton/sync/ui.js ShareDialog: Carton UX
+//   redesign PLAN 8.1, in place of the panel's Share tab). The title bar's History and Share icons and its cut chip
+//   (scripts/carton/strip-buttons.js) send their commands here (patch-carton.js routes them as carton:command to this
+//   page), and this page reports back what is open, the cut it is on and what it is viewing (bridge.reportPanel).
 // - CartonStage: a layer over the stage (the preview's column, above the timeline, left of the chat): the conflict
 //   cards' floating stack in its bottom-right corner, with "See it", and the viewing banner ("Back to my edit").
 // Neither takes keys but its own (Esc closes the panel while focus is in it), so the stage, the timeline's keyboard,
@@ -12,7 +14,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -42,13 +44,14 @@ function confirmations(ui) {
     }
     return r;
   };
+  // A conflict card's pick names what was kept, as the card named it (docs/carton-ux DESIGN §6.7): "Kept Claude Code's
+  // move of “Interview B”." No Undo on it yet (PLAN 5.3): a pick of the side already shown commits nothing, so the
+  // editor's undo would take back an earlier change instead.
   const resolve = ui.resolve.bind(ui);
   ui.resolve = async (id, choice) => {
     const c = ui.conflicts().find((x) => x.id === id);
     await resolve(id, choice);
-    if (!c) return;
-    const who = choice === "both" ? null : actorLabel((choice === "mine" ? c.mine : c.theirs).author, ui.actor.bind(ui), words.you);
-    toasts.show(choice === "both" ? `Kept both · ${c.title}` : `Kept ${who === words.you ? "yours" : `${who}'s`} · ${c.title}`);
+    if (c) toasts.show(keptText(c, choice, ui.actor.bind(ui)));
   };
 }
 
@@ -113,12 +116,78 @@ function useConn(projectId, bridge) {
 }
 
 const HISTORY_KEY = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "⌘⇧H" : "Ctrl+Shift+H";
-const PANELS = { history: { label: "History", icon: "versions", key: HISTORY_KEY }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
+// Share is a dialog now (PLAN 8.1), not one of the panel's tabs.
+const PANELS = { history: { label: "History", icon: "versions", key: HISTORY_KEY }, comments: { label: "Comments", icon: "comment" } };
+const TABS = ["history", "comments"];
 // Which side panel is open, for the stage layer of this page (both parts live in this module, so it stays in it): the
 // card stack folds to its pill while a panel takes the room beside the chat.
 const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (const f of this.subs) f(v); } };
-// The stage's live chip asks the side panel to open Share (both parts live in this module).
+// The stage's live chip asks the side panel's part to open Share (both parts live in this module).
 const panelRequests = new Set();
+// Below this window width the title bar keeps History only, and Share opens from the panel's head (PLAN 2.3; the same
+// query as scripts/carton/strip-buttons.js: both pages are the window's width).
+const NARROW = "(max-width: 1180px)";
+function useNarrowWindow() {
+  const [narrow, setNarrow] = useState(() => typeof matchMedia === "function" && matchMedia(NARROW).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return undefined;
+    const q = matchMedia(NARROW), f = () => setNarrow(q.matches);
+    q.addEventListener?.("change", f);
+    return () => q.removeEventListener?.("change", f);
+  }, []);
+  return narrow;
+}
+
+// ---------------------------------------------------------------- the title bar's cut chip (PLAN 2.1, 2.2)
+// Each cut but Main has a colour: its dot in the chip (and in the cuts menu and History's cut bar, PLAN 6.1). A cut's
+// own colour when the view model gives one (Cut.color), else one picked from its id, so it never changes.
+const CUT_COLORS = ["#f59e0b", "#22d3ee", "#a78bfa", "#f472b6", "#4ade80", "#fb7185", "#60a5fa", "#facc15"];
+export function cutColor(cut) {
+  if (typeof cut?.color === "string" && /^#[0-9a-f]{3,8}$/i.test(cut.color)) return cut.color;
+  let x = 0x811c9dc5;
+  for (const ch of String(cut?.id ?? "")) x = Math.imul(x ^ ch.charCodeAt(0), 0x01000193) >>> 0;
+  return CUT_COLORS[x % CUT_COLORS.length];
+}
+const upFirst = (s) => (typeof s === "string" && s ? s[0].toUpperCase() + s.slice(1) : s);
+/**
+ * What the editor shows when it isn't your edit (PLAN 0.5's ui.viewing(): {ref, kind, label, short}, or null), and
+ * what the view model doesn't say there yet: a teammate's cut switched to (read-only: today's cuts menu switches to
+ * it), and a version opened read-only through openPreview(), which the real view model (from-carton.ts) still keeps in
+ * preview() only (review of feat/ux-2-8 #1: with viewing() there but null, the chip lost its label and its ✕).
+ */
+export function viewingOf(ui) {
+  const v = typeof ui.viewing === "function" ? ui.viewing() : null;
+  if (v) return v;
+  const current = ui.cuts().find((c) => c.current);
+  if (current?.readOnly) return { ref: current.head, kind: "cut", cutId: current.id, label: current.label, short: current.label };
+  const p = ui.preview?.();
+  return p ? { ref: p.ref, kind: "version", label: p.label, short: p.label } : null;
+}
+// Your own cut: the current one, or while a teammate's cut is viewed, your Main cut (the one Back goes to).
+const homeCut = (cuts) => {
+  const current = cuts.find((c) => c.current);
+  return current && !current.readOnly ? current : cuts.find((c) => !c.readOnly && c.kind === "main") ?? cuts.find((c) => !c.readOnly) ?? null;
+};
+/** The chip's part of the title bar's report: {cut: {name, dot}, viewing: {label}}; null until the cuts are known. */
+export function chipOf(ui) {
+  const cuts = ui.cuts();
+  const cut = homeCut(cuts);
+  if (!cut) return null;
+  const v = viewingOf(ui);
+  // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
+  return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: upFirst(v.label) } : null };
+}
+/**
+ * Back to your edit (the chip's ✕). A teammate's cut switched to: your own cut again. Anything else viewed: through
+ * openPreview(null), the path connect() wraps so the editor swaps back too (bridge.preview); PLAN 0.5 keeps it as
+ * view(null)'s alias, and it clears whatever is viewed.
+ */
+export function backToEdit(ui) {
+  const cuts = ui.cuts(), current = cuts.find((c) => c.current), home = homeCut(cuts);
+  if (current?.readOnly && home) return ui.switchCut(home.id);
+  if (viewingOf(ui)) return ui.openPreview(null);
+  return undefined;
+}
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
 // The preview keeps at least this much width beside the panel (UI audit P2-13: at a narrow window the panel took it all).
 const MIN_STAGE = 320;
@@ -180,16 +249,39 @@ function useFit(ref, preferred) {
 }
 
 /**
- * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
- * Fold in: all, some or none of it), then the versions, and the Changes view in their place (docs/carton-ux DESIGN
- * §5.4: "Compare with your edit", Shift+click), with Play and Before (§5.3). It replaced the old Compare card and
- * shot strips (PLAN 4.4): this page no longer mounts either.
+ * History in the side panel: the cut it shows, with the cuts menu (switch, a switch that waits for an agent's turn, New
+ * cut, Rename, "Fold in changes from a cut…", which opens Fold in: from a cut into a cut, all, some or none of it); on a
+ * teammate's cut, what you can do with it (fold it into yours, or copy it as a new cut: UX redesign PLAN 6.2); then
+ * the versions, and the Changes view in their place (docs/carton-ux DESIGN §5.4: "Compare with your edit", Shift+click),
+ * with Play and Before (§5.3). It replaced the old Compare card and shot strips (PLAN 4.4): this page mounts neither.
  */
-function HistorySide({ projectId, bridge }) {
+function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const cuts = useCuts();
   const [fold, setFold] = useState(null);
+  const openFold = useCallback((from, into) => setFold({ from: from.id, into: into.id }), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
+  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus on its first item
+  // (MenuList's own focus), from the list. The menu is the cuts button's own (the one with the class
+  // carton-cuts-trigger, CutsMenu's), opened as a click opens it, so the chip's menu and History's are one menu. The
+  // request is the side panel's (CartonSide's), consumed there once the menu opens (review of feat/ux-2-8 #3: kept
+  // here, it outlived History closing, and reopening History opened the menu again). With the Changes view open in
+  // place of the list (its cut bar hidden), it goes back to the list first (its ← History), then the menu opens.
+  useEffect(() => {
+    if (!cutsAsk) return undefined;
+    const open = () => {
+      const t = box.current?.querySelector(".carton-cuts-trigger, .carton-sidebar-cuts [aria-haspopup=menu]");
+      if (t && t.getAttribute("aria-expanded") !== "true") t.click();
+      onCutsAsked?.();
+    };
+    let id = requestAnimationFrame(() => {
+      const back = box.current?.querySelector(".carton-history[data-changes] .carton-changes-nav button");
+      if (!back) return open();
+      back.click();
+      id = requestAnimationFrame(open);
+    });
+    return () => cancelAnimationFrame(id);
+  }, [cutsAsk, onCutsAsked]);
   // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: its playhead
   // follows Play's, real frames there, at most 10 seeks a second while it plays, and always the last one.
   const seeker = useMemo(() => {
@@ -215,7 +307,8 @@ function HistorySide({ projectId, bridge }) {
     length: () => bridge.editLength?.(),
   }), [seeker, bridge, projectId]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
-    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) })),
+    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: openFold })),
+    h(TeammateCutActions, { onFoldIn: openFold }),
     h(HistoryPanel, { currentRef: current, play }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }
@@ -277,20 +370,22 @@ export class CartonBoundary extends Component {
     const again = h(Button, { onClick: () => this.setState({ error: null }) }, "Try again");
     if (this.props.panel === "stage")
       return h("div", { className: "carton-stage-snag", role: "alert" }, h("span", null, "Conflict cards and the preview banner hit a snag."), again);
+    // a dialog (Share) keeps its frame, so Esc and its ✕ still close it
+    if (this.props.onClose)
+      return h(Dialog, { title: this.props.title ?? words.share, onClose: this.props.onClose }, h("div", { role: "alert", className: "carton-share-snag" }, h("p", null, "This hit a snag. Nothing you’ve made is lost."), again));
     return h("div", { className: "flex flex-col items-start gap-2 p-4 text-sm text-muted-foreground", role: "alert" },
       h("p", null, "This panel hit a snag. Nothing you’ve made is lost."),
       again);
   }
 }
 
-function Sidebar({ panel, setPanel, projectId, bridge }) {
+function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsAsked }) {
   const ref = useRef(null);
   const [preferred, onResize] = useWidth();
   const fit = useFit(ref, preferred);
   const width = fit.width;
   // A drawer over the chat when the window is too narrow for the preview, the panel and the chat side by side.
   const overlay = fit.mode === "overlay" ? { position: "fixed", right: 0, top: fit.top ?? 0, height: fit.height ?? "100%", zIndex: 40, boxShadow: "-16px 0 40px -12px #000000b3" } : null;
-  const share = window.__cartonSyncUi?.SharePanel ?? null;
   // Esc closes it, and only while focus is in it: the editor's own keys are never taken. A preview is the layer inside
   // it (UI audit P2-1: "… → preview → panel"): Esc returns from the preview first, as its banner's button does, and
   // the next Esc closes the panel (regress 2026-11-02 #4: it closed the panel and left the preview open).
@@ -303,10 +398,10 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
-  const tabs = share ? ["history", "comments", "share"] : ["history", "comments"];
-  // Below 340 px three labelled tabs run under the close ✕ ("Share✕" at the 300 px minimum: regress 2026-11-02 P3-3):
-  // the tabs not open show their icon only, named for screen readers and on hover; the open one keeps its label.
-  const compact = tabs.length > 2 && width < 340;
+  // Below 1180 px the title bar has no Share icon: it joins this head, beside Close (PLAN 2.3). Two labelled tabs, it and
+  // Close fit at the panel's 300 px minimum (regress 2026-11-02 P3-3 was three tabs there).
+  const narrowWindow = useNarrowWindow();
+  const headButton = "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30";
   // Cardboard's own classes, as its chat sidebar uses them: same width, rule, handle, header and buttons.
   return h("aside", { ref, tabIndex: -1, className: "carton-sidebar relative shrink-0 overflow-hidden bg-[var(--desktop-panel)] outline-none", style: { width, ...overlay }, "data-carton-skin": "cardboard", "data-fit": fit.mode, "aria-label": PANELS[panel].label, onKeyDown },
     h("div", { className: "pointer-events-none absolute inset-y-0 left-0 z-10 w-px bg-white/[0.06]" }),
@@ -315,29 +410,50 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
         h("div", { className: "pointer-events-none absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 bg-accent/80 opacity-0 transition-opacity group-hover:opacity-100" })),
       h("div", { className: "flex h-[40px] shrink-0 items-center gap-[2px] pr-[16px] pl-[12px]" },
         h("div", { className: "flex min-w-0 flex-1 items-center gap-[2px]", role: "tablist" },
-          ...tabs.map((id) => h("button", {
-            key: id, type: "button", role: "tab", "aria-selected": panel === id, "aria-label": PANELS[id].label, onClick: () => setPanel(id), title: PANELS[id].key ? `${PANELS[id].label} (${PANELS[id].key})` : compact ? PANELS[id].label : undefined, "aria-keyshortcuts": PANELS[id].key ? "Control+Shift+H" : undefined,
+          ...TABS.map((id) => h("button", {
+            key: id, type: "button", role: "tab", "aria-selected": panel === id, "aria-label": PANELS[id].label, onClick: () => setPanel(id), title: PANELS[id].key ? `${PANELS[id].label} (${PANELS[id].key})` : undefined, "aria-keyshortcuts": PANELS[id].key ? "Control+Shift+H" : undefined,
             className: "relative flex h-[26px] shrink-0 cursor-pointer items-center gap-[6px] rounded-ui-md px-[8px] text-ui-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/30 " +
               (panel === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"),
-          }, h(Icon, { name: PANELS[id].icon, size: 14 }), compact && panel !== id ? null : PANELS[id].label))),
-        h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null),
-          className: "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30" },
+          }, h(Icon, { name: PANELS[id].icon, size: 14 }), PANELS[id].label))),
+        narrowWindow && onShare ? h("button", { type: "button", "aria-label": words.share, title: words.share, "data-carton-share": "", onClick: onShare, className: headButton }, h(Icon, { name: "users", size: 16 })) : null,
+        h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null), className: headButton },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        h(CartonBoundary, { key: panel, panel }, panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { projectId, bridge })))));
+        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { projectId, bridge, cutsAsk, onCutsAsked })))));
 }
 
-/** The side panel, beside the chat: opened and closed from the title bar's icons, which show the one open. */
+/** The Share dialog over the editor (PLAN 8.1), inside its own boundary: a throw keeps the dialog's frame. */
+function ShareHost({ projectId, bridge, onClose }) {
+  const Share = window.__cartonSyncUi?.ShareDialog;
+  if (!Share) return null;
+  const name = bridge.projectName ?? null;
+  return h("div", { "data-carton-skin": "cardboard" },
+    h(CartonBoundary, { panel: "share", onClose, title: (name ? words.shareTitle(name) : words.shareThisProject) }, h(Share, { projectId, bridge, name, onClose })));
+}
+
+/**
+ * The side panel, beside the chat, and the Share dialog: opened and closed from the title bar's icons, which show the
+ * one open; the cut chip's click opens History with its cuts menu (PLAN 2.2, version 1), its ✕ goes back to your edit.
+ */
 export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
-  const [conn] = useConn(projectId, bridge);
+  const [conn, ready] = useConn(projectId, bridge);
   const [panel, setPanelState] = useState(null);
+  const [share, setShare] = useState(false);
+  // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
+  const [cutsAsk, setCutsAsk] = useState(0);
+  const cutsAsked = useCallback(() => setCutsAsk(0), []);
   const setPanel = useCallback((p) => setPanelState(p), []);
+  // Share is a modal dialog: while it is open the editor's shortcut for History is its, not the page's behind it
+  // (review of feat/ux-2-8 #2: History opened behind it and took the focus, and Esc then closed History, not Share).
+  const shareOpen = useRef(false);
+  shareOpen.current = share;
   // Ctrl+Shift+H (Cmd+Shift+H on a Mac) opens and closes History (UI audit P3-7): H is free in Cardboard's keymap,
   // and Shift with Ctrl/Cmd pairs it with Cardboard's own Ctrl+Shift+B ("Report an issue"). Only the editor's page
   // listens (this panel lives there), and only for that exact chord.
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || (e.code !== "KeyH" && e.key !== "H" && e.key !== "h")) return;
+      if (shareOpen.current) return;
       e.preventDefault();
       e.stopPropagation();
       setPanelState((p) => (p === "history" ? null : "history"));
@@ -345,27 +461,66 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
-  // The title bar's icons: the same icon again closes it.
+  // The title bar: its icons (the same icon again closes what it opened), the cut chip and its ✕.
   useEffect(() => bridge.onCommand?.((ev) => {
-    const which = ev?.action === "carton-history" ? "history" : ev?.action === "carton-share" ? "share" : null;
-    if (which) setPanelState((p) => (p === which ? null : which));
-  }), [bridge]);
-  useEffect(() => { panelRequests.add(setPanelState); return () => { panelRequests.delete(setPanelState); }; }, []);
-  // Tell the title bar which is open (null: none, which also says the icons apply to this tab), and the stage layer.
-  // With a shared project's live summary for the strip's status dot and avatars (P2-11); sent again only when what it
-  // shows changes.
+    const a = ev?.action;
+    // the title bar is outside the Share dialog: its History icon closes Share and opens History
+    if (a === "carton-history") { setShare(false); setPanelState((p) => (p === "history" ? null : "history")); }
+    else if (a === "carton-share") setShare((o) => !o);
+    else if (a === "carton-cuts") { setShare(false); setPanelState("history"); setCutsAsk((n) => n + 1); }
+    else if (a === "carton-back") void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
+  }), [bridge, conn]);
+  useEffect(() => {
+    const f = (p) => (p === "share" ? setShare(true) : setPanelState(p));
+    panelRequests.add(f);
+    return () => { panelRequests.delete(f); };
+  }, []);
+  // Tell the title bar what it shows (bridge.reportPanel; main hands it to the strip): the panel open (null: none,
+  // which also says the strip's Carton parts apply to this tab), a shared project's live summary for the status dot and
+  // avatars (P2-11), whether Share is open, and the cut chip's cut and viewing label. Sent again only when what the
+  // strip shows changes: the cuts topic changes at every version (a head moves), the chip only when a name, a dot or
+  // the viewing label does. The chip's part is sent straight from the topic's notice, without waiting for a render, so a
+  // switch (the cuts menu's, or cb cut switch from a terminal) reaches the title bar within the frame it lands in.
   const summary = liveSummary(useLiveStatus(projectId, bridge));
   const summaryKey = summary ? JSON.stringify(summary) : "";
-  useEffect(() => { bridge.reportPanel?.(panel, summaryKey ? JSON.parse(summaryKey) : undefined); sidePanel.set(panel); }, [bridge, panel, summaryKey]);
+  const report = useRef({ panel: null, live: null, share: false, chip: null, sent: null });
+  const send = useCallback(() => {
+    const r = report.current;
+    const key = JSON.stringify([r.panel, r.live, r.share, r.chip]);
+    if (key === r.sent) return;
+    r.sent = key;
+    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null });
+  }, [bridge]);
+  useEffect(() => {
+    Object.assign(report.current, { panel, live: summaryKey ? JSON.parse(summaryKey) : null, share });
+    send();
+    sidePanel.set(panel);
+  }, [panel, summaryKey, share, send]);
+  useEffect(() => {
+    if (!ready) return undefined;
+    const ui = conn.ui;
+    const update = () => { report.current.chip = chipOf(ui); send(); };
+    update();
+    // "viewing": PLAN 0.5's topic, once the view model has it; "preview" and "cuts" until then
+    const offs = ["cuts", "preview", "viewing"].map((t) => ui.subscribe(t, update));
+    return () => { for (const off of offs) off(); };
+  }, [conn, ready, send]);
   useEffect(() => () => sidePanel.set(null), []);
-  if (!panel) return null;
-  return h(CartonProvider, { ui: conn.ui }, h(Sidebar, { panel, setPanel, projectId, bridge }));
+  // History closed before the menu opened: the request goes with it
+  useEffect(() => { if (!panel) setCutsAsk(0); }, [panel]);
+  const closeShare = useCallback(() => setShare(false), []);
+  if (!panel && !share) return null;
+  return h(CartonProvider, { ui: conn.ui },
+    panel ? h(Sidebar, { panel, setPanel, projectId, bridge, onShare: () => setShare(true), cutsAsk, onCutsAsked: cutsAsked }) : null,
+    share ? h(ShareHost, { projectId, bridge, onClose: closeShare }) : null);
 });
 
 /**
  * Opening a shared project whose footage is a teammate's (UI audit P1-9; the editor patch in sync/patches/media.js
  * keeps Cardboard's "Missing Media Files" and its "Remove and Open" away from those clips): what happened, in words.
  * Clips not sent yet show as Offline; it checks every 15 s and says when they have arrived. Closed with its ✕ or Esc.
+ * Carton UX redesign PLAN 8.3: clips on their way say so in a title line, "2 clips are still on their way from Leo",
+ * then which ones, by name in quotes, and that nothing was removed (`from`: the teammate, when the notice is told).
  */
 function MediaNotice({ projectId, bridge }) {
   const [here, setHere] = useState(() => (window.__cartonMediaHere?.projectId === projectId ? window.__cartonMediaHere : null));
@@ -388,18 +543,21 @@ function MediaNotice({ projectId, bridge }) {
   }, [bridge, projectId, waiting, closed, arrived]);
   if (closed || !here || (!waiting.length && !here.playable)) return null;
   const names = waiting.slice(0, 2).map((w) => w.fileName).join(", ") + (waiting.length > 2 ? ` and ${waiting.length - 2} more` : "");
+  const quoted = waiting.length > 2 ? `${waiting.slice(0, 2).map((w) => `“${w.fileName}”`).join(", ")} and ${waiting.length - 2} more` : waiting.map((w) => `“${w.fileName}”`).join(" and ");
+  const onTheirWay = !here.unchecked && !arrived && waiting.length > 0;
+  const title = onTheirWay ? words.clipsOnTheirWay(waiting.length, typeof here.from === "string" && here.from ? here.from : "your teammate") : null;
   const text = here.unchecked
     ? `${waiting.length === 1 ? `${names} couldn't be checked, so it shows` : `${waiting.length} clips couldn't be checked (${names}), so they show`} as Offline. Nothing was removed. Close and reopen the project to check again.`
     : arrived
     ? "Your teammate's footage has arrived. Close and reopen the project to play it."
     : waiting.length === 1
-      ? `${names} hasn't arrived yet. It shows as Offline until your teammate's computer sends it. Nothing was removed.`
+      ? words.clipOfflineUntil(quoted)
       : waiting.length
-        ? `${waiting.length} clips haven't arrived yet (${names}). They show as Offline until your teammate's computer sends them. Nothing was removed.`
+        ? words.clipsOfflineUntil(quoted)
         : "This video plays from preview copies. Its originals stay on your teammate's computer.";
   return h("div", { className: "carton-media-notice", role: "status", "data-waiting": waiting.length && !arrived ? "" : undefined, onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); setClosed(true); } } },
     h(Icon, { name: waiting.length && !arrived ? "cloudSlash" : "cloudCheck", size: 14 }),
-    h("span", { className: "carton-media-notice-text" }, text),
+    h("span", { className: "carton-media-notice-text" }, title ? h("strong", { className: "carton-media-notice-title" }, title) : null, text),
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => setClosed(true) }));
 }
 
@@ -432,7 +590,8 @@ export function liveSummary(st) {
   const state = offline ? "offline" : st.status !== "up-to-date" || waiting ? "syncing" : "ok";
   return {
     state,
-    words: offline ? words.offline(waiting) : state === "syncing" ? words.syncing : words.upToDate,
+    // DESIGN §8: "Offline: 3 changes not sent yet", "Sending 2 changes" (PLAN 8.3)
+    words: offline ? words.offlineNotSent(waiting) : state === "syncing" ? (waiting ? words.sending(waiting) : words.syncing) : words.upToDate,
     here: hereWords(peers),
     people: peers.slice(0, 3).map((p) => ({ name: p.actor.name, initials: initials(p.actor.name), color: actorColor(p.actor), idle: !!p.idle })),
     more: Math.max(0, peers.length - 3),
@@ -448,7 +607,8 @@ function LiveChipView({ st, onOpen, peersToo = false }) {
   const peers = peersToo ? livePeers(st) : [];
   const offline = st.status === "offline" || st.status === "stopped";
   const waiting = st.pending ?? 0;
-  const status = offline ? words.offline(waiting) : st.status !== "up-to-date" && waiting ? words.syncing : null;
+  // PLAN 8.3: "Offline · 3 changes not sent yet", "Sending 2 changes"
+  const status = offline ? (waiting ? words.offlineChip(waiting) : words.offline(0)) : st.status !== "up-to-date" && waiting ? words.sending(waiting) : null;
   if (!status && !peers.length) return null;
   const here = hereWords(peers);
   return h("button", { type: "button", className: "carton-live-chip", "data-state": offline ? "offline" : status ? "syncing" : "ok", title: [status, here].filter(Boolean).join(" · ") + ". Open Share", "aria-label": [status, here].filter(Boolean).join(". ") + ". Open Share", onClick: onOpen },
@@ -459,16 +619,16 @@ function LiveChipView({ st, onOpen, peersToo = false }) {
 }
 
 /**
- * Join a shared project from the Dashboard (UI audit P2-9): its tile (sync/patches/ui.js) opens this dialog, which holds
- * the Share panel's Join form; once joined, Open opens the project in its tab and the dialog closes.
+ * Join a shared project from the Dashboard (UI audit P2-9): its tile (sync/patches/ui.js) opens this dialog
+ * (scripts/carton/sync/ui.js Join: the invite link, who you join as, and Join and open, PLAN 8.2), which opens the
+ * project in its tab and closes.
  */
 export function JoinDialog({ bridge, onClose }) {
   useEffect(() => { injectCardboardSkin(document); }, []);
   const Join = window.__cartonSyncUi?.Join;
   return h("div", { "data-carton-skin": "cardboard" },
-    h(Dialog, { title: "Join a shared project", onClose, className: "carton-join-dialog" },
-      h("p", { className: "carton-join-lead" }, "Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it."),
-      Join ? h(Join, { bridge, startOpen: true, onOpened: onClose, onCancel: onClose }) : h("p", { className: "carton-error", role: "alert" }, words.failed)));
+    Join ? h(Join, { bridge, onOpened: onClose, onCancel: onClose })
+      : h(Dialog, { title: words.joinTitle, onClose, className: "carton-join-dialog" }, h("p", { className: "carton-error", role: "alert" }, words.failed)));
 }
 
 /** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */
@@ -476,12 +636,18 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
-  const onPreview = useCallback(async (conflict, side, label) => {
+  // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the side's timeline, read-only, with the card's clip in view,
+  // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
+  // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
+  // "conflict"}) reaches the editor: the worker's view() (Workstream 0, PLAN 0.5) and the stage frame that shows its
+  // label (Workstream 1). Then this goes, and the card calls ui.view itself. `live()`: still wanted once loaded (the
+  // card wasn't left, decided or set aside meanwhile), else nothing is shown.
+  const onPreview = useCallback(async (conflict, side, label, live = () => true) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
-    if (!ref) return;
-    // the side's timeline, read-only, with the card's clip in view, so the difference is on screen
+    if (!live()) return;
+    if (!ref) throw new Error(words.loadFailed);
     await conn.ui.openPreview(ref, label);
-    if (conflict.item) bridge.reveal(conflict.item);
+    if (live() && conflict.item) bridge.reveal(conflict.item);
   }, [conn, bridge]);
   const onReveal = useCallback((conflict) => { if (conflict.item) bridge.reveal(conflict.item); }, [bridge]);
   const [panelOpen, setPanelOpen] = useState(sidePanel.value != null);
@@ -498,4 +664,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor };

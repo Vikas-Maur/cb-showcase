@@ -181,6 +181,66 @@ S["titlebar"] = () => ({ ui: mock({ versions: 0 }), chrome: "titlebar" });
 // Workstream 4: the mock's story (its newest versions: DESIGN §3), behind the app's History
 S["changes-story"] = () => { const ui = mock({ versions: 40 }); setCuts(ui, CUTS(newest(ui))); ui.setSync({ kind: "upToDate" }); ui.setConflicts([]); return { ui, panel: "history" }; };
 
+// ------------------------------------------------------------------ cuts menu and Fold in (UX redesign PLAN 6.x)
+// The mockups' cuts (after/cuts-menu-*.png): who changed each and when, a dot for each but Main, Leo's under From teammates
+const WS6_CUTS = (head, current = "cut-main") => {
+  const now = Date.now();
+  return [
+    cut({ id: "cut-main", name: "Main cut", label: "Main cut", kind: "main", head, shared: true, updatedAt: now - 20_000, updatedBy: people.alice }),
+    cut({ id: "cut-ig", name: "30s Instagram cut", label: "30s Instagram cut", head: "ig@41", updatedAt: now - 130 * MIN, updatedBy: people.director, color: "#f59e0b" }),
+    cut({ id: "cut-client", name: "Client review — shorter version with alternate ending", label: "Client review — shorter version with alternate ending", head: "cr@9", updatedAt: now - 26 * 60 * MIN, updatedBy: people.alice, color: "#22d3ee" }),
+    cut({ id: "cut-leo-main", name: "Main cut", label: "Leo's Main cut", kind: "main", readOnly: true, owner: leo, head: "leomain@88", shared: true, updatedAt: now - 5 * MIN - 20_000, updatedBy: leo }),
+  ].map((c) => ({ ...c, current: c.id === current }));
+};
+const ws6 = (setup = () => {}) => () => { const ui = mock({ versions: 0 }); const head = fewVersions(ui); setCuts(ui, WS6_CUTS(head)); ui.setSync({ kind: "upToDate" }); ui.setConflicts([]); setup(ui); return { ui, panel: "history" }; };
+S["ws6-cuts"] = ws6();
+S["ws6-cuts-turn"] = ws6((ui) => ui.setWorking({ actor: people.terminal, label: "Tighten the intro and add a lower third", edits: 2, since: Date.now() - 90_000, cutId: "cut-main" }));
+S["ws6-cuts-many"] = () => {
+  const r = ws6()();
+  const names = ["Teaser", "Festival cut", "Vertical 9:16", "Director's cut: punchier open", "Rough cut for Priya", "Alt ending", "No music", "Captions off", "Trailer A", "Trailer B", "Long version"];
+  setCuts(r.ui, [...WS6_CUTS(newest(r.ui)), ...names.map((n, i) => cut({ id: `cut-x${i}`, name: n, label: n, head: `x${i}@3`, updatedAt: Date.now() - (i + 3) * 60 * MIN, updatedBy: i % 3 ? people.alice : people.director, color: ["#a78bfa", "#f472b6", "#a3e635", "#fb923c", "#38bdf8", "#34d399"][i % 6] }))]);
+  return r;
+};
+// Fold in: the mockups' changes (after/fold-*.png), as change rows
+const ws6Row = (id, summary, author, ago, change, more = {}) => ({ id, summary, author, at: Date.now() - ago, change: { key: id, text: summary, ...change }, ...more });
+const WS6_FOLD = () => [
+  ws6Row("items/intro", "Trimmed “Intro”, now ends at 0:03", people.director, 130 * MIN, { kind: "change", clip: "video", at: 0, end: 3 }),
+  ws6Row("items/summer", "Changed “Summer launch” to “Summer sale”", people.alice, 70 * MIN, { kind: "change", clip: "title", at: 3, end: 7 }),
+  ws6Row("items/closeup", "Removed “Product close-up”", people.director, 65 * MIN, { kind: "remove", clip: "video", at: 12, end: 16 }),
+  ws6Row("aspectRatio", "Changed the aspect ratio to 9:16", people.director, 131 * MIN, { kind: "change", clip: "project" }, { locked: true }),
+];
+// 30s Instagram cut was made from Main cut at 12:20 pm (the capture clock is 2:30 pm)
+const WS6_MADE = { which: "from", at: Date.now() - 130 * MIN };
+const ws6Fold = (make) => () => {
+  const r = ws6()();
+  r.ui.planFold = async (fromId, intoId) => {
+    const cuts = r.ui.cuts(), from = cuts.find((c) => c.id === fromId), into = cuts.find((c) => c.id === intoId);
+    return { from, into, made: WS6_MADE, conflicts: [], warnings: [], ...make(from, into) };
+  };
+  return r;
+};
+S["ws6-fold-all"] = ws6Fold(() => ({ changes: WS6_FOLD() }));
+S["ws6-fold-conflict"] = ws6Fold((from, into) => ({
+  changes: WS6_FOLD().filter((c) => c.id !== "items/closeup"),
+  conflicts: [{ id: "timelineItems/item-interview-b/#time", title: "'Interview B' timing", clip: "Interview B", canKeepBoth: false, provisional: "mine",
+    mine: { author: people.alice, summary: "starts at 0:18", at: Date.now() - 13 * MIN, what: "move", where: into.label },
+    theirs: { author: people.director, summary: "starts at 0:20", at: Date.now() - 70 * MIN, what: "move", where: from.label } }],
+}));
+S["ws6-fold-rest"] = ws6Fold(() => ({ changes: [ws6Row("left:fold-17:items/closeup", "Removed “Product close-up”", people.director, 4 * 24 * 60 * MIN, { kind: "remove", clip: "video", at: 12, end: 16 }, { leftOut: "fold-17", leftOutAt: new Date(2026, 9, 30, 16, 10).getTime() })] }));
+S["ws6-fold-nothing"] = ws6Fold(() => ({ changes: [], made: undefined }));
+// Leo's Main cut on screen (after/history-teammate-cut-384.png): History lists its versions, with what you can do with it
+S["ws6-teammate"] = () => {
+  const ui = mock({ versions: 0 });
+  const now = Date.now();
+  const add = (ago, o) => ui.addVersion({ at: now - ago * MIN - 20_000, kind: "edit", ...o });
+  add(30, { author: leo, summary: "Trimmed “Outro”, now ends at 0:34", changes: 5 });
+  add(140, { author: leosDirector, kind: "turn", turn: { label: "Add a title card at the end", edits: 3 }, summary: "Added title “Thanks for watching”", changes: 3 });
+  add(-20, { author: leo, summary: "Replaced the music with “Upbeat.wav”", changes: 1 });
+  setCuts(ui, WS6_CUTS(newest(ui), "cut-leo-main"));
+  ui.setSync({ kind: "upToDate" }); ui.setConflicts([]);
+  return { ui, panel: "history" };
+};
+
 const scenario = (S[scenarioName] ?? S["history-few"])();
 const ui = scenario.ui;
 

@@ -27,6 +27,8 @@ export interface ChangesViewProps {
   onBack: () => void;
   /** The host's player: the editor's playhead, loading a version ahead, your edit's length. */
   host?: PlayHost;
+  /** No Restore here: a teammate's cut stays as its owner left it (PLAN 6.2: fold it in or copy it instead). */
+  noRestore?: boolean;
   className?: string;
 }
 
@@ -114,7 +116,7 @@ export function ChangesView(p: ChangesViewProps) {
   }, [play.lit, hover, changes]);
 
   const [confirm, setConfirm] = useState<null | { busy: boolean; failed: boolean }>(null);
-  const canRestore = !a.empty && !a.provisional && a.start == null;
+  const canRestore = !p.noRestore && !a.empty && !a.provisional && a.start == null;
   const restore = async () => {
     setConfirm({ busy: true, failed: false });
     try {

@@ -75,15 +75,22 @@ test("P2-4: Fold in says what went where, and offers to switch to the cut it wen
   assert.equal(T.toasts.value, null);
 });
 
-test("P2-4: a conflict card's pick says whose edit was kept", opt, async () => {
+test("P2-4: a conflict card's pick says whose change was kept, as the card named it (docs/carton-ux DESIGN §6.7)", opt, async () => {
   const ui = fakeUi();
   T.confirmations(ui);
+  const [plain] = ui.conflicts();
+  ui.conflicts = () => [{ ...plain, clip: "W6", mine: { ...plain.mine, what: "move" }, theirs: { ...plain.theirs, what: "move" } }];
   await ui.resolve("c1", "theirs");
-  assert.equal(T.toasts.value.text, "Kept Claude Code's · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's move of “W6”.");
   await ui.resolve("c1", "mine");
-  assert.equal(T.toasts.value.text, "Kept yours · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept your move of “W6”.");
   await ui.resolve("c1", "both");
-  assert.equal(T.toasts.value.text, "Kept both · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept both changes to “W6”.");
+  // a host that gives the card no sentences: who, still
+  ui.conflicts = () => [plain];
+  await ui.resolve("c1", "theirs");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's edit.");
+  assert.ok(!T.toasts.value.action, "no Undo yet (PLAN 5.3): a pick of the side shown commits nothing to undo");
 });
 
 // A teammate as Live.view() sends one (sync/live.js peerActor).
@@ -114,18 +121,32 @@ test("P2-11: a shared project's status shows over the preview, not only in the S
   assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [] }), "", "up to date, nobody else: nothing");
   const off = chip({ shared: true, status: "offline", pending: 3, peers: [] });
   assert.match(off, /data-state="offline"/);
-  assert.match(off, />Offline: 3 edits waiting</);
+  assert.match(off, />Offline · 3 changes not sent yet</, "PLAN 8.3's words");
   // who is here shows in the title bar now (round 2): over the preview only while edits wait
   assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo()] }), "");
   const both = render(React.createElement(T.LiveChipView, { st: { shared: true, status: "up-to-date", pending: 0, peers: [leo(), { actor: null }] }, onOpen() {}, peersToo: true }));
   assert.match(both, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
 });
 
+test("PLAN 8.3: footage still on its way: a title line, then which clips by name, and that nothing was removed", opt, () => {
+  const notice = (waiting, extra = {}) => {
+    globalThis.window.__cartonMediaHere = { projectId: "p1", waiting, playable: 1, ...extra };
+    try { return render(React.createElement(T.MediaNotice, { projectId: "p1", bridge: { call: async () => ({}) } })); } finally { delete globalThis.window.__cartonMediaHere; }
+  };
+  const two = notice([{ mediaId: "m1", fileName: "interview-b.mp4" }, { mediaId: "m2", fileName: "broll-03.mp4" }], { from: "Leo" });
+  assert.match(two, /<strong class="carton-media-notice-title">2 clips are still on their way from Leo<\/strong>“interview-b\.mp4” and “broll-03\.mp4” show as Offline until they arrive\. Nothing was removed\./);
+  assert.match(notice([{ mediaId: "m1", fileName: "a.mov" }]), />1 clip is still on its way from your teammate<\/strong>“a\.mov” shows as Offline until it arrives\. Nothing was removed\./);
+  assert.match(notice(["a", "b", "c", "d"].map((n, i) => ({ mediaId: "m" + i, fileName: n + ".mp4" }))), /“a\.mp4”, “b\.mp4” and 2 more show as Offline/);
+  // the other states keep their one line
+  assert.doesNotMatch(notice([{ mediaId: "m1", fileName: "a.mov" }], { unchecked: true }), /carton-media-notice-title/);
+  assert.match(notice([]), /plays from preview copies/);
+});
+
 test("P2-11 (title bar): the strip's summary of a shared project: its state, its words, who is here", opt, () => {
   assert.equal(U.liveSummary({ shared: false }), null);
   const mia = { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia Chen" }, idle: true };
   const s = U.liveSummary({ shared: true, status: "offline", pending: 2, peers: [leo(), mia, { actor: { id: "x" } }] });
-  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 edits waiting", "Leo, Mia Chen are here", 0]);
+  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 changes not sent yet", "Leo, Mia Chen are here", 0]);
   assert.deepEqual(s.people.map((p) => [p.name, p.initials, p.idle, /^#[0-9a-f]{6}$/.test(p.color)]), [["Leo", "L", false, true], ["Mia Chen", "MC", true, true]]);
   assert.equal(U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: [] }).state, "ok");
   assert.equal(U.liveSummary({ shared: true, status: "syncing", pending: 1, peers: [] }).state, "syncing");
@@ -139,26 +160,118 @@ function strip({ narrow = false } = {}) {
   const src = require(path.join(ROOT, "scripts", "carton", "strip-buttons.js"));
   const sent = [];
   const matchMedia = () => ({ matches: narrow, addEventListener() {}, removeEventListener() {} });
-  const Strip = new Function("n", "c", "w", "I", "C", "matchMedia", src + "\nreturn __cbCartonStrip;")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
-  return { html: (panel) => render(React.createElement(Strip, { panel })), sent };
+  const [Strip, Chip] = new Function("n", "c", "w", "I", "C", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
+  return { html: (panel) => render(React.createElement(Strip, { panel })), chip: (panel) => render(React.createElement(Chip, { panel })), Chip, sent };
 }
 
 test("P2-11, P3-6: the title bar shows the sync dot and who is here; a narrow window keeps History only", opt, () => {
   const live = U.liveSummary({ shared: true, status: "offline", pending: 3, peers: [leo()] });
   const wide = strip().html({ panel: null, live });
   assert.match(wide, /data-carton-strip="history"/);
-  assert.match(wide, /aria-label="Share · Offline: 3 edits waiting · Leo is here"/);
+  assert.match(wide, /aria-label="Share · Offline: 3 changes not sent yet · Leo is here"/);
   assert.match(wide, /data-carton-sync="offline"/);
   assert.match(wide, />L<\/span>/, "Leo's avatar");
   // as before for a project that isn't shared: the panel's name alone, no dot, no avatars
   const plain = strip().html("history");
   assert.match(plain, /aria-pressed="true"[^>]*data-carton-strip="history"|data-carton-strip="history"[^>]*aria-pressed="true"/);
   assert.doesNotMatch(plain, /data-carton-sync|>L</);
-  // narrow: History only, with the dot; Share is the side panel's own tab
-  const narrow = strip({ narrow: true }).html({ panel: "share", live });
+  // narrow: History only, with the dot; Share opens from the History panel's head (PLAN 2.3)
+  const narrow = strip({ narrow: true }).html({ panel: "history", live });
   assert.doesNotMatch(narrow, /data-carton-strip="share"/);
   assert.match(narrow, /data-carton-sync="offline"/);
   assert.match(narrow, /aria-pressed="true"/, "History shows the panel is open");
+  // Share is a dialog (PLAN 8.1): its icon is pressed while the dialog is open, History's isn't
+  const sharing = strip().html({ panel: null, live, share: true });
+  assert.match(sharing, /aria-pressed="true"[^>]*data-carton-strip="share"/);
+  assert.match(sharing, /aria-pressed="false"[^>]*data-carton-strip="history"/);
+});
+
+// Carton UX redesign PLAN 2.1, 2.3: the cut chip in the title bar, before Cardboard's own "16:9 ⌄".
+test("PLAN 2.1: the cut chip says the cut you're on: scissors for Main, a colour dot for any other, the name whole in its tooltip", opt, () => {
+  const s = strip();
+  assert.equal(s.chip({ panel: null, live: null }), "", "no cut known yet: no chip");
+  assert.equal(s.chip("history"), "", "an older page's report (a bare panel name): no chip");
+  const main = s.chip({ panel: null, cut: { name: "Main cut", dot: null }, viewing: null });
+  assert.match(main, /data-carton-cut-chip=""/);
+  assert.match(main, /data-no-drag="true"/, "the title bar doesn't drag the window from it");
+  assert.match(main, /<button type="button" aria-haspopup="menu" aria-label="Cut: Main cut\. Switch cuts" title="Main cut" data-carton-cut="main"/);
+  assert.match(main, />Main cut<\/span>/);
+  assert.doesNotMatch(main, /data-carton-cut-dot|data-carton-viewing/);
+  const other = s.chip({ panel: "history", cut: { name: "30s Instagram cut", dot: "#f59e0b" }, viewing: null });
+  assert.match(other, /data-carton-cut="other"/);
+  assert.match(other, /data-carton-cut-dot=""[^>]*style="[^"]*background:#f59e0b/);
+  // a long name: cut off at 220 px (150 px in a narrow window), whole in the tooltip
+  const long = "Client review: the long version with the drone shot and the new music";
+  assert.match(s.chip({ cut: { name: long, dot: "#22d3ee" } }), new RegExp(`title="${long}"[\\s\\S]*max-width:220px`));
+  assert.match(strip({ narrow: true }).chip({ cut: { name: long, dot: "#22d3ee" } }), /max-width:150px/);
+});
+
+test("PLAN 2.1: while viewing, the chip grows its second part, the label and a ✕ back to your edit", opt, () => {
+  const s = strip();
+  const html = s.chip({ panel: "history", cut: { name: "Main cut", dot: null }, viewing: { label: "Director's “Add captions…”" } });
+  assert.match(html, /data-viewing=""/);
+  assert.match(html, /data-carton-viewing="" title="Director&#x27;s “Add captions…”"/);
+  assert.match(html, /<span class="sr-only">Looking at <\/span>Director&#x27;s “Add captions…”/);
+  assert.match(html, /<button type="button" aria-label="Back to my edit \(Esc\)" title="Back to my edit \(Esc\)" aria-keyshortcuts="Escape" data-carton-back=""/);
+  assert.doesNotMatch(html, /role="status"|aria-live/, "the editor's page announces viewing, not the title bar too");
+});
+
+test("PLAN 2.1, 2.2: the chip's click asks for the cuts menu, its ✕ for your edit", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = globalThis.document;
+  globalThis.document = w.document;
+  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const el = w.document.createElement("div");
+  w.document.body.appendChild(el);
+  const root = client.createRoot(el);
+  try {
+    const s = strip();
+    await React.act(async () => root.render(React.createElement(s.Chip, { panel: { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } } })));
+    await React.act(async () => el.querySelector("[data-carton-cut]").click());
+    await React.act(async () => el.querySelector("[data-carton-back]").click());
+    assert.deepEqual(s.sent, [{ action: "carton-cuts" }, { action: "carton-back" }]);
+  } finally {
+    await React.act(async () => root.unmount());
+    globalThis.document = keep;
+    await w.happyDOM.close();
+  }
+});
+
+test("PLAN 2.1: the chip's part of the report: your cut and what you're viewing, from today's view model or ui.viewing()", opt, () => {
+  const cuts = (current, o = {}) => [
+    { id: "cut-main", name: "Main cut", label: "Main cut", kind: "main", current: current === "cut-main", readOnly: false, head: "main@9" },
+    { id: "cut-ig", name: "30s Instagram cut", label: "30s Instagram cut", kind: "cut", current: current === "cut-ig", readOnly: false, head: "ig@3", ...o },
+    { id: "cut-leo", name: "Main cut", label: "Leo's Main cut", kind: "main", current: current === "cut-leo", readOnly: true, head: "leo@2" },
+  ];
+  const ui = (current, preview = null, extra = {}) => ({ cuts: () => cuts(current, extra.ig), preview: () => preview, calls: [], ...extra });
+  assert.equal(T.chipOf({ cuts: () => [], preview: () => null }), null, "no cuts yet: nothing");
+  assert.deepEqual(T.chipOf(ui("cut-main")), { cut: { name: "Main cut", dot: null }, viewing: null });
+  const ig = T.chipOf(ui("cut-ig"));
+  assert.equal(ig.cut.name, "30s Instagram cut");
+  assert.match(ig.cut.dot, /^#[0-9a-f]{6}$/);
+  assert.equal(T.chipOf(ui("cut-ig")).cut.dot, ig.cut.dot, "a cut keeps its colour");
+  assert.equal(T.chipOf(ui("cut-ig", null, { ig: { color: "#123abc" } })).cut.dot, "#123abc", "the view model's own colour first (PLAN 6.1)");
+  // a version opened read-only (today's preview): its label, capitalised for the chip
+  assert.deepEqual(T.chipOf(ui("cut-main", { ref: "main@3", label: "the version from 2:14 PM (Codex)" })).viewing, { label: "The version from 2:14 PM (Codex)" });
+  // a teammate's cut: your Main cut in the chip, theirs viewed
+  assert.deepEqual(T.chipOf(ui("cut-leo")), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
+  // the view model's viewing() (PLAN 0.5) first; a preview the model keeps only in preview() still shows (review #1)
+  assert.deepEqual(T.chipOf(ui("cut-main", { ref: "x", label: "ignored" }, { viewing: () => ({ ref: "main@3", kind: "version", label: "Director's “Add captions…”", short: "12:20 · Director" }) })).viewing, { label: "Director's “Add captions…”" });
+  assert.deepEqual(T.chipOf(ui("cut-main", { ref: "main@3", label: "the version from 12:41 pm" }, { viewing: () => null })).viewing, { label: "The version from 12:41 pm" });
+  assert.equal(T.chipOf(ui("cut-main", null, { viewing: () => null })).viewing, null);
+  // a teammate's cut switched to (today's cuts menu) is viewing with viewing() too
+  assert.deepEqual(T.chipOf(ui("cut-leo", null, { viewing: () => null })), { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } });
+});
+
+test("PLAN 2.1: the chip's ✕ goes back to your edit: the view closed (the editor swapped back with it), or your own cut again", opt, async () => {
+  const calls = [];
+  const base = (current, preview, o = {}) => ({ cuts: () => [{ id: "cut-main", label: "Main cut", kind: "main", current: current === "cut-main", readOnly: false }, { id: "cut-leo", label: "Leo's Main cut", kind: "main", current: current === "cut-leo", readOnly: true }], preview: () => preview, openPreview: (r) => calls.push(["openPreview", r]), switchCut: async (id) => calls.push(["switchCut", id]), view: (v) => calls.push(["view", v]), ...o });
+  await T.backToEdit(base("cut-main", null, { viewing: () => ({ ref: "main@3", kind: "before", label: "Before x", short: "x" }) }));
+  await T.backToEdit(base("cut-main", { ref: "main@3", label: "x" }, { viewing: undefined }));
+  await T.backToEdit(base("cut-leo", null));
+  await T.backToEdit(base("cut-main", null, { viewing: () => null }));
+  assert.deepEqual(calls, [["openPreview", null], ["openPreview", null], ["switchCut", "cut-main"]], "through openPreview(null), which connect() wraps with the editor's swap; nothing when there is nothing to go back from");
 });
 
 
@@ -302,6 +415,14 @@ test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors'
   assert.match(html, /id="carton-join-link"/, "the link field, with no extra button to get to it");
   assert.doesNotMatch(html, /Got an invite link/);
   assert.equal((html.match(/Join a shared project/g) ?? []).length, 1, "the title only, no second heading");
+  // PLAN 8.2: one button, Join and open, at the dialog's foot; no separate Open after joining
+  assert.match(html, /class="carton-dialog-foot"[\s\S]*>Cancel<[\s\S]*>Join and open</);
+  assert.doesNotMatch(html, />Join</, "no bare Join");
+  // a name already known: "You'll join as Leo. Change"
+  globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Leo" : null), setItem() {} };
+  const known = render(React.createElement(U.JoinDialog, { bridge: { call: async () => ({}), onEvent: () => () => {} }, onClose() {} }));
+  assert.match(known, /You&#x27;ll join as <span class="carton-known-value">Leo<\/span>\. <button type="button" class="carton-link">Change<\/button>/);
+  assert.doesNotMatch(known, /Your name/);
 });
 
 // The Dashboard patch (sync/patches/ui.js), on its own text: its anchors, and its tile. `win` and `portal` stand in for
@@ -377,9 +498,10 @@ test("regress #3: an empty library offers Join beside Start a blank project, onl
 // own as the joined project arrived, so Open couldn't be pressed and no tab opened (5 of 5 fresh profiles). The dialog
 // lived in the empty library's view ("Make your first video"), which Cardboard's Home replaces with the grid as soon as
 // the library holds a project. Here a Home as Cardboard's renders either view (its `P`), with the real Join dialog; the
-// library gets the project while the join is answered, before the answer and after it.
+// library gets the project while the join is answered, before the answer and after it. PLAN 8.2: Join and open is one
+// button now, so the dialog must live through the swap until the project is open; then it closes.
 for (const when of ["before", "after"])
-  test(`final N1: joining from an empty library keeps Open / Done until pressed (the project arrives ${when} the answer)`, opt, async () => {
+  test(`final N1, PLAN 8.2: Join and open from an empty library opens the project (it arrives in the library ${when} the answer)`, opt, async () => {
     const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
     const w = new Window({ url: "http://localhost/" });
     const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
@@ -439,14 +561,12 @@ for (const when of ["before", "after"])
         Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
         for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
       });
-      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+      const go = [...body.querySelectorAll("[role=dialog] button")].find((b) => b.textContent === "Join and open");
+      assert.ok(go, "one button: Join and open");
+      await React.act(async () => { go.click(); await new Promise((r) => setTimeout(r, 20)); });
       await React.act(async () => { await new Promise((r) => setTimeout(r, 20)); });
       assert.ok(el.querySelector('[data-view="grid"]'), "the library shows the joined project: Cardboard swapped the empty view for the grid");
-      assert.match(body.textContent, /“FX ui” is in your library now\./, "the dialog says so, and stays");
-      const open = [...body.querySelectorAll("button")].find((b) => b.textContent === "Open");
-      assert.ok(open, "with its Open");
-      await React.act(async () => { open.click(); await new Promise((r) => setTimeout(r, 10)); });
-      assert.deepEqual(opened, ["p-fx"], "Open opens the joined project");
+      assert.deepEqual(opened, ["p-fx"], "the joined project opens in its tab, through the swap");
       assert.equal(body.querySelector(".carton-join-dialog"), null, "and the dialog closes");
     } finally {
       if (root) await React.act(async () => root.unmount());
@@ -455,6 +575,93 @@ for (const when of ["before", "after"])
       await w.happyDOM.close();
     }
   });
+
+// PLAN 8.2: a project that joined but couldn't open (its tab couldn't be made) isn't lost: the dialog says it is in the
+// library, with Open to try again.
+test("PLAN 8.2: joined but not opened: the dialog says it's in the library, and Open tries again", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    let fail = true;
+    const opened = [], closed = [];
+    const bridge = { onEvent: () => () => {}, call: async () => ({ projectId: "p-fx", name: "FX ui" }), openProject: async (id) => { if (fail) throw new Error("Error invoking remote method 'tabs:open': Error: no window"); opened.push(id); } };
+    const el = w.document.createElement("div");
+    w.document.body.appendChild(el);
+    root = client.createRoot(el);
+    await React.act(async () => { root.render(React.createElement(U.JoinDialog, { bridge, onClose: () => closed.push(1) })); });
+    const link = el.querySelector("#carton-join-link");
+    await React.act(async () => {
+      link.focus();
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+      for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+    });
+    // Enter in the field joins, as the button does
+    await React.act(async () => { link.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+    assert.match(el.textContent, /“FX ui” is in your library now\./);
+    assert.match(el.querySelector("[role=alert]")?.textContent ?? "", /Something went wrong|Try again/);
+    assert.deepEqual(closed, [], "the dialog stays");
+    fail = false;
+    const open = [...el.querySelectorAll("button")].find((b) => b.textContent === "Open");
+    await React.act(async () => { open.click(); await new Promise((r) => setTimeout(r, 20)); });
+    assert.deepEqual([opened, closed], [["p-fx"], [1]], "Open opened it, and the dialog closed");
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage });
+    await w.happyDOM.close();
+  }
+});
+
+// Review of feat/ux-2-8 #4, #5: Enter again while Join and open is busy starts no second join; Cancel while it is
+// answered leaves the project in the library and opens nothing.
+test("PLAN 8.2: one join at a time from every way in, and a Join cancelled meanwhile opens nothing", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    let answer = null;
+    const joins = [], opened = [], closed = [];
+    const bridge = { onEvent: () => () => {}, call: (m, a) => { joins.push(a[0].link); return new Promise((r) => { answer = r; }); }, openProject: async (id) => { opened.push(id); } };
+    const el = w.document.createElement("div");
+    w.document.body.appendChild(el);
+    root = client.createRoot(el);
+    await React.act(async () => { root.render(React.createElement(U.JoinDialog, { bridge, onClose: () => closed.push(1) })); });
+    const link = el.querySelector("#carton-join-link");
+    await React.act(async () => {
+      link.focus();
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+      for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+    });
+    const enter = () => React.act(async () => { link.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 5)); });
+    await enter();
+    await enter();
+    const go = [...el.querySelectorAll("button")].find((b) => /Join and open|Joining/.test(b.textContent));
+    await React.act(async () => { go.click(); link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 5)); });
+    assert.equal(joins.length, 1, "Enter, Enter, the button and the form: one join");
+    // Cancel while it is answered
+    const cancel = [...el.querySelectorAll("button")].find((b) => b.textContent === "Cancel");
+    await React.act(async () => { cancel.click(); });
+    await React.act(async () => { answer({ projectId: "p-fx", name: "FX ui" }); await new Promise((r) => setTimeout(r, 20)); });
+    assert.deepEqual(closed, [1], "the dialog closed");
+    assert.deepEqual(opened, [], "and the late answer opened nothing");
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage });
+    await w.happyDOM.close();
+  }
+});
 
 // Regress prod3 P3-E: joining from an empty library, the page jumped back to the Dashboard's top as the join landed
 // (Home swaps the empty view for the grid, and its scroller lost its place while the grid measured itself): the
@@ -476,7 +683,7 @@ for (const moves of [null, "scrolls", "sidebar"])
       const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
       const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
       let addToLibrary = null;
-      const bridge = { on: true, ready: Promise.resolve(true), onEvent: () => () => {}, call: async () => { setTimeout(addToLibrary, 0); return { projectId: "p-fx", name: "FX ui" }; }, openProject: async () => {} };
+      const bridge = { on: true, ready: Promise.resolve(true), onEvent: () => () => {}, call: async () => { setTimeout(addToLibrary, 0); return { projectId: "p-fx", name: "FX ui" }; }, openProject: () => new Promise((r) => setTimeout(r, 30)) };
       const d = dashboard(bridge.ready, true, { win: { __carton: bridge, __testUi: async () => ({ JoinDialog: U.JoinDialog }) }, portal: createPortal, doc: w.document });
       const revealed = [];
       w.HTMLElement.prototype.scrollIntoView = function (o) { revealed.push([this.textContent, o?.block]); };
@@ -512,26 +719,28 @@ for (const moves of [null, "scrolls", "sidebar"])
         Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
         for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
       });
-      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 10)); });
       assert.ok(el.querySelector('[data-view="grid"]'), "the join landed: the grid replaced the empty view");
       if (moves === "scrolls") {
         // the person scrolls up meanwhile: theirs, not put back
         await React.act(async () => { scroller.dispatchEvent(new w.Event("wheel")); scroller.scrollTop = 120; await new Promise((r) => setTimeout(r, 50)); });
         assert.equal(scroller.scrollTop, 120);
       } else if (moves === "sidebar") {
-        // Done, then the sidebar's Dashboard, which scrolls Home to its top: Home's, not put back, no tile revealed
-        const done = [...body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === "Done");
-        await React.act(async () => { done.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); done.click(); await new Promise((r) => setTimeout(r, 20)); });
+        // the project opened and the dialog closed (Join and open: PLAN 8.2); then the sidebar's Dashboard, which
+        // scrolls Home to its top: Home's, not put back, no tile revealed
+        await React.act(async () => { await new Promise((r) => setTimeout(r, 40)); });
+        assert.equal(body.querySelector('[role="dialog"]'), null);
         const nav = body.querySelector("#to-dashboard");
         await React.act(async () => { nav.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); nav.click(); await new Promise((r) => setTimeout(r, 1700)); });
         assert.equal(scroller.scrollTop, 0);
         assert.deepEqual(revealed, []);
       } else {
-        // a click in the dialog isn't going elsewhere
+        // a click in the dialog isn't going elsewhere (it is up while the project opens)
         const inDialog = body.querySelector('[role="dialog"]');
+        assert.match(inDialog?.textContent ?? "", /“FX ui” is in your library now\./, "with the dialog up while it opens");
         await React.act(async () => { inDialog.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); await new Promise((r) => setTimeout(r, 50)); });
         assert.equal(scroller.scrollTop, 700, "still at the projects, not the Dashboard's top");
-        assert.match(body.textContent, /“FX ui” is in your library now\./, "with the dialog up");
+        assert.equal(body.querySelector('[role="dialog"]'), null, "the project opened: the dialog closed");
         await React.act(async () => { await new Promise((r) => setTimeout(r, 1600)); });
         assert.equal(scroller.scrollTop, 700);
         assert.deepEqual(revealed, [["p-fx", "nearest"]], "the new tile is brought into view if it isn't");
@@ -593,9 +802,9 @@ test("regress #4: in the side panel, Esc returns from a preview first; the next 
   }
 });
 
-// Regress 2026-11-02 P3-3: at the panel's 300 px minimum the three tabs' labels ran under the close ✕ ("Share✕"). Below
-// 340 px the tabs not open show their icon only (named for screen readers and on hover); the open one keeps its label.
-test("regress P3-3: a narrow panel keeps the open tab's label and shows the others as icons, clear of the close button", opt, async () => {
+// Regress 2026-11-02 P3-3: at the panel's 300 px minimum the three tabs' labels ran under the close ✕ ("Share✕"). Share
+// is a dialog now (PLAN 8.1): two tabs, both labelled at every width, as the mockups show them.
+test("regress P3-3, PLAN 8.1: the panel's tabs are History and Comments, labelled at 300 px too", opt, async () => {
   const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
   const w = new Window({ url: "http://localhost/" });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
@@ -620,8 +829,8 @@ test("regress P3-3: a narrow panel keeps the open tab's label and shows the othe
       el.remove();
       return out;
     };
-    assert.deepEqual(await tabs(300), [{ name: "History", text: "History" }, { name: "Comments", text: "" }, { name: "Share", text: "" }]);
-    assert.deepEqual(await tabs(384), [{ name: "History", text: "History" }, { name: "Comments", text: "Comments" }, { name: "Share", text: "Share" }]);
+    assert.deepEqual(await tabs(300), [{ name: "History", text: "History" }, { name: "Comments", text: "Comments" }]);
+    assert.deepEqual(await tabs(384), [{ name: "History", text: "History" }, { name: "Comments", text: "Comments" }]);
   } finally {
     if (root) await React.act(async () => root.unmount());
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
