@@ -9,7 +9,7 @@ Play both waits, the row detail, the new ways into Compare). Every builder's wor
 **For whom:** a video editor who has never used version control. The user's asks: *"make version stuff as much easy
 for the end user as possible"*, and the complaints DESIGN-V2 §0 lists (a messy History to roll back from, a git-like
 diff of any two versions, Compare congested in the panel, comparing separate cuts, the agent opening Compare).
-**By:** a design QA reviewer who neither designed nor built it. The fixes are on `fix/ux2-qa`.
+**By:** a design QA reviewer who neither designed nor built it. The fixes are on `fix/ux2-qa` (`18cb7a60`).
 
 **How:** the capture rig (`carton/packages/react/gallery/capture`, `npm run screens`) renders the real components with
 Cardboard 1.4.0's own CSS and fonts, on React and on preact/compat. Every History state was shot at 384 and 300 px,
@@ -97,6 +97,13 @@ Each with a test where it's behaviour; every one shot before and after in the ri
 
 N2c fixed the Compare menu's clipping at 300 px at the same time as I did; its CSS was kept.
 
+**Review:** one round by a fresh reviewer (Opus 5.5; the Codex accounts were out). It found five, all fixed with
+tests: a Before's title cut a clip name that has " from " in it ("Bringing back “View"); across cuts the second length
+was always your edit's, even when the right side is an older version; openCompare waited for a read on every open and
+a close during another cut's read didn't cancel it (now only another cut's version waits, and a close wins); an earlier
+day's moment read "“30s Instagram cut” Oct 30 at 4:10 pm" (now "on Oct 30 at 4:10 pm"); a peek on an export lowered
+its label's first letter.
+
 ## 4. Open gaps, by impact, with their exact fixes
 
 **N1b's four items** (built by N1b, judged here, not changed by me): Play both's wait and slates are as §1.4 says in
@@ -135,17 +142,23 @@ Play both is N1b's.
 
 ## 6. React and preact/compat
 
-The v2 states (N1's, N2's, N2c's, this QA's, and the editor compositions) were shot on both after the fixes and compared
-pixel by pixel (a pixel counts when a channel differs by more than 16). No Preact shot failed. Four pairs differ:
-- `editor-before`, `editor-edit-attempt`: a few pixels where the playhead was caught at another instant;
-- `n1-edit-attempt`: the frame's pulse, an animation shot mid-way;
-- `qa2-editor-goback`: my shot's selector, not the UI. Two rows share the title "Add captions to the interview" (today's
-  and Oct 31's), and the two runtimes put a different one first in the DOM, so the shot opened Go back… on different
-  rows. Both render it the same way.
+The whole rig (every state of every workstream, 319 shots a runtime) was shot on both from `fix/ux2-qa`'s final code
+and compared pixel by pixel (a pixel counts when a channel differs by more than 16). The pairs that differ are all
+things caught at another instant, as in the first QA:
+- a playhead or progress line mid-playback (`editor-before`, `editor-viewing`, `editor-play-newest`,
+  `after-history-viewing`, `tip-before`, `tip-viewing-x`, `ws1-editor-*`);
+- the frame's pulse on an edit tried, an animation (`n1-edit-attempt`, `ws1-editor-edit-attempt`);
+- a text caret (`ws6-cuts-new`).
 
-`npm test -w packages/react` passes on both runtimes; the full `npm run typecheck` passes; `compare.test.js`,
-`viewing.test.js`, `panel-polish.test.js` and `cut-chip.test.js` pass; the history bundle stays within its 32 KB budget
-(nothing was added to `packages/core/src/history/`).
+Six shots fail on both runtimes, the same way: the retired in-panel Changes view's (`changes`, `changes-playing`,
+`changes-before`, `changes-none`, `changes-two`, `changes-play-older`). Their steps open it through "Compare with your
+edit" or Shift+click, which now open Compare in the editor (DESIGN-V2 §1.2, N1), so the view they wait for never comes.
+That is the design; the rig's WS4 list in `shoot.mjs` should drop them, or open them in a scenario without the host's
+Compare, as DESIGN-V2 keeps `ChangesView` in the gallery for one release.
+
+Tests on the final code: the full `npm run typecheck`; `npm test -w packages/react` on React and on preact/compat;
+`compare.test.js`, `viewing.test.js`, `panel-polish.test.js` and `cut-chip.test.js`; all pass. The history bundle stays
+within its 32 KB budget (nothing was added to `packages/core/src/history/`).
 
 ## 7. Shots
 
