@@ -8,6 +8,7 @@ import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, StateRef,
 import type { CbResult, WriteOp } from "@carton/local";
 import { ago, cardLine, exitCodeOf, noticeLines, resultText, shellWord, table, who } from "./format.ts";
 import { resolveCut, resolveVersion, UsageError, versionName } from "./refs.ts";
+import { compareShowCommand, findCommand, landmarksCommand, restoreClipCommand } from "./recall.ts";
 
 /** An open project, as `@carton/local`'s `openLocal` returns it. */
 export interface CbProject {
@@ -142,11 +143,14 @@ const history: CommandSpec = {
     { name: "limit", type: "number", description: "how many versions (default 20)" },
     { name: "stats", type: "boolean", description: "also count tracks, items and duration per version" },
     { name: "find", type: "string", description: "only versions whose name, agent prompt, author, clips (by name) or title and caption text contain this, with what matched" },
-    { name: "landmarks", type: "boolean", description: "only the versions people remember: exported, sent, shared, published, each day's start, safety points before a restore, agent turns, named versions" },
+    { name: "landmarks", type: "boolean", description: "only the versions people remember: exported, sent, named, agent turns, each start, and before a restore" },
+    { name: "all", type: "boolean", description: "with --find: every match, not the newest 5" },
+    { name: "all-cuts", type: "boolean", description: "with --find: search every cut" },
   ],
   async run(ctx, a) {
     const { carton } = ctx.project;
-    if (a.find !== undefined || a.landmarks) throw new UsageError("not implemented yet: --find, --landmarks");
+    if (a.find !== undefined) return findCommand(ctx, a);
+    if (a.landmarks) return landmarksCommand(ctx, a);
     const cut = await resolveCut(carton, a.cut);
     const limit = Math.max(1, Math.min(Number(a.limit ?? 20), 1000));
     const versions = await carton.log({ cut: cut.id, limit });
@@ -329,14 +333,14 @@ const restore: CommandSpec = {
   path: ["restore"],
   gitAlias: ["revert"],
   summary: "Restore a version: its state saved as a new version on the current cut. --clip brings back one clip as it was then, and leaves everything else as it is now",
-  args: [{ name: "version", description: "<cut>@<seq> from `cb history`, or a header ref", required: true }],
+  args: [{ name: "version", description: "<cut>@<seq> from `cb history`, a header ref, or sent, exported, today, a version's name", required: true }],
   options: [
     { name: "clip", type: "string", description: "bring back only this clip (its name or id), as it was in that version; a clip deleted since comes back" },
     { name: "remove", type: "boolean", description: "with --clip: the clip wasn't in that version, so bringing it back as it was removes it" },
   ],
   write: true,
   async run(ctx, a) {
-    if (a.clip !== undefined) throw new UsageError("not implemented yet: --clip");
+    if (a.clip !== undefined) return restoreClipCommand(ctx, a);
     const v = await resolveVersion(ctx.project.carton, String(a.version));
     await refuseEmpty(ctx.project.carton, v, "restore");
     const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` }, { actor: ctx.actor });
@@ -382,15 +386,15 @@ const undo: CommandSpec = {
 const compare: CommandSpec = {
   path: ["compare"],
   gitAlias: ["diff"],
-  summary: "What changed from one version to another, in plain words (default <b>: the current head)",
-  args: [{ name: "a", description: "from version", required: true }, { name: "b", description: "to version (default: head)" }],
+  summary: "What changed from one version to another, in plain words (default <b>: the current head). Versions of two cuts compare too; --show opens it in the editor for the user",
+  args: [{ name: "a", description: "from version (left): <cut>@<seq>, a cut's name (that cut now), sent, exported, today, now, a version's name", required: true }, { name: "b", description: "to version (right; default: the user's edit now)" }],
   options: [
     { name: "shots", type: "boolean", description: "also the shot diff (Watch the changes)" },
-    { name: "show", type: "boolean", description: "also open this comparison in the editor (Compare, side by side), for the person to see" },
+    { name: "show", type: "boolean", description: "open this comparison in the editor for the user (when they ask to show or compare something)" },
   ],
   async run(ctx, a) {
     const { carton } = ctx.project;
-    if (a.show) throw new UsageError("not implemented yet: --show");
+    if (a.show) return compareShowCommand(ctx, a);
     const va = await resolveVersion(carton, String(a.a));
     const vb = a.b ? await resolveVersion(carton, String(a.b)) : undefined;
     const d = await carton.diff(va, vb, { shots: !!a.shots });

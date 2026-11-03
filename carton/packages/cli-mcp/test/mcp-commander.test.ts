@@ -10,7 +10,7 @@ const setName = (id: string, v: string) => ({ kind: "commit" as const, ops: [{ o
 
 test("MCP: tool names and JSON schemas; timeline_history keeps 1.4.0's text shape and adds who", async () => {
   const tools = mcpTools();
-  assert.deepEqual(tools.map((t) => t.name), ["timeline_history", "check_timeline", "undo_timeline", "timeline_cuts", "timeline_fold", "timeline_credits", "timeline_publish"]);
+  assert.deepEqual(tools.map((t) => t.name), ["timeline_history", "check_timeline", "undo_timeline", "timeline_cuts", "timeline_fold", "timeline_credits", "timeline_publish", "timeline_find", "timeline_landmarks", "timeline_restore_clip", "timeline_compare"]);
   const fold = tools.find((t) => t.name === "timeline_fold")!;
   assert.deepEqual((fold.inputSchema as any).required, ["cut"]);
   assert.deepEqual((fold.inputSchema as any).properties.reject, { type: "array", items: { type: "string" }, description: "record paths to keep out, e.g. timelineItems/c3" });
