@@ -226,20 +226,22 @@ const AGENTS = new Set(["agent", "subagent"]);
  * A teammate as the Share panel shows them (UI audit P1-1): an actor as @carton/react's helpers take one (`key`, `kind`,
  * `name`; actorColor hashes the `key`), keyed as History keys the same person (fromCarton's toUiActor: core's
  * actorKey), so their colour is the same in both, plus the `id`. The person (`who`) when the sender told one, else the
- * actor the host relayed. An agent's presence stays the agent's (QA G3), with its person, when told (`who`, or the
- * actor's `owner`), as its `parent` (their key) and `owner` ({id, name}), so it shows under them as theirs ("Leo's
- * Director"). Only text is kept, the name falling back to the id; null with no id to show.
+ * actor the host relayed. An agent's own presence (an agent's actor and no `who`) stays the agent's (QA G3), with its
+ * person, when core told one (the actor's `owner`), as its `parent` (their key) and `owner` ({id, name}), so it shows
+ * under them as theirs ("Leo's Director"). Only text is kept, the name falling back to the id; null with no id to show.
  */
 export function peerActor(actor, who) {
-  const agent = actor && typeof actor === "object" && AGENTS.has(actor.kind) && text(actor.id) ? actor : null;
-  // an agent's person: the sender's `who`, else the `owner` core tells an agent's actor with
-  const told = text(who?.id) ? who : agent && text(agent.owner?.id) ? agent.owner : null;
-  const person = told ? { kind: "human", id: told.id, name: text(told.name) ? told.name : told.id } : null;
-  const a = agent ?? person ?? (actor && typeof actor === "object" && text(actor.id) ? actor : null);
+  // `who` is the person at the app (worker.js livePresence), whatever the handle's own actor is: a worker started from
+  // an agent's terminal has an agent's (CLAUDECODE, CODEX_*), and that presence is still the person's
+  const person = (p) => ({ kind: "human", id: p.id, name: text(p.name) ? p.name : p.id });
+  const agent = !text(who?.id) && actor && typeof actor === "object" && AGENTS.has(actor.kind) && text(actor.id) ? actor : null;
+  const a = text(who?.id) ? person(who) : actor && typeof actor === "object" && text(actor.id) ? actor : null;
   if (!a) return null;
   const kind = text(a.kind) ? a.kind : "human", agentId = text(a.agentId) ? a.agentId : undefined;
   const out = { key: actorKey({ kind, id: a.id, agentId }), kind, id: a.id, name: text(a.name) ? a.name : a.id };
-  return agent && person ? { ...out, parent: actorKey(person), owner: { id: person.id, name: person.name } } : out;
+  // an agent's own presence: its person as core tells an agent's actor (`owner`)
+  const owner = agent && text(agent.owner?.id) ? person(agent.owner) : null;
+  return owner ? { ...out, parent: actorKey(owner), owner: { id: owner.id, name: owner.name } } : out;
 }
 
 /**

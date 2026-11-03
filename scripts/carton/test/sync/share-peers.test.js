@@ -249,8 +249,8 @@ test("QA G3, G11: each teammate with their role, their agent under them as their
   const { live: l, presence } = await live();
   const who = (id, name, role) => ({ id, name, ...(role ? { role } : {}) });
   presence(ALICE, { activity: "Editing", who: who("alice", "Alice", "editor") });
-  // her Director's presence: the agent's own actor, told as hers
-  presence({ kind: "agent", id: "director", agentId: "t1", name: "Director", group: "alice-pc/alice", app: true }, { activity: "Working on “Add a title card”", who: who("alice", "Alice", "editor") });
+  // her Director's own presence: the agent's actor, told as hers as core tells one (`owner`), with no `who`
+  presence({ kind: "agent", id: "director", agentId: "t1", name: "Director", group: "alice-pc/alice", app: true, owner: { id: "alice", name: "Alice" } }, { activity: "Working on “Add a title card”" });
   presence({ kind: "human", id: "mia", name: "Mia" }, { activity: null, idle: true, who: who("mia", "Mia", "commenter") });
   // a role this app doesn't know, and none at all (an older app): no role shown
   presence({ kind: "human", id: "bo", name: "Bo" }, { activity: "Editing", who: who("bo", "Bo", "admin") });
@@ -285,6 +285,13 @@ test("QA G3, G11: each teammate with their role, their agent under them as their
     assert.equal(mark.style.getPropertyValue("--carton-actor"), lis[1].querySelector(".carton-avatar").style.getPropertyValue("--carton-actor"), "her agent in her colour");
     assert.ok(lis[1].querySelector("[data-here]"), "who is here wears the ring");
   } finally { await m.done(); }
+});
+
+test("QA G3: the app's own presence is the person's, even from a worker whose handle is an agent's (started from an agent's terminal)", opt, async () => {
+  const { live: l, presence } = await live();
+  // CODEX_* or CLAUDECODE in the worker's environment: core tells its handle's actor as Codex, with its owner
+  presence({ kind: "agent", id: "codex@alice-pc", name: "Codex", owner: { id: "alice", name: "Alice" } }, { activity: "Editing", who: { id: "alice", name: "Alice", role: "editor" } });
+  assert.deepEqual(l.view().peers.map((p) => [p.actor, p.role]), [[{ key: "human/alice", kind: "human", id: "alice", name: "Alice" }, "editor"]]);
 });
 
 test("boundary, stage layer: a throw over the stage shows a small Try again there, never takes the editor tab down", opt, async () => {
