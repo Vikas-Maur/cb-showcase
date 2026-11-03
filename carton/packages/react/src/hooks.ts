@@ -60,6 +60,11 @@ export function useCartonUi(): CartonUi {
   return ui;
 }
 
+/** The view model when there is a CartonProvider, else null: for parts that also render without one (Comments' avatars). */
+export function useCartonUiIfAny(): CartonUi | null {
+  return useContext(UiContext);
+}
+
 export function useWords(): Words {
   return useContext(SettingsContext).words;
 }

@@ -1,8 +1,8 @@
 // The shots for Carton UX v2 N1, Compare in the editor (docs/carton-ux/v2/DESIGN-V2.md §1), beside the mockups in
 // docs/carton-ux/v2/after/compare-*.png: shoot.mjs adds them to its list (one line there). Editor shots at 1522 × 810,
 // the mockups' window; narrow at 1100 × 810; the panel at 384 and 300 px.
-export function n1Shots({ P }) {
-  const editor = { width: 1522, height: 810 };
+export function shots({ P, ED }) {
+  const editor = ED;
   const W = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "window", perWidth: false, viewport: editor, ...o });
   const open = async (p) => { await p.locator(".carton-compare").waitFor(); await p.locator(".carton-compare-list .carton-change").first().waitFor({ timeout: 4000 }).catch(() => {}); await p.waitForTimeout(300); };
   const pick = async (p, text) => { await p.locator(".carton-compare-list .carton-change", { hasText: text }).first().click(); await p.waitForTimeout(250); };

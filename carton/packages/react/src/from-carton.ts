@@ -32,7 +32,7 @@ import { TopicHub } from "./hub.ts";
 import { itemFilter } from "./item-filter.ts";
 import { cardSentences, conflictWords, type SideSentence } from "./conflict-words.ts";
 import { clock as clockWords, versionLabel, versionShort } from "./format.ts";
-import { actorLabel } from "./actors.ts";
+import { actorLabel, firstName } from "./actors.ts";
 import type {
   Actor,
   AlignEntry,
@@ -805,7 +805,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let undo: UndoTurn | null = null;
   const heads = new Map<string, number>();
 
-  const ownerName = (owner: string) => actors.get(owner)?.name ?? owner;
+  // a teammate's cut by their first name ("Leo's Main cut"), never an id (design QA G27, G30)
+  const ownerName = (owner: string) => firstName(actors.get(owner)?.name);
   const refreshCuts = async () => {
     records = await carton.cuts();
     const visible = records.filter((c) => c.kind !== "published");

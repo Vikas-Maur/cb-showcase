@@ -47,16 +47,12 @@ async function pixelDiff(pairs) {
 // How a shot differs from the real app, beyond what every shot shares (the header below).
 const DIFFERS = {
   "history-many": "Times come from the mock's generator: some rows say \"just now\" below rows from minutes ago (the generator clamps late times), which the real History never shows.",
-  "history-compare": "Compare's numbers and side labels come from the mock's shot diff (makeShotDiff), not from the two versions' timelines.",
-  "watch-": "The shot strip is the mock's 26-shot diff; the player (Cardboard's own preview) is the stand-in colour bars, which don't change with the side.",
-  "window-watch": "The player is the stand-in colour bars (dimmed while a version is previewed); in the app it is Cardboard's own preview showing the side.",
-  "window-preview": "The stage shows the stand-in bars, dimmed: the app shows the version's own frame.",
-  "fold-": "The plan is a gallery-made FoldPlan (the mock's planFold, replaced from gallery code) for 30s Instagram cut → Main cut.",
-  "comments-": "Comments come from @carton/react's comments mock (its people are Alice Chen, Bob Okafor, Cora Lind; the History mock's you is Alice Moreau).",
+  "after-comments": "Comments come from @carton/react's comments mock (its people are Alice Chen, Bob Okafor, Cora Lind; the History mock's you is Alice Moreau).",
   "share-": "The worker's live services are the fake bridge: liveStatus, liveHostInfo and liveInvite answer with the scenario's values at once.",
   "stage-media-arrived": "The notice checks every 15 s in the app; this page checks every 150 ms so the \"arrived\" answer comes at once.",
-  "stage-toast": "The toast was made by the real action (Restore / Fold in); its 6 s timeout is still running when shot.",
-  "stage-conflict-preview": "The card's preview ref comes from a gallery conflictRef on the mock (the mock has none).",
+  "ws6-fold-": "The plan is a gallery-made FoldPlan (gallery code replaces the mock's planFold).",
+  "conflict-": "The cards are gallery-made (states/qa.js); See it answers a held state the mock doesn't have.",
+  "editor-": "The window around Carton is a stand-in at the mockups' size (1522 × 810).",
   "titlebar": "Only the History/Share icons are Carton's (strip-buttons.js run with Cardboard's button class). The tabs, 16:9, report-issue, Export and sidebar buttons are stand-ins.",
   "join-": "The Dashboard behind the dialog is a stand-in.",
 };
@@ -75,7 +71,7 @@ const lines = react.shots.map((s) => {
   const errs = [...s.errors.map((e) => `React: ${e}`), ...(p?.errors ?? []).map((e) => `Preact: ${e}`)];
   return `| ${s.file ? `\`${s.file}\`` : `(not produced: ${s.name})`} | ${s.how} | \`?s=${s.scenario}${s.width ? `&w=${s.width}` : ""}\`, ${s.target} | ${[differs(s.name), errs.join("; ")].filter(Boolean).join(" ") || "—"} |`;
 });
-writeFileSync(join(out, "INDEX.md"), `# Carton UI, before: screenshots
+writeFileSync(join(out, "INDEX.md"), `# Carton UI: screenshots
 
 Made by \`carton/packages/react/gallery/capture/run.mjs\` (see README.md here). Headless Chromium on Linux, DPR 2, React 19
 (preact/compat copies in \`preact/\`). Every shot runs the app's own code: \`scripts/carton/ui.js\` (CartonSide,

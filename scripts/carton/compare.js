@@ -13,7 +13,7 @@
 import { createElement as h, Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
-  clock, compareMarks, compareModeShown, compareModesFor, cutRef, followTime, leadTime, rowRange, stepAt, stripOf, timecode,
+  actorLabel, clock, compareMarks, compareModeShown, compareModesFor, cutColor, cutRef, followTime, isMainCut, leadTime, rowRange, stepAt, stripOf, timecode,
   useCartonUi, versionLabel, words,
 } from "@carton/react";
 import { injectStyles } from "@carton/react/skin/cardboard";
@@ -59,7 +59,8 @@ export function endOf(ui, ref, now = Date.now()) {
     return { ...base, label, title: upFirst(unquote(label)), detail: clock(v.at, { now }) };
   }
   if (cut) {
-    const owner = cut.readOnly && cut.owner?.name ? cut.owner.name : null;
+    // a teammate's cut by its owner's first name ("now · Leo"), as names go everywhere (actorLabel)
+    const owner = cut.readOnly && cut.owner ? actorLabel(cut.owner, actor, words.you) || null : null;
     if (head) return { ...base, label: cutRef(cut), title: cut.label, detail: [words.now, owner].filter(Boolean).join(" · ") };
     return { ...base, label: `${cutRef(cut)} (${words.anEarlierVersion})`, title: cut.label, detail: words.anEarlierVersion };
   }
@@ -83,7 +84,8 @@ export function sidesOf(ui, from, to, now = Date.now()) {
   }
   const acrossCuts = !!a.cutId && !!b.cutId && a.cutId !== b.cutId;
   if (acrossCuts && b.you && b.cut) b = { ...b, label: cutRef(b.cut), title: b.cut.label, detail: words.yourEditNowLabel.toLowerCase() };
-  const clean = ({ seq, at, cut, ...e }) => ({ ...e, ...(cut ? { cutMark: { main: cut.kind === "main" && !cut.readOnly, dot: cut.color ?? null } } : {}) });
+  // each side's cut mark, as the cuts menu and the chip draw it: scissors for Main cut, else its colour dot
+  const clean = ({ seq, at, cut, ...e }) => ({ ...e, ...(cut ? { cutMark: { main: isMainCut(cut), dot: cutColor(cut) ?? null } } : {}) });
   return { left: clean(a), right: clean(b), acrossCuts };
 }
 

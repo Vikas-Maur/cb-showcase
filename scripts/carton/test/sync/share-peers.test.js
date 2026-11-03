@@ -273,7 +273,8 @@ test("QA G3, G11: each teammate with their role, their agent under them as their
       ["Mia", "Here, not editing", "Can comment", false],
       ["Bo", "Here now · editing", null, false],
       ["Cy", "Here now · editing", null, false],
-      ["Dee Ray's Director", "Working on “Trim the intro”", null, false],
+      // a teammate by first name in every author slot (design QA G27, actorLabel)
+      ["Dee's Director", "Working on “Trim the intro”", null, false],
     ]);
     const lis = [...m.container.querySelectorAll(".carton-share-dialog li")];
     // You: "Y", as History draws you, before and after a share (not the account's initial)

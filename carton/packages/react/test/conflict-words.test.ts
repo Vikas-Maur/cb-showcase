@@ -109,8 +109,9 @@ test("conflictWords: the title says what both did, or what each did; the lead sa
   assert.equal(kb.lead, "Pick one to keep, or keep both. Until you pick, both are in the timeline.");
 });
 
-test("conflictWords: a host that gives no sentences keeps core's title; a project setting has no clip", () => {
-  assert.equal(conflictWords(card({}), nameOf).title, "'Interview B' timing");
+test("conflictWords: a host that gives no sentences gets the card's own form from core's title; a project setting has no clip", () => {
+  // design QA G30: core's "'Interview B' timing" reads as the other cards do, the clip in curly quotes
+  assert.equal(conflictWords(card({}), nameOf).title, "“Interview B”: you and Claude Code both changed it");
   const root = conflictWords(card({ title: "Aspect ratio", mine: side(people.alice, { did: "changed it", what: "aspect ratio" }), theirs: side(people.director, { did: "changed it", what: "aspect ratio" }) }), nameOf);
   assert.equal(root.title, "Aspect ratio: you and Director both changed it");
   assert.deepEqual([root.label.mine, root.label.theirs], ["Your aspect ratio", "Director's aspect ratio"]);

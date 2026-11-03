@@ -10,23 +10,34 @@ after(closeDom);
 const name = (t: string) => `${t} [${runtime}]`;
 const texts = (els: Element[]) => els.map((e) => e.textContent?.trim());
 
-test(name("threads in timeline order with where they sit: timecode, Moved, a changed moment, whole video, replies"), async () => {
+test(name("threads in timeline order with where they sit: timecode, Moved with its clip, a changed moment, whole video, replies"), async () => {
   const ui = createMockComments();
   const m = await render(h(CommentsPanel, { comments: ui }));
   const threads = $$(m.container, "[role=listitem]");
   assert.equal(threads.length, 4, "the resolved thread is under Resolved");
   // PLAN 9.1: times as the editor shows them (0:06), "Whole video"
   assert.deepEqual(texts(threads.map((t) => $(t, ".carton-comment-at")!)), ["0:12", "0:31–0:35", "0:47", "Whole video"]);
-  assert.equal(byText(threads[1]!, ".carton-badge", "Moved")?.dataset.tone, "info");
-  // laptop report: no tooltip over the next thread; the hint is for screen readers
-  assert.equal($(threads[1]!, ".carton-badge")?.getAttribute("aria-description"), "The clip moved; the comment followed it.");
-  assert.equal($(threads[1]!, ".carton-badge")?.getAttribute("data-carton-tip"), null);
+  // a note that followed its clip says so in the grey line a changed moment uses, never a pill (design QA G26)
+  assert.equal($(threads[1]!, ".carton-badge"), null);
+  assert.equal($(threads[1]!, ".carton-comment-changed")?.textContent, "Moved with its clip.");
+  // laptop report: no tooltip over the next thread; the hint is the line's title, as a changed moment's is
+  assert.equal($(threads[1]!, ".carton-comment-changed")?.getAttribute("title"), "The clip moved; the comment followed it.");
+  assert.equal($(threads[1]!, ".carton-comment-changed")?.getAttribute("data-carton-tip"), null);
   // a moment that changed since says so in a line of its own, not a badge (PLAN 9.1)
   assert.equal($(threads[2]!, ".carton-badge"), null);
   assert.equal($(threads[2]!, ".carton-comment-changed")?.textContent, "That moment changed since.", "no host to view it: no link");
   assert.equal($(threads[2]!, ".carton-comment-changed")?.getAttribute("title"), "What's there changed since this comment was made.");
   assert.equal($$(threads[0]!, ".carton-thread-replies .carton-comment").length, 1);
-  assert.match(threads[0]!.getAttribute("aria-label")!, /Bob Okafor's comment at 0:12/);
+  // screen readers hear a sentence, the teammate by first name as on screen (design QA G22, G27)
+  assert.equal(threads[0]!.getAttribute("aria-label"), "Bob's comment at 0:12");
+  assert.equal($(threads[0]!, ".carton-comment-name")?.textContent, "Bob");
+  const whole = threads[3]!, who = $(whole, ".carton-comment-name")?.textContent;
+  assert.equal(whole.getAttribute("aria-label"), who === "You" ? "Your comment on the whole video" : `${who}'s comment on the whole video`);
+  // You is "Y" here, as in History (design QA G11)
+  const mine = threads.find((t) => $(t, ".carton-comment-name")?.textContent === "You");
+  assert.ok(mine, "one of the threads is yours");
+  assert.equal($(mine!, ".carton-avatar")?.textContent, "Y");
+  assert.equal(mine!.getAttribute("aria-label")?.startsWith("Your comment "), true);
   assert.deepEqual(texts($$(m.container, "[role=tab]")), ["Open 4", "Resolved 1", "All 5"]);
   await click(byText(m.container, "[role=tab]", "Resolved 1"));
   assert.match($(m.container, "[role=listitem] .carton-thread-resolved")!.textContent!, /Resolved by You/);
@@ -108,10 +119,11 @@ test(name("PLAN 9.1: That moment changed since. See it as it was: the version it
   // a clip removed: the same line, its own reason in the tooltip
   await act(() => ui.setPlacement(ui.threads()[0]!.id, { status: "removed", range: [12.4, 12.4] }));
   await flush();
-  const removed = $$(m.container, "[role=listitem]").find((t) => /Bob Okafor's comment at 0:12/.test(t.getAttribute("aria-label") ?? ""))!;
+  const removed = $$(m.container, "[role=listitem]").find((t) => /Bob's comment at 0:12/.test(t.getAttribute("aria-label") ?? ""))!;
   assert.equal($(removed, ".carton-comment-changed")?.getAttribute("title"), "The clip this comment was on was removed.");
-  // the others have no line: a moved one, the whole video
-  assert.equal($$(m.container, ".carton-comment-changed").length, 2);
+  // the others have no "changed" line: the whole video, and a moved one, whose line says it moved with its clip (G26)
+  assert.equal($$(m.container, ".carton-comment-changed:not([data-moved])").length, 2);
+  assert.deepEqual(texts($$(m.container, ".carton-comment-changed[data-moved]")), ["Moved with its clip."]);
 });
 
 test(name("typing in the panel never reaches the editor's shortcuts"), async () => {

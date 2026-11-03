@@ -1,6 +1,6 @@
-// The capture page's states for Carton UX v2 N1, Compare in the editor (docs/carton-ux/v2/DESIGN-V2.md §1). Kept apart
-// from entry.js (a few lines there use it), so other workstreams' rig states don't edit the same lines. Gallery code
-// only: nothing here ships.
+// The capture page's states for Carton UX v2 N1, Compare in the editor (docs/carton-ux/v2/DESIGN-V2.md §1), as
+// states/README.md has them; entry.js also takes this file's stand-ins (its stage, second player and timeline in
+// Cardboard's structure) and the bridge's Compare half for these scenarios (`n1`). Gallery code only: nothing ships.
 // - Stand-ins in Cardboard's own structure where Compare reads it: the stage (its padded stage div, the pan-and-zoom
 //   wrapper, the picture), and the timeline (the scroll area, the tracks' scroll area, the tracks surface with one
 //   [data-track-id] row per track, the track names' column, the toolbar's right-hand group). The clips are divs here
@@ -75,8 +75,8 @@ for (const [i, j] of SHOTDIFF.matches) SHOTDIFF.b[j] = { ...SHOTDIFF.b[j], sig: 
 
 const PPS = 20;
 
-/** Add the scenarios to entry.js's table `S`, from its own builders. */
-export function addN1(S, { ux, setCuts, CUTS, newest, people }) {
+/** Add the scenarios to entry.js's table `S` (states/README.md), from its own builders. */
+export function addStates(S, { ux }) {
   const compare = (o = {}) => () => {
     const r = ux()();
     const ui = r.ui;
