@@ -488,6 +488,79 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-playhead)::before{content:"";position:absolute;top:-2px;bottom:-2px;left:-1px;width:2px;border-radius:1px;background:var(--cb-fg-1);box-shadow:0 0 0 1px #00000080}
 :where(${S}) :where(.carton-playhead)::after{content:"";position:absolute;top:-6px;left:-5px;border:5px solid transparent;border-top-color:var(--cb-fg-1)}
 
+/* ---------------------------------------------------------------- the Changes view, Play and Before (DESIGN §5, PLAN 4) */
+:where(${S}) :where(.carton-changes){display:flex;flex-direction:column;flex:1 1 0;min-height:0;height:100%;background:var(--cb-panel);outline:none}
+:where(${S}) :where(.carton-changes-nav){flex:none;display:flex;align-items:center;height:36px;padding:2px 10px 0 6px}
+:where(${S}) :where(.carton-changes-nav .carton-btn){height:28px;padding:0 10px 0 8px;font-size:12.5px;border-radius:7px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-changes-head){flex:none;padding:4px 14px 10px}
+:where(${S}) :where(.carton-changes-title){font-size:15px;line-height:20px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-changes-sub){margin-top:2px;font-size:12.5px;line-height:17px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-changes-body){flex:1 1 0;min-height:0;display:flex;flex-direction:column;overflow-y:auto;outline:none}
+:where(${S}) :where(.carton-changes[data-compact] .carton-changes-body){overflow:hidden}
+:where(${S}) :where(.carton-changes-mapbox){flex:none;padding:0 14px}
+:where(${S}) :where(.carton-changes-ends){display:flex;justify-content:space-between;margin:-4px 0 6px;font-size:11px;line-height:15px;color:var(--cb-fg-4);font-variant-numeric:tabular-nums}
+:where(${S}) :where(.carton-changes-list){flex:none;padding:0 14px 8px;outline:none}
+:where(${S}) :where(.carton-changes[data-compact] .carton-changes-list){flex:1 1 0;min-height:0;padding:0 8px 0 14px}
+:where(${S}) :where(.carton-changes-error){padding:0 14px 8px}
+:where(${S}) :where(.carton-changes-failed){display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:4px 14px}
+:where(${S}) :where(.carton-changes-skeleton){display:flex;flex-direction:column;gap:14px;padding:6px 14px}
+:where(${S}) :where(.carton-changes-skeleton span){height:30px;border-radius:6px;background:linear-gradient(90deg,#ffffff08,#ffffff10,#ffffff08)}
+:where(${S}) :where(.carton-changes-transport){flex:none;display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--cb-line);background:var(--cb-panel)}
+:where(${S}) :where(.carton-changes-transport .carton-btn){height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
+:where(${S}) :where(.carton-changes-transport .carton-btn:has(> .carton-icon)){padding-left:8px}
+:where(${S}) :where(.carton-changes-spacer){flex:1}
+:where(${S}) :where(.carton-changes-confirm){flex:none;margin:8px 10px 10px;padding:10px;border-radius:8px;background:var(--cb-raised);box-shadow:inset 0 0 0 1px #ffffff10}
+:where(${S}) :where(.carton-changes-confirm-title){font-size:13px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-changes-confirm-body){margin-top:4px;font-size:12.5px;line-height:17px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-changes-confirm .carton-error){margin-top:6px}
+:where(${S}) :where(.carton-changes-confirm-acts){display:flex;gap:6px;margin-top:10px}
+:where(${S}) :where(.carton-changes-confirm-acts .carton-btn){height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
+/* a change row: time in the edit · kind of clip · what happened (and who) · ▶ */
+:where(${S}) :where(.carton-change){position:relative;display:grid;grid-template-columns:34px 18px minmax(0,1fr) 22px;align-items:start;column-gap:6px;padding:5px 6px;margin:0 -6px;border-radius:6px;font-size:12.5px;line-height:17px;cursor:default;-webkit-user-select:none;user-select:none}
+:where(${S}) :where(.carton-change:hover){background:#ffffff0a}
+:where(${S}) :where(.carton-change[data-lit]){background:#ffffff12}
+:where(${S}) :where(.carton-changes-list:focus-visible .carton-change[data-active]){box-shadow:inset 0 0 0 1px #ffffff2e}
+:where(${S}) :where(.carton-change-at){color:var(--cb-fg-3);font-variant-numeric:tabular-nums}
+:where(${S}) :where(.carton-change-text){min-width:0;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-change-sentence){display:block;overflow-wrap:anywhere}
+:where(${S}) :where(.carton-changes[data-compact] .carton-change-sentence){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:where(${S}) :where(.carton-change-who){display:block;margin-top:1px;font-size:11.5px;line-height:15px;color:var(--cb-fg-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+:where(${S}) :where(.carton-change-kind){position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;color:#fff;background:#3a3a3a}
+:where(${S}) :where(.carton-change-kind[data-clip=video]){background:#2680d9}
+:where(${S}) :where(.carton-change-kind[data-clip=title]){background:#4f4096}
+:where(${S}) :where(.carton-change-kind[data-clip=caption]){background:#5d4db3}
+:where(${S}) :where(.carton-change-kind[data-clip=audio]){background:#1c7054}
+:where(${S}) :where(.carton-change-kind[data-clip=image]){background:#a347d1}
+:where(${S}) :where(.carton-change-kind[data-clip=code]){background:#b5405f}
+:where(${S}) :where(.carton-change-badge){position:absolute;right:-3px;bottom:-3px;display:flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:9px;font-size:9px;line-height:9px;font-weight:700;box-shadow:0 0 0 1.5px var(--cb-panel)}
+:where(${S}) :where(.carton-change-badge[data-kind=add]){background:var(--cb-ok);color:#06240f}
+:where(${S}) :where(.carton-change-badge[data-kind=remove]){background:var(--cb-danger);color:#2a0b0b}
+:where(${S}) :where(.carton-change-badge[data-kind=change]){background:var(--cb-warn)}
+:where(${S}) :where(.carton-change-play){display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin-top:-2px;padding:0;border:0;border-radius:6px;background:none;color:var(--cb-fg-1);cursor:pointer;opacity:0}
+:where(${S}) :where(.carton-change:hover .carton-change-play, .carton-change[data-lit] .carton-change-play, .carton-change[data-active] .carton-change-play){opacity:1}
+:where(${S}) :where(.carton-change-play:hover){background:#ffffff14}
+:where(${S}) :where(.carton-change-progress){grid-column:1/5;position:relative;height:2px;margin-top:5px;border-radius:2px;background:#ffffff14;overflow:hidden}
+:where(${S}) :where(.carton-change-progress > i){position:absolute;inset:0;background:var(--cb-fg-1);transform:scaleX(0);transform-origin:left;will-change:transform}
+/* the change map: the edit's length, a tick per change, Play's playhead (moved by transform) */
+:where(${S}) :where(.carton-change-map){position:relative;height:18px;margin:2px 0 8px}
+:where(${S}) :where(.carton-change-map-track){position:absolute;left:0;right:0;top:6px;height:6px;border-radius:9px;background:#2c2c2c}
+:where(${S}) :where(.carton-change-tick){position:absolute;top:2px;width:4px;height:14px;margin-left:-2px;border-radius:2px;background:var(--cb-warn)}
+:where(${S}) :where(.carton-change-tick[data-kind=add]){background:var(--cb-ok)}
+:where(${S}) :where(.carton-change-tick[data-kind=remove]){background:var(--cb-danger)}
+:where(${S}) :where(.carton-change-tick[data-on]){box-shadow:0 0 0 2px var(--cb-panel),0 0 0 3.5px var(--cb-fg-1);z-index:1}
+:where(${S}) :where(.carton-change-map-head){position:absolute;inset:0;pointer-events:none;will-change:transform;z-index:2}
+:where(${S}) :where(.carton-change-map-head > i){position:absolute;top:-1px;left:-1px;width:2px;height:20px;border-radius:2px;background:var(--cb-fg-1);box-shadow:0 0 0 1px #00000080}
+/* Before: an outlined toggle; held or latched, blue (the viewing colour) */
+:where(${S}) :where(.carton-before){display:inline-flex;align-items:center;height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;box-shadow:inset 0 0 0 1px var(--cb-line-2);color:var(--cb-fg-2);font-size:12.5px;font-weight:500;cursor:pointer;touch-action:none;outline:none}
+:where(${S}) :where(.carton-before:hover){color:var(--cb-fg-1);background:#ffffff08}
+:where(${S}) :where(.carton-before[aria-pressed=true]){background:#8ab4ff24;color:#dce8ff;box-shadow:inset 0 0 0 1px #8ab4ff66}
+:where(${S}) :where(.carton-before:focus-visible){box-shadow:inset 0 0 0 1px var(--cb-line-2),0 0 0 3px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+/* Play all's spinner: only once a load has taken 300 ms */
+:where(${S}) :where(.carton-play-all){display:inline-flex;align-items:center;gap:6px}
+:where(${S}) :where(.carton-spinner){width:14px;height:14px;border-radius:50%;border:2px solid #ffffff2e;border-top-color:var(--cb-fg-1);opacity:0;animation:carton-spin .8s linear infinite,carton-show 0s linear .3s forwards}
+@keyframes carton-show{to{opacity:1}}
+@media (prefers-reduced-motion: reduce){ :where(${S}) :where(.carton-spinner){opacity:1} }
+
 @media (prefers-reduced-motion: reduce){
   :where(${S}) *, :where(${S}) *::before, :where(${S}) *::after{animation:none!important;transition:none!important}
 }

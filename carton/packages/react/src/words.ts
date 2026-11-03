@@ -323,6 +323,11 @@ export const words = {
   sameAs: (label: string) => `Your edit is the same as ${label}.`,
   restoreThisVersion: "Restore this version…",
   backToHistory: "History",
+  // Workstream 4 (the Changes view between two versions, neither your edit; the back button's tooltip; a retry)
+  noChangesBetween: (from: string, to: string) => `No changes from ${from} to ${to}`,
+  sameVersions: "The two versions are the same.",
+  backToHistoryKey: "Back to History (Esc)",
+  tryAgain: "Try again",
 
   // Viewing
   beforeOf: (label: string) => `Before ${label}`,

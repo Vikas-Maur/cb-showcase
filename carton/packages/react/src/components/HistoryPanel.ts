@@ -2,7 +2,7 @@
 // turns (shown as checkpoints, like the chat's) stand out, and each row says who and when, down to the subagent.
 // A version still waiting for the server says so: its place is provisional until confirmed (L5).
 
-import { createElement as h, memo, useCallback, useId, useMemo, useRef, useState, type MouseEvent } from "react";
+import { createElement as h, memo, useCallback, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { exactTime, versionLabel, when } from "../format.ts";
 import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
@@ -11,7 +11,8 @@ import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, spansDays, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSeparator, cx, radioKeys, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
-import { CompareCard } from "./CompareCard.ts";
+import { ChangesView } from "./ChangesView.ts";
+import type { PlayHost } from "./Play.ts";
 
 export const VERSION_ROW_HEIGHT = 52;
 /** About the height of a row's actions menu: with less room than this below a row, it opens above it. */
@@ -23,10 +24,13 @@ const DETAILS_PAD = 8;
 export interface HistoryPanelProps {
   /** Open a version (Enter or double-click). Default: a read-only preview of it (§9). */
   onOpen?: (v: Version) => void;
-  /** "Watch the changes" on the Compare card. */
-  onWatch?: (a: string, b: string) => void;
-  /** Ref of the current state, for "Compare with current". */
+  /** Ref of the current state. Deprecated: the Changes view finds your edit itself. */
   currentRef?: string;
+  /**
+   * The host's player for Play and Before (DESIGN §5.3): the editor's playhead, loading a version ahead, your edit's
+   * length. Without one, Play still lights the rows and views versions.
+   */
+  play?: PlayHost;
   className?: string;
   /** Viewport height used before the list can measure itself. */
   initialHeight?: number;
@@ -42,8 +46,6 @@ interface RowProps {
   active: boolean;
   /** Its actions menu is open: it looks picked while the menu is, and only then (UI audit P2-2). */
   menuOpen: boolean;
-  /** It is the version the Compare card compares. */
-  compared: boolean;
   naming: "version" | "cut" | null;
   now: number;
   onPick: (id: string, e: MouseEvent) => void;
@@ -102,7 +104,6 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-provisional": v.provisional ? "" : undefined,
       "data-active": p.active ? "" : undefined,
       "data-menu": p.menuOpen ? "" : undefined,
-      "data-compared": p.compared ? "" : undefined,
       "data-expanded": p.expanded && v.details?.length ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(v.id, e),
       onDoubleClick: () => p.onOpen(v.id),
@@ -195,7 +196,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // A row being named in place: naming the version itself, or naming a new cut made from it.
   const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number; bottom?: number } | null>(null);
-  const [comparing, setComparing] = useState<string | null>(null);
+  // The Changes view in place of the list (DESIGN §5.4): between a version and your edit (Compare with your edit), or
+  // two versions (Shift+click, Shift+↑↓). The list keeps its filter and its row; ← History comes back to it.
+  const [changes, setChanges] = useState<{ from: Version; to: Version | null } | null>(null);
   // Why the last restore or new cut didn't happen, in the words the app gave.
   const [failed, setFailed] = useState<string | null>(null);
   const act = useCallback((p: Promise<unknown>) => {
@@ -253,7 +256,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [find, props.onOpen, ui, previewLabel],
   );
 
-  const onPick = useCallback((id: string) => setActiveId(id), []);
+  const activeRef = useRef(activeId);
+  activeRef.current = activeId;
+  // Shift+click on a second version: the Changes view between the two. A plain click picks the row.
+  const onPick = useCallback(
+    (id: string, e: MouseEvent) => {
+      const was = activeRef.current;
+      if (e.shiftKey && was && was !== id) {
+        const a = find(was), b = find(id);
+        if (a && b && !a.provisional && !b.provisional) return setChanges({ from: a, to: b });
+      }
+      setActiveId(id);
+    },
+    [find],
+  );
   // The menu opens below its row, or above it when there isn't room below (the last rows: P2-3). Opening it doesn't
   // make its row the active one: the row looks picked while its menu is open, and stops when it closes (P2-2).
   const onMenu = useCallback((id: string, el: HTMLElement) => {
@@ -264,7 +280,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     const up = !!box && box.height - below < MENU_ROOM && r.top - box.top > box.height - below;
     setMenu({ id, x: box ? r.right - box.left : 0, y: below, ...(up && box ? { bottom: box.bottom - r.top + 4 } : {}) });
   }, []);
-  // Back to the list after a menu closed with Esc, or the Compare card closed: never to <body> (P2-1).
+  // Back to the list after a menu closed with Esc, or the Changes view closed: never to <body> (P2-1).
   const toList = useCallback(() => {
     requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>(".carton-history-list")?.focus({ preventScroll: true }));
   }, []);
@@ -301,13 +317,39 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const expanded = expandedAt >= 0 ? { index: expandedAt, extra: expandedV!.details!.length * VERSION_DETAIL_HEIGHT + DETAILS_PAD } : null;
   const menuVersion = menu ? find(menu.id) : undefined;
   const waiting = !!menuVersion?.provisional;
-  const compareVersion = comparing ? find(comparing) : undefined;
   const filters = useMemo(() => (["all", "named", "turns"] as const).map((f) => ({ f, label: words.historyFilters[f] })), [words]);
   const empty = filter === "named" ? words.historyEmptyNamed : filter === "turns" ? words.historyEmptyTurns : words.historyEmpty;
 
+  // Shift+↑↓ on the list: the Changes view between the row and the one above or below it (DESIGN §7).
+  const onShiftArrow = (e: KeyboardEvent<HTMLElement>) => {
+    if (!e.shiftKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!(e.target as HTMLElement).classList?.contains("carton-history-list") || active < 0) return;
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    let j = active + step, b: Version | undefined;
+    for (; j >= 0 && j < (rows ? rows.length : count) && !(b = versionAtRow(j)); j += step);
+    const a = versionAtRow(active);
+    e.preventDefault();
+    e.stopPropagation();
+    if (a && b && !a.provisional && !b.provisional) setChanges({ from: a, to: b });
+  };
+  const closeChanges = useCallback(() => {
+    setChanges((c) => {
+      if (c) setActiveId(c.from.id);
+      return null;
+    });
+    toList();
+  }, [toList]);
+
+  if (changes)
+    return h(
+      "section",
+      { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-changes": "" },
+      h(ChangesView, { from: changes.from, to: changes.to, onBack: closeChanges, ...(props.play ? { host: props.play } : {}) }),
+    );
+
   return h(
     "section",
-    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-menu-open": menu ? "" : undefined, "data-scrolled": scrolled ? "" : undefined },
+    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-menu-open": menu ? "" : undefined, "data-scrolled": scrolled ? "" : undefined, onKeyDownCapture: onShiftArrow },
     h(
       "header",
       { className: "carton-panel-head" },
@@ -371,7 +413,6 @@ export function HistoryPanel(props: HistoryPanelProps) {
               domId: `${listId}-${v.id}`,
               active: v.id === activeId,
               menuOpen: v.id === menu?.id,
-              compared: v.id === comparing,
               naming: naming?.id === v.id ? naming.mode : null,
               // Rows only need minute precision; passing the shared minute keeps memo effective.
               now,
@@ -405,28 +446,13 @@ export function HistoryPanel(props: HistoryPanelProps) {
           // A version still waiting to sync can't be previewed, compared, named or restored yet (L5). An empty one
           // (the start of an imported project's history) has nothing to preview, restore or make a cut from: it says so.
           menuVersion.empty ? null : h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
-          props.currentRef
-            ? h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setComparing(menuVersion.id)) }, words.compareWithCurrent)
-            : null,
+          h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setChanges({ from: menuVersion, to: null })) }, words.compareWithYourEdit),
           h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
           menuVersion.empty ? null : h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
           menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
           h(MenuSeparator, null),
           h(MenuItem, { icon: "restore", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), act(ui.restore(menuVersion.ref))) }, words.restore),
         )
-      : null,
-    compareVersion && props.currentRef
-      ? h(CompareCard, {
-          a: compareVersion.ref,
-          b: props.currentRef,
-          onWatch: props.onWatch,
-          ...(compareVersion.empty ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
-          onClose: () => {
-            setComparing(null);
-            toList();
-          },
-          className: "carton-history-compare",
-        })
       : null,
   );
 }

@@ -112,22 +112,24 @@ test(name("P2-3: a row's menu opens above it when there's no room below"), async
   await m.unmount();
 });
 
-test(name("P2-1, P2-5: the Compare card takes focus, Esc closes only it, and the compared row is marked"), async () => {
+test(name("P2-1, P2-5 (the Changes view, PLAN 4.1): it takes focus, Esc closes only it, and focus is back on the row it came from"), async () => {
   const ui = createMockUi({ versions: 30 });
   let outer = 0;
   // the side panel around it closes on Esc (scripts/carton/ui.js: a React handler, as here)
-  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600, currentRef: "main@30" }))));
-  await click($$(m.container, "[role=option]")[3]!.querySelector(".carton-version-more"));
-  await click(byText(m.container, "[role=menuitem]", "Compare with current"));
+  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600 }))));
+  const row = $$(m.container, "[role=option]")[3]!;
+  const title = row.querySelector(".carton-version-text")!.textContent;
+  await click(row.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Compare with your edit"));
   await flush();
-  const card = $(m.container, ".carton-compare")!;
-  assert.equal(document.activeElement, card);
-  assert.equal($$(m.container, "[role=option]")[3]!.dataset.compared, "");
-  await key(card, "Escape");
+  const view = $(m.container, ".carton-changes")!;
+  assert.ok(view.contains(document.activeElement), "focus is in the Changes view");
+  await key(document.activeElement, "Escape");
   await raf();
-  assert.equal($(m.container, ".carton-compare"), null);
+  assert.equal($(m.container, ".carton-changes"), null);
   assert.equal(outer, 0, "the panel around it never saw that Esc");
   assert.ok((document.activeElement as HTMLElement).classList.contains("carton-history-list"));
+  assert.equal($(m.container, ".carton-version[data-active] .carton-version-text")?.textContent, title, "on the row it came from");
   await m.unmount();
 });
 
