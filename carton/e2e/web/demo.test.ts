@@ -287,7 +287,7 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
 
       // 7. The Changes view (docs/carton-ux PLAN 4.1): the first version against your edit, in place of History's list;
       // Play all plays each change on her own edit (nothing is viewed, so no banner); Esc goes back to the list
-      await alice.locator('[aria-label="Actions for Started the cut"]').click();
+      await alice.locator('[aria-label="Actions for Project created"]').click();
       await alice.getByRole("menuitem", { name: "Compare with your edit" }).click();
       await alice.locator(".carton-changes-view").waitFor();
       await alice.getByRole("button", { name: "Play all" }).click();
