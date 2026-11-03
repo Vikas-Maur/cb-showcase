@@ -284,6 +284,8 @@ test("QA G3, G11: each teammate with their role, their agent under them as their
     assert.equal(lis[2].querySelector(".carton-avatar-initials"), null);
     assert.equal(mark.style.getPropertyValue("--carton-actor"), lis[1].querySelector(".carton-avatar").style.getPropertyValue("--carton-actor"), "her agent in her colour");
     assert.ok(lis[1].querySelector("[data-here]"), "who is here wears the ring");
+    assert.equal(lis[2].querySelector("[data-here]"), null, "her agent doesn't: hers says it");
+    assert.equal(lis[3].querySelector("[data-here]"), null, "nor someone idle (faded)");
   } finally { await m.done(); }
 });
 

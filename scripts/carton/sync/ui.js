@@ -127,12 +127,12 @@ const roleWords = (r) => (typeof r === "string" && Object.hasOwn(words.roles, r)
 const RING = "0 0 0 2px var(--cb-dialog), 0 0 0 3.5px var(--cb-ok)";
 /**
  * One row of People: the avatar as History draws the same actor (@carton/react's Avatar: You are "Y" before and after a
- * share, an agent its own mark: QA G11), with the green ring of who is here; the name, what they're doing, and their
- * role. An agent sits under its person, smaller (QA G3).
+ * share, an agent its own mark: QA G11), with the green ring of a person here and not idle (an agent's mark has none:
+ * its person's says it); the name, what they're doing, and their role. An agent sits under its person, smaller (QA G3).
  */
 function Person({ actor, name, sub, role, here, idle, you, under }) {
   return h("li", { className: "carton-share-person", "data-you": you ? "" : undefined, "data-under": under ? "" : undefined, style: { ...(idle ? { opacity: 0.55 } : null), ...(under ? { marginLeft: 36, minHeight: 40 } : null) } },
-    h("span", { "data-here": here ? "" : undefined, style: { display: "inline-flex", flex: "none", borderRadius: 999, boxShadow: here ? RING : undefined } }, h(Avatar, { actor, size: under ? 20 : 24, named: true })),
+    h("span", { "data-here": here && !idle ? "" : undefined, style: { display: "inline-flex", flex: "none", borderRadius: 999, boxShadow: here && !idle ? RING : undefined } }, h(Avatar, { actor, size: under ? 20 : 24, named: true })),
     h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
     role ? h("span", { className: "carton-share-role" }, role) : null);
 }
@@ -158,7 +158,7 @@ export function People({ st }) {
   }
   // actorLabel and the Avatar look an agent's person up here: "Leo's Director", in Leo's colour
   const ui = { actor: (k) => byKey.get(k) };
-  const agent = (p) => h(Person, { key: p.actor.key, under: under.has(p.actor.parent), actor: p.actor, name: actorLabel(p.actor, ui.actor, words.you), sub: p.activity ? upFirst(p.activity) : words.hereNowLine, here: true, idle: p.idle });
+  const agent = (p) => h(Person, { key: p.actor.key, under: under.has(p.actor.parent), actor: p.actor, name: actorLabel(p.actor, ui.actor, words.you), sub: p.activity ? upFirst(p.activity) : words.hereNowLine, idle: p.idle });
   return h(CartonProvider, { ui },
     h("section", { className: "carton-share-section" },
       h("h3", { className: "carton-share-heading" }, words.people),
