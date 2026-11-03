@@ -38,7 +38,7 @@ const unquote = (s) => s.replace(/^“(.*)”$/, "$1");
  * One side of a comparison from a ref (any cut's; a cut id is its head; null is your edit now): its CompareEnd, with
  * what the ordering needs (`seq`, `at`). Labels as DESIGN-V2 §1.7 and §1.12 give them.
  */
-export function endOf(ui, ref, now = Date.now()) {
+export function endOf(ui, ref, now = Date.now(), found = null) {
   const cuts = ui.cuts?.() ?? [];
   const current = cuts.find((c) => c.current) ?? null;
   if (ref == null) ref = current?.head ?? null;
@@ -50,6 +50,8 @@ export function endOf(ui, ref, now = Date.now()) {
   const all = ui.history?.().all?.() ?? [];
   let v = null;
   for (let k = all.length - 1; k >= 0; k--) if (all[k].ref === ref) { v = all[k]; break; }
+  // another cut's version, which this cut's History doesn't list: as openCompare read it from that cut's (N2c)
+  v ??= found?.get(ref) ?? null;
   const actor = (k) => ui.actor?.(k);
   const seq = Number(String(ref).split("@")[1]);
   const base = { ref, ...(cut ? { cutId: cut.id } : {}), ...(v ? { versionId: v.id } : {}), seq: Number.isFinite(seq) ? seq : null, at: v?.at ?? null, cut };
@@ -61,8 +63,14 @@ export function endOf(ui, ref, now = Date.now()) {
   if (cut) {
     // a teammate's cut by its owner's first name ("now · Leo"), as names go everywhere (actorLabel)
     const owner = cut.readOnly && cut.owner ? actorLabel(cut.owner, actor, words.you) || null : null;
-    if (head) return { ...base, label: cutRef(cut), title: cut.label, detail: [words.now, owner].filter(Boolean).join(" · ") };
-    return { ...base, label: `${cutRef(cut)} (${words.anEarlierVersion})`, title: cut.label, detail: words.anEarlierVersion };
+    if (head) return { ...base, name: cutRef(cut), label: cutRef(cut), title: cut.label, detail: [words.now, owner].filter(Boolean).join(" · ") };
+    // a moment of that cut (§1.12: "“30s Instagram cut” at 12:20 pm"), by its time when known; it said "(an earlier
+    // version)" in the chip, twice in the range line, and in Fold in's button, which folds the cut as it is now (QA v2)
+    if (v) {
+      const when = clock(v.at, { now });
+      return { ...base, name: cutRef(cut), moment: true, label: `${cutRef(cut)} ${/^\d/.test(when) ? `at ${when}` : when}`, title: cut.label, detail: when };
+    }
+    return { ...base, name: cutRef(cut), moment: true, label: `${cutRef(cut)} (${words.anEarlierVersion})`, title: cut.label, detail: words.anEarlierVersion };
   }
   return { ...base, label: words.anEarlierVersion, title: upFirst(words.anEarlierVersion) };
 }
@@ -72,8 +80,8 @@ export function endOf(ui, ref, now = Date.now()) {
  * the two; of two versions of one cut the older is left; two other cuts: the first picked is left. Across cuts, both
  * sides are named by their cut ("“30s Instagram cut”" with "Main cut", the latter's player "Main cut · your edit now").
  */
-export function sidesOf(ui, from, to, now = Date.now()) {
-  let a = endOf(ui, from, now), b = endOf(ui, to ?? null, now);
+export function sidesOf(ui, from, to, now = Date.now(), found = null) {
+  let a = endOf(ui, from, now, found), b = endOf(ui, to ?? null, now, found);
   if (!a || !b) return null;
   const current = (ui.cuts?.() ?? []).find((c) => c.current);
   const onCurrent = (e) => !!current && e.cutId === current.id;
@@ -83,10 +91,34 @@ export function sidesOf(ui, from, to, now = Date.now()) {
     if (!older(a, b)) [a, b] = [b, a];
   }
   const acrossCuts = !!a.cutId && !!b.cutId && a.cutId !== b.cutId;
-  if (acrossCuts && b.you && b.cut) b = { ...b, label: cutRef(b.cut), title: b.cut.label, detail: words.yourEditNowLabel.toLowerCase() };
+  // (against a moment of the other cut, yours is "Main cut now": "Comparing “30s Instagram cut” at 12:20 pm with Main cut now")
+  if (acrossCuts && b.you && b.cut) b = { ...b, name: cutRef(b.cut), label: a.moment ? `${cutRef(b.cut)} ${words.now}` : cutRef(b.cut), title: b.cut.label, detail: words.yourEditNowLabel.toLowerCase() };
   // each side's cut mark, as the cuts menu and the chip draw it: scissors for Main cut, else its colour dot
   const clean = ({ seq, at, cut, ...e }) => ({ ...e, ...(cut ? { cutMark: { main: isMainCut(cut), dot: cutColor(cut) ?? null } } : {}) });
   return { left: clean(a), right: clean(b), acrossCuts };
+}
+
+/**
+ * The versions of other cuts among `refs` (N2c's picker: "A version on “30s Instagram cut”…"), which this cut's History
+ * doesn't list, read one each from their cut's History (`cutHistory`, the version at that seq), so a side says when it
+ * is. Empty when the view model has no cutHistory, or a read fails: the side then says "an earlier version".
+ */
+export async function versionsElsewhere(ui, refs) {
+  const found = new Map();
+  if (typeof ui.cutHistory !== "function") return found;
+  const cuts = ui.cuts?.() ?? [];
+  const all = ui.history?.().all?.() ?? [];
+  await Promise.all(refs.map(async (ref) => {
+    if (typeof ref !== "string" || !ref.includes("@") || cuts.some((c) => c.id === ref || c.head === ref) || all.some((v) => v.ref === ref)) return;
+    const cut = cuts.find((c) => branchOf(c.head) === branchOf(ref));
+    const n = Number(ref.slice(ref.indexOf("@") + 1));
+    if (!cut || cut.current || !Number.isInteger(n)) return;
+    try {
+      const v = (await ui.cutHistory(cut.id, { before: n + 1, limit: 1 }))?.versions?.find((x) => x.ref === ref);
+      if (v) found.set(ref, v);
+    } catch {}
+  }));
+  return found;
 }
 
 /** The chip's and the stage region's words: "Comparing “Sent to client” with your edit". */
@@ -152,7 +184,9 @@ export function attachCompare(ui, o) {
   ui.compareFlipped = () => flipped;
   ui.openCompare = async (from, to, opts = {}) => {
     const mine = ++seq;
-    const sides = sidesOf(ui, from, to ?? null);
+    const found = await versionsElsewhere(ui, [from, to]);
+    if (mine !== seq) return;
+    const sides = sidesOf(ui, from, to ?? null, Date.now(), found);
     if (!sides) throw new Error(words.compareFailed);
     // never stacked on viewing (§1.11): what loads for a view never swaps the editor now; the worker forgets it
     const viewing = (typeof ui.viewing === "function" && ui.viewing()) || ui.pendingView?.();
@@ -604,7 +638,7 @@ export function CompareSide({ bridge, onFoldIn }) {
   const count = countWord ? (len > 0 ? words.compareCountLength(countWord, timecode(len)) : countWord) : null;
   const strong = (s) => h("b", null, s);
   const range = c.acrossCuts
-    ? [h("span", null, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWithWord} `, strong(c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]
+    ? [h("span", null, strong(c.left.name ?? c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWithWord} `, strong(c.right.name ?? c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]
     : [h("span", null, `${words.compareFrom} `, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareTo} `, strong(c.right.you ? words.yourEditNow : c.right.label), !c.right.you && c.right.detail ? ` · ${c.right.detail}` : "")];
   // The footer (§1.2, §1.12): one cut, your edit on the right: Restore your edit to the left side…; across cuts, your
   // cut on the right: Fold in changes from the left cut…; between two others: nothing, only Done comparing
@@ -630,7 +664,7 @@ export function CompareSide({ bridge, onFoldIn }) {
     : canRestore
       ? h(Button, { variant: "ghost", icon: "restore", onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreEditTo(c.left.label))
       : canFold
-        ? h(Button, { variant: "ghost", icon: "foldIn", onClick: () => onFoldIn(c.left.cutId, c.right.cutId) }, words.foldInFrom(c.left.label))
+        ? h(Button, { variant: "ghost", icon: "foldIn", onClick: () => onFoldIn(c.left.cutId, c.right.cutId) }, words.foldInFrom(c.left.name ?? c.left.label))
         : null;
   return h(CompareList, {
     className: "carton-sidebar-compare",

@@ -461,6 +461,25 @@ test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare w
     assert.ok(!m.side.querySelector(".carton-changes-view"), "never the panel's own Changes view");
     await m.key("Escape");
     assert.equal(m.page().comparing(), null);
+    // an older version of that cut (one this cut's History doesn't list): named by its time everywhere, and Fold in
+    // names the cut, which it folds as it is now (design QA v2: "(an earlier version)" three times, and in Fold in)
+    await m.click(btn);
+    await m.click(menuItems().find((b) => /Another cut/.test(b.textContent)));
+    await m.click(menuItems().find((b) => /A version on 30s Instagram cut/.test(b.textContent)));
+    await m.settle(120);
+    const older = m.side.querySelectorAll(".carton-cut-pick-row:not([data-now])")[1];
+    assert.ok(older, "an older version of that cut");
+    await m.click(older);
+    await m.settle(120);
+    const c = m.page().comparing();
+    assert.equal(c?.left.cutId, "cut-ig");
+    assert.match(c.left.label, /^“30s Instagram cut” (at \d{1,2}:\d{2} [ap]m|yesterday at .+)$/, "the cut at its moment");
+    assert.equal(c.right.label, "Main cut now");
+    assert.match(m.chip().comparing?.label ?? "", /^Comparing “30s Instagram cut” (at |yesterday ).+ with Main cut now$/);
+    assert.doesNotMatch(m.list().textContent, /an earlier version/);
+    assert.match(m.list().querySelector(".carton-compare-foot")?.textContent ?? "", /^Fold in changes from “30s Instagram cut”…$/);
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null);
     // a row's ⋯ → Compare with… → a click on another row (pick mode)
     const rows = () => [...m.side.querySelectorAll(".carton-version")];
     const target = rows()[3];
