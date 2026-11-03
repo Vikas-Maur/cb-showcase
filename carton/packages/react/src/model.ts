@@ -457,11 +457,36 @@ export interface FoldPlan {
   readonly missingBase?: string;
 }
 
-export interface FoldResult {
+export interface FoldResult extends ActionResult {
   readonly ok: boolean;
   /** Cards the fold left for the person, if any. */
   readonly conflicts?: readonly Conflict[];
   readonly error?: string;
+}
+
+/**
+ * What an action wrote (PLAN 5.3): the versions it made, on the cut it made them on, by their change ids, oldest
+ * first. A toast's Undo takes back exactly these, through Ctrl+Z's own path, and only while they are still the newest
+ * things Ctrl+Z would take back on that cut (the host checks, where the history is). A fold with what earlier partial
+ * folds left out makes more than one.
+ */
+export interface Made {
+  readonly cut: string;
+  readonly changes: readonly string[];
+  /**
+   * The step that takes it back, when it isn't Ctrl+Z's undo: an undo of a whole agent turn is itself an undo (core
+   * keeps it off the undo stack), so redo puts the turn back. A toast's Undo then runs redo, the editor's own redo.
+   */
+  readonly by?: "redo";
+}
+
+/**
+ * An action's answer (restore, fold, a conflict pick, Undo this turn). `made` is absent when it made no version: a
+ * conflict pick of the side already in the timeline commits nothing, so there is nothing of its own to undo (an Undo
+ * there would take back an earlier change).
+ */
+export interface ActionResult {
+  readonly made?: Made;
 }
 
 /** A shot of the shot diff (§9): a maximal stretch with the same picture stack. */
@@ -536,12 +561,18 @@ export interface CartonUi {
   newCut(name: string, fromRef: string): Promise<Cut>;
   /** Absent when the engine can't rename cuts yet: the Cuts menu then doesn't offer it. */
   renameCut?(cutId: string, name: string): Promise<void>;
-  /** Fold `from` into `into`, leaving out the changes in `leaveOut` (partial accept). */
-  fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>>; allCards?: boolean }): Promise<FoldResult>;
-  resolve(conflictId: string, choice: ConflictChoice): Promise<void>;
+  /**
+   * Fold `from` into `into`, leaving out the changes in `leaveOut` (partial accept). `count`: how many changes the
+   * person was told it folds in (the Fold dialog's button, Workstream 6's count): its confirmation says the same. The
+   * engine doesn't read it.
+   */
+  fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>>; allCards?: boolean; count?: number }): Promise<FoldResult>;
+  /** Keep one side of a card. Says what it made (`made`), if anything: the side already shown makes nothing. */
+  resolve(conflictId: string, choice: ConflictChoice): Promise<ActionResult | void>;
   /** "Fold in the rest" of a partial fold: the changes its inverse version left out. */
   foldRest(versionId: string): Promise<FoldResult>;
-  restore(ref: string): Promise<void>;
+  /** Restore a version as a new one on top. Says what it made (`made`). */
+  restore(ref: string): Promise<ActionResult | void>;
   nameVersion(versionId: string, name: string): Promise<void>;
   undo(turnId: string): Promise<FoldResult>;
   publish(cutId: string): Promise<void>;
