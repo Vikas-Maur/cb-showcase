@@ -65,7 +65,11 @@ test("compare with a teammate's cut (a full-history import's tracking cut); find
     const v = await b.diff(`${alt.id}@1`, b.cut, { rows: true });
     assert.equal(v.count, 3);
     // find and landmarks over the teammate's cut
-    assert.deepEqual((await b.find("opening", { cut: alt.id })).matches.map((m) => m.field), ["clip"]);
+    const op = (await b.find("opening", { cut: alt.id })).matches;
+    assert.deepEqual(op.map((m) => [m.field, m.span]), [["clip", { start: 0, end: 5 }]], "a clip match says where it was");
+    // every cut: ours and the teammate's
+    const every = await b.find("opening", { allCuts: true });
+    assert.deepEqual(every.matches.map((m) => m.ref.branchId), [alt.id]);
     assert.deepEqual((await b.find("client", { cut: alt.id })).matches.map((m) => m.field), ["name"]);
     assert.deepEqual((await b.landmarks({ cut: alt.id, kinds: ["named"] })).map((l) => [l.label, l.personal]), [["Sent to client", false]]);
   } finally {

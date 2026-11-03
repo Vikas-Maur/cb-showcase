@@ -85,18 +85,39 @@ import { unescapeSegment } from "./engine/json.ts";
 /** Lower case, accents dropped ("Émile" → "emile"): what find compares. */
 export const foldText = (s: string): string => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
-/** A string kept with its folded form (folded once, at index time). */
-type Words = readonly [text: string, folded: string];
-const words = (s: string): Words => {
-  const one = s.replace(/\s+/g, " ").trim();
-  return [one, foldText(one)];
-};
+/**
+ * A string with its words, folded once (at index time): each word's offset in the string, for the highlight. A word
+ * is a run of letters and digits ("Summer ’26": "summer", "26").
+ */
+export interface Words {
+  readonly text: string;
+  readonly toks: readonly { readonly at: number; readonly len: number; readonly w: string }[];
+}
+const WORD = /[\p{L}\p{N}]+/gu;
+export function findWords(s: string): Words {
+  const text = s.replace(/\s+/g, " ").trim();
+  const toks: { at: number; len: number; w: string }[] = [];
+  for (const m of text.matchAll(WORD)) toks.push({ at: m.index, len: m[0].length, w: foldText(m[0]) });
+  return { text, toks };
+}
+/** The words of a query, folded. */
+export const queryWords = (q: string): string[] => [...foldText(q).matchAll(WORD)].map((m) => m[0]);
+/** The words of `w` each query word starts: [lo, hi) per word matched, or null when a query word matches none. */
+export function hitsIn(w: Words, q: readonly string[], all = false): [number, number][] | null {
+  const out: [number, number][] = [];
+  for (const x of q) {
+    const t = w.toks.find((t) => t.w.startsWith(x));
+    if (t) out.push([t.at, t.at + Math.min(t.len, x.length)]);
+    else if (all) return null;
+  }
+  return out.length ? out : null;
+}
 
 interface Entry {
   seq: number;
   row: ConfirmedChange;
-  /** The clips it touched, each by every name it had (before and after the version). */
-  clips: { key: PathKey; names: Words[] }[];
+  /** The clips it touched, each by every name it had (before and after the version), and where it was after it. */
+  clips: { key: PathKey; names: Words[]; span?: { start: number; end: number } }[];
   /** Text it set (a title's, a caption's), by record. */
   texts: { key: PathKey; name: string; text: Words }[];
 }
@@ -124,10 +145,13 @@ export class FindIndex {
   #seq = 0;
   #doc: Doc | null = null;
   readonly entries: Entry[] = [];
+  /** Every clip the cut's versions touched, by its newest name (deleted: the name it had last): find's `clips`. */
+  readonly clips = new Map<PathKey, { names: Words[]; seq: number; deleted?: true }>();
 
   /** Index the rows saved since the last call; start again when the cut's log was rebuilt (a compaction, a reload). */
   update(src: FindSource): void {
     const { log, schema } = src;
+    const tl = schema.timeline;
     if (log !== this.#log || (this.#seq && log[this.#seq - 1] !== this.#last) || log.length < this.#seq) this.#reset(src);
     if (!this.#doc) return;
     let doc = this.#doc;
@@ -155,13 +179,20 @@ export class FindIndex {
         const was = before[i]!, now = this.#read(doc, r.coll, r.id, r.spec, schema);
         const part = r.spec.nounOf?.((now.rec ?? was.rec)!) === null;
         if (!part) {
-          const names = [...new Set([was.name, now.name].filter((n): n is string => !!n))];
-          if (names.length) entry.clips.push({ key: r.key, names: names.map(words) });
+          const names = [...new Set([now.name, was.name].filter((n): n is string => !!n))];
+          const span = now.rec && tl && r.coll === tl.collection && typeof now.rec[tl.start] === "number" && typeof now.rec[tl.end] === "number" ? { start: now.rec[tl.start] as number, end: now.rec[tl.end] as number } : undefined;
+          if (names.length) {
+            entry.clips.push({ key: r.key, names: names.map(findWords), ...(span ? { span } : {}) });
+            // the clip as the cut has it last: its name now, or the one it had when it was deleted
+            const had = this.clips.get(r.key)?.names ?? [];
+            const all = [...names.map(findWords), ...had.filter((w) => !names.includes(w.text))];
+            this.clips.set(r.key, { names: all, seq: s, ...(now.rec ? {} : { deleted: true as const }) });
+          }
         }
         // the text it set: what the record holds after it that it didn't before
         const had = new Set(was.words);
         const name = now.name ?? was.name ?? "";
-        for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: words(w) });
+        for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: findWords(w) });
       });
       this.entries.push(entry);
     }
@@ -172,6 +203,7 @@ export class FindIndex {
 
   #reset(src: FindSource): void {
     this.entries.length = 0;
+    this.clips.clear();
     this.#log = src.log;
     this.#seq = 0;
     this.#last = null;
@@ -195,22 +227,26 @@ export class FindIndex {
   }
 }
 
-/** A snippet of at most `max` characters around [lo, hi) of `s`, `…` where it was cut, and the hit inside it. */
-export function snippetOf(s: string, lo: number, hi: number, max = 80): { snippet: string; hit: [number, number] } {
-  const one = s;
-  if (one.length <= max) return { snippet: one, hit: [lo, hi] };
+/** A snippet of at most `max` characters around the first hit of `s`, `…` where it was cut, and the hits inside it. */
+export function snippetOf(s: string, hits: readonly [number, number][], max = 80): { snippet: string; hits: [number, number][] } {
+  if (s.length <= max || !hits.length) return { snippet: s.length <= max ? s : s.slice(0, max - 1) + "…", hits: s.length <= max ? hits.map((h) => [h[0], h[1]]) : hits.filter((h) => h[1] < max).map((h) => [h[0], h[1]]) };
+  const [lo, hi] = hits[0]!;
   const room = Math.max(0, max - (hi - lo));
-  let a = Math.max(0, lo - Math.floor(room / 2));
-  const b = Math.min(one.length, a + max);
+  let a = Math.max(0, lo - Math.floor(room / 3));
+  const b = Math.min(s.length, a + max);
   a = Math.max(0, b - max);
-  const pre = a > 0 ? "…" : "", post = b < one.length ? "…" : "";
-  return { snippet: pre + one.slice(a, b) + post, hit: [lo - a + pre.length, hi - a + pre.length] };
+  const pre = a > 0 ? "…" : "", post = b < s.length ? "…" : "";
+  const shift = pre.length - a;
+  return { snippet: pre + s.slice(a, b) + post, hits: hits.filter((h) => h[0] >= a && h[1] <= b).map((h) => [h[0] + shift, h[1] + shift]) };
 }
 
-/** Where `q` (folded) is in `w`: offsets in its text (the folded form when folding changed its length: then none). */
-export function hitIn(w: Words, q: string): [number, number] | null {
-  const i = w[1].indexOf(q);
-  if (i < 0) return null;
-  return w[0].length === w[1].length ? [i, i + q.length] : [0, 0];
+const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTHS_LONG = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+/** A day in words find knows (local time): "today" or "yesterday", its weekday, its month and day ("oct 30"). */
+export function dayWords(at: number, now: number): Words {
+  const d = new Date(at), n = new Date(now);
+  const days = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime() - new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) / 86_400_000);
+  const rel = days === 0 ? "today " : days === 1 ? "yesterday " : "";
+  return findWords(`${rel}${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${MONTHS_LONG[d.getMonth()]} ${d.getDate()}`);
 }
-export { words as findWords };

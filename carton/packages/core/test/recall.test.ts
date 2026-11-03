@@ -71,11 +71,22 @@ test("find: names, prompts, clips by their names then and after, text set, peopl
     assert.equal(s.snippet, "Sent to client");
     assert.deepEqual(s.hit, [8, 14]);
     // text a version set (the title's), and the person: accents ignored
-    const t = (await c.find("’26")).matches;
+    const t = (await c.find("’26", { fields: ["clip", "text"] })).matches;
     // (a title's name is its text: it matches as the clip first, and as text too)
     assert.deepEqual(t.map((m) => [m.ref.seq, m.field, m.fields]), [[4, "clip", ["clip", "text"]]]);
     assert.equal(t[0]!.recordName, "Summer ’26");
     assert.deepEqual((await c.find("leo")).matches.map((m) => [m.ref.seq, m.field, m.snippet]), [[5, "person", "Léo"]]);
+    // every word starts a word, in any order (DESIGN-V2 §2.3): "intr cap" finds the turn's request
+    const ic = (await c.find("intr cap")).matches;
+    assert.deepEqual(ic.map((m) => [m.ref.seq, m.field]), [[4, "prompt"]]);
+    assert.equal(ic[0]!.snippet, "Add captions to the intro");
+    assert.deepEqual(ic[0]!.hits, [[20, 24], [4, 7]]);
+    assert.equal((await c.find("tro")).total, 0, "from a word's start only");
+    // a clip first: the one the words name, by any name it had
+    assert.deepEqual((await c.find("intro")).clips, [{ record: "items/c1", name: "Opening", cut: c.cut }]);
+    // you, and the day
+    assert.deepEqual((await c.find("you")).matches.map((m) => m.ref.seq), [3, 2, 1]);
+    assert.equal((await c.find("today")).total, 5);
     // only some fields; a limit counts the rest in total
     assert.deepEqual((await c.find("intro", { fields: ["clip"] })).matches.map((m) => m.ref.seq), [2, 1]);
     const one = await c.find("intro", { limit: 1 });
@@ -186,6 +197,15 @@ test("bring back one clip: as it was then, everything else as it is now; deleted
     assert.equal(again.brought.how, "same");
     assert.equal(again.status === "confirmed" && again.empty, true);
 
+    // "Choose a clip…": what differs from @0, in three groups (DESIGN-V2 §3.2)
+    const ch = await c.bringBackChoices(`${c.cut}@0`);
+    assert.deepEqual({ changed: ch.changed.map((x) => x.name), deleted: ch.deleted.map((x) => x.name), added: ch.added.map((x) => x.name), same: ch.same }, { changed: ["Intro v2"], deleted: [], added: [], same: 2 });
+    await c.commit({ ops: [set("items", "c1", "end", 2), { op: "remove", path: ["items", "c2"] }, { op: "insert", path: ["items", "c8"], value: { id: "c8", trackId: "v1", name: "Logo", start: 20, end: 22, mediaId: "m1" } }], author: leo });
+    const ch2 = await c.bringBackChoices(`${c.cut}@0`);
+    assert.deepEqual(ch2.changed.map((x) => [x.name, x.then?.text, x.now?.text]), [["Intro v2", undefined, undefined]]);
+    assert.deepEqual(ch2.deleted.map((x) => [x.name, x.by?.name]), [["Interview A", "Léo"]]);
+    assert.deepEqual(ch2.added.map((x) => [x.name, x.by?.name]), [["Logo", "Léo"]]);
+    assert.equal(ch2.same, 1);
     // a retried id answers the first time and makes nothing more
     await c.commit({ ops: [set("items", "c1", "end", 3)] });
     const id = c.newChangeId();
