@@ -273,14 +273,23 @@ export function GoBack(p: GoBackProps) {
         // (across a bridge that keeps only a refusal's words, the clip's token says it changed)
         const now = c.token !== undefined ? await fresh(c).catch(() => null) : null;
         setBusy(false);
-        const changed = x?.code === "CHANGED_SINCE" || (now !== null && (now === "same" || now.token !== c.token));
+        // ChangedSince by its code; a changed token says it only when the refusal came with no code at all (a bridge that
+        // keeps only words): any other refusal is that failure, said as such (review of feat/ux2-n2b #2)
+        const code = typeof x?.code === "string" ? x.code : undefined;
+        const changed = code === "CHANGED_SINCE" || (code === undefined && now !== null && (now === "same" || now.token !== c.token));
         if (!changed) return setError({ text: words.bringBackFailed, ...(reason(e) ? { why: reason(e)! } : {}) });
         if (now === "same") {
           setStep({ kind: "clips" });
           return setNote(words.alreadyAsItWas(c.name));
         }
-        const said = x?.code === "CHANGED_SINCE" && reason(e) ? reason(e)! : words.clipChangedNothing(c.name);
-        setStep({ kind: "confirm", choice: now ?? { ...c, ...(typeof x?.token === "string" ? { token: x.token } : {}) }, again: said });
+        const said = code === "CHANGED_SINCE" && reason(e) ? reason(e)! : words.clipChangedNothing(c.name);
+        // the clip as it is now could not be read: never ask again over the old preview (where it goes, what moves);
+        // back to the list, read again, with the engine's words (review of feat/ux2-n2b #1)
+        if (now === null) {
+          setStep({ kind: "clips" });
+          return setNote(said);
+        }
+        setStep({ kind: "confirm", choice: now, again: said });
       },
     );
   };
