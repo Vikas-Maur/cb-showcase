@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ws59Shots } from "./ws59-shots.mjs";
+import { n1Shots } from "./n1-shots.mjs"; // Carton UX v2 N1: Compare in the editor
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -94,7 +95,7 @@ const WS1 = [
   W("ws1-editor-comments-see", "ux-history", "Comments open, a version viewed without a row (as Comments' See it as it was views one): the frame's label tab.", async (p) => { await p.locator('[role=tab][aria-label="Comments"]').click(); await p.waitForTimeout(200); await p.evaluate(() => window.__cap.ui.view({ kind: "version", ref: "main@20", label: "Your edit from 11:02 am" })); await p.waitForTimeout(300); }),
   { name: "ws1-titlebar-viewing", s: "ux-history", how: "The title bar while viewing the Director's turn: the chip's second part, 👁 label ✕.", target: "titlebar", steps: playDirector },
 ];
-const SHOTS = [...AFTER, ...WS1, ...WS59,
+const SHOTS = [...AFTER, ...WS1, ...WS59, ...n1Shots({ P }),
   // Workstream 4: the Changes view, Play and Before (after/changes-384.png, changes-300.png, changes-playing-384.png, changes-none-384.png)
   P("changes", "changes-story", "History, ⋯ → Compare with your edit on the Director's “Add captions to the interview”: the Changes view in place of the list.", (p) => changes(p)),
   P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),

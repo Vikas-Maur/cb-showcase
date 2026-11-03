@@ -16,8 +16,10 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu, cutRef, pickUndoneText, commentWords } from "@carton/react";
+import { Button, CartonProvider, Dialog, Glyph, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu, cutRef, pickUndoneText, commentWords } from "@carton/react";
 import { injectCardboardSkin, injectStyles } from "@carton/react/skin/cardboard";
+// Compare in the editor (Carton UX v2, N1): the comparison on the page's view model, the stage, the change list
+import { attachCompare, CompareStage, CompareSide, comparingLabel } from "./compare.js";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
 // person couldn't tell they had worked. One at a time, gone after 6 s, and kept while the pointer or the keyboard is on
@@ -213,7 +215,9 @@ function connect(projectId, bridge) {
     }
   };
   confirmations(r.ui, bridge);
-  return { ...r, close: off };
+  // Compare in the editor (N1): openCompare and the rest (scripts/carton/compare.js); its stage swaps go through swap()
+  const offCompare = attachCompare(r.ui, { bridge, projectId, swap, unmark: () => { if (stageRef !== null) { stageRef = null; for (const f of [...stageSubs]) f(); } }, cancelView: () => { ++viewSeq; pending = null; }, view });
+  return { ...r, close: () => { offCompare(); off(); } };
 }
 
 /**
@@ -306,7 +310,7 @@ function Toast() {
     onFocus: (e) => { if (keyboardFocus(e.target)) { inside.current = true; setFocus(true); } },
     onBlur: (e) => { if (!running.current && !e.currentTarget.contains(e.relatedTarget)) { inside.current = false; setFocus(false); } },
   },
-    h(Icon, { name: warn ? "warning" : viewing ? "eye" : t.icon === "undo" ? "undo" : "check", size: 14 }),
+    t.icon === "compare" ? h(Glyph, { name: "compare", size: 14 }) : h(Icon, { name: warn ? "warning" : viewing ? "eye" : t.icon === "undo" ? "undo" : "check", size: 14 }),
     h("span", { className: "carton-toast-text" }, t.text),
     // (the edit-attempt toast's Back to my edit: the primary button, its key Esc in place of the ✕)
     ...actions.map((a, i) => h(Button, { key: `${t.id}:${i}`, variant: viewing ? "primary" : undefined, keys: viewing ? "Escape" : undefined, busy: busyAt === i, disabled: busyAt !== null && busyAt !== i, onClick: () => run(a, i) }, a.label)),
@@ -395,6 +399,9 @@ export function chipOf(ui) {
   const cuts = ui.cuts();
   const cut = homeCut(cuts);
   if (!cut) return null;
+  // comparing (N1): the chip's second part is "⇆ Comparing “Sent to client” with your edit ✕"
+  const cmp = ui.comparing?.();
+  if (cmp) return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: { label: comparingLabel(cmp), compare: true } };
   const v = viewingOf(ui);
   // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
   return { cut: { name: cut.label || cut.name, dot: cut.kind === "main" ? null : cutColor(cut) }, viewing: v?.label ? { label: upFirst(v.label) } : null };
@@ -405,6 +412,8 @@ export function chipOf(ui) {
  * view(null)'s alias, and it clears whatever is viewed.
  */
 export function backToEdit(ui) {
+  // Done comparing (the chip's ✕, Esc, Export: N1)
+  if (ui.comparing?.()) return ui.closeCompare();
   const cuts = ui.cuts(), current = cuts.find((c) => c.current), home = homeCut(cuts);
   if (current?.readOnly && home) return ui.switchCut(home.id);
   if (viewingOf(ui)) return ui.openPreview(null);
@@ -417,6 +426,8 @@ export function backToEdit(ui) {
  * panel closes: review of feat/ux-1-viewing #3); a conflict's side belongs to its card on the stage.
  */
 const leavesWithPanel = (ui) => {
+  // closing History ends Compare (DESIGN-V2 §1.7)
+  if (ui.comparing?.()) return true;
   const v = viewingOf(ui) ?? ui.pendingView?.() ?? null;
   return !!v && v.kind !== "conflict";
 };
@@ -433,6 +444,8 @@ const leavesWithPanel = (ui) => {
  * without stageRef (a host of its own): viewingOf.
  */
 export function stageViewingOf(ui) {
+  // comparing marks the stage its own way (compare.js): no viewing frame then
+  if (ui.comparing?.()) return null;
   const v = viewingOf(ui);
   if (typeof ui.stageRef !== "function") return v;
   if (v?.kind === "cut" && !(typeof ui.viewing === "function" && ui.viewing())) return v;
@@ -560,10 +573,22 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     prefetch: (ref) => bridge.prefetch?.(projectId, ref),
     length: () => bridge.editLength?.(),
   }), [seeker, bridge, projectId]);
+  // Compare in the editor (N1, DESIGN-V2 §1.2): every way into the Changes view opens Compare; while comparing,
+  // History is its change list
+  const comparing = useComparingNow(ui);
+  const onCompare = useCallback((a, b) => void Promise.resolve(ui.openCompare?.(a, b)).catch(() => {}), [ui]);
+  if (comparing) return h("div", { ref: box, className: "carton-sidebar-history" }, h(CompareSide, { bridge }));
   return h("div", { ref: box, className: "carton-sidebar-history" },
     // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2)
-    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play }),
+    h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play, ...(typeof ui.openCompare === "function" ? { onCompare } : {}) }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
+}
+
+/** Whether Compare is open (N1), re-read when it opens, closes or changes. */
+function useComparingNow(ui) {
+  const [, bump] = useState(0);
+  useEffect(() => (typeof ui.onCompare === "function" ? ui.onCompare(() => bump((n) => (n + 1) | 0)) : undefined), [ui]);
+  return typeof ui.comparing === "function" ? ui.comparing() : null;
 }
 
 /** The project's timecoded comments (@carton/comments, served by the worker): pinned at the playhead, a timecode seeks. */
@@ -771,6 +796,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     update();
     // "viewing": PLAN 0.5's topic, once the view model has it; "preview" and "cuts" until then
     const offs = ["cuts", "preview", "viewing"].map((t) => ui.subscribe(t, update));
+    if (typeof ui.onCompare === "function") offs.push(ui.onCompare(update));
     return () => { for (const off of offs) off(); };
   }, [conn, ready, send]);
   useEffect(() => () => sidePanel.set(null), []);
@@ -918,11 +944,13 @@ ${TL}[data-carton-cut] .justify-between>.flex-1.justify-end::before{content:var(
 // What the timeline's wrapper shows: viewing (any), and your cut's name and dot when it isn't Main and nothing is viewed
 // (the timeline shows that cut then). Null fields stay off.
 export function timelineMarkOf(ui, projectId) {
+  // comparing (N1): its own mark (only Cardboard's clip canvases muted, the frame, room for the strip)
+  if (ui.comparing?.()) return { projectId, viewing: false, compare: true, cut: null, dot: null };
   const v = stageViewingOf(ui), chip = chipOf(ui);
   const other = !v && chip?.cut?.dot ? chip.cut : null;
   return { projectId, viewing: !!v, cut: other ? other.name : null, dot: other ? other.dot : null };
 }
-const sameMark = (a, b) => a === b || (!!a && !!b && a.projectId === b.projectId && a.viewing === b.viewing && a.cut === b.cut && a.dot === b.dot);
+const sameMark = (a, b) => a === b || (!!a && !!b && a.projectId === b.projectId && a.viewing === b.viewing && !!a.compare === !!b.compare && a.cut === b.cut && a.dot === b.dot);
 
 /**
  * The stage's viewing marks (PLAN 1.1, 1.4, 1.5), in one place so they say one thing: the frame round the stage with
@@ -946,6 +974,7 @@ function StageViewing({ projectId, bridge, panel }) {
     update();
     const offs = ["viewing", "preview", "cuts"].map((t) => ui.subscribe(t, update));
     if (typeof ui.onStage === "function") offs.push(ui.onStage(update));
+    if (typeof ui.onCompare === "function") offs.push(ui.onCompare(update));
     return () => {
       for (const off of offs) off();
       window.__cartonTimelineMark?.({ projectId, viewing: false, cut: null, dot: null });
@@ -983,8 +1012,10 @@ function StageViewing({ projectId, bridge, panel }) {
   return h(ViewingFrame, { viewing: shown, label: !listMarks(panel, v), onBack: back, isViewing, escapeState: bridge.selection, pulse });
 }
 
+const showToast = (text, actions, tone, icon) => toasts.show(text, actions, tone, icon);
+const openPanel = (p) => { for (const f of panelRequests) f(p); };
 /** The layer over the stage: viewing's frame, the conflict cards' floating stack, the toasts and the shared-footage notice. */
-export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
+export const CartonStage = memo(function CartonStage({ projectId, bridge, player = null, portal = null }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
@@ -1004,6 +1035,8 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
       h(StageViewing, { projectId, bridge, panel }),
+      // Compare in the editor (N1): its stage, the second player (editor-panel.js), the timeline's marks
+      h(CompareStage, { projectId, bridge, player, portal, panel, toast: showToast, openPanel }),
       h("div", { className: "carton-stage-banner" }, h(MediaNotice, { projectId, bridge })),
       h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onReveal, collapsed: panel != null })),
       h("div", { className: "carton-stage-toast" }, h(Toast)),

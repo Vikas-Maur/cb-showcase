@@ -256,7 +256,8 @@ module.exports = String.raw`var __cartonMain = (() => {
         live: t.live && typeof t.live === "object" ? t.live : null,
         share: t.share === true,
         cut: cutName ? { name: cutName, dot: typeof t.cut.dot === "string" && /^#[0-9a-f]{3,8}$/i.test(t.cut.dot) ? t.cut.dot : null } : null,
-        viewing: view ? { label: view } : null,
+        // compare: Compare in the editor (UX v2, N1): the chip's ⇆ and "Done comparing"
+        viewing: view ? { label: view, ...(t.viewing.compare === true ? { compare: true } : {}) } : null,
       };
     },
     // Strip commands that open something taking keys in the editor's page (the cuts menu, the Share dialog): main

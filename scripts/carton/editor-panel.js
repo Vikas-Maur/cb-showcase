@@ -27,14 +27,59 @@ function __cbCartonModule() {
   }, [m]);
   return m;
 }
+// Compare in the editor (UX v2, N1): while comparing, the stage's Carton layer publishes (window.__cartonStageMode) the
+// mode and the hole it leaves for the editor's own picture (the right side: Side by side's right half, or Wipe's and
+// Flip's one picture), as insets in px from the stage's edges. The host carries them (data-carton-compare and
+// --carton-hole-*), and Compare's sheet lays Cardboard's picture into that box (scripts/carton/compare.js STAGE_CSS):
+// Cardboard measures the box itself and sizes its picture to it. Null: not comparing, and the host is Cardboard's
+// stage exactly.
+const __cbCartonStage = { value: null, subs: new Set() };
+window.__cartonStageMode = (v) => {
+  __cbCartonStage.value = v ?? null;
+  for (const f of [...__cbCartonStage.subs]) f(__cbCartonStage.value);
+};
 function __cbCartonStageHost({ className, children }) {
   const m = __cbCartonModule();
   const projectId = window.__carton?.projectId ?? null;
+  const [mode, setMode] = o.useState(__cbCartonStage.value);
+  o.useEffect(() => {
+    __cbCartonStage.subs.add(setMode);
+    setMode(__cbCartonStage.value);
+    return () => { __cbCartonStage.subs.delete(setMode); };
+  }, []);
   o.useEffect(() => (typeof __cbCartonPresence === "function" ? __cbCartonPresence(projectId) : undefined), [projectId]);
+  const hole = mode?.hole;
+  const style = hole ? { "--carton-hole-t": hole.top + "px", "--carton-hole-r": hole.right + "px", "--carton-hole-b": hole.bottom + "px", "--carton-hole-l": hole.left + "px" } : void 0;
   // data-carton-stage-host: the side panel measures the preview's room by it (scripts/carton/ui.js, fitPanel).
-  return c.jsxs("div", { className: className + " relative", "data-carton-stage-host": "", children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton }, projectId) : null] });
+  return c.jsxs("div", { className: className + " relative", "data-carton-stage-host": "", "data-carton-compare": mode?.mode || void 0, style, children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton, player: __cbCartonPlayerOk ? __cbCartonPlayer : null, portal: __cbCartonPortal }, projectId) : null] });
 }
-// What the timeline shows besides Cardboard's own: { projectId, viewing, cut, dot }, or null. One value for the page;
+// The editor's own createPortal (its ReactDOM, Na here): Compare's marks go into Cardboard's timeline, inside its scroll
+// areas, so they scroll with the clips with no work of ours. Null outside the editor's bundle.
+const __cbCartonPortal = typeof Na === "object" && Na && typeof Na.createPortal === "function" ? Na.createPortal : null;
+// Compare's second player (UX v2, N1): another version on Cardboard's own preview engine (YD, the stage's
+// "webcodecs-renderer-hook"), on a canvas of its own, for Side by side and Wipe. Mounted only while one of those shows;
+// unmounted (Flip, Compare closed) its engine is destroyed: WebGL context, video sources, audio graph. Silent: its clips
+// are muted and audio-only items left out, so its audio graph decodes nothing (the editor's own player is heard). Its
+// time follows the editor's: the playhead while paused (one frame per seek), the playback clock (hn) while playing,
+// mapped onto the other version by follow(t) (in step by shot, @carton/react followTime). doc: the bridge's
+// compareDoc. onReady(true) once its engine runs. The names are Cardboard 1.4.0's; patch-carton.js checks each.
+// (typeof only: run outside the editor's bundle, as the capture page and the tests run this file, none of them exist)
+const __cbCartonPlayerOk = typeof YD === "function" && typeof L2 === "function" && typeof U === "function" && typeof hn === "object" && !!hn && typeof hn.get === "function" && typeof hn.subscribe === "function";
+function __cbCartonPlayer({ doc, follow, onReady }) {
+  const playing = U((s) => !!s.isPlaying);
+  const paused = U((s) => s.playheadTime ?? s.currentTime ?? 0);
+  const [, tick] = o.useState(0);
+  o.useEffect(() => (playing ? hn.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [playing]);
+  const t = playing ? hn.get() : paused;
+  const at = typeof follow === "function" ? follow(t) : t;
+  const size = o.useMemo(() => L2(doc.aspectRatio), [doc.aspectRatio]);
+  const items = o.useMemo(() => doc.timelineItems.filter((i) => i.type !== "audio").map((i) => (i.muted ? i : { ...i, muted: true })), [doc.timelineItems]);
+  const r = YD({ width: size.width, height: size.height, timelineItems: items, tracks: doc.tracks, mediaItems: doc.media, currentTime: Number.isFinite(at) ? Math.max(0, at) : 0, isPlaying: playing, masterVolume: 0, enabled: true, drivenByExternalClock: false });
+  o.useEffect(() => { onReady?.(!!r.isReady); }, [r.isReady, onReady]);
+  return c.jsx("canvas", { ref: r.canvasRef, "data-carton-player": "", style: { display: "block", width: "100%", height: "100%" } });
+}
+// What the timeline shows besides Cardboard's own: { projectId, viewing, cut, dot, compare }, or null (compare: Compare
+// in the editor, data-carton-compare, which mutes only Cardboard's clip canvases so Compare's marks stay bright). One value for the page;
 // the wrapper re-renders only when it changes, and its child (the timeline) is the same element, so it doesn't.
 const __cbCartonMark = { value: null, subs: new Set() };
 window.__cartonTimelineMark = (v) => {
@@ -49,8 +94,8 @@ function __cbCartonTimeline(props) {
     return () => { __cbCartonMark.subs.delete(setMark); };
   }, []);
   const m = window.__carton?.on && mark && mark.projectId === (window.__carton?.projectId ?? null) ? mark : null;
-  if (!m || (!m.viewing && !m.cut)) return c.jsx("div", props);
-  return c.jsx("div", { ...props, "data-carton-viewing": m.viewing ? "" : void 0, "data-carton-cut": m.cut || void 0, style: m.cut ? { "--carton-cut-label": JSON.stringify(String(m.cut)), "--carton-cut-dot": m.dot || "#f59e0b" } : void 0 });
+  if (!m || (!m.viewing && !m.cut && !m.compare)) return c.jsx("div", props);
+  return c.jsx("div", { ...props, "data-carton-viewing": m.viewing ? "" : void 0, "data-carton-compare": m.compare ? "" : void 0, "data-carton-cut": m.cut || void 0, style: m.cut ? { "--carton-cut-label": JSON.stringify(String(m.cut)), "--carton-cut-dot": m.dot || "#f59e0b" } : void 0 });
 }
 function __cbCartonSide() {
   const m = __cbCartonModule();

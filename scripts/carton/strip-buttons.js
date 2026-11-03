@@ -27,6 +27,8 @@ const __cbCartonStripIcons = {
   caret: ["M7 10l5 5 5-5"],
   eye: ["M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z", "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"],
   x: ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
+  // comparing (UX v2, N1): ⇆
+  compare: ["M4 8h13", "M14 5l3 3-3 3", "M20 16H7", "M10 13l-3 3 3 3"],
 };
 const __cbCartonSvg = (id, className, strokeWidth = 1.75) => n.jsx("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": !0, className, children: __cbCartonStripIcons[id].map((d, i) => n.jsx("path", { d }, i)) }, id);
 // A shared project's status beside the icons (UI audit P2-11): a dot on the icon (amber offline, white while edits are
@@ -88,7 +90,7 @@ function __cbCartonCutChip({ panel }) {
   if (!cut) return null;
   const viewing = p.viewing && typeof p.viewing.label === "string" ? p.viewing : null;
   const clip = (max) => ({ minWidth: 0, maxWidth: max, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
-  const back = "Back to my edit (Esc)";
+  const back = viewing?.compare ? "Done comparing (Esc)" : "Back to my edit (Esc)";
   // data-no-drag: the title bar drags the window; the viewing label isn't a button, so it says so itself
   return n.jsxs("div", { "data-no-drag": !0, "data-carton-cut-chip": "", "data-viewing": viewing ? "" : void 0, className: "flex shrink-0 items-center overflow-hidden rounded-ui-sm", style: { boxShadow: "inset 0 0 0 1px rgba(255,255,255," + (viewing ? "0.12)" : "0.08)") }, children: [
     n.jsxs("button", {
@@ -109,8 +111,8 @@ function __cbCartonCutChip({ panel }) {
     }, "cut"),
     // no live region here: the editor's page announces viewing once (DESIGN §7), not this page too
     viewing ? n.jsxs("span", { "data-carton-viewing": "", title: viewing.label, className: "flex h-7 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: "rgba(138,180,255,0.11)", color: "#d6e4ff", boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
-      __cbCartonSvg("eye", "size-3.5 shrink-0"),
-      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
+      __cbCartonSvg(viewing.compare ? "compare" : "eye", "size-3.5 shrink-0"),
+      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: viewing.compare ? viewing.label : [n.jsx("span", { className: "sr-only", children: "Looking at " }, "s"), viewing.label] }, "label"),
       n.jsx("button", { type: "button", "aria-label": back, title: back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: "carton-back" }), className: w(C, "size-[22px] justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
     ] }, "view") : null,
   ] });
