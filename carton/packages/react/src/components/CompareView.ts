@@ -9,7 +9,7 @@
 // - CompareMarks, CompareStrip: the marks on Cardboard's own timeline clips and the other side's strip, placed from
 //   the timeline's geometry (seconds × pixels per second, each track's row).
 
-import { createElement as h, Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { createElement as h, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { timecode } from "../format.ts";
 import { useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
@@ -392,7 +392,8 @@ const MARK_CLASS: Record<MarkKind, string> = { added: "add", removed: "rem", mov
  * Removed: a ghost (dashed, hatched) where it was, or a seam (a dashed line and a − knob) when the rest moved up.
  * aria-hidden: the list says the same. A click on a mark picks its row.
  */
-export function CompareMarks(p: { marks: readonly TimelineMark[]; pps: number; rows: ReadonlyMap<string, TrackRow>; selected?: string | null; counts?: ReadonlyMap<string, number>; onPick?: (key: string) => void }) {
+// (memo: Play both's playhead ticks re-render the stage four times a second; the marks don't change with it)
+export const CompareMarks = memo(function CompareMarks(p: { marks: readonly TimelineMark[]; pps: number; rows: ReadonlyMap<string, TrackRow>; selected?: string | null; counts?: ReadonlyMap<string, number>; onPick?: (key: string) => void }) {
   const words = useWords();
   const out: ReactNode[] = [];
   for (const m of p.marks) {
@@ -418,14 +419,16 @@ export function CompareMarks(p: { marks: readonly TimelineMark[]; pps: number; r
     );
   }
   return h("div", { className: "carton-tl-marks", "aria-hidden": true }, ...out);
-}
+});
 
 /** The left side's strip over the tracks: its shots on its own time, a red outline where it differs; its playhead. */
 export function CompareStrip(p: { bars: readonly StripBar[]; pps: number; label: string; playhead?: number | null; height?: number }) {
+  // the bars as the same elements while only the playhead moves (Play both's ticks): React skips them
+  const bars = useMemo(() => p.bars.map((b, i) =>
+    h("span", { key: i, className: "carton-tl-strip-bar", "data-kind": b.kind, title: b.label, style: { left: b.start * p.pps, width: Math.max(2, (b.end - b.start) * p.pps - 2) } })), [p.bars, p.pps]);
   return h("div", { className: "carton-tl-strip", "aria-hidden": true, style: { height: p.height ?? 26 } },
-    ...p.bars.map((b, i) =>
-      h("span", { key: i, className: "carton-tl-strip-bar", "data-kind": b.kind, title: b.label, style: { left: b.start * p.pps, width: Math.max(2, (b.end - b.start) * p.pps - 2) } })),
-    p.playhead != null ? h("span", { className: "carton-tl-strip-ph", style: { left: p.playhead * p.pps } }) : null);
+    ...bars,
+    p.playhead != null ? h("span", { key: "ph", className: "carton-tl-strip-ph", style: { left: p.playhead * p.pps } }) : null);
 }
 
 /** The strip's label in the timeline's track-name column. */

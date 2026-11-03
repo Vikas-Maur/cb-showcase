@@ -492,9 +492,12 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
   const leftSide = { title: c.left.title, detail: c.left.detail, cut: c.acrossCuts ? c.left.cutMark : undefined, at: leftAt, step: leftStep, slate };
   const rightSide = { title: c.right.title, detail: c.right.detail, cut: c.acrossCuts ? c.right.cutMark : undefined, at: t, step: rightStep };
   const ratio = aspectOf(data?.rightDoc?.aspectRatio ?? data?.leftDoc?.aspectRatio);
-  const playerEl = needsPlayer && Player && !failed && data?.leftDoc
-    ? h(PlayerBoundary, { onFail: () => setFailed(true) }, h(Player, { doc: data.leftDoc, follow, onReady }))
-    : null;
+  // the same element while nothing it shows changed: Play both's 4 Hz label ticks re-render this stage, not the player
+  const leftDoc = data?.leftDoc ?? null;
+  const onFail = useCallback(() => setFailed(true), []);
+  const playerEl = useMemo(() => (needsPlayer && Player && !failed && leftDoc
+    ? h(PlayerBoundary, { onFail }, h(Player, { doc: leftDoc, follow, onReady }))
+    : null), [needsPlayer, Player, failed, leftDoc, follow, onReady, onFail]);
   return h("div", { ref: rootRef, className: "carton-compare-root" },
     h("span", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
     h(CompareStageView, {
