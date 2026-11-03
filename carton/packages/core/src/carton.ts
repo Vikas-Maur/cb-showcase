@@ -21,9 +21,9 @@ import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } fro
 import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
-import type { FindOptions, FindResult } from "./find.ts";
-import type { Landmark, LandmarkOptions, MarkOptions, RecordedLandmarkKind } from "./landmarks.ts";
-import type { BringBackOptions, BroughtBack } from "./bring-back.ts";
+import { FIND_FIELDS, FindIndex, findWords, foldText, hitIn, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult } from "./find.ts";
+import { LANDMARK_KINDS, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type SafetyBefore } from "./landmarks.ts";
+import { bringBack, recordName, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -1566,6 +1566,7 @@ class CartonImpl implements Carton {
       if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
       const ch = v.change ? this.#h.findChange(v.change) : null;
       if (v.kind === "restore" && ch?.restoreOf) v.restoreOf = ch.restoreOf;
+      if (v.kind === "restore" && ch?.restoreRecord) Object.assign(v, { restoreRecord: ch.restoreRecord, ...(ch.restoreName ? { restoreName: ch.restoreName } : {}) });
       // an undo says what it undid; a version whose changes don't start at the seq before it says where they do (a
       // fold-some's fold, a compacted run): the app reads both (UX redesign 0.6, 0.1)
       if (v.kind === "undo" && ch?.reverts) v.undoes = [ch.reverts].flat();
@@ -1658,6 +1659,10 @@ class CartonImpl implements Carton {
         const from = cutOf(merged);
         summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
         title = { kind: "fold", ...(from ? { cut: from } : {}), taken: n, total: n };
+      } else if (c.kind === "restore" && c.restoreRecord) {
+        // a bring-back of one clip (Carton UX v2): the app says when from ("Brought back “Intro” from Mon 4:10 pm")
+        summary = `Brought back '${c.restoreName ?? "a clip"}' from an earlier version`;
+        title = { kind: "bring-back", ...(c.restoreOf ? { of: c.restoreOf } : {}), record: c.restoreRecord, ...(c.restoreName ? { name: c.restoreName } : {}) };
       } else if (c.kind === "restore") {
         summary = "Restored an earlier version";
         title = { kind: "restore", ...(c.restoreOf ? { of: c.restoreOf } : {}) };
@@ -1724,17 +1729,219 @@ class CartonImpl implements Carton {
     }
     return out;
   }
-  async find(_text: string, _opts: FindOptions = {}): Promise<FindResult> {
-    throw new Error("not implemented: find");
+  /** Find's index per cut (find.ts): built on the first call, extended by the rows saved since on each later one. */
+  #finds = new Map<string, FindIndex>();
+  async find(text: string, opts: FindOptions = {}): Promise<FindResult> {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh(cut);
+    if (!this.#h.cut(cut)) throw new Error(`Carton: no cut ${cut}`);
+    let ix = this.#finds.get(cut);
+    if (!ix) this.#finds.set(cut, (ix = new FindIndex()));
+    ix.update({ schema: this.schema, log: this.#h.changes(cut), start: () => this.#h.viewOf(nodeId(cut, 0)), records: (c) => this.#recordsOf(c), completedAt });
+    const q = foldText(String(text ?? "").replace(/\s+/g, " ").trim());
+    const all = ix.entries, before = opts.before;
+    let versions = 0;
+    for (const e of all) if (before === undefined || e.seq < before) versions++;
+    if (!q) return { matches: [], total: 0, versions };
+    const want = new Set<FindField>(opts.fields?.length ? opts.fields : FIND_FIELDS);
+    const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
+    const names = new Map(this.#h.names());
+    // who made it, told as log() tells it (the person behind a generic save), once per actor and change replica
+    const told = new Map<string, Actor | null>();
+    const whoOf = (c: ConfirmedChange): Actor | null => {
+      const k = `${c.author ? actorKey(c.author) : ""}\u0000${c.id.slice(0, c.id.lastIndexOf("."))}`;
+      let a = told.get(k);
+      if (a === undefined) told.set(k, (a = this.#who(c.author, c.id)));
+      return a;
+    };
+    const matches: FindMatch[] = [];
+    let total = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      const e = all[i]!, c = e.row;
+      if (before !== undefined && e.seq >= before) continue;
+      const hits: { field: FindField; text: string; at: [number, number]; record?: PathKey; recordName?: string }[] = [];
+      const name = names.get(nodeId(cut, e.seq))?.name;
+      // a turn's version is named from its prompt (cardboard's nameTurn): that name is the prompt
+      const turn = !!c.author && (c.author.kind === "agent" || c.author.kind === "subagent" || !!c.author.turn);
+      if (name && want.has(turn ? "prompt" : "name")) {
+        const w = findWords(name), at = hitIn(w, q);
+        if (at) hits.push({ field: turn ? "prompt" : "name", text: w[0], at });
+      }
+      if (want.has("clip")) for (const cl of e.clips) {
+        const w = cl.names.find((n) => n[1].includes(q));
+        if (w) { hits.push({ field: "clip", text: w[0], at: hitIn(w, q)!, record: cl.key, recordName: w[0] }); break; }
+      }
+      if (want.has("text")) for (const t of e.texts) {
+        const at = hitIn(t.text, q);
+        if (at) { hits.push({ field: "text", text: t.text[0], at, record: t.key, ...(t.name ? { recordName: t.name } : {}) }); break; }
+      }
+      let who: Actor | null | undefined;
+      if (want.has("person")) {
+        who = whoOf(c);
+        for (const n of [who?.name, who?.owner?.name]) {
+          if (!n) continue;
+          const w = findWords(n), at = hitIn(w, q);
+          if (at) { hits.push({ field: "person", text: w[0], at }); break; }
+        }
+      }
+      if (!hits.length) continue;
+      total++;
+      if (matches.length >= limit) continue;
+      hits.sort((x, y) => FIND_FIELDS.indexOf(x.field) - FIND_FIELDS.indexOf(y.field));
+      const best = hits[0]!, sn = snippetOf(best.text, best.at[0], best.at[1]);
+      matches.push({
+        ref: { branchId: cut, seq: e.seq, pending: [] },
+        change: c.id,
+        at: c.at,
+        author: who === undefined ? whoOf(c) : who,
+        ...(name ? { name } : {}),
+        field: best.field,
+        fields: hits.map((h) => h.field),
+        snippet: sn.snippet,
+        hit: sn.hit,
+        ...(best.record ? { record: best.record } : {}),
+        ...(best.recordName ? { recordName: best.recordName } : {}),
+      });
+    }
+    return { matches, total, versions };
   }
-  async landmarks(_opts: LandmarkOptions = {}): Promise<Landmark[]> {
-    throw new Error("not implemented: landmarks");
+  async landmarks(opts: LandmarkOptions = {}): Promise<Landmark[]> {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh(cut);
+    if (!this.#h.cut(cut)) throw new Error(`Carton: no cut ${cut}`);
+    const want = new Set<LandmarkKind>(opts.kinds?.length ? opts.kinds : LANDMARK_KINDS);
+    const before = opts.before ?? Infinity;
+    const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 200)) || 200, 5000));
+    const log = this.#h.changes(cut);
+    const out: Landmark[] = [];
+    const ref = (seq: number): StateRef => ({ branchId: cut, seq, pending: [] });
+    const add = (kind: LandmarkKind, seq: number, at: number, by: Actor | null, extra: Partial<Landmark> = {}, recorded = false) => {
+      if (!want.has(kind) || seq >= before || seq < 0 || seq > log.length) return;
+      const r = ref(seq);
+      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, at, by, recorded, team: kind === "named" || kind === "turn" || kind === "published", picture: pictureKey(r), ...extra });
+    };
+    // recorded by the app (mark): this machine's own, from the local ephemeral table
+    if (RECORDED_KINDS.some((k) => want.has(k))) {
+      for (const { key, value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] })) {
+        const seq = Number(key[2]);
+        if (!value || !Number.isInteger(seq) || !RECORDED_KINDS.includes(value.kind)) continue;
+        add(value.kind, seq, value.at, value.by ?? null, value.label ? { label: value.label } : {}, true);
+      }
+    }
+    // read from the history: agent turns (a turn's newest version), named versions, safety points
+    const isAgent = (a: Actor | null | undefined) => !!a && (a.kind === "agent" || a.kind === "subagent" || !!a.turn);
+    const turns = new Set<string>();
+    const names = new Map(this.#h.names());
+    for (let s = log.length; s >= 1; s--) {
+      const c = log[s - 1]!;
+      if (c.withdrawn || c.squashedInto !== undefined || completedAt(log, s)) continue;
+      const name = names.get(nodeId(cut, s))?.name;
+      const turn = c.author?.turn ? `${c.author.chat ?? ""}/${c.author.turn}` : null;
+      if (turn && !turns.has(turn)) {
+        turns.add(turn);
+        add("turn", s, c.at, this.#who(c.author, c.id), name ? { label: name } : {});
+      } else if (name && !isAgent(c.author) && !(c.kind === "undo" && /^Undo turn /.test(name))) {
+        const n = names.get(nodeId(cut, s))!;
+        add("named", s, n.at ?? c.at, n.by ? this.#who(n.by, null) : this.#who(c.author, c.id), { label: name });
+      }
+      // a safety point: the version just before a restore, a fold in, an undo of a turn or a bring-back made here
+      const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`);
+      if (!mine) continue;
+      const pair = s > 1 && completedAt(log, s - 1);
+      const why: SafetyBefore | null = c.kind === "restore" ? (c.restoreRecord ? "bring-back" : "restore")
+        : c.mergeOf || pair ? "fold"
+        : c.kind === "undo" && Array.isArray(c.reverts) && c.reverts.some((id) => !!this.#h.findChange(id)?.author?.turn) ? "undo-turn"
+        : null;
+      if (why) add("safety", pair ? s - 2 : s - 1, c.at, this.#who(c.author, c.id), { before: why, after: nodeId(cut, s) });
+    }
+    // Published versions of this cut
+    if (want.has("published")) {
+      for (const cutRec of this.#h.cuts()) {
+        if (cutRec.kind !== "published" || !cutRec.forkOf) continue;
+        const from = parseNode(this.#h.canon(cutRec.forkOf));
+        if (from.branchId !== cut) continue;
+        const first = this.#h.changes(cutRec.id)[0];
+        add("published", from.seq, first?.at ?? cutRec.at ?? log[from.seq - 1]?.at ?? 0, this.#who(first?.author ?? this.#h.maker(cutRec.id) ?? null, first?.id ?? null), { label: cutRec.name });
+      }
+    }
+    out.sort((a, b) => b.ref.seq - a.ref.seq || b.at - a.at);
+    return out.slice(0, limit);
   }
-  async mark(_kind: RecordedLandmarkKind, _opts: MarkOptions = {}): Promise<Landmark | null> {
-    throw new Error("not implemented: mark");
+  async mark(kind: RecordedLandmarkKind, opts: MarkOptions = {}): Promise<Landmark | null> {
+    if (!RECORDED_KINDS.includes(kind)) throw new Error(`Carton: a ${String(kind)} landmark is read from the history, never marked`);
+    let cut = opts.cut ?? this.#h.current, seq: number;
+    await this.#refresh(cut);
+    if (opts.ref !== undefined) {
+      // as given (never canonicalized: a version of a fresh cut stays that cut's)
+      const node = typeof opts.ref === "string" && NODE_RE.test(opts.ref) ? parseNode(opts.ref) : null;
+      const r = node ?? (typeof opts.ref === "object" ? opts.ref : parseNode(this.#node(opts.ref)));
+      cut = r.branchId;
+      seq = r.seq;
+      if (!this.#h.cut(cut)) throw new Error(`Carton: no cut ${cut}`);
+    } else {
+      if (!this.#h.cut(cut)) throw new Error(`Carton: no cut ${cut}`);
+      seq = this.#h.headSeq(cut);
+    }
+    const at = opts.at ?? this.#opts.clock?.() ?? Date.now();
+    if (opts.once === "day") {
+      const day = new Date(at).toDateString();
+      for (const { value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] })) if (value?.kind === kind && new Date(value.at).toDateString() === day) return null;
+    }
+    const by = opts.by ?? this.#actor();
+    const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}) };
+    await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, seq, kind, at], value: row }]);
+    this.#emit({ type: "landmarks", branchId: cut });
+    const r: StateRef = { branchId: cut, seq, pending: [] };
+    return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, team: false, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };
   }
-  async restoreClip(_ref: StateRef | string, _record: PathKey | readonly string[], _opts: BringBackOptions = {}): Promise<CommitResult & { brought: BroughtBack }> {
-    throw new Error("not implemented: restoreClip");
+  async restoreClip(ref: StateRef | string, record: PathKey | readonly string[], opts: BringBackOptions = {}): Promise<CommitResult & { brought: BroughtBack }> {
+    const cut = opts.cut ?? this.#h.current;
+    const [coll, id] = typeof record === "string" ? record.split("/").map(unescapeSegment) : [...record];
+    if (!coll || id === undefined || !this.schema.collections[coll]) throw new Error(`Carton: ${String(record)} isn't a record (want <collection>/<id>)`);
+    await this.#whole();
+    await this.#refresh(cut);
+    this.#writable(cut);
+    const author = this.#actor(opts.author);
+    // the version it comes from: a cut id is that cut's head as of now (inside the write, as restore's)
+    const then = () => {
+      const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
+      const of = typeof t === "string" ? (NODE_RE.test(t) ? this.#h.canon(t) : null) : t && !t.pending?.length && typeof t.branchId === "string" ? this.#h.canon(nodeId(t.branchId, t.seq)) : null;
+      return { doc: this.#doc(t), of: of ?? this.#node(t) };
+    };
+    let brought!: BroughtBack;
+    const plan = (head: Doc) => {
+      const t = then();
+      const p = bringBack(head, t.doc, coll, id, this.schema, { remove: !!opts.remove });
+      brought = { ...p.brought, of: t.of };
+      return { doc: p.doc, extra: { restoreOf: t.of, restoreRecord: p.brought.record, ...(p.brought.name ? { restoreName: p.brought.name } : {}) } };
+    };
+    if (this.#isShared(cut)) {
+      // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); the server keeps no
+      // restoreOf, so History reads it as a restore there, as it does a shared cut's restore
+      const r = await this.#planShared(cut, opts.id, (tail) => ({ doc: plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!).doc, author, kind: "restore" }));
+      return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+    }
+    const r = await this.#mutate(
+      undefined,
+      () => {
+        const done = this.#h.confirmedById(opts.id);
+        if (done) return done;
+        const p = plan(this.#h.viewOf(this.#h.head(cut))!);
+        return this.#h.commit(cut, { doc: p.doc, author, kind: "restore", ...(opts.id ? { id: opts.id } : {}), extra: p.extra });
+      },
+      { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
+    );
+    return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+  }
+  /** A retried bring-back answers from its first try: what it did, read again from the change it made. */
+  async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string): Promise<BroughtBack> {
+    const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
+    const of = typeof t === "string" ? t : nodeId(t.branchId, t.seq);
+    const doc = this.#doc(t), now = this.#h.viewOf(this.#h.head(cut))!;
+    const rec = (E.getIn(doc, [coll, id], this.schema) ?? E.getIn(now, [coll, id], this.schema)) as Rec | undefined;
+    return { record: E.pathKey([coll, id]), name: recordName(this.schema, coll, rec, doc), how: "changed", parts: [], of };
   }
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
   #leftOutN = new Map<string, number>();
@@ -1764,6 +1971,8 @@ class CartonImpl implements Carton {
     const ops = E.diff(da, db, this.schema);
     const out: DiffResult = { ops, describe: E.describe(ops, da, this.schema) };
     if (opts.shots && this.schema.timeline) out.shots = E.shotDiff(da, db, this.schema);
+    // the app's change rows and their count, as History, Compare and Watch count them (Carton UX v2: also across cuts)
+    if (opts.rows) Object.assign(out, { rows: E.changeList(ops, da, this.schema), count: E.countChanges(ops, da, this.schema) });
     return out;
   }
   async shots(a: StateRef | string, b?: StateRef | string) {

@@ -54,3 +54,143 @@ export interface FindResult {
   /** How many versions were searched. */
   versions: number;
 }
+
+// ------------------------------------------------------------------ the index
+
+import type { ConfirmedChange, Doc, Rec } from "./types.ts";
+import type { Schema } from "./schema.ts";
+import * as E from "./engine/index.ts";
+import { unescapeSegment } from "./engine/json.ts";
+
+/** Lower case, accents dropped ("Émile" → "emile"): what find compares. */
+export const foldText = (s: string): string => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+/** A string kept with its folded form (folded once, at index time). */
+type Words = readonly [text: string, folded: string];
+const words = (s: string): Words => {
+  const one = s.replace(/\s+/g, " ").trim();
+  return [one, foldText(one)];
+};
+
+interface Entry {
+  seq: number;
+  row: ConfirmedChange;
+  /** The clips it touched, each by every name it had (before and after the version). */
+  clips: { key: PathKey; names: Words[] }[];
+  /** Text it set (a title's, a caption's), by record. */
+  texts: { key: PathKey; name: string; text: Words }[];
+}
+
+/** What the index reads from Carton: its rows, the state they start from, and which records each touched. */
+export interface FindSource {
+  schema: Schema;
+  log: readonly ConfirmedChange[];
+  /** The cut's start state (seq 0), as History holds it (never written: the walk forks it). */
+  start: () => Doc | null;
+  /** The records a row touched (Carton's `#recordsOf`). */
+  records: (c: ConfirmedChange) => readonly PathKey[];
+  /** A row is a fold-some's fold, whose version is the partial revert right after it. */
+  completedAt: (log: readonly ConfirmedChange[], seq: number) => boolean;
+}
+
+/**
+ * One cut's find index: a forward walk over its rows, kept between calls. Each version's entry holds the names of the
+ * clips it touched (as they were before and after it) and the text it set. Names of versions and people aren't kept:
+ * they are read at query time (a rename, a person's name from the server, shows at once).
+ */
+export class FindIndex {
+  #log: readonly ConfirmedChange[] | null = null;
+  #last: ConfirmedChange | null = null;
+  #seq = 0;
+  #doc: Doc | null = null;
+  readonly entries: Entry[] = [];
+
+  /** Index the rows saved since the last call; start again when the cut's log was rebuilt (a compaction, a reload). */
+  update(src: FindSource): void {
+    const { log, schema } = src;
+    if (log !== this.#log || (this.#seq && log[this.#seq - 1] !== this.#last) || log.length < this.#seq) this.#reset(src);
+    if (!this.#doc) return;
+    let doc = this.#doc;
+    for (let s = this.#seq + 1; s <= log.length; s++) {
+      const c = log[s - 1]!;
+      // no version of its own: a withdraw row, a compacted row (its ops are in the row it was squashed into), a
+      // fold-some's fold (its version is the partial revert after it, which takes its records)
+      const version = !c.withdrawn && c.squashedInto === undefined && !src.completedAt(log, s);
+      let keys: readonly PathKey[] = version ? src.records(c) : [];
+      if (version && s > 1 && src.completedAt(log, s - 1)) {
+        const out = new Set((c.rejected ?? []).map((p) => p.split("/").slice(0, 2).join("/")));
+        keys = src.records(log[s - 2]!).filter((k) => !out.has(k));
+      }
+      const recs = keys.flatMap((k) => {
+        const [a, b] = k.split("/");
+        if (b === undefined) return [];
+        const coll = unescapeSegment(a!), spec = schema.collections[coll];
+        return spec ? [{ key: k, coll, id: unescapeSegment(b), spec }] : [];
+      });
+      const before = recs.map((r) => this.#read(doc, r.coll, r.id, r.spec, schema));
+      if (c.ops.length) doc = E.apply(doc, c.ops, schema);
+      if (!version) continue;
+      const entry: Entry = { seq: s, row: c, clips: [], texts: [] };
+      recs.forEach((r, i) => {
+        const was = before[i]!, now = this.#read(doc, r.coll, r.id, r.spec, schema);
+        const part = r.spec.nounOf?.((now.rec ?? was.rec)!) === null;
+        if (!part) {
+          const names = [...new Set([was.name, now.name].filter((n): n is string => !!n))];
+          if (names.length) entry.clips.push({ key: r.key, names: names.map(words) });
+        }
+        // the text it set: what the record holds after it that it didn't before
+        const had = new Set(was.words);
+        const name = now.name ?? was.name ?? "";
+        for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: words(w) });
+      });
+      this.entries.push(entry);
+    }
+    this.#doc = doc;
+    this.#seq = log.length;
+    this.#last = log[log.length - 1] ?? null;
+  }
+
+  #reset(src: FindSource): void {
+    this.entries.length = 0;
+    this.#log = src.log;
+    this.#seq = 0;
+    this.#last = null;
+    const start = src.start();
+    this.#doc = start ? E.fork(start, src.schema) : null;
+  }
+
+  #read(doc: Doc, coll: string, id: string, spec: Schema["collections"][string], schema: Schema): { rec: Rec | undefined; name: string | undefined; words: readonly string[] } {
+    const rec = E.getIn(doc, [coll, id], schema) as Rec | undefined;
+    if (!rec) return { rec, name: undefined, words: [] };
+    const label = schema.label ? schema.label(coll, rec, doc) : typeof rec.name === "string" ? rec.name : undefined;
+    // a name only: never a label made of an id fragment (a clip with no name or media: "video 3f9a1c")
+    const name = label && label !== "?" && !label.includes(String(id).slice(0, 6)) ? label : undefined;
+    let ws: readonly string[] = [];
+    try {
+      ws = (spec.words?.(rec) ?? []).filter((w: unknown): w is string => typeof w === "string" && w.trim().length > 0);
+    } catch {
+      ws = [];
+    }
+    return { rec, name, words: ws };
+  }
+}
+
+/** A snippet of at most `max` characters around [lo, hi) of `s`, `…` where it was cut, and the hit inside it. */
+export function snippetOf(s: string, lo: number, hi: number, max = 80): { snippet: string; hit: [number, number] } {
+  const one = s;
+  if (one.length <= max) return { snippet: one, hit: [lo, hi] };
+  const room = Math.max(0, max - (hi - lo));
+  let a = Math.max(0, lo - Math.floor(room / 2));
+  const b = Math.min(one.length, a + max);
+  a = Math.max(0, b - max);
+  const pre = a > 0 ? "…" : "", post = b < one.length ? "…" : "";
+  return { snippet: pre + one.slice(a, b) + post, hit: [lo - a + pre.length, hi - a + pre.length] };
+}
+
+/** Where `q` (folded) is in `w`: offsets in its text (the folded form when folding changed its length: then none). */
+export function hitIn(w: Words, q: string): [number, number] | null {
+  const i = w[1].indexOf(q);
+  if (i < 0) return null;
+  return w[0].length === w[1].length ? [i, i + q.length] : [0, 0];
+}
+export { words as findWords };

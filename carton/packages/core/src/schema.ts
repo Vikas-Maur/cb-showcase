@@ -145,6 +145,7 @@ export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly noun?: string;
   readonly nounOf?: (record: Rec) => string | null | undefined;
   readonly partOf?: { readonly collection: string; readonly field: string };
+  readonly words?: (record: Rec) => readonly string[];
   readonly labels?: Readonly<Record<string, string>>;
   readonly phrases?: Readonly<Record<string, FieldPhrase>>;
   readonly parent?: { field: string; collection: string };
