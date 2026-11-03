@@ -144,6 +144,23 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Back to my
   assert.equal(t.c.stale, false);
 });
 
+// Review of the UX data #3: a version asked for, then "Back to my edit" before its checkout answered: the editor stays
+// on your edit; the late answer shows nothing.
+test("a preview whose checkout answers after a newer one (back to your edit) shows nothing", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let answer;
+  t.answers.checkout = () => new Promise((r) => (answer = r));
+  const slow = t.c.preview("p1", "main@3");
+  await new Promise((r) => setImmediate(r));
+  await t.c.preview("p1", null);
+  assert.equal(t.state().cartonPreview, null);
+  answer(t.project(150, [{ id: "old", endTime: 2 }]));
+  await slow;
+  assert.equal(t.state().cartonPreview, null, "still your edit");
+  assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
+});
+
 // Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
 // "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Back to my edit puts it
 // back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is

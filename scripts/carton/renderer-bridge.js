@@ -33,6 +33,9 @@ module.exports = String.raw`window.__carton = (() => {
   // A preview shorter than the playhead moved it to its end: where it was, where the preview put it, and the store
   // subscription that drops it at the person's first move (preview()). "seeking": the bridge's own seek under way.
   let held = null, seeking = false;
+  // Each preview() call's turn: one whose checkout answers after a newer call (back to your edit meanwhile) shows
+  // nothing (review of the UX data #3: the older version came back over "Back to my edit")
+  let previewGen = 0;
   const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
   // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
   // playback clock while playing.
@@ -302,8 +305,10 @@ module.exports = String.raw`window.__carton = (() => {
     // preview, unless the person moved it meanwhile (held: that place and where the preview put it, until a move).
     async preview(projectId, ref) {
       if (!on || !store) return;
+      const gen = ++previewGen;
       if (ref != null) await store.flush();
       const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
+      if (gen !== previewGen) return;
       const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
       // a place held for another project (the editor opened another one meanwhile) isn't this one's
       if (held && held.project !== projectId) release();

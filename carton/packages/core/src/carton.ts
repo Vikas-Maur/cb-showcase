@@ -1528,10 +1528,13 @@ class CartonImpl implements Carton {
       // a redo is a revert of an undo: marked, so a list shows it as a redo (laptop: `cb history` listed it as `revert`)
       const c = v.kind === "revert" && v.change ? this.#h.findChange(v.change) : null;
       if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
-      if (v.kind === "restore" && v.change) {
-        const of = this.#h.findChange(v.change)?.restoreOf;
-        if (of) v.restoreOf = of;
-      }
+      const ch = v.change ? this.#h.findChange(v.change) : null;
+      if (v.kind === "restore" && ch?.restoreOf) v.restoreOf = ch.restoreOf;
+      // an undo says what it undid; a version whose changes don't start at the seq before it says where they do (a
+      // fold-some's fold, a compacted run): the app reads both (UX redesign 0.6, 0.1)
+      if (v.kind === "undo" && ch?.reverts) v.undoes = [ch.reverts].flat();
+      if (v.rejected) v.startsAt = v.ref.seq - 2;
+      else if (ch?.squashedFrom !== undefined && ch.squashedFrom < v.ref.seq) v.startsAt = ch.squashedFrom - 1;
       const who = this.#who(v.author, v.change);
       // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
@@ -1543,7 +1546,7 @@ class CartonImpl implements Carton {
     let lo = versions[versions.length - 1]!.ref.seq;
     if (lo > 1 && completedAt(log, lo - 1)) lo--;
     let doc = E.fork(this.#h.stateOf(nodeId(cut, Math.max(0, lo - 1)))!, this.schema);
-    const words = new Map<number, { summary: string; details?: string[]; rows?: ChangeRow[]; title?: Version["title"]; undoes?: ChangeId[] }>();
+    const words = new Map<number, { summary: string; details?: string[]; rows?: ChangeRow[]; title?: Version["title"] }>();
     const name = (id: string) => this.#h.cut(id)?.name;
     // "Folded 'Client review' into 'Main cut'": the cut folded in by name (a copy's lineage node has none)
     const foldOf = (m: ConfirmedChange, rest = false) => {
@@ -1576,7 +1579,7 @@ class CartonImpl implements Carton {
       if (n && what) {
         const how = n % 2 ? "undo" : "redo";
         const from = m?.mergeOf ? name(m.mergeOf.branchId) : undefined;
-        undoneAs = x.kind === "restore" ? { kind: `${how}-restore`, ...(x.restoreOf ? { of: x.restoreOf } : {}) } : { kind: `${how}-fold`, ...(from ? { cut: from } : {}) };
+        undoneAs = x.kind === "restore" ? { kind: `${how}-restore`, ...(x.restoreOf ? { of: x.restoreOf } : {}) } : { kind: `${how}-fold`, ...(from ? { cut: from } : {}), ...(rest ? { rest: true } : {}) };
       }
       return n && what ? `${n % 2 ? "Undid" : "Redid"} ${what}` : undefined;
     };
@@ -1636,14 +1639,13 @@ class CartonImpl implements Carton {
       }
       if (c.name) summary = c.name;
       const details = c.kind !== "import" && v.lines.length && (v.lines.length > 1 || v.lines[0] !== summary) ? v.lines : undefined;
-      const undoes = rows && c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
-      if (summary || details || rows) words.set(s, { summary, ...(details ? { details } : {}), ...(rows ? { rows } : {}), ...(rows && title ? { title } : {}), ...(undoes ? { undoes } : {}) });
+      if (summary || details || rows) words.set(s, { summary, ...(details ? { details } : {}), ...(rows ? { rows } : {}), ...(rows && title ? { title } : {}) });
       doc = after;
       pairBase = null;
     }
     return versions.map((v) => {
       const w = words.get(v.ref.seq);
-      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}), ...(w.rows ? { rows: w.rows } : {}), ...(w.title ? { title: w.title } : {}), ...(w.undoes ? { undoes: w.undoes } : {}) } : v;
+      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}), ...(w.rows ? { rows: w.rows } : {}), ...(w.title ? { title: w.title } : {}) } : v;
     });
   }
   /** The records a change touched, by record (`coll/id`, a root field by name): from its declaration, once per change. */
