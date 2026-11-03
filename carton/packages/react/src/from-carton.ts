@@ -114,6 +114,11 @@ export interface FromCartonOptions {
   /** Re-read the store every N ms (other processes may append). 0: only on events and refresh(). */
   pollMs?: number;
   clock?: () => number;
+  /**
+   * Where landmark pictures are kept (Carton UX v2): the app stores a small JPEG per version (`Landmark.picture`, a key
+   * per version). Without it the panel shows no pictures. `put` takes a `data:image/jpeg` URL (at most 64 KB).
+   */
+  pictures?: { get(key: string): Promise<string | null>; put(key: string, jpeg: string): Promise<void> };
 }
 
 export interface CartonUiHandle extends CartonUi {

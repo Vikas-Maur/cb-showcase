@@ -112,6 +112,83 @@ export interface ClipVersions {
   readonly since?: number;
 }
 
+// ------------------------------------------------------------ Carton UX v2 (N0): find, landmarks, bring back, compare
+
+/** What a Find hit matched, best first: a version's name, a turn's prompt, a clip's name, text it set, a person. */
+export type FindField = "name" | "prompt" | "clip" | "text" | "person";
+
+/** One version Find matched (`CartonUi.find`). */
+export interface FindHit {
+  /** History's row id (`Version.id`) and the version's ref. */
+  readonly versionId: string;
+  readonly ref: string;
+  readonly at: number;
+  readonly author: Actor;
+  /** The best thing it matched, and all of them. */
+  readonly field: FindField;
+  readonly fields: readonly FindField[];
+  /** A short piece of what matched (about 80 characters at most, `…` where cut), never an id. */
+  readonly snippet: string;
+  /** Where the match is in `snippet` ([lo, hi), UTF-16), for the highlight. */
+  readonly hit: readonly [number, number];
+  /** A clip or text match: the clip's id on the timeline and its name ("Intro"). */
+  readonly itemId?: string;
+  readonly clipName?: string;
+}
+export interface FindHits {
+  /** Newest first. */
+  readonly hits: readonly FindHit[];
+  /** How many versions matched in all. */
+  readonly total: number;
+  /** How many versions were searched. */
+  readonly versions: number;
+}
+
+/** The versions people remember (core's `landmarks.ts`). */
+export type LandmarkKind = "exported" | "sent" | "shared" | "published" | "session" | "safety" | "turn" | "named";
+export interface Landmark {
+  /** Stable key. */
+  readonly id: string;
+  readonly kind: LandmarkKind;
+  /** History's row id for its version, and its ref. */
+  readonly versionId: string;
+  readonly ref: string;
+  readonly at: number;
+  readonly by: Actor | null;
+  /** Words given with it: an export's preset ("1080p"), whom it was sent to ("Leo"), a turn's prompt, a name. */
+  readonly label?: string;
+  /** A safety point: what came right after it ("Before you restored 11:02 am"). */
+  readonly before?: "restore" | "fold" | "undo-turn" | "bring-back";
+  /** Teammates have it too; false: yours, on this computer only. */
+  readonly team: boolean;
+  /** Its picture's key (`landmarkPicture`), one per version. */
+  readonly picture: string;
+}
+
+/** Bring back one clip's answer (`CartonUi.restoreClip`). */
+export interface BringBack extends ActionResult {
+  /** `same`: it already was as it was then, nothing made. */
+  readonly how: "changed" | "added" | "removed" | "same";
+  /** The clip's name ("Intro"). */
+  readonly clipName: string;
+}
+
+/**
+ * An agent asked the editor to open Compare (`cb compare <a> [b] --show`). The worker sends it to the pages as a
+ * `carton:event`: `{ kind: "carton", id: <projectId>, topic: "compare", compare: OpenCompare }`. N1's `openCompare`
+ * takes it. A page shows each `request` once.
+ */
+export interface OpenCompare {
+  /** Refs as History's (`Version.ref`): versions of any two cuts; a cut id is that cut's head (the current cut's: your edit now). */
+  readonly from: string;
+  readonly to: string;
+  /** Who asked, as core records it, and in words ("Director", "Claude Code"). */
+  readonly by: { readonly kind: string; readonly id: string; readonly name?: string };
+  readonly byName: string;
+  readonly at: number;
+  readonly request: string;
+}
+
 /** What kind of clip a change is about, shown in Cardboard's own timeline colours (DESIGN §5.1). */
 export type ClipKind = "video" | "title" | "caption" | "audio" | "image" | "code" | "project";
 /** What happened to it: the change row's corner mark (green +, red −, amber dot). */
@@ -526,7 +603,9 @@ export type Topic =
   | "published"
   | "preview"
   | "viewing"
-  | "working";
+  | "working"
+  /** Landmarks changed (one recorded: an export, a send; a new version can be one too): read `landmarks()` again. */
+  | "landmarks";
 
 /** Everything a component can ask for. Reads that cost real work are async and on demand. */
 export interface CartonUi {
@@ -618,4 +697,23 @@ export interface CartonUi {
   conflictRef?(conflictId: string, side: ConflictChoice): Promise<string | null>;
   /** The host saw an edit attempt while viewing: the stage then explains and offers "Back to my edit". */
   blockEdit(): void;
+
+  // Carton UX v2 (N0). Optional: a host without them shows no find box, landmarks or "Bring back".
+  /**
+   * Find in the current cut's History: names, turn prompts, people, clips by name, title and caption text. Newest
+   * first. An empty `text` warms the index and finds nothing (call it when the find box gets focus).
+   */
+  find?(text: string, opts?: { limit?: number; before?: number; fields?: readonly FindField[] }): Promise<FindHits>;
+  /** The current cut's landmarks, newest first. Topic "landmarks" says when to read them again. */
+  landmarks?(opts?: { kinds?: readonly LandmarkKind[]; limit?: number }): Promise<readonly Landmark[]>;
+  /**
+   * Bring back one clip as it was in version `ref`, as a new version on top (Ctrl+Z takes it back). `remove`: the clip
+   * wasn't there then, so bringing it back removes it (only when the person said so: without it, the call rejects
+   * with the words that say so).
+   */
+  restoreClip?(ref: string, itemId: string, opts?: { remove?: boolean }): Promise<BringBack>;
+  /** A landmark's picture (`Landmark.picture`) as a `data:image/jpeg` URL, or null when none was made yet. */
+  landmarkPicture?(key: string): Promise<string | null>;
+  /** Keep a landmark's picture (a `data:image/jpeg` URL, at most 64 KB), made from the stage the first time it shows. */
+  saveLandmarkPicture?(key: string, jpeg: string): Promise<void>;
 }
