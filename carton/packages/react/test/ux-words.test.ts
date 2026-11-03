@@ -45,7 +45,9 @@ test("0.3: every word of DESIGN §8 the components need is in words.ts, counted 
   assert.equal(words.leftOutLine(1, "30s Instagram cut"), "1 change is left out. It stays on “30s Instagram cut”, and you can fold it in later.");
   assert.equal(words.offlineChip(3), "Offline · 3 changes not sent yet");
   assert.equal(words.notSentYet, "Not sent yet");
-  assert.equal(words.lookingAt("Director's “Add captions…”"), "You're looking at Director's “Add captions…”.");
+  // a label that ends in an ellipsis takes no full stop after it (design QA G21: never "…”.")
+  assert.equal(words.lookingAt("Director's “Add captions…”"), "You're looking at Director's “Add captions…”");
+  assert.equal(words.lookingAt("“Sent to client”"), "You're looking at “Sent to client”.");
   assert.equal(words.conflictsToPick(2), "2 conflicts to pick");
 });
 

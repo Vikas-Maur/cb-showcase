@@ -24,7 +24,8 @@ export const commentWords = {
   reopen: "Reopen",
   resolvedBy: (name: string) => `Resolved by ${name}`,
   you: "You",
-  forAgent: (person: string, agent: string) => `${agent} for ${person}`,
+  // an agent's note, named as History names it (design QA G27): yours bare ("Director"), a teammate's "Leo's Director"
+  forAgent: (person: string | null, agent: string) => (person === null ? agent : `${person}'s ${agent}`),
   edited: "edited",
   deleted: "Comment deleted",
   justNow: "just now",
@@ -44,7 +45,8 @@ export const commentWords = {
   // where a thread sits on the version shown (§9: "may be outdated")
   status: {
     exact: "",
-    moved: "Moved",
+    // said in the note's grey line, as "That moment changed since." is (design QA G26), never as a pill
+    moved: "Moved with its clip.",
     outdated: "May be outdated",
     trimmed: "Trimmed away",
     removed: "Clip removed",
@@ -66,7 +68,8 @@ export const commentWords = {
   dismiss: "Dismiss",
   markers: "Comments on the timeline",
   marker: (n: number, at: string) => (n > 1 ? `${n} comments at ${at}` : `Comment at ${at}`),
-  threadLabel: (who: string, at: string) => `${who}'s comment at ${at}`,
+  // for screen readers (design QA G22): `who` null is you ("Your comment at 0:47"), `at` null the whole video
+  threadLabel: (who: string | null, at: string | null) => `${who === null ? "Your" : `${who}'s`} comment ${at === null ? "on the whole video" : `at ${at}`}`,
   actions: "Comment actions",
   // The redesign (DESIGN §6.8, §8): the box says where the comment is pinned; times as the editor shows them (0:06)
   // (the box's words as after/comments-*.png has them: a note, pinned at the playhead)

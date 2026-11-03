@@ -20,7 +20,7 @@ import { Icon } from "../icons.ts";
 import type { Conflict, ConflictChoice, Cut, FoldChange, FoldPlan, FoldResult } from "../model.ts";
 import type { Words } from "../words.ts";
 import { ChangeRow } from "./ChangeRow.ts";
-import { CutDot } from "./CutsMenu.ts";
+import { CutDot, CutMark } from "./CutsMenu.ts";
 import { Button, Dialog, MenuButton, MenuLabel, radioKeys } from "./ui.ts";
 
 /** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
@@ -346,8 +346,7 @@ function CutPicker(p: { label: string; value: string; cut: Cut | undefined; opti
   const words = useWords();
   const name = p.cut?.label ?? "";
   const shown = [
-    h(Icon, { key: "i", name: "cut" }),
-    p.cut ? h(CutDot, { key: "d", cut: p.cut }) : null,
+    h(CutMark, { key: "m", cut: p.cut }),
     h("span", { key: "n", className: "carton-fold-cut-name" }, name),
     p.cut?.current ? h("span", { key: "on", className: "carton-fold-on" }, `· ${words.youreOnIt}`) : null,
   ];

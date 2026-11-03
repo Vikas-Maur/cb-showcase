@@ -198,10 +198,10 @@ test(name("PLAN 1.1 with WS4: a frame still waiting for its label shows no tab a
   assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "", "nothing said yet");
   await m.rerender(wrap(ui, h(ViewingFrame, { viewing: at("Before Director's “Add captions…”"), isViewing: () => true })));
   assert.equal($(m.container, ".carton-frame-text")!.textContent, "Before Director's “Add captions…”");
-  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…”. Esc to go back.");
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…” Esc to go back.");
   // the next swap waits for its label too: the last one said stays
   await m.rerender(wrap(ui, h(ViewingFrame, { viewing: at(""), isViewing: () => true })));
-  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…”. Esc to go back.");
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…” Esc to go back.");
   await m.rerender(wrap(ui, h(ViewingFrame, { viewing: null, isViewing: () => false })));
   assert.equal($(m.container, ".carton-frame"), null);
   assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Back to your edit");

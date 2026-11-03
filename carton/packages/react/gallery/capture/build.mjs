@@ -21,8 +21,24 @@ if (!css) throw new Error(`no styles-*.css in ${assets}`);
 // The strip's button class (`C` in tabs-*.js), which strip-buttons.js builds its icons on.
 const stripClass = (tabs && readFileSync(join(assets, tabs), "utf8").match(/,C="(flex h-7 cursor-pointer[^"]*)"/)?.[1]) ?? "flex h-7 cursor-pointer items-center rounded-ui-sm text-ui-sm font-medium outline-none select-none transition-colors";
 
+// Every states/*.js (a feature's scenarios, beside its states/*.shots.mjs): entry.js imports them all as "capture-states",
+// so a feature adds its states in files of its own, never by editing a shared list.
+const statesDir = join(here, "states");
+const statesPlugin = {
+  name: "capture-states",
+  setup(b) {
+    b.onResolve({ filter: /^capture-states$/ }, () => ({ path: "capture-states", namespace: "capture-states" }));
+    b.onLoad({ filter: /.*/, namespace: "capture-states" }, () => {
+      const files = existsSync(statesDir) ? readdirSync(statesDir).filter((f) => /^[\w-]+\.js$/.test(f)).sort() : [];
+      const imports = files.map((f, i) => `import * as m${i} from ${JSON.stringify(join(statesDir, f))};`).join("\n");
+      return { contents: `${imports}\nexport default [${files.map((f, i) => `{ file: ${JSON.stringify(f)}, ...m${i} }`).join(", ")}];`, resolveDir: statesDir, watchFiles: files.map((f) => join(statesDir, f)), watchDirs: [statesDir] };
+    });
+  },
+};
+
 const common = {
   entryPoints: [join(here, "entry.js")],
+  plugins: [statesPlugin],
   bundle: true,
   format: "iife",
   platform: "browser",

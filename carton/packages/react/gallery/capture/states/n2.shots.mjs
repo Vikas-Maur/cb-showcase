@@ -1,8 +1,7 @@
 // The shots for Carton UX v2, History (N2), beside docs/carton-ux/v2's mockups (after/history-landmarks-*.png,
 // history-search-*.png, history-goback-*.png, bring-back-*.png, compare-menu-384.png, compare-pick-384.png,
-// history-filter-landmarks-384.png, editor-peek.png): shoot.mjs adds them to its list (one line there).
-// `h`: shoot.mjs's own helpers.
-export function n2Shots({ P, menuItem, foldOlder, uxMenu, openCard }) {
+// history-filter-landmarks-384.png, editor-peek.png): shoot.mjs picks up every states/*.shots.mjs (states/README.md).
+export function shots({ P, menuItem, foldOlder, uxMenu }) {
   const card = async (p, text) => {
     await foldOlder(p);
     await p.locator(".carton-version", { hasText: text }).first().click();

@@ -216,6 +216,8 @@ test("0.6: undoing an older agent turn takes out only that turn; a later edit on
   const c = await ui.undoTurnOf(t3.id);
   assert.equal(c.ok, true);
   assert.equal(c.conflicts?.length, 1, "a card for the clash");
+  // its sides come with their sentences, on the stage's card too (design QA G30: no fallback words on a real path)
+  for (const k of [c.conflicts![0]!, ...ui.conflicts()]) assert.ok(k.mine.text && k.mine.did && k.mine.what && k.theirs.text && k.theirs.did && k.theirs.what, JSON.stringify(k));
   assert.equal(((await carton.head()).doc.items as Rec[]).find((x) => x.id === "d")!.color, "black", "the later edit stays until picked");
   assert.equal((await ui.undoTurnOf(ui.history().all!().find((v) => v.kind === "edit" && v.seq === 3)!.id)).ok, false, "a person's edit is no turn");
 });

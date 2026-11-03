@@ -14,11 +14,13 @@ import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useM
 import { clock, clockOfDay, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Actor, CartonUi, Credits, FindHit, HistoryFilter, Landmark, Version, Viewing, Working } from "../model.ts";
+import type { Actor, CartonUi, FindHit, HistoryFilter, Landmark, Version, Viewing, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, Button, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { actorLabel } from "../actors.ts";
+import { clipCredits, type ClipCreditsView } from "../credits.ts";
+import { CLIP_ICON } from "./ChangeRow.ts";
 import { ChangesView } from "./ChangesView.ts";
 import { sentenceTail } from "./ChangeRow.ts";
 import { BeforeButton, usePlayChanges, type PlayHost } from "./Play.ts";
@@ -423,29 +425,37 @@ const DayRow = memo(function DayRow({ row, label, domId, active, onToggle, marke
   );
 });
 
-/** The clip History is filtered to: its credits, oldest first ("Added by You on Oct 30 · trimmed by Director · …"). */
+/**
+ * The clip History is filtered to: its kind chip and name, then its credits, oldest first ("Added by You on Oct 30 ·
+ * trimmed by Director · moved by You at 12:41 pm"; the verbs from what each change did: credits.ts, design QA G7).
+ */
 function ClipCredits({ item, name, title }: { item: string; name: string; title?: string }) {
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
-  const credits = useAsync<Credits>(() => ui.credits(item), [ui, item]);
-  if (credits.status !== "ready" || !credits.value.lines.length) return null;
-  const lines = [...credits.value.lines].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const credits = useAsync<ClipCreditsView>(() => clipCredits(ui, item, words), [ui, item, words]);
+  if (credits.status !== "ready" || !credits.value.parts.length) return null;
   const today = dayNumber(now);
-  const text = lines
+  const text = credits.value.parts
     .map((l, i) => {
       const who = actorLabel(l.author, ui.actor.bind(ui), words.you);
-      const verb = words.creditVerb[l.what] ?? `${l.what.toLowerCase()} changed`;
       const when = l.at === undefined ? "" : dayNumber(l.at) === today ? words.creditAt(clockOfDay(l.at, locale)) : dayNumber(l.at) === today - 1 ? clock(l.at, { now, locale }) : words.creditOn(shortDate(l.at, locale));
-      const s = words.creditPart(verb, who, when);
+      const s = words.creditPart(l.verb, who, when);
       return i === 0 ? s[0]!.toUpperCase() + s.slice(1) : s;
     })
     .join(" · ");
+  const kind = credits.value.kind;
   return h(
     "div",
     { className: "carton-clip-credits" },
-    h("div", { className: "carton-clip-credits-name" }, title ?? `“${credits.value.clip || name}”`),
+    h(
+      "div",
+      { className: "carton-clip-credits-name" },
+      kind ? h("span", { className: "carton-change-chip", "data-clip": kind, role: "img", "aria-label": words.clipKinds[kind] ?? kind }, h(Icon, { name: CLIP_ICON[kind] ?? "layers", size: 11 })) : null,
+      // the clip as the timeline names it (the engine's answer may be its id)
+      h("span", null, title ?? `“${name || credits.value.clip}”`),
+    ),
     h("p", null, text),
   );
 }
