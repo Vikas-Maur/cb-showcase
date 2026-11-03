@@ -736,9 +736,11 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
         toast?.(`${words.openedComparison(by)} ${words.escToGoBack}.`, null, null, "compare");
       }, () => { answer(ask, "refused", "not-here"); toast?.(words.compareFailed, null, "warning"); });
     };
-    const offer = (ask, why) => {
+    const offer = async (ask, why) => {
       const by = ask.byName || ask.by?.name || "An agent";
-      const sides = sidesOf(ui, ask.from, ask.to);
+      // (another cut's older version by its time in the note too, as openCompare names it: never rejects)
+      const found = await versionsElsewhere(ui, [ask.from, ask.to]);
+      const sides = sidesOf(ui, ask.from, ask.to, Date.now(), found);
       if (!sides) return answer(ask, "refused", "not-here");
       answer(ask, "offered", why);
       toast?.(words.comparisonReady(by, sides.left.label, sides.right.label), { label: words.openIt, run: () => open(ask) }, null, "compare", { sticky: true });
