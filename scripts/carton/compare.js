@@ -592,7 +592,7 @@ export function CompareSide({ bridge, onFoldIn }) {
   const count = countWord ? (len > 0 ? words.compareCountLength(countWord, timecode(len)) : countWord) : null;
   const strong = (s) => h("b", null, s);
   const range = c.acrossCuts
-    ? [h("span", null, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWith} `, strong(c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]
+    ? [h("span", null, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWithWord} `, strong(c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]
     : [h("span", null, `${words.compareFrom} `, strong(c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareTo} `, strong(c.right.you ? words.yourEditNow : c.right.label), !c.right.you && c.right.detail ? ` · ${c.right.detail}` : "")];
   // The footer (§1.2, §1.12): one cut, your edit on the right: Restore your edit to the left side…; across cuts, your
   // cut on the right: Fold in changes from the left cut…; between two others: nothing, only Done comparing

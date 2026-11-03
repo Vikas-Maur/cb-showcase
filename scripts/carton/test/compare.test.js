@@ -427,3 +427,44 @@ test("N1 review: a newer comparison isn't moved by an older one's close; an agen
     assert.ok(m.toast()?.textContent.includes("Claude Code has a comparison ready"), "still there after 6 s");
   } finally { await m.done(); }
 });
+
+test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare with…) and the cuts menu all open Compare in the editor", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    const menuItems = () => [...document.querySelectorAll(".carton-menu-item")];
+    // ⇆ Compare → Another cut › → “30s Instagram cut”: that cut now with the cut you're on now
+    const btn = m.side.querySelector(".carton-compare-btn");
+    assert.ok(btn, "History's ⇆ Compare button");
+    await m.click(btn);
+    await m.click(menuItems().find((b) => /Another cut/.test(b.textContent)));
+    await m.click(menuItems().find((b) => /30s Instagram cut/.test(b.textContent)));
+    await m.settle(80);
+    assert.equal(m.page().comparing()?.left.cutId, "cut-ig", "Compare opened, across cuts");
+    assert.ok(m.compare() && m.list(), "on the stage, and the list in the panel");
+    assert.ok(!m.side.querySelector(".carton-changes-view"), "never the panel's own Changes view");
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null);
+    // a row's ⋯ → Compare with… → a click on another row (pick mode)
+    const rows = () => [...m.side.querySelectorAll(".carton-version")];
+    const target = rows()[3];
+    target.dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    await m.click(target.querySelector(".carton-version-more"));
+    await m.click(menuItems().find((b) => b.textContent.trim() === "Compare with…"));
+    assert.ok(m.side.querySelector(".carton-pick-line"), "pick mode");
+    await m.click(rows()[1]);
+    await m.settle(80);
+    assert.ok(m.page().comparing(), "Compare opened from pick mode");
+    assert.ok(!m.side.querySelector(".carton-changes-view"));
+    await m.key("Escape");
+    // the cuts menu: another cut's ⇆ Compare
+    await m.click(m.side.querySelector(".carton-cuts-trigger"));
+    const cmp = [...document.querySelectorAll(".carton-cut-compare")];
+    assert.ok(cmp.length >= 1, "other cuts' rows offer Compare");
+    await m.click(cmp[0]);
+    await m.settle(80);
+    assert.ok(m.page().comparing()?.acrossCuts, "Compare opened from the cuts menu");
+    // N2's landmark pictures never come from a comparing stage
+    assert.equal(await U.__forTests.stagePicture(), null);
+  } finally { await m.done(); }
+});

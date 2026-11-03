@@ -94,6 +94,8 @@ import { clockOfDay } from "@carton/react";
  */
 function stagePicture() {
   const host = document.querySelector("[data-carton-stage-host]");
+  // never while comparing (N1): the stage then shows two versions, and its largest picture may be the other one
+  if (host?.hasAttribute("data-carton-compare") || host?.querySelector(".carton-compare")) return Promise.resolve(null);
   let best = null, area = 0;
   for (const el of host?.querySelectorAll("canvas, video") ?? []) {
     const r = el.getBoundingClientRect();
@@ -1177,4 +1179,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge, player
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, tellStep, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, stageViewingOf, StageViewing, sidePanel, conns };
+export const __forTests = { stagePicture, confirmations, toasts, tellFailure, tellStep, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, stageViewingOf, StageViewing, sidePanel, conns };
