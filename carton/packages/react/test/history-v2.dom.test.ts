@@ -137,7 +137,7 @@ test(name("Bring back one clip: the clips that differ, in three groups; a delete
   const before = ui.history().count("all");
   await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
   await waitFor(() => calls.length === 1 && ui.history().count("all") === before + 1, "restoreClip and its version");
-  assert.deepEqual(calls[0], [director.ref, "item-broll", {}]);
+  assert.deepEqual(calls[0], [director.ref, "item-broll", { expect: "absent" }], "with the clip as shown (N0b: gone now)");
   await waitFor(() => !$(m.container, ".carton-card-version"), "the card closes");
   // one that wasn't there then: Take out, with remove
   await click(row(m.container, "Add captions to the interview"));
@@ -152,7 +152,9 @@ test(name("Bring back one clip: the clips that differ, in three groups; a delete
   assert.equal($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent, "Take out “Jane Smith, Founder”?");
   await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
   await waitFor(() => calls.length === 2, "restoreClip with remove");
-  assert.deepEqual(calls[1], [director.ref, "item-jane", { remove: true }]);
+  assert.equal((calls[1]![2] as { remove?: boolean }).remove, true);
+  assert.deepEqual(calls[1]!.slice(0, 2), [director.ref, "item-jane"]);
+  assert.match((calls[1]![2] as { expect?: string }).expect ?? "", /^mock:item-jane:/, "with the clip as shown");
   await m.unmount();
 });
 
@@ -414,27 +416,30 @@ const openGoBack = async (root: HTMLElement) => {
   await waitFor(() => !!$(root, ".carton-goback"), "the chooser");
 };
 
-test(name("review #1: a clip that changed again while its confirmation was open says so and asks again"), async () => {
+test(name("N0b: a clip that changed again since its confirmation showed is refused with the engine's words; asked again, it comes back"), async () => {
   const ui = story();
-  const calls: string[] = [];
+  const calls: [string, unknown][] = [];
   const restoreClip = ui.restoreClip!.bind(ui);
-  ui.restoreClip = (ref, id, o) => (calls.push(id), restoreClip(ref, id, o));
+  ui.restoreClip = (ref, id, o) => (calls.push([id, o]), restoreClip(ref, id, o));
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900, selectedClip: () => ({ id: "item-intro", name: "Intro" }) })));
   await flush();
   await openGoBack(m.container);
   await waitFor(() => $(m.container, ".carton-goback .carton-btn[data-variant=primary]")?.textContent === "Bring back “Intro” as it was", "Intro picked");
   await click($(m.container, ".carton-goback .carton-btn[data-variant=primary]"));
   assert.equal($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent, "Bring back “Intro”?");
+  assert.match($(m.container, ".carton-bringback-confirm .carton-card-confirm-body")!.textContent ?? "", /: its timing, text, look and settings\. Nothing else moves\. Ctrl\+Z takes it back\.$/);
+  const shown = ((await ui.bringBackChoices!(ui.history().all!().find((v) => v.name === "Add captions to the interview")!.ref)).changed.find((c) => c.itemId === "item-intro")!.token);
   // an agent trims “Intro” again meanwhile
   await act(() => void ui.addVersion({ kind: "edit" }, [{ key: "timelineItems/item-intro", itemId: "item-intro", clip: "video", kind: "change", text: "Trimmed “Intro”, now ends at 0:04", at: 0, end: 4 }]));
-  // (the card takes in the new head with the cuts topic, then reads the list again: the button waits for it)
-  await wait(80);
-  await waitFor(() => !($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]") as HTMLButtonElement | null)?.disabled, "the list read again");
   await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
-  assert.match($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent ?? "", /^“Intro” just changed again\. Bring back the \d+:\d\d (am|pm) one anyway\?$/);
-  assert.deepEqual(calls, [], "nothing brought back yet");
+  await waitFor(() => !!$(m.container, ".carton-goback-warn"), "the refusal's words");
+  assert.deepEqual(calls[0], ["item-intro", { expect: shown }], "the clip as the confirmation showed it");
+  assert.equal($(m.container, ".carton-goback-warn")!.textContent, "“Intro” just changed again. Nothing was brought back.");
+  assert.equal($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent, "Bring back “Intro”?", "asked again");
+  const before = ui.history().count("all");
   await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
-  await waitFor(() => calls.length === 1, "brought back on the second click");
+  await waitFor(() => ui.history().count("all") === before + 1, "brought back on the second click, with the new token");
+  assert.notEqual((calls[1]![1] as { expect: string }).expect, shown);
   await m.unmount();
 });
 

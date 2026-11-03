@@ -16,7 +16,8 @@ import { clockOfDay, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import { actorLabel } from "../actors.ts";
-import type { Actor, BringBack, BringBackChoices, Change, ClipKind, Version } from "../model.ts";
+import type { Actor, BringBack, BringBackChoices, BringBackPlace, BringBackRipple, Change, ClipKind, Version } from "../model.ts";
+import type { Words } from "../words.ts";
 import { Button, radioKeys } from "./ui.ts";
 
 /** A choice of Go back… (DESIGN-V2 §3.1), smallest first. */
@@ -40,6 +41,11 @@ export interface ClipChoice {
   readonly text: string;
   /** A title's or caption's text then ("Then “Summer sale”"), when the engine says. */
   readonly thenText?: string;
+  /** The clip as it is now (N0b): `restoreClip`'s `expect`, so one that changed since is refused, never overwritten. */
+  readonly token?: string;
+  /** What bringing it back does (N0b): where it goes, and what else moves (null: nothing; absent: not known). */
+  readonly place?: BringBackPlace;
+  readonly ripple?: BringBackRipple | null;
 }
 
 const NOUN_KIND: Record<string, ClipKind> = { title: "title", "lower third": "title", caption: "caption", audio: "audio", music: "audio", image: "image", "code graphic": "code", code: "code" };
@@ -63,6 +69,9 @@ export function fromBringBack(c: BringBackChoices): ClipChoice[] {
       ...(x.at !== undefined ? { when: x.at } : {}),
       text: "",
       ...(x.then?.text !== undefined && x.then.text !== x.now?.text ? { thenText: x.then.text } : {}),
+      ...(x.token !== undefined ? { token: x.token } : {}),
+      ...(x.place ? { place: x.place } : {}),
+      ...(x.ripple !== undefined ? { ripple: x.ripple } : {}),
     };
   };
   return [...c.changed.map(row("changed")), ...c.deleted.map(row("deleted")), ...c.added.map(row("added"))];
@@ -144,14 +153,30 @@ export interface GoBackProps {
 }
 
 /**
- * The chooser's steps. A confirmation keeps the head it was shown at (`head`): if your edit moved on before the click and
- * the clip changed again, it says so and asks again (`again`, DESIGN-V2 §3.2's conflicts).
+ * The chooser's steps. A confirmation the engine refused because the clip changed since it showed (N0b's ChangedSince)
+ * shows its words (`again`) over the clip as it is now, and asks again (DESIGN-V2 §3.2's conflicts).
  */
-type Step = { kind: "choose" } | { kind: "clips" } | { kind: "confirm"; choice: ClipChoice; head?: string | undefined; again?: boolean } | { kind: "newCut" };
+type Step = { kind: "choose" } | { kind: "clips" } | { kind: "confirm"; choice: ClipChoice; again?: string } | { kind: "newCut" };
 
-/** Whether a clip's row reads differently now (its place, its text, what Bring back would do): it changed again. */
-const sameChoice = (a: ClipChoice, b: ClipChoice) =>
-  a.how === b.how && a.thenText === b.thenText && a.text === b.text && String(a.now ?? "") === String(b.now ?? "") && String(a.then ?? "") === String(b.then ?? "");
+/**
+ * What Bring back will do, in DESIGN-V2 §3.2's words, from the engine's preview (N0b's place and ripple): where it goes
+ * ("Its place is taken by “Drone shot”, so it goes on a new track above, at 0:06"), what else moves ("Everything after
+ * it moves 5 s later"; null: "Nothing else moves."; not known: nothing said), and that Ctrl+Z takes it back.
+ */
+export function bringBackLine(c: ClipChoice, when: string, words: Words): string {
+  const out = c.how === "added";
+  const at = c.then ? timecode(c.then[0]) : c.now ? timecode(c.now[0]) : null;
+  const names = c.place?.takenBy?.length ? c.place.takenBy.map((t) => `“${t.name}”`).join(" and ") : words.anotherClip;
+  const lead = out
+    ? words.takeOutLead
+    : c.place?.placed === "new-track"
+      ? `${c.how === "changed" ? `${words.asItWasAt(when)} ` : ""}${words.placeTaken(names, at)}`
+      : c.how === "deleted"
+        ? words.goesBackWhere(at)
+        : words.bringBackChangedLead(when);
+  const ripple = c.ripple === null ? words.nothingElseMoves : c.ripple ? (c.ripple.direction === "later" ? words.restMovesLater(c.ripple.by) : words.restMovesEarlier(c.ripple.by)) : null;
+  return [lead, ripple, out ? words.ctrlZPutsBack : words.ctrlZTakesBack].filter(Boolean).join(" ");
+}
 
 const isAgent = (v: Version) => v.author.kind === "agent" || v.author.kind === "subagent";
 const reason = (e: unknown) => (e instanceof Error && e.message ? e.message : typeof e === "string" ? e : undefined);
@@ -226,31 +251,43 @@ export function GoBack(p: GoBackProps) {
       },
     );
   };
-  const bringBack = (c: ClipChoice) =>
-    act(
-      () => ui.restoreClip!(v.ref, c.itemId, c.how === "added" ? { remove: true } : {}),
-      words.bringBackFailed,
-      (r) => ((r as BringBack | undefined)?.how === "same" ? words.alreadyAsItWas((r as BringBack).clipName || c.name) : null),
+  // Bring back the clip as the confirmation showed it (N0b: `expect`, its token). The engine refuses one that changed
+  // since (ChangedSince, checked inside the write, nothing written): then the confirmation shows its words over the clip
+  // as it is now (read again: its new token, place and ripple) and asks again. One that is now as it was then: said.
+  const fresh = async (c: ClipChoice): Promise<ClipChoice | "same" | null> => {
+    if (typeof ui.bringBackChoices !== "function") return null;
+    return fromBringBack(await ui.bringBackChoices(v.ref)).find((x) => x.itemId === c.itemId) ?? "same";
+  };
+  const bringBack = (c: ClipChoice) => {
+    setError(null);
+    setNote(null);
+    setBusy(true);
+    ui.restoreClip!(v.ref, c.itemId, { ...(c.how === "added" ? { remove: true } : {}), ...(c.token !== undefined ? { expect: c.token } : {}) }).then(
+      (r: BringBack) => {
+        setBusy(false);
+        if (r?.how === "same") setNote(words.alreadyAsItWas(r.clipName || c.name));
+        else p.onDone();
+      },
+      async (e: unknown) => {
+        const x = e as { code?: string; token?: string } | null;
+        // (across a bridge that keeps only a refusal's words, the clip's token says it changed)
+        const now = c.token !== undefined ? await fresh(c).catch(() => null) : null;
+        setBusy(false);
+        const changed = x?.code === "CHANGED_SINCE" || (now !== null && (now === "same" || now.token !== c.token));
+        if (!changed) return setError({ text: words.bringBackFailed, ...(reason(e) ? { why: reason(e)! } : {}) });
+        if (now === "same") {
+          setStep({ kind: "clips" });
+          return setNote(words.alreadyAsItWas(c.name));
+        }
+        const said = x?.code === "CHANGED_SINCE" && reason(e) ? reason(e)! : words.clipChangedNothing(c.name);
+        setStep({ kind: "confirm", choice: now ?? { ...c, ...(typeof x?.token === "string" ? { token: x.token } : {}) }, again: said });
+      },
     );
-
-  // Confirm: if your edit moved on since the confirmation showed and this clip changed again, say so and ask again;
-  // the list is read again for the new head (it is while `differ` loads: the button waits)
-  const confirm = (c: ClipChoice, at: string | undefined) => {
-    if (at !== head && clips) {
-      const now = clips.find((x) => x.itemId === c.itemId);
-      if (!now) {
-        setStep({ kind: "clips" });
-        setNote(words.alreadyAsItWas(c.name));
-        return;
-      }
-      if (!sameChoice(now, c)) return setStep({ kind: "confirm", choice: now, head, again: true });
-    }
-    bringBack(c);
   };
 
   const go = () => {
     if (!choice) return;
-    if (choice === "clip") return selected ? setStep({ kind: "confirm", choice: selected, head }) : setStep({ kind: "clips" });
+    if (choice === "clip") return selected ? setStep({ kind: "confirm", choice: selected }) : setStep({ kind: "clips" });
     if (choice === "turn") return act(() => ui.undoTurnOf(v.id), words.undoTurnFailed);
     if (choice === "restore") return act(() => ui.restore(v.ref), words.restoreFailed);
     setStep({ kind: "newCut" });
@@ -279,18 +316,18 @@ export function GoBack(p: GoBackProps) {
   if (step.kind === "confirm") {
     const c = step.choice;
     const out = c.how === "added";
-    const where = c.then ? `${timecode(c.then[0])}` : null;
     return h(
       "div",
       { ref: root, tabIndex: -1, className: "carton-bringback-confirm", role: "group", "aria-label": out ? words.takeOutQ(c.name) : words.bringBackQ(c.name), onKeyDown },
-      h("p", { className: "carton-card-confirm-title" }, step.again ? words.clipChangedAgain(c.name, time) : out ? words.takeOutQ(c.name) : words.bringBackQ(c.name)),
-      // (what restoreClip does: the clip as it was, at its own time and on its own track; nothing else moves)
-      h("p", { className: "carton-card-confirm-body" }, out ? words.takeOutBody : c.how === "deleted" ? words.bringBackDeletedBody(where) : words.bringBackChangedBody(time)),
+      // (refused because it changed again: the engine's words, then the question again, over the clip as it is now)
+      step.again ? h("p", { className: "carton-goback-warn", role: "status" }, step.again) : null,
+      h("p", { className: "carton-card-confirm-title" }, out ? words.takeOutQ(c.name) : words.bringBackQ(c.name)),
+      h("p", { className: "carton-card-confirm-body" }, bringBackLine(c, time, words)),
       failure,
       h(
         "div",
         { className: "carton-card-actions" },
-        h(Button, { variant: "primary", icon: out ? "x" : "restoreArc", busy, disabled: differ.status === "loading", onClick: () => (step.again ? bringBack(c) : confirm(c, step.head)) }, out ? words.takeOutNamed(c.name) : words.bringBackNamed(c.name)),
+        h(Button, { variant: "primary", icon: out ? "x" : "restoreArc", busy, onClick: () => bringBack(c) }, out ? words.takeOutNamed(c.name) : words.bringBackNamed(c.name)),
         h(Button, { variant: "ghost", onClick: back }, words.cancel),
         h("span", { className: "carton-card-gap" }),
         p.onSeeFirst ? h("button", { type: "button", className: "carton-link", onClick: () => p.onSeeFirst!(c) }, words.seeItFirst) : null,
@@ -298,7 +335,7 @@ export function GoBack(p: GoBackProps) {
     );
   }
 
-  if (step.kind === "clips") return h(ClipList, { root, clips, same, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c, head }), onBack: back, onKeyDown, failure });
+  if (step.kind === "clips") return h(ClipList, { root, clips, same, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c }), onBack: back, onKeyDown, failure });
 
   // the choices, smallest first
   const after = p.after ?? 0;
