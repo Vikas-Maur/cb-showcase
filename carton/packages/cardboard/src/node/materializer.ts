@@ -331,7 +331,7 @@ export interface MaterializerOptions {
  * 1,928): `cb` waits at most 2 s for the app's timeline.tsx to show its write, and this says what that wait was spent
  * on, in the app, so a run there names the cause. Times in ms; never file contents, never anything typed.
  * - `ms`: from the ask to the answer; `budgetMs`: the wait it was given; `beforeMs`: the holder's look at carton.db
- *   before it asked (when it says).
+ *   before it asked (when it says). The wait reported is the two together: `beforeMs` + `ms` >= `slowShowMs`.
  * - `queueMs`: from the ask until this answer's own look at the file (behind the materializer's other work); null
  *   when it never got that far (another print answered it first, or the wait ran out). `lookMs`: that look (the read
  *   of timeline.tsx that checks whether it shows the write already).
@@ -344,7 +344,8 @@ export interface MaterializerOptions {
  *   line of each one's source and how long it ran.
  * - `print`: the shared file's last rewrite since it was asked, step by step: `look` (the file read, a foreign save
  *   imported, the freeze checked), `pin`, `print` (project.json read, the printer), `install` (the bundle's install
- *   lock, displace and link) and `tell` (the read-back of the file that tells the waiting writes); `at` when it began.
+ *   lock, displace and link) and `tell` (the read-back of the file that tells the waiting writes); `at` when it began,
+ *   `failed` when it threw (its last step is the one that failed).
  */
 export interface SlowShow {
   change: string;
@@ -360,8 +361,10 @@ export interface SlowShow {
   retrying: boolean;
   frozen: boolean;
   tasks: { task: string; ms: number }[];
-  print?: { at: number; look: number; pin: number; print: number; install: number; tell: number };
+  print?: { at: number; look: number; pin: number; print: number; install: number; tell: number; failed?: boolean };
 }
+/** The shared file's rewrite, step by step (`SlowShow.print`). */
+type PrintStep = "look" | "pin" | "print" | "install" | "tell";
 
 export interface ViewRow {
   /** Who printed it: the turn's actor for hooked agents, otherwise the view's own name. */
@@ -993,8 +996,10 @@ export class Materializer {
           if (timer !== null) this.clock.clearTimeout(timer);
           resolve(s);
           const now = this.clock.now(), took = now - asked;
+          // the whole wait counts, the caller's look at carton.db too (review #1: one that took the wait left a prompt
+          // answer here, and nothing was reported); `ms` is this part, `beforeMs` the caller's
           // (answered by the print of its own rewrite, which hasn't returned yet: its time so far)
-          if (this.onSlowShow && took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, lookMs: lookMs ?? (looked === null ? null : now - looked), rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
+          if (this.onSlowShow && (o.beforeMs ?? 0) + took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, lookMs: lookMs ?? (looked === null ? null : now - looked), rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
         },
       };
       this.showing.add(w);
@@ -1338,17 +1343,28 @@ export class Materializer {
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     // how long each step took, for a slow read-your-writes answer's report (`SlowShow.print`; one made during a step
-    // counts that step up to then): each `step(next)` ends the step under way
-    type Step = "look" | "pin" | "print" | "install" | "tell";
+    // counts that step up to then): each `step(next)` ends the step under way, and the rewrite's end, failed or not,
+    // ends the last one (review #2: a failed rewrite's step went on counting the wait for its retry)
     const steps: NonNullable<SlowShow["print"]> = { at: this.clock.now(), look: 0, pin: 0, print: 0, install: 0, tell: 0 };
-    let mark = steps.at, doing: Step | null = "look";
-    const step = (next: Step | null): void => {
+    let mark = steps.at, doing: PrintStep | null = "look";
+    const step = (next: PrintStep | null): void => {
       const n = this.clock.now();
       if (doing) steps[doing] += n - mark;
       mark = n;
       doing = next;
     };
     this.lastPrint = () => (doing ? { ...steps, [doing]: steps[doing] + this.clock.now() - mark } : { ...steps });
+    try {
+      await this.rewriteShared(cause, force, step);
+    } catch (e) {
+      steps.failed = true;
+      throw e;
+    } finally {
+      step(null);
+    }
+  }
+  /** The shared file's rewrite (`writeSharedNow`), telling `step` where it is. */
+  private async rewriteShared(cause: string, force: boolean, step: (next: PrintStep | null) => void): Promise<void> {
     // the path is read once: what the import found there (current, not parsing yet, or nothing) is what the "unchanged"
     // check below compares, and a write landing in between is read at its own event; after an import it is read again
     const seen = await this.importUnseen(TIMELINE_FILE);

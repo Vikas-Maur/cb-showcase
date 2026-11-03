@@ -1462,3 +1462,46 @@ test("apply-tail: a slow read-your-writes answer is reported with where its time
   assert.equal(q.print?.pin, 800, "the rewrite's steps: the pin took the time");
   assert.ok(q.print!.look + q.print!.print + q.print!.install + q.print!.tell < 50, JSON.stringify(q.print));
 });
+
+// Review #1 of perf/apply-tail: the whole wait counts. A holder whose look at carton.db took most of the wait, and a
+// prompt answer here, is still a slow wait, and is reported with that look (`beforeMs`).
+test("apply-tail review #1: a wait the holder's look at carton.db took is reported, the materializer's own part prompt", async (t) => {
+  const reports: SlowShow[] = [];
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { onSlowShow: (r) => reports.push(r) } });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "late look"), "agent.4");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.4", seq: s.engine.headSeq }, 100, { beforeMs: 1900 }), "shown");
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0]!.beforeMs, 1900);
+  assert.ok(reports[0]!.ms < 50, String(reports[0]!.ms));
+  assert.equal(reports[0]!.by, "own rewrite");
+  // and a prompt one stays unreported
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "prompt again"), "agent.5");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.5", seq: s.engine.headSeq }, 2000, { beforeMs: 4 }), "shown");
+  assert.equal(reports.length, 1);
+});
+
+// Review #2: a rewrite that fails ends its steps when it fails. A report made later (the wait's end, while the retry
+// waits on its timer) says the rewrite failed, in which step, and doesn't count the idle wait for the retry into it.
+test("apply-tail review #2: a failed rewrite's steps end with it: a later report says it failed, without the retry's wait", async (t) => {
+  const reports: SlowShow[] = [];
+  let broken = false;
+  const codec = { ...jsonTimelineCodec, print: (project: Record<string, unknown>, rev: string) => { if (broken) throw new Error("the printer broke"); return jsonTimelineCodec.print(project, rev); } };
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { codec, onSlowShow: (r) => reports.push(r) } });
+  broken = true;
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "never printed"), "agent.6");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.6", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  assert.equal(reports.length, 1);
+  const r = reports[0]!;
+  assert.equal(r.by, "timer");
+  assert.equal(r.retrying, true, "the failed rewrite waits to be tried again");
+  assert.equal(r.print?.failed, true, "the last rewrite failed");
+  const sum = r.print!.look + r.print!.pin + r.print!.print + r.print!.install + r.print!.tell;
+  assert.ok(sum < 50, `its steps took what the rewrite took, not the wait for its retry: ${JSON.stringify(r.print)}`);
+  assert.ok(r.print!.at + sum < r.ms, "and it ended before the wait did");
+  broken = false;
+});

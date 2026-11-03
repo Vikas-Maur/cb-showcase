@@ -164,7 +164,8 @@ export class View {
       // perf/apply-tail: a cb write that waited 500 ms or more for timeline.tsx to show it, and where that time went
       // (the holder's look at carton.db, the queue, its rewrite, what answered it, the longest tasks meanwhile): into the
       // worker's output, which the app's activity log keeps (main's __cbPipeWorker). Timings and task names only.
-      onSlowShow: (s) => console.warn("[carton] a cb write waited " + s.ms + " ms for timeline.tsx (" + s.answer + "): " + JSON.stringify(s)),
+      // (the whole wait: the holder's look at carton.db, beforeMs, and the materializer's part, ms)
+      onSlowShow: (s) => console.warn("[carton] a cb write waited " + ((s.beforeMs ?? 0) + s.ms) + " ms for timeline.tsx (" + s.answer + "): " + JSON.stringify(s)),
       onCards: (c) => {
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
         (async () => {
