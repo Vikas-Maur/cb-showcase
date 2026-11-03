@@ -186,3 +186,24 @@ test(name("PLAN 1.3: a row's click, Enter and double-click leave viewing null; P
   assert.ok($(m.container, ".carton-version[data-viewing]"), "its row marked");
   await m.unmount();
 });
+
+// With Workstream 4's swap made at once: the frame is drawn with the swap, before the view model has labelled it; no
+// tab and nothing said until the label comes, then said once; a change of label is said, the return said once.
+test(name("PLAN 1.1 with WS4: a frame still waiting for its label shows no tab and says nothing; its label, when it comes"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const at = (label: string) => ({ ref: "main@3", kind: "before" as const, label, short: label });
+  const m = await render(wrap(ui, h(ViewingFrame, { viewing: at(""), isViewing: () => true })));
+  assert.ok($(m.container, ".carton-frame"), "the frame, at once");
+  assert.equal($(m.container, ".carton-frame-label"), null, "no tab before the label");
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "", "nothing said yet");
+  await m.rerender(wrap(ui, h(ViewingFrame, { viewing: at("Before Director's “Add captions…”"), isViewing: () => true })));
+  assert.equal($(m.container, ".carton-frame-text")!.textContent, "Before Director's “Add captions…”");
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…”. Esc to go back.");
+  // the next swap waits for its label too: the last one said stays
+  await m.rerender(wrap(ui, h(ViewingFrame, { viewing: at(""), isViewing: () => true })));
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Looking at Before Director's “Add captions…”. Esc to go back.");
+  await m.rerender(wrap(ui, h(ViewingFrame, { viewing: null, isViewing: () => false })));
+  assert.equal($(m.container, ".carton-frame"), null);
+  assert.equal($(m.container, ".carton-sr[role=status]")!.textContent, "Back to your edit");
+  await m.unmount();
+});

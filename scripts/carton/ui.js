@@ -68,9 +68,20 @@ function connect(projectId, bridge) {
   // still loading (the worker hasn't set viewing for it yet), so leaving can cancel it too.
   let viewSeq = 0, pending = null;
   r.ui.pendingView = () => pending?.target ?? null;
+  // What the editor was last told to show (a ref, or null: your edit): stageRef(). The stage's marks follow it, so a
+  // swap made at once (Play's and Before's, before the worker has labelled it: viewAndSwap) is never unmarked, and a
+  // return is unmarked at once (PLAN 1.1, with Workstream 4). onStage(f): told when it changes.
+  let stageRef = null;
+  const stageSubs = new Set();
+  const swap = (ref) => {
+    if (stageRef !== ref) { stageRef = ref; for (const f of [...stageSubs]) f(); }
+    return bridge.preview(projectId, ref);
+  };
+  r.ui.stageRef = () => stageRef;
+  r.ui.onStage = (f) => { stageSubs.add(f); return () => { stageSubs.delete(f); }; };
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
-  r.ui.openPreview = (ref, label) => { ++viewSeq; pending = null; openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
+  r.ui.openPreview = (ref, label) => { ++viewSeq; pending = null; openPreview(ref, label); return swap(ref ?? null); };
   // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
   // editor swaps (viewAndSwap, below). A conflict's side (its card's See it, PLAN 7.1) brings the card's clip into view:
   // the playhead at its start in the side shown, the clip not selected, so the first Esc is viewing's, not Cardboard's
@@ -82,7 +93,7 @@ function connect(projectId, bridge) {
     pending = target ? { seq, target } : null;
     const mine = () => seq === viewSeq;
     try {
-      await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? bridge.preview(projectId, ref) : Promise.resolve()))(target);
+      await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? swap(ref) : Promise.resolve()))(target);
     } finally {
       if (pending?.seq === seq) pending = null;
     }
@@ -258,6 +269,21 @@ const leavesWithPanel = (ui) => {
  * so the stage frame needs no label (PLAN 1.1): History open on a version or how it was before one; never a conflict's
  * side, nor a version without a row (Comments' "See it as it was").
  */
+/**
+ * What the stage's marks show (the frame, the timeline's frame): what the editor was told to show (connect()'s
+ * stageRef), labelled once the view model says what it is (viewingOf, its ref the one shown); while a swap made at
+ * once waits for its label, the frame with no label yet; your edit asked for: nothing, even before the view model
+ * catches up. A teammate's cut switched to is your current cut in the editor (no preview): viewingOf's. A view model
+ * without stageRef (a host of its own): viewingOf.
+ */
+export function stageViewingOf(ui) {
+  const v = viewingOf(ui);
+  if (typeof ui.stageRef !== "function") return v;
+  if (v?.kind === "cut" && !(typeof ui.viewing === "function" && ui.viewing())) return v;
+  const shown = ui.stageRef();
+  if (shown == null) return null;
+  return v && v.ref === shown ? v : { ref: shown, kind: v?.kind ?? "version", label: "", short: "" };
+}
 export function listMarks(panel, v) {
   if (panel !== "history" || !v) return false;
   return v.kind === "cut" || ((v.kind === "version" || v.kind === "before") && typeof v.versionId === "string");
@@ -732,7 +758,7 @@ ${TL}[data-carton-cut] .justify-between>.flex-1.justify-end::before{content:var(
 // What the timeline's wrapper shows: viewing (any), and your cut's name and dot when it isn't Main and nothing is viewed
 // (the timeline shows that cut then). Null fields stay off.
 export function timelineMarkOf(ui, projectId) {
-  const v = viewingOf(ui), chip = chipOf(ui);
+  const v = stageViewingOf(ui), chip = chipOf(ui);
   const other = !v && chip?.cut?.dot ? chip.cut : null;
   return { projectId, viewing: !!v, cut: other ? other.name : null, dot: other ? other.dot : null };
 }
@@ -745,20 +771,21 @@ const sameMark = (a, b) => a === b || (!!a && !!b && a.projectId === b.projectId
  */
 function StageViewing({ projectId, bridge, panel }) {
   const ui = useCartonUi();
-  // what is viewed, as the chip says it (a teammate's cut switched to counts: viewingOf), read again on each topic
-  const [v, setV] = useState(() => viewingOf(ui));
+  // what the stage shows when it isn't your edit (stageViewingOf), read again on each topic and each swap
+  const [v, setV] = useState(() => stageViewingOf(ui));
   const [pulse, setPulse] = useState(0);
   useEffect(() => {
     injectStyles(document, TIMELINE_CSS, "carton-timeline-css");
     let mark = null;
     const update = () => {
-      const next = viewingOf(ui);
+      const next = stageViewingOf(ui);
       setV((was) => (was === next || (was && next && was.ref === next.ref && was.kind === next.kind && was.label === next.label && was.versionId === next.versionId) ? was : next));
       const m = timelineMarkOf(ui, projectId);
       if (!sameMark(m, mark)) { mark = m; window.__cartonTimelineMark?.(m); }
     };
     update();
     const offs = ["viewing", "preview", "cuts"].map((t) => ui.subscribe(t, update));
+    if (typeof ui.onStage === "function") offs.push(ui.onStage(update));
     return () => {
       for (const off of offs) off();
       window.__cartonTimelineMark?.({ projectId, viewing: false, cut: null, dot: null });
@@ -791,7 +818,7 @@ function StageViewing({ projectId, bridge, panel }) {
     return Promise.resolve(backToEdit(ui));
   }), [bridge, ui]);
   const shown = useMemo(() => (v ? { ...v, label: upFirst(v.label) } : null), [v]);
-  const isViewing = useCallback(() => !!viewingOf(ui), [ui]);
+  const isViewing = useCallback(() => !!stageViewingOf(ui) || !!viewingOf(ui), [ui]);
   const back = useCallback(() => backToEdit(ui), [ui]);
   return h(ViewingFrame, { viewing: shown, label: !listMarks(panel, v), onBack: back, isViewing, escapeState: bridge.selection, pulse });
 }
@@ -820,4 +847,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, StageViewing, sidePanel };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, stageViewingOf, StageViewing, sidePanel, conns };

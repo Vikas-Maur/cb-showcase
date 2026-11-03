@@ -247,18 +247,22 @@ export function ViewingFrame(p: ViewingFrameProps) {
   const back = () => void Promise.resolve(p.onBack ? p.onBack() : ui.view(null)).catch(() => undefined);
   const isViewing = p.isViewing ?? (() => !!(p.viewing !== undefined ? shown.current : ui.viewing()));
   useEscapeBack({ open: !!v, viewing: isViewing, back, escapeState: p.escapeState, inside: frame });
-  // what the live region says: a new label when viewing starts or changes, "Back to your edit" once it ends
-  const label = v?.label ?? null;
+  // What the live region says: a new label when viewing starts or changes, "Back to your edit" once it ends. A frame
+  // still waiting for its label (a swap made at once, PLAN 4.3) says nothing yet: its label, when it comes.
+  const open = !!v;
+  const label = v?.label || null;
   const [said, setSaid] = useState("");
   const last = useRef<string | null>(null);
   useEffect(() => {
-    if (label === last.current) return;
-    const was = last.current;
-    last.current = label;
-    if (label) setSaid(words.lookingAtAnnounce(label));
-    else if (was) setSaid(words.backAnnounce);
-  }, [label, words]);
-  const tab = p.label !== false;
+    if (!open) {
+      if (last.current) setSaid(words.backAnnounce);
+      last.current = null;
+    } else if (label && label !== last.current) {
+      last.current = label;
+      setSaid(words.lookingAtAnnounce(label));
+    }
+  }, [open, label, words]);
+  const tab = p.label !== false && !!label;
   return h(
     Fragment,
     null,
@@ -279,7 +283,7 @@ export function ViewingFrame(p: ViewingFrameProps) {
                 "div",
                 { className: "carton-frame-label" },
                 h(Icon, { name: "eye", size: 13 }),
-                h("span", { className: "carton-frame-text", title: v.label }, v.label),
+                h("span", { className: "carton-frame-text", title: label! }, label),
                 h("button", { type: "button", className: "carton-frame-back", "aria-label": words.backToMyEditKey, title: words.backToMyEditKey, "aria-keyshortcuts": "Escape", onClick: back }, h(Icon, { name: "x", size: 12 })),
               )
             : null,

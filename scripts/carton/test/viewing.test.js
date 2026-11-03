@@ -105,6 +105,8 @@ async function mount(ui = createMockUi({ versions: 8 })) {
   const toast = () => stage.querySelector(".carton-toast");
   return {
     ui, bridge, did, stage, side, cmd, click, settle, frame, tab, toast,
+    // the page's own view model (connect()'s: its view() swaps the editor), as History, a card or Comments call it
+    page: () => U.__forTests.conns.get(PROJECT).conn.ui,
     setSelected: (s) => { selected = s; },
     // a version that isn't the newest, confirmed
     older: () => ui.history().all().filter((v) => !v.provisional).at(-3),
@@ -118,7 +120,7 @@ test("PLAN 1.1: viewing is a frame round the stage, no banner; its label tab onl
     assert.ok(!m.frame(), "your edit: no frame");
     const v = m.older();
     // History closed (a version viewed from elsewhere): the frame carries the label, the chip's words
-    await act(async () => { await m.ui.view({ kind: "version", versionId: v.id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: v.id }); });
     await m.settle();
     assert.ok(m.frame(), "the frame");
     assert.ok(!m.stage.querySelector(".carton-preview-banner"), "no banner over the picture");
@@ -168,7 +170,7 @@ test("PLAN 1.4: an edit tried while viewing: one line and one pulse, Back to my 
   const m = await mount();
   try {
     assert.equal(m.bridge.blocked(), false, "your edit: Cardboard's own refusal (an agent's lock) is left to it");
-    await act(async () => { await m.ui.view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
     await m.settle();
     let told;
     await act(async () => { told = m.bridge.blocked(); await sleep(10); });
@@ -195,7 +197,7 @@ test("PLAN 1.6: Export while viewing comes back to your edit first, says so, and
   const m = await mount();
   try {
     assert.equal(m.bridge.beforeExport(), null, "nothing viewed: Export opens at once");
-    await act(async () => { await m.ui.view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
     await m.settle();
     let p;
     await act(async () => { p = m.bridge.beforeExport(); await p; await sleep(20); });
@@ -213,14 +215,14 @@ test("PLAN 1.5: the timeline's marks: viewing while viewing; a cut other than Ma
   try {
     const mark = () => m.did.marks.at(-1);
     assert.deepEqual(mark(), { projectId: m.bridge.projectId, viewing: false, cut: null, dot: null }, "Main cut, your edit");
-    await act(async () => { await m.ui.view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
     await m.settle();
     assert.equal(mark().viewing, true);
     const n = m.did.marks.length;
     await act(async () => { m.ui.addVersion({ summary: "Trimmed 'Intro'" }); await sleep(20); });
     await m.settle();
     assert.equal(m.did.marks.length, n, "a new version changes nothing on the timeline");
-    await act(async () => { await m.ui.view(null); });
+    await act(async () => { await m.page().view(null); });
     await m.settle();
     await act(async () => { await m.ui.switchCut("cut-ig"); });
     await m.settle();
@@ -277,7 +279,7 @@ test("PLAN 1.3: closing the panel or switching its tab brings your edit back; a 
   try {
     // History closed with its icon while viewing
     await m.cmd("carton-history");
-    await act(async () => { await m.ui.view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
     await m.settle();
     await m.cmd("carton-history");
     assert.ok(!open(), "closed");
@@ -285,12 +287,12 @@ test("PLAN 1.3: closing the panel or switching its tab brings your edit back; a 
     assert.equal(m.did.previews.at(-1), null, "the editor swapped back");
     // History → Comments while viewing
     await m.cmd("carton-history");
-    await act(async () => { await m.ui.view({ kind: "version", versionId: m.older().id }); });
+    await act(async () => { await m.page().view({ kind: "version", versionId: m.older().id }); });
     await m.settle();
     await m.click(m.side.querySelector('[role=tab][aria-label="Comments"]'));
     assert.equal(m.ui.viewing(), null, "switching tab too");
     // a viewing Comments showed ("See it as it was": a version without a row) goes when the panel closes (its ✕)
-    await act(async () => { await m.ui.view({ kind: "version", ref: "main@2", label: "the version this comment was made on" }); });
+    await act(async () => { await m.page().view({ kind: "version", ref: "main@2", label: "the version this comment was made on" }); });
     await m.settle();
     assert.ok(m.tab(), "Comments open: the frame carries the label");
     await m.click(m.side.querySelector('button[aria-label="Close"]'));
@@ -306,7 +308,7 @@ test("PLAN 1.3: closing the panel or switching its tab brings your edit back; a 
     await m.cmd("carton-history");
     assert.ok(!open());
     assert.equal(m.ui.viewing()?.kind, "conflict", "the side stays");
-    await act(async () => { await m.ui.view(null); });
+    await act(async () => { await m.page().view(null); });
     await m.settle();
     m.ui.setConflicts([]);
     // Play on an older version's card: viewing it, and no clip selected (Cardboard's Esc would take the first Esc)
@@ -328,9 +330,11 @@ test("PLAN 1.3: closing the panel or switching its tab brings your edit back; a 
 
 // Review of feat/ux-1-viewing #3: Play on an older version, then the panel closed before the version has loaded. The
 // return found nothing viewed yet and did nothing; the load then finished and swapped the editor, with the panel gone.
-// Now leaving cancels what is still loading: it never takes the stage. (The worker drops a view superseded by a newer
-// one itself, from-carton.ts viewGen; the mock's view is wrapped here to load late and do the same.)
-test("review #3: closing the panel while a Play still loads: the version never takes the stage", opt, async () => {
+// Now leaving cancels what is still loading: once the panel has closed it never takes the stage. (Workstream 4's Play
+// swaps the stage at once, before the worker answers: that swap is marked, below, and taken back by the close.) The
+// worker drops a view superseded by a newer one itself (from-carton.ts viewGen); the mock's view is wrapped here to
+// load late and do the same.
+test("review #3: closing the panel while a Play still loads: the version never takes the stage after", opt, async () => {
   const ui = createMockUi({ versions: 8 });
   const real = ui.view.bind(ui);
   let gen = 0, release = null;
@@ -349,13 +353,79 @@ test("review #3: closing the panel while a Play still loads: the version never t
     await m.click(play);
     assert.ok(release, "the version is loading");
     assert.equal(m.ui.viewing(), null, "not shown yet");
+    // swapped at once (Workstream 4), and marked at once: the frame doesn't wait for the worker's label
+    assert.ok(m.did.previews.at(-1), "the stage swapped at once");
+    assert.ok(m.frame(), "and the frame with it, before the worker has labelled it");
+    assert.equal(m.did.marks.at(-1)?.viewing, true, "the timeline's too");
     await m.cmd("carton-history");
     assert.ok(!m.side.querySelector(".carton-sidebar"), "the panel closed meanwhile");
+    assert.equal(m.did.previews.at(-1), null, "your edit back");
+    assert.ok(!m.frame(), "unmarked at once");
+    const after = m.did.previews.length;
     await act(async () => { release(); await sleep(30); });
     await m.settle(40);
     assert.equal(m.ui.viewing(), null, "nothing viewed");
-    assert.ok(!m.did.previews.some((r) => r !== null), "the editor never swapped to it: " + JSON.stringify(m.did.previews));
+    assert.deepEqual(m.did.previews.slice(after).filter((r) => r !== null), [], "the late load never swapped the editor again: " + JSON.stringify(m.did.previews));
     assert.ok(!m.frame(), "no frame");
+  } finally { await m.done(); }
+});
+
+// With Workstream 4's Play and Before (feat/carton-ux @ ed5b9d1c): Play on the cut's newest version plays on your edit,
+// so nothing is marked; Before (latched here: a keyboard click; held is the same view) views how it was before, and is
+// marked; Play on an older version views it, marked on its row, and its Before keeps the mark on that row. The marks:
+// the stage's frame, the row's "Viewing ✕", the timeline's frame, one label in the chip's report.
+test("PLAN 1.1, 1.2, 1.5 with WS4: the frame and the row mark for Play on an older version and for Before, never for Play on the newest", opt, async () => {
+  const ui = createMockUi({ versions: 8 });
+  ui.confirmAll();
+  const m = await mount(ui);
+  const marked = () => [...m.side.querySelectorAll(".carton-version[data-viewing]")];
+  const timeline = () => m.did.marks.at(-1)?.viewing;
+  const button = (re) => [...m.side.querySelectorAll(".carton-card-version button")].find((b) => re.test(b.textContent));
+  const keyClick = async (el) => { await act(async () => { el.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 })); await sleep(30); }); await m.settle(40); };
+  try {
+    await m.cmd("carton-history");
+    // the newest: Play all plays on your edit
+    const newest = m.side.querySelector(".carton-version[data-now]");
+    await m.click(newest);
+    await m.click(button(/Play all/));
+    await m.settle(60);
+    assert.equal(m.ui.viewing(), null, "Play on the newest: your edit");
+    assert.ok(!m.frame(), "no frame");
+    assert.equal(marked().length, 0, "no row mark");
+    assert.equal(timeline(), false, "no timeline frame");
+    // its Before: how it was before the newest's changes, viewed and marked
+    const before = button(/^Before$/);
+    assert.ok(before, "Before while it plays");
+    await keyClick(before);
+    assert.equal(m.ui.viewing()?.kind, "before");
+    assert.ok(m.frame(), "Before: the frame");
+    assert.ok(!m.tab(), "History's row says it: no label tab");
+    assert.equal(marked().length, 1, "the row marked");
+    assert.ok(marked()[0].hasAttribute("data-now"), "on the newest's row");
+    assert.equal(timeline(), true, "the timeline's frame");
+    await keyClick(button(/^Before$/));
+    assert.equal(m.ui.viewing(), null, "Before let go: your edit");
+    assert.ok(!m.frame());
+    assert.equal(marked().length, 0);
+    // an older version: Play all views it
+    const older = [...m.side.querySelectorAll(".carton-version")].filter((r) => !r.hasAttribute("data-now") && r.getAttribute("data-kind") !== "start")[1];
+    const olderId = older.id;
+    await m.click(older);
+    await m.click(button(/Play all/));
+    await m.settle(60);
+    assert.equal(m.ui.viewing()?.kind, "version", "Play on an older version views it");
+    assert.ok(m.frame(), "the frame");
+    assert.deepEqual(marked().map((r) => r.id), [olderId], "its row marked");
+    assert.equal(timeline(), true);
+    assert.ok(m.did.previews.at(-1), "the editor shows it");
+    // and its Before: the mark stays on its row
+    await keyClick(button(/^Before$/));
+    assert.equal(m.ui.viewing()?.kind, "before");
+    assert.ok(m.frame());
+    assert.deepEqual(marked().map((r) => r.id), [olderId], "Before of it: the same row");
+    await keyClick(button(/^Before$/));
+    assert.equal(m.ui.viewing()?.kind, "version", "back to the version played");
+    assert.deepEqual(marked().map((r) => r.id), [olderId]);
   } finally { await m.done(); }
 });
 

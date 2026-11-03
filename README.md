@@ -530,7 +530,9 @@ What changes with it on:
   picture: three quiet marks say it, with one label ("Director's “Add captions…”"): the title bar's chip, a thin blue
   frame round the preview and the timeline (the timeline's clips muted), and the row in History ("👁 Viewing ✕"). When
   History's list isn't on screen to show the row (the panel closed, Comments, a conflict's side), the frame carries the
-  label itself in a small tab on its top-left corner, with ✕. Esc, any of those ✕, closing the panel or switching its
+  label itself in a small tab on its top-left corner, with ✕. The marks follow what the preview actually shows: a
+  version Play or Before puts on the preview at once is framed at once (its label follows a moment later), and your
+  edit asked for is unframed at once. Esc, any of those ✕, closing the panel or switching its
   tab brings your edit back (a conflict side stays until its card or Esc leaves it). Undo and Redo look unavailable
   meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question, stays the
   editor's, whichever was selected first, and with focus in the History panel the first Esc returns to your edit and
