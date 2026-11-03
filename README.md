@@ -414,7 +414,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `key` | A key with Ctrl/Alt/Win anywhere, or any key outside a text field, that ran no shortcut or menu item | `combo`, `handled` (`false`: nothing took it; `native`: it pressed a focused button, named in `on`), `field` (see below) |
 | `director.answer` | An agent question was answered | `kind` (`generation`, `question`, `clone`), `outcome` (`approved`, `skipped`, `replied`, `answered`), `waitMs`, `via` (`key:Ctrl+Enter`, `pointer`…), `credits` |
 | `toast` | An error or warning toast | `kind`, `msg`, `detail` |
-| `error` | An uncaught error in a page; with Carton, also one its side panel or stage layer caught (the editor stays: the panel says so), and a teammate's presence the Share panel skipped | `msg`, `src`, `rejection`, `panel` |
+| `error` | An uncaught error in a page; with Carton, also one its side panel, Share dialog or stage layer caught (the editor stays: the panel or dialog says so), and a teammate's presence the Share dialog skipped | `msg`, `src`, `rejection`, `panel` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
 | `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks, and with Carton a `[carton] a cb write waited … ms for timeline.tsx` line for each `cb` write the app took 500 ms or more to show (where the time went: the look at the history, the wait behind the app's other work and its longest tasks, the rewrite, what answered it) | `msg` |
 | `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |
@@ -461,8 +461,8 @@ accelerator tests.
 
 Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
 by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
-`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: History and Share are in the
-title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
+`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: the cut you're on, History and
+Share are in the title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
 (`false`, `off` and `no` work too; for every start, `setx CARDBOARD_CARTON 0` and restart Cardboard). With it off,
 every hook below runs Cardboard's own code, and the app and `cb` read the same variable, so they always agree.
 `build-windows.js --no-carton` leaves Carton out of the build altogether.
@@ -509,10 +509,16 @@ What changes with it on:
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
-- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
-  panel beside the agent's chat, in the chat's look (drag its edge to resize; under 340 px its tabs not open show their
-  icon only, so they stay clear of the close button); the same icon closes it, and the icon
-  of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
+- **The cut you're on, in the title bar**: on every project tab, before Cardboard's own "16:9 ⌄", a chip names the cut
+  the editor shows: "✂ Main cut ⌄", or a colour dot and the name for any other cut ("● 30s Instagram cut ⌄"; a long
+  name is cut off at 220 px, 150 px in a window under 1180 px wide, and shown whole in its tooltip). It follows every
+  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click opens History
+  with its cuts menu open, the keyboard in it (arrows, Enter, Esc). While the editor shows something other than your
+  own edit (an earlier version opened, a teammate's cut), the chip grows a second part saying what ("👁 The version
+  from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. With Carton off there is no chip.
+- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. History opens a
+  full-height panel beside the agent's chat, in the chat's look (drag its edge to resize), with two tabs, History and
+  Comments; the same icon closes it, and shows as pressed while it is open. Share opens a dialog (below). Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
   History: versions, compare with current and play the changes, restore, cuts, fold in (from the cut's own menu
   too: "Fold “X” in here"). Every change reads as one sentence in the editor's words, the same in History, Compare and
@@ -539,14 +545,22 @@ What changes with it on:
   and back where it came from as it closes, and Esc closes the innermost one only.
   Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
   with its text up to about eight lines, then scrolls, and has no resize grip.
-- **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
-  your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
-  once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
-  it. **See it:** "Preview" shows the timeline with that side kept, read-only, with the clip in view; "Show on
-  timeline" selects the clip and moves the playhead to it. On an agent's card your value is the
-  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
-  side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
-  two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
+- **Conflict cards** sit in the preview's bottom-right corner, one at a time: your own edits that clashed, and an
+  agent's view edit that clashed with yours (see "An agent's edit and yours at once" below). A card says in words what
+  each side did to which clip: "“Interview B”: you and Claude Code both moved it", then "Yours · 2 min ago: Moved it to
+  start at 0:18" and "Claude Code's · just now: Moved it to start at 0:20" ("Made it bigger (font size 120)", "Set its
+  opacity to 50%", "Removed it"; a clip by its name or file, never an id), and which side the timeline shows until you
+  pick ("Until you pick, yours is in the timeline."). The sides are radio buttons that only pick, starting on the side
+  shown; the one main button names the pick ("Keep yours", "Keep Claude Code's", "Keep both") and Enter presses it.
+  **See it** on a side shows that side on the preview, read-only, with the clip in view ("Seeing it"; again, Esc, or
+  deciding brings your edit back); "On timeline" selects the clip and moves the playhead to it. "Keep Director's" puts
+  the agent's in as your own version (Ctrl+Z takes it back), and the confirmation names it ("Kept Claude Code's move
+  of “Interview B”."). Two changes of your own read "Your earlier change · 10:04 am" and "Your later change", with
+  "Keep earlier" and "Keep later". While the agent is still working, the card says so; if it changes the same thing
+  again, a pick you made on the old values is dropped ("Claude Code changed it again. Pick again."). "1/2 ›" steps
+  through the cards; "Not now" folds them into a "2 conflicts to pick" pill and sends that card to the back, deciding
+  nothing. While History is open or you're looking at another version, the cards wait as the pill, whose click brings
+  your edit back and opens them.
 - **Who made each version** reads as you'd say it: "You" (a `cb` you typed included), a teammate's name, "Director",
   "Claude Code", "Codex", and a teammate's agent as theirs ("Leo's Director"). A subagent shows as the agent that
   started it; its type and the model are in the tooltip. The project's import reads "Imported the project" by you;
@@ -848,8 +862,11 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" icon in the title bar): enter the sharing server's address and your name (asked once, then
-  shown as "Teammates see you as …" with Change). A host with open creation (the free web demo's) needs nothing else:
+- **Share** (the "Share" icon in the title bar; in a window under 1180 px wide, the Share button in the History panel's
+  head) opens a dialog over the editor, "Share “Weekend reel”" (it was a tab of the side panel). Not shared yet: enter
+  the sharing server's address (as people say it, "share.example.com" is enough; once used it is remembered and shown
+  as one line with Change) and your name (asked once, then shown as "Teammates see you as …" with Change), then Share
+  project; Enter in a field does the same. A host with open creation (the free web demo's) needs nothing else:
   you become the project's owner. Any other host asks for the invite you were given (the host's owner gets one with its
   admin token); the form shows that "Invite code" field only when the host asks for it. An address that can't be
   reached is said so at the address field, and every failure is a sentence that says what to do (can't reach the
@@ -858,24 +875,29 @@ with Carton off none of it runs at all.
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
-- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch", picked from a menu) that expires; not
-  offered while offline. **Join** (the Share panel of a project that isn't shared, "Join a shared project") in another
-  library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
-  tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
-  only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
-  "Join a shared project" button beside "Start a blank project" instead. The dialog stays until you press Open or
-  Done, also when the project you joined is the library's first (it used to close by itself there). Joining the first
-  project keeps the home page where you were (it jumped back to the Dashboard's top as the library's empty view gave
-  way to the grid) and brings the new tile into view.
+- **Shared**: the dialog shows the status by its title ("Up to date", "Sending 3 changes", "Offline"), then People:
+  You (with the name teammates see and your role), and everyone here now with what they're doing ("Here now · editing
+  captions"; someone idle is faded). Offline, an amber line says your changes are kept here and sent when you're back.
+- **Invite** (the owner): who can do what ("Can edit", "Can comment", "Can watch", from a menu), the link, and Copy
+  link, which makes the link for that role the first time (one per role, not one each time the dialog opens), shows it
+  and copies it; "Anyone with this link can join and edit." Links expire; none can be made offline, and it says so.
+  **Join** from the Dashboard: a "Join a shared project" tile beside "New project" (Carton on only) opens a dialog with
+  the invite link, "You'll join as Leo. Change" (or your name, the first time), and one button, Join and open: the
+  project arrives in the library with its history, opens in a tab of its own, and the dialog closes; its clips play
+  from the host. If the tab can't open, the dialog says the project is in your library, with Open to try again. An
+  empty library (a new user's first screen, "Make your first video") has a "Join a shared project" button beside
+  "Start a blank project" instead. The dialog lives through the library's first project arriving (it used to close by
+  itself there), and joining the first project keeps the home page where you were (it jumped back to the Dashboard's
+  top as the library's empty view gave way to the grid) and brings the new tile into view.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
-  The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
-  what they are doing. The title bar shows it too, with no panel open: a dot on the Share icon (amber offline, white
+  The Share dialog shows the status and who is in the project, with what they are doing. The title bar shows it too,
+  with nothing open: a dot on the Share icon (amber offline, white
   while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
-  says "Offline: 3 edits waiting" while edits wait (a click opens Share). Someone with the project open but idle stays
-  listed, faded. In a narrow window the title bar keeps only the History icon (Share is one of the panel's tabs), with
-  the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
-  panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
+  says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
+  listed, faded. In a narrow window the title bar keeps only the History icon (Share is in the History panel's head),
+  with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
   message), access refused, the host out of reach.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
@@ -889,7 +911,9 @@ with Carton off none of it runs at all.
   Media Files", whose only way on is a red "Remove and Open" (which, live, would remove the clips for everyone). With
   Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
   is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
-  removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
+  removal; a notice over the preview says so in a title line ("2 clips are still on their way from your teammate"),
+  then which ones, by name ("“interview-b.mp4” and “broll-03.mp4” show as Offline until they arrive. Nothing was
+  removed."), and later that they have arrived. The dialog still
   appears for footage that was on this computer and is gone (moved, a drive unplugged). If the worker can't tell whose
   a clip is (it fails, or doesn't answer within 6 s), the clips go Offline too, never to the dialog, and the notice says
   to reopen the project to check again.

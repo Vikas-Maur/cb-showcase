@@ -229,6 +229,8 @@ export const words = {
   viewOnly: "View only",
   cutWho: (who: string, when: string) => `${who} · ${when}`,
   now: "now",
+  // A moment in a short list (the cuts menu, the Fold dialog's rows): "now", "4 min ago", "2 h ago", "11:02 am", "yesterday", "Oct 30"
+  yesterdayShort: "yesterday",
   workingNow: "working now",
   newCutFromYourEdit: "New cut from your edit",
   foldInFromCut: "Fold in changes from a cut…",
@@ -238,6 +240,17 @@ export const words = {
   workingOnCut: (agent: string, cut: string) => `${agent} is working on ${cut}, and agents work on the cut you're on.`,
   switchWhenDone: "Switch when it finishes",
   switchNow: "Switch now",
+  // A switch waiting for an agent's turn to end (PLAN 6.1): said under the cut bar until it runs, with a way out
+  switchQueued: (cut: string, agent: string) => `Switches to ${cut} when ${agent} finishes.`,
+  switchQueuedRow: (agent: string) => `Switches when ${agent} finishes`,
+  dontSwitch: "Don't switch",
+  // More than 12 cuts: a search field at the top of the menu
+  findCut: "Find a cut",
+  noCutMatches: "No cut has that name.",
+  // A teammate's cut, viewed (DESIGN §6.3): what you can do with it, above its History
+  foldIntoCut: (cut: string) => `Fold into ${cut}…`,
+  newCutFromIt: "New cut from it",
+  teammateCut: (label: string) => `You're looking at ${label}. You can fold it in or copy it as a new cut; it stays as its owner left it.`,
 
   // History head and filter
   comments: "Comments",
@@ -379,6 +392,71 @@ export const words = {
   conflictsToPick: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
   stillWorking: (agent: string) => `${agent} is still working. Pick now, or when it's done.`,
   changedAgain: (agent: string) => `${agent} changed it again. Pick again.`,
+  // The card's title and lead (Workstream 7, conflict-words.ts): the clip, then what each side did; the lead says which
+  // side is in the timeline until you pick. Core keeps the head's side there, and that isn't always yours.
+  conflictBoth: (subject: string, a: string, b: string, did: string) => `${subject}: ${a} and ${b} both ${did}`,
+  conflictEach: (subject: string, a: string, didA: string, b: string, didB: string) => `${subject}: ${a} ${didA} and ${b} ${didB}`,
+  conflictTwice: (subject: string, who: string | null) => `${subject}: two of ${who ? `${who}'s` : "your"} changes disagree`,
+  conflictTwiceLead: (who: string | null, did: string, close: boolean) => `${who ?? "You"} ${did} twice, from two places${close ? ", at nearly the same time" : ""}.`,
+  conflictTwiceEach: (who: string | null, first: string, then: string) => `${who ?? "You"} ${first} in one place and ${then} in another.`,
+  /** `shown`: the side in the timeline now, mid-sentence ("yours", "Claude Code's", "your later change"); null: both. */
+  pickLeadFor: (shown: string | null, canKeepBoth: boolean) =>
+    `${canKeepBoth ? "Pick one to keep, or keep both." : "Pick the one to keep."} Until you pick, ${shown === null ? "both are" : `${shown} is`} in the timeline.`,
+  theirEarlier: (who: string) => `${who}'s earlier change`,
+  theirLater: (who: string) => `${who}'s later change`,
+  seeSide: (side: string) => `See ${side.replace(/^Yours\b/, "yours").replace(/^Your\b/, "your")}`,
+  notNowHint: "Keep it for later. Nothing is decided until you pick.",
+  pickOne: "Pick the one to keep",
+  conflictOf: (i: number, n: number) => `${i} of ${n}`,
+  nextConflict: "Next conflict",
+  // Viewing a side (the chip, the frame's label): "Claude Code's move of “Interview B”" is sideOf/yourSideOf above
+  sideAlone: (who: string, what: string) => `${who}'s ${what}`,
+  yourSideAlone: (what: string) => `Your ${what}`,
+  orderedSideOf: (name: string, clip?: string) => (clip ? `${name} to “${clip}”` : name),
+  bothChangesTo: (clip?: string) => (clip ? `Both changes to “${clip}”` : "Both changes"),
+  // What a side did, as a sentence about the card's clip (DESIGN §8 "(a conflict side) Moved it to start at 0:07")
+  sideMoved: (at: string) => `Moved it to start at ${at}`,
+  sideTrimmedEnd: (at: string) => `Trimmed it to end at ${at}`,
+  sideTrimmedStart: (at: string) => `Trimmed it to start at ${at}`,
+  sideRetimed: (from: string, to: string) => `Set it to play ${from}–${to}`,
+  sideSlipped: (at: string) => `Slipped it to play its media from ${at}`,
+  sideLeft: (from: string, to: string) => `Left it at ${from}–${to}`,
+  sideAdded: (at: string) => `Added it at ${at}`,
+  sideAddedNoTime: "Added it",
+  sideRemoved: "Removed it",
+  sideToTrack: (track: string) => `Moved it to ${track}`,
+  sideAnotherTrack: "another track",
+  sideOrder: "Put it in another place in the order",
+  sideText: (v: string) => `Changed it to ${v}`,
+  sideRenamed: (v: string) => `Renamed it ${v}`,
+  sideBigger: (label: string, v: string) => `Made it bigger (${label} ${v})`,
+  sideSmaller: (label: string, v: string) => `Made it smaller (${label} ${v})`,
+  sideSet: (label: string, v: string) => `Set its ${label} to ${v}`,
+  sideCleared: (label: string) => `Cleared its ${label}`,
+  sideItsValue: "value",
+  sideChangedField: (label: string) => `Changed its ${label}`,
+  sideChanged: "Changed it",
+  sideMore: (n: number) => `and ${plural(n, "more change", "more changes")}`,
+  // ... as a verb phrase for the title ("you and Claude Code both moved it")
+  didMove: "moved it",
+  didTrim: "trimmed it",
+  didRetime: "changed when it plays",
+  didSlip: "slipped it",
+  didAdd: "added it",
+  didRemove: "removed it",
+  didReorder: "reordered it",
+  didRename: "renamed it",
+  didChange: "changed it",
+  didChangeField: (label: string) => `changed its ${label}`,
+  // ... and as a noun for the viewing label ("Claude Code's move of “Interview B”")
+  whatMove: "move",
+  whatTrim: "trim",
+  whatRetime: "timing",
+  whatSlip: "slip",
+  whatAdd: "placement",
+  whatRemove: "removal",
+  whatRename: "renaming",
+  whatEdit: "edit",
 
   // Fold dialog
   foldInChanges: "Fold in changes",
@@ -395,6 +473,18 @@ export const words = {
   foldUndoLine: "Ctrl+Z takes the whole fold back.",
   foldInN: (n: number) => `Fold in ${plural(n, "change", "changes")}`,
   alreadyHas: (into: string, from: string) => `${into} already has everything from “${from}”.`,
+  // The dialog's line with names as cutRef() gives them (Main cut bare, any other cut in curly quotes): the one made from
+  // the other, or neither (PLAN 6.3)
+  foldLine: (into: string, from: string, parent: string, when: string) => `${into} gets what changed on ${from} since it was made from ${parent} ${when}.`,
+  // A moment after a noun ("made from Main cut at 12:20 pm"), from clock()'s "12:20 pm", "yesterday at 4:10 pm", "Oct 30 at 4:10 pm"
+  atMoment: (clock: string, day: "today" | "yesterday" | "other") => (day === "today" ? `at ${clock}` : day === "yesterday" ? clock : `on ${clock}`),
+  foldLinePlain: (into: string, from: string) => `${into} gets what changed on ${from}.`,
+  // Only what an earlier partial fold left out is left to fold (DESIGN §6.4, after/fold-rest.png)
+  foldRestLine: (n: number, day: string) => `${plural(n, "change was", "changes were")} left out when you folded this cut in on ${day}. ${n === 1 ? "It" : "They"} can come in now.`,
+  foldRestLinePlain: (n: number) => `${plural(n, "change was", "changes were")} left out when you folded this cut in. ${n === 1 ? "It" : "They"} can come in now.`,
+  // A conflict's sides in the dialog: "Main cut's: starts at 0:18" · who
+  cutsSide: (cut: string, what: string) => `${cut}'s: ${what}`,
+  bothCutsChanged: (title: string) => `Both cuts changed ${title}. Pick one:`,
 
   // Toasts (DESIGN §6.7)
   undo: "Undo",
@@ -441,6 +531,27 @@ export const words = {
   offlineChip: (n: number) => `Offline · ${plural(n, "change", "changes")} not sent yet`,
   clipsOnTheirWay: (n: number, from: string) => `${plural(n, "clip is", "clips are")} still on ${n === 1 ? "its" : "their"} way from ${from}`,
   clipsOfflineUntil: (names: string) => `${names} show as Offline until they arrive. Nothing was removed.`,
+
+  // Share and Join, the dialogs' own words beside the ones above (Carton UX redesign PLAN 8.1, 8.2; scripts/carton/sync/ui.js)
+  shareThisProject: "Share this project",
+  // review finding 8: not every original stays on this computer
+  shareLeadMore: "Audio and still images go as they are.",
+  sharingServerPlaceholder: "share.example.com",
+  sharingNow: "Sharing…",
+  youHereNow: (name: string) => `${name} · here now`,
+  hereNotEditing: "Here, not editing",
+  nobodyElseHere: "Nobody else is here right now.",
+  whoCanDoWhat: "Who can do what",
+  copyLinkToMake: "Copy link to make one",
+  anyoneCanJoinTo: (role: string) => (role === "viewer" ? "Anyone with this link can join and watch." : role === "commenter" ? "Anyone with this link can join and comment." : "Anyone with this link can join and edit."),
+  inviteWhenOnline: "You can make a link when you're back online.",
+  offlineLineNone: "You're offline. Keep editing: your changes are saved here and are sent when you're back.",
+  joiningNow: "Joining…",
+  openingNow: "Opening…",
+  inYourLibrary: (name: string) => `“${name}” is in your library now.`,
+  openIt: "Open",
+  // the footage notice for one clip (clipsOfflineUntil is the plural's)
+  clipOfflineUntil: (name: string) => `${name} shows as Offline until it arrives. Nothing was removed.`,
 };
 
 export type Words = typeof words;

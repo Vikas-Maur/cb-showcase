@@ -177,6 +177,30 @@ test("Carton on: the stage's text editor asks the bridge before it opens; the st
   assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
 });
 
+// Carton UX redesign PLAN 2.1: the title bar's cut chip goes before Cardboard's own "16:9 ⌄" (Bt) and the History and
+// Share icons before "Report an issue" (Ut), from one anchor in the tab strip's editor controls (Wt), which matches
+// once in Cardboard 1.4.0's strip as the Windows patch leaves it; main hands the strip the page's report through
+// main-bridge's panel, and the chip's and Share's commands hand the editor's page the keyboard.
+test("Carton on: the cut chip sits before the aspect ratio, the icons before Report an issue, each once; main relays the chip's report", { skip }, () => {
+  const tabs = fs.readFileSync(path.join(carton.assets, fs.readdirSync(carton.assets).find((n) => /^tabs-.*\.js$/.test(n))), "utf8");
+  const count = (s, t) => s.split(t).length - 1;
+  const anchor = "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),";
+  const plain = fs.readFileSync(path.join(win.assets, fs.readdirSync(win.assets).find((n) => /^tabs-.*\.js$/.test(n))), "utf8");
+  assert.equal(count(plain, anchor), 1, "the anchor, once, in the strip as the Windows patch leaves it");
+  assert.equal(count(tabs, "t.cartonPanel!==void 0&&n.jsx(__cbCartonCutChip,{panel:t.cartonPanel}),n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),"), 1);
+  assert.equal(count(tabs, "n.jsx(__cbCartonCutChip,"), 1, "the chip once");
+  assert.equal(count(tabs, "n.jsx(__cbCartonStrip,"), 1, "the icons once");
+  assert.ok(tabs.includes("function __cbCartonCutChip(") && tabs.includes("function __cbCartonStrip("), "with their code");
+  // Bt is the aspect ratio chip and Ut Report an issue, as the strip names them
+  assert.ok(/Bt=\(\{value:e\}\)=>\{[\s\S]{0,1600}"aria-label":"Aspect ratio"/.test(plain) || plain.includes('"data-analytics":"strip-aspect-ratio"'), "Bt is the aspect ratio's");
+  assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");
+  const main = fs.readFileSync(carton.main, "utf8");
+  assert.equal(count(main, '_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))})'), 1);
+  assert.equal(count(main, "if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}"), 1);
+  // main's own command handler, where it sends the active tab's webContents (r) the strip's commands
+  assert.ok(main.includes("activeContents(){return this.model.activeView()?.webContents??null}"), "r is the active tab's webContents");
+});
+
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");

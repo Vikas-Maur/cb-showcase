@@ -51,6 +51,11 @@ export interface VersionCardProps {
   newest: boolean;
   /** The cut's newest ref: "Your edit has N changes since this" counts `changes(version, head)`. */
   head?: string;
+  /**
+   * The version is on a teammate's cut (Workstream 6, PLAN 6.2): it stays as its owner left it, so no Restore… and no
+   * Undo this turn; Play, Compare and New cut from it stay.
+   */
+  readOnly?: boolean;
   /** The cut you're on, by name: "You'll switch to it. Main cut stays as it is." */
   cutName?: string;
   mode?: CardMode;
@@ -184,7 +189,8 @@ export function VersionCard(p: VersionCardProps) {
     }
   };
 
-  const mode = p.mode ?? null;
+  // (a teammate's cut offers no Restore: a mode asked for anyway, by a host, shows nothing of it)
+  const mode = p.readOnly && p.mode === "restore" ? null : (p.mode ?? null);
   const shown = changes ? (mode ? changes.slice(0, 1) : all ? changes.slice(0, CARD_ROWS_MAX) : changes.slice(0, CARD_ROWS)) : [];
   const more = changes ? changes.length - shown.length : 0;
   const showAuthor = useMemo(() => !!changes && new Set(changes.map((c) => c.author?.key ?? "")).size > 1, [changes]);
@@ -273,7 +279,9 @@ export function VersionCard(p: VersionCardProps) {
               : playing
                 ? h(Button, { icon: "pause", onClick: () => p.onPause?.() }, words.pause)
                 : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
-            p.newest
+            p.readOnly
+              ? null
+              : p.newest
               ? turn
                 ? h(Button, { variant: "ghost", icon: "undo", busy, title: words.undoThisTurnHint(v.changes ?? changes?.length ?? v.turn?.edits ?? 0), onClick: () => act(() => ui.undoTurnOf(v.id), words.undoTurnFailed) }, words.undoThisTurn)
                 : null

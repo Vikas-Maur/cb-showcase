@@ -27,8 +27,10 @@ import type {
   UndoEntry,
   Version as CoreVersion,
 } from "@carton/core";
+import { cutColors } from "./cuts.ts";
 import { TopicHub } from "./hub.ts";
 import { itemFilter } from "./item-filter.ts";
+import { cardSentences, conflictWords, type SideSentence } from "./conflict-words.ts";
 import { clock as clockWords, versionLabel, versionShort } from "./format.ts";
 import { actorLabel } from "./actors.ts";
 import type {
@@ -802,8 +804,21 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         head: head ? `${c.id}@${head.ref.seq}` : `${c.id}@0`,
         updatedAt: head?.at ?? c.at ?? 0,
         shared: c.sequencer.kind !== "local",
+        // who made its newest version (the cuts menu's "Director · 2 h ago", PLAN 6.1)
+        ...(head?.author ? { updatedBy: ui(head.author) } : {}),
       };
-      out.push(prev && sameCut(prev, next) ? prev : next);
+      out.push(next);
+    }
+    // Every cut but Main its colour dot (PLAN 6.1): your cuts in the order they were made, a teammate's its owner's
+    const colors = cutColors(out, (id) => {
+      const owner = visible.find((c) => c.id === id)?.owner;
+      return owner && !mine.has(owner) ? ui({ kind: "human", id: owner }) : undefined;
+    });
+    for (let i = 0; i < out.length; i++) {
+      const color = colors.get(out[i]!.id);
+      const next = color ? { ...out[i]!, color } : out[i]!;
+      const prev = cuts.find((x) => x.id === next.id);
+      out[i] = prev && sameCut(prev, next) ? prev : next;
     }
     if (out.length !== cuts.length || out.some((c, i) => c !== cuts[i])) {
       cuts = out;
@@ -923,6 +938,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const segs = splitPathKey(card.path);
     return tl && segs[0] === tl.collection && segs[1] ? { item: segs[1] } : {};
   };
+  // What each side did, as change sentences about the card's clip (DESIGN §8, conflict-words.ts): ConflictSide.text,
+  // .did and .what, and Conflict.clip. `mineIs`: core's side holding the person's edit. `doc`: the cut's head, which
+  // names the clip and its track (without it, a field card's clip is unknown until completeCards reads the head).
+  const sentencesOf = (card: ConflictCard, mineIs: "ours" | "theirs", doc?: Doc): { clip?: string; mine: SideSentence; theirs: SideSentence } => {
+    const s = cardSentences(card, schema, doc, opts.valueWords);
+    return { ...(s.clip ? { clip: s.clip } : {}), mine: s[mineIs], theirs: s[mineIs === "ours" ? "theirs" : "ours"] };
+  };
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
     const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
     const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
@@ -931,6 +953,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (seen.has(key(cut, card))) continue;
       seen.add(key(cut, card));
       const w = describeCard(card, schema);
+      const sw = sentencesOf(card, "theirs");
       const id = `${cut}|${card.path}|${++cardSeq}`;
       cardEntries.set(id, {
         card,
@@ -941,14 +964,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           path: card.path,
           title: w.title,
           // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
-          mine: { author: me, summary: w.theirs, what: sideNoun(w.theirs) },
-          theirs: { author: by ? ui(by) : someone, summary: w.mine, what: sideNoun(w.mine) },
+          mine: { author: me, summary: w.theirs, ...sw.mine },
+          theirs: { author: by ? ui(by) : someone, summary: w.mine, ...sw.theirs },
           canKeepBoth: !!opts.keepBoth?.(card),
           ...(w.reason ? { reason: w.reason } : {}),
           provisional: "theirs",
           sig: cardSig(card),
           ...itemOf(card),
-          ...(w.name ? { clip: w.name } : {}),
+          ...((sw.clip ?? w.name) ? { clip: (sw.clip ?? w.name)! } : {}),
         },
       });
       added.push(id);
@@ -974,9 +997,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       let c = e.conflict;
       if (doc) {
         const w = describeCard(e.card, schema, doc);
+        const sw = sentencesOf(e.card, e.mineSide, doc);
         // describeCard words core's sides; the person's edit is core's theirs here
-        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary || w.name !== c.clip)
-          c = { ...c, title: w.title, mine: { ...c.mine, summary: w.theirs, what: sideNoun(w.theirs) }, theirs: { ...c.theirs, summary: w.mine, what: sideNoun(w.mine) }, ...(w.name ? { clip: w.name } : {}) };
+        const clip = sw.clip ?? w.name;
+        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary || clip !== c.clip || sw.mine.text !== c.mine.text || sw.theirs.text !== c.theirs.text) {
+          const { clip: _clip, ...rest } = c;
+          c = { ...rest, title: w.title, mine: { ...c.mine, summary: w.theirs, ...sw.mine }, theirs: { ...c.theirs, summary: w.mine, ...sw.theirs }, ...(clip ? { clip } : {}) };
+        }
       }
       if (who) c = { ...c, theirs: { ...c.theirs, author: ui(who.actor), ...(who.at != null ? { at: who.at } : {}) } };
       if (c !== e.conflict) {
@@ -1287,6 +1314,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     ...(r.end !== undefined ? { end: r.end } : {}),
     ...(who ? { author: who.author, when: who.when } : {}),
   });
+  // A row of the Fold dialog as a change row (PLAN 6.3): its place in the edit, the kind of clip and what happened. A
+  // row of several sentences (a record's own and its part's) takes the first's place and kind; the text is all of them.
+  const foldRow = (key: string, list: readonly ChangeRow[]): { change?: Change } =>
+    list[0] ? { change: { ...toChange(list[0]), key, text: list.map((x) => x.text).join("; ") } } : {};
   const notSent = () => new Error("Available once it's sent");
   // Every change from a to b, as core's change rows (a docDiff: one per change as countChanges counts it). Kept per
   // pair of versions (refs `cut@seq` name fixed states; a cut id moves with its head, so it isn't kept).
@@ -1435,10 +1466,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const e = cardEntries.get(target.conflictId);
       const ref = e && handle.conflictRef ? await handle.conflictRef(target.conflictId, target.side) : null;
       if (!e || !ref) throw failed();
-      const side = target.side === "mine" ? e.conflict.mine : e.conflict.theirs;
-      const clip = e.conflict.clip ?? e.conflict.title;
-      const what = side.what ?? "change";
-      const label = target.side === "mine" ? `Your ${what} of “${clip}”` : `${actorLabelOf(side.author)}'s ${what} of “${clip}”`;
+      // the card's own words for its side (conflict-words.ts): the card, the chip, the frame and the toast say the same
+      // ("Claude Code's move of “Interview B”", "Your earlier change to “Summer launch”", "Director's aspect ratio")
+      const label = conflictWords(e.conflict, (a) => actorLabel(a, (k) => actors.get(k), "You")).label[target.side];
       return { ref, kind: "conflict", conflictId: target.conflictId, side: target.side, label, short: label };
     }
     const r = target.versionId !== undefined ? rows[pos.get(target.versionId) ?? -1] : undefined;
@@ -1509,6 +1539,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return p;
   };
 
+  /**
+   * How a fold's two cuts are related, for the dialog's line (PLAN 6.3): one made from the other (its fork point is on
+   * the other's line), when. Read from the cuts as last listed; nothing when neither was made from the other.
+   */
+  const madeOf = (fromId: string, intoId: string): { made?: FoldPlan["made"] } => {
+    const rec = (id: string) => records.find((c) => c.id === id);
+    const forkedFrom = (id: string) => rec(id)?.forkOf?.slice(0, rec(id)!.forkOf!.lastIndexOf("@"));
+    const f = rec(fromId), i = rec(intoId);
+    if (f?.at != null && forkedFrom(fromId) === intoId) return { made: { which: "from", at: f.at } };
+    if (i?.at != null && forkedFrom(intoId) === fromId) return { made: { which: "into", at: i.at } };
+    return {};
+  };
+
   // Cards of the last fold plan, by path: the fold's choices and "Keep both" read the real cards, not placeholders.
   const planCards = new Map<string, ConflictCard>();
   // What earlier partial folds of the plan's cut left out (UI audit P1-4): each partial fold's inverse change → its rows.
@@ -1522,25 +1565,28 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const planJoined = new Map<string, string[]>();
   const planKey = (from: string, into: string) => `${from}>${into}`;
   let planFor = "";
+  // Which plan is the newest (planFold): only it writes the plan state above.
+  let planGen = 0;
 
   // A fold card: yours is the cut you fold into, theirs the cut you fold in; each side says which.
   const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string, doc?: Doc): Conflict => {
     const w = describeCard(card, schema, doc);
+    const sw = sentencesOf(card, "ours", doc);
     const where = (id?: string) => (id ? cuts.find((c) => c.id === id)?.label : undefined);
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
       id: card.path,
       path: card.path,
       title: w.title,
-      mine: { author: me, summary: w.mine, what: sideNoun(w.mine), ...(mineWhere ? { where: mineWhere } : {}) },
-      theirs: { author: theirs, summary: w.theirs, what: sideNoun(w.theirs), ...(theirWhere ? { where: theirWhere } : {}) },
-      ...(w.name ? { clip: w.name } : {}),
+      mine: { author: me, summary: w.mine, ...sw.mine, ...(mineWhere ? { where: mineWhere } : {}) },
+      theirs: { author: theirs, summary: w.theirs, ...sw.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
       // Core's compare2 applies a {value} choice too (99db79c), so a §13 compare card can Keep both like any other.
       canKeepBoth: !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
       sig: cardSig(card),
       ...itemOf(card),
+      ...((sw.clip ?? w.name) ? { clip: (sw.clip ?? w.name)! } : {}),
     };
   };
 
@@ -1594,7 +1640,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * record, marked with its partial fold (`leftOut`): its rows fold in together. Each row says what folding it in does
    * (described from the partial fold's state) and who made it on `fromId`. Read only while planning a fold.
    */
-  const leftOutRows = async (fromId: string, intoId: string): Promise<FoldChange[]> => {
+  const leftOutRows = async (fromId: string, intoId: string, rests: Map<string, { ids: string[]; ops: Op[]; whole: boolean }>): Promise<FoldChange[]> => {
     const list = (await carton.leftOut?.(fromId, { into: intoId }).catch(() => [])) ?? [];
     const out: FoldChange[] = [];
     if (!list.length) return out;
@@ -1623,9 +1669,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
-        out.push({ id, summary: changeList(ops, doc, schema, { names, ...valueOpt }).map((x) => x.text).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
+        const list = changeList(ops, doc, schema, { names, ...valueOpt });
+        out.push({ id, summary: list.map((x) => x.text).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change, leftOutAt: p.at, ...foldRow(id, list) });
       }
-      if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
+      if (ids.length) rests.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
     return out;
   };
@@ -1843,61 +1890,81 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     shotDiff,
 
     async planFold(fromId, intoId, o) {
+      // Only the newest plan is the one a fold acts on. Each plan is built apart and written to the plan state at its
+      // end, and only while no newer plan has started: an older one still running (the Fold dialog's From or Into
+      // changed meanwhile) never writes what fold() reads (review of feat/ux-6: a slow plan of cut A, finishing after
+      // B's, made folding B bring in A's left-out change too).
+      const gen = ++planGen;
+      const cards = new Map<string, ConflictCard>();
+      const rests = new Map<string, { ids: string[]; ops: Op[]; whole: boolean }>();
+      const joined = new Map<string, string[]>();
+      let isNew = false, heads = "";
+      const publish = <T>(plan: T): T => {
+        if (gen !== planGen) return plan;
+        planCards.clear();
+        for (const [k, v] of cards) planCards.set(k, v);
+        planRest.clear();
+        for (const [k, v] of rests) planRest.set(k, v);
+        planJoined.clear();
+        for (const [k, v] of joined) planJoined.set(k, v);
+        planNew = isNew;
+        planHeads = heads;
+        planFor = planKey(fromId, intoId);
+        return plan;
+      };
       const from = cuts.find((c) => c.id === fromId) ?? fallbackCut(fromId), into = cuts.find((c) => c.id === intoId) ?? fallbackCut(intoId);
       const r = await carton.fold(fromId, { into: intoId, check: true, ...(o?.allCards ? { missingBase: "all-cards" as const } : {}) });
-      planCards.clear();
-      planRest.clear();
-      planJoined.clear();
-      planNew = false;
-      planFor = planKey(fromId, intoId);
-      const base = { from, into, changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
+      const base = { from, into, ...madeOf(fromId, intoId), changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
       if (r.status === "up-to-date") {
-        const rest = await leftOutRows(fromId, intoId);
-        return rest.length ? { ...base, changes: rest } : base;
+        const rest = await leftOutRows(fromId, intoId, rests);
+        return publish(rest.length ? { ...base, changes: rest } : base);
       }
-      if (r.status === "missing-base") return { ...base, missingBase: r.dialog.text };
-      if (r.status === "rejected") throw new Error(r.reason);
+      if (r.status === "missing-base") return publish({ ...base, missingBase: r.dialog.text });
+      if (r.status === "rejected") throw (publish(null), new Error(r.reason));
       const cardList: ConflictCard[] = r.status === "conflicts" || r.status === "compare" ? r.cards : [];
-      for (const c of cardList) planCards.set(c.path, c);
-      planNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
+      for (const c of cardList) cards.set(c.path, c);
+      isNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
-      planHeads = await headsOf(fromId, intoId);
+      heads = await headsOf(fromId, intoId);
       // the cut folded into names the cards' clips (and every change below): read once
       const intoDoc = cardList.length || r.preview ? (await carton.head(intoId)).doc : undefined;
       const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId, intoDoc));
       // §13 "every difference shown as a card": the cards are the whole plan, there is nothing else to leave out.
-      if (r.status === "compare") return { ...base, conflicts: cardsOut, partial: false };
+      if (r.status === "compare") return publish({ ...base, conflicts: cardsOut, partial: false });
       const preview = r.preview;
-      if (!preview) return { ...base, conflicts: cardsOut, partial: false };
+      if (!preview) return publish({ ...base, conflicts: cardsOut, partial: false });
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
       const groups = byRecord(preview.ops);
       // a split clip is one row, left out whole (fold() adds its parts' keys)
-      const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
+      const creditOf = joinSplits(groups, preview.ops, intoDoc!, joined);
       const changes: FoldChange[] = [];
       // named from all of the fold, made once: a track it adds names the clip moved onto it (regress prod3 P3-B)
       const names = namingDoc(intoDoc!, preview.ops, schema);
       for (const [key, ops] of groups) {
         // the change sentences (PLAN 0.2): a row of the Fold dialog says it as History and the card do
-        const words = changeList(ops, intoDoc!, schema, { names, ...valueOpt }).map((x) => x.text);
+        const list = changeList(ops, intoDoc!, schema, { names, ...valueOpt });
+        const words = list.map((x) => x.text);
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }) : null;
-        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
+        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock(), ...foldRow(key, list) });
       }
       // A remap (ripple) can't be left out on its own: it moves many records at once.
       const hasRemap = preview.ops.some((op) => op.op === "remap");
-      planNew = true;
+      isNew = true;
       // what earlier partial folds left out comes with them (none when the fold can't be split)
-      if (!hasRemap) changes.push(...(await leftOutRows(fromId, intoId)));
-      return {
+      if (!hasRemap) changes.push(...(await leftOutRows(fromId, intoId, rests)));
+      return publish({
         ...base,
         changes,
         conflicts: cardsOut,
         warnings: preview.warnings.map((w) => String((w as { text?: unknown }).text ?? w.kind)),
         ...(hasRemap ? { partial: false } : {}),
-      };
+      });
     },
 
-    async switchCut(id) {
+    async switchCut(id, o) {
+      // a queued switch (onlyFrom): the cut is the handle's own, so a switch made since, here or by `cb cut switch`, wins
+      if (o?.onlyFrom !== undefined && carton.cut !== o.onlyFrom) return;
       await carton.switchTo(id);
       cutId = id;
       rows.length = 0;
@@ -2227,7 +2294,7 @@ function mapSync(status: string, waiting: number): SyncStatus {
 }
 
 function sameCut(a: Cut, b: Cut): boolean {
-  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared;
+  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared && a.color === b.color && a.updatedBy?.key === b.updatedBy?.key;
 }
 
 function samePublished(a: Published | null, b: Published | null): boolean {

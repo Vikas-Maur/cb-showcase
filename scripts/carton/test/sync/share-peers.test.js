@@ -1,4 +1,4 @@
-// The Share panel with a teammate here (UI audit P1-1). The real carton-ui code (scripts/carton/ui.js with sync/ui.js,
+// The Share dialog (the Share panel until Carton UX redesign PLAN 8.1) with a teammate here (UI audit P1-1). The real carton-ui code (scripts/carton/ui.js with sync/ui.js,
 // bundled as scripts/carton/build.js bundles carton-ui.js) on React 19's client renderer in a DOM (happy-dom), inside a
 // stand-in for Cardboard's own tab boundary ("This tab hit a snag"), fed what the library worker really sends: the
 // Share panel's status from Live.view() (scripts/carton/sync/live.js) after a teammate's presence arrives, as the sync
@@ -118,11 +118,11 @@ test("Share open with a teammate here, as the worker sends them: the editor stay
   try {
     assert.ok(!m.container.querySelector("#snag"), "the editor tab hit a snag: " + m.caught.map((e) => e?.message).join("; "));
     assert.ok(!!m.container.querySelector("#editor"), "the editor is still there");
-    const share = m.container.querySelector(".carton-share");
-    assert.ok(!!share, "the Share panel is open");
+    const share = m.container.querySelector(".carton-share-dialog");
+    assert.ok(!!share, "the Share dialog is open");
     const row = [...share.querySelectorAll("li")].find((li) => li.textContent.includes("Alice"));
     assert.ok(!!row, "Alice is listed: " + share.textContent);
-    assert.match(row.textContent, /Editing/);
+    assert.match(row.textContent, /Here now · editing/);
     assert.match(row.querySelector(".carton-avatar")?.getAttribute("style") ?? "", /--carton-actor:\s*#[0-9a-f]{6}/i, "her avatar has her colour");
     assert.equal(row.querySelector(".carton-avatar-initials")?.textContent, "A");
   } finally { await m.done(); }
@@ -134,7 +134,7 @@ test("a teammate with no `who` (a replica that sent none): listed by the actor t
   const m = await openShare(status(l));
   try {
     assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
-    assert.match(m.container.querySelector(".carton-share li")?.textContent ?? "", /Leo/);
+    assert.match(m.container.querySelector(".carton-share-dialog li:not([data-you])")?.textContent ?? "", /Leo/);
   } finally { await m.done(); }
 });
 
@@ -190,7 +190,7 @@ test("guard, panel: an entry it can't show is skipped and logged once; the rest 
   const m = await openShare({ ...good, peers: [...bad, ...good.peers] });
   try {
     assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
-    assert.deepEqual([...m.container.querySelectorAll(".carton-share li")].map((li) => li.textContent), ["AAliceEditing"]);
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["AAliceHere now · editing"]);
     const skips = logged.filter((e) => /skipped/.test(e.msg ?? ""));
     assert.equal(skips.length, 1, "logged once: " + JSON.stringify(logged));
     assert.doesNotMatch(JSON.stringify(skips), /Alice|"W"|human\/z/, "never an entry's own text");
@@ -198,14 +198,14 @@ test("guard, panel: an entry it can't show is skipped and logged once; the rest 
   // only "Nobody else is here" when none can be shown
   const m2 = await openShare({ ...good, peers: bad });
   try {
-    assert.match(m2.container.querySelector(".carton-share")?.textContent ?? "", /Nobody else is here right now\./);
+    assert.match(m2.container.querySelector(".carton-share-dialog")?.textContent ?? "", /Nobody else is here right now\./);
   } finally { await m2.done(); }
 });
 
-test("boundary: any throw in the side panel shows a message in the panel, never takes the editor tab down", opt, async () => {
+test("boundary: any throw in the Share dialog shows a message in the dialog, never takes the editor tab down", opt, async () => {
   const sync = window.__cartonSyncUi;
   let boom = true;
-  window.__cartonSyncUi = { ...sync, SharePanel: (p) => { if (boom) throw new TypeError("Cannot read properties of undefined (reading 'length')"); return h(sync.SharePanel, p); } };
+  window.__cartonSyncUi = { ...sync, ShareDialog: (p) => { if (boom) throw new TypeError("Cannot read properties of undefined (reading 'length')"); return h(sync.ShareDialog, p); } };
   logged.length = 0;
   const { live: l, presence } = await live();
   presence(ALICE, editing);
@@ -213,9 +213,9 @@ test("boundary: any throw in the side panel shows a message in the panel, never 
   try {
     assert.ok(!m.container.querySelector("#snag"), "the editor tab hit a snag");
     assert.ok(!!m.container.querySelector("#editor"), "the editor is still there");
-    const alert = m.container.querySelector(".carton-sidebar [role=alert]");
-    assert.ok(!!alert, "the panel says so: " + m.container.textContent);
-    assert.ok(!!m.container.querySelector(".carton-sidebar [role=tablist]"), "its tabs and Close still work");
+    const alert = m.container.querySelector("[role=dialog] [role=alert]");
+    assert.ok(!!alert, "the dialog says so: " + m.container.textContent);
+    assert.ok(!!m.container.querySelector("[role=dialog] .carton-dialog-close"), "its ✕ still closes it");
     const errs = logged.filter((e) => e.ev === "error");
     assert.equal(errs.length, 1, "logged once: " + JSON.stringify(logged));
     assert.equal(errs[0].panel, "share");
@@ -225,8 +225,8 @@ test("boundary: any throw in the side panel shows a message in the panel, never 
     assert.ok(!!again, "Try again");
     await act(async () => { again.click(); await sleep(20); });
     await act(async () => { await sleep(20); });
-    assert.ok(!m.container.querySelector(".carton-sidebar [role=alert]"), "the message went");
-    assert.match(m.container.querySelector(".carton-share li")?.textContent ?? "", /Alice/);
+    assert.ok(!m.container.querySelector("[role=dialog] [role=alert]"), "the message went");
+    assert.match(m.container.querySelector(".carton-share-dialog li:not([data-you])")?.textContent ?? "", /Alice/);
   } finally { window.__cartonSyncUi = sync; await m.done(); }
 });
 
@@ -239,7 +239,7 @@ test("two agents of one teammate (same id, their own agentId) are two rows, each
   console.error = (...a) => { errors.push(a.join(" ")); };
   const m = await openShare(status(l));
   try {
-    assert.deepEqual([...m.container.querySelectorAll(".carton-share li")].map((li) => li.textContent), ["CCClaude CodeEditing captions", "CCClaude CodeTrimming"]);
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["CCClaude CodeHere now · editing captions", "CCClaude CodeHere now · trimming"]);
     assert.ok(!errors.some((e) => /same key/.test(e)), "no duplicate React keys: " + errors.join("\n"));
   } finally { console.error = was; await m.done(); }
 });
@@ -272,8 +272,8 @@ test("P2-11: a teammate who is here without input says idle instead of leaving: 
   assert.deepEqual(st.peers.map((p) => [p.actor.name, p.idle]), [["Alice", true]]);
   const m = await openShare(st);
   try {
-    const row = [...m.container.querySelectorAll(".carton-share li")].find((li) => li.textContent.includes("Alice"));
-    assert.ok(!!row, "listed: " + m.container.querySelector(".carton-share")?.textContent);
+    const row = [...m.container.querySelectorAll(".carton-share-dialog li")].find((li) => li.textContent.includes("Alice"));
+    assert.ok(!!row, "listed: " + m.container.querySelector(".carton-share-dialog")?.textContent);
     assert.match(row.getAttribute("style") ?? "", /opacity:\s*0\.55/);
   } finally { await m.done(); }
   presence(ALICE, { activity: "Editing", who: { id: "alice", name: "Alice" } });

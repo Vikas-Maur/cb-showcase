@@ -23,8 +23,8 @@ const shapes = {
   pause: [h("rect", { x: 6.5, y: 5, width: 3.6, height: 14, rx: 1, fill: "currentColor", stroke: "none" }), h("rect", { x: 13.9, y: 5, width: 3.6, height: 14, rx: 1, fill: "currentColor", stroke: "none" })],
   flag: [P("M5.5 21V4"), P("M5.5 4.5h11.3l-2.4 4 2.4 4H5.5")],
   bookmark: [P("M7 3.8h10a.8.8 0 0 1 .8.8v15.6l-5.8-3.7-5.8 3.7V4.6a.8.8 0 0 1 .8-.8z")],
-  // A cut: scissors (docs/carton-ux DESIGN §4.1, "✂ Main cut"), not a branch's fork
-  cut: [C(6, 6, 2.6), C(6, 18, 2.6), P("M8.2 7.4L20 17M8.2 16.6L20 7")],
+  // A cut: scissors (DESIGN §4.1, "✂ Main cut"), as Cardboard's own split tool reads
+  cut: [C(6.3, 6.8, 2.5), C(6.3, 17.2, 2.5), P("M8.5 8.1L20 16.4"), P("M8.5 15.9L20 7.6")],
   fold: [P("M12 20.5V12.8L6.5 7.3V3.5"), P("M12 12.8l5.5-5.5V3.5"), P("M8.8 17.4l3.2 3.2 3.2-3.2")],
   // Agents' own marks (UI audit P2-15), drawn for Carton in the set's weight, never a product's logo: Claude Code a
   // burst, Codex a hexagon, the Director a clapperboard. Any other agent keeps the sparkle.

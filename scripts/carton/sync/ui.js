@@ -1,26 +1,41 @@
-// The Share panel (Invite to edit, Join, who is here, the status words; PLAN §0.1, §12): bundled into carton-ui.js by
-// scripts/carton/build.js, so it runs on the editor's own React, and opened by the title bar's Share icon (scripts/carton/ui.js). It
-// talks to the library worker's live services through the pages' bridge (carton:call liveStatus, liveShare,
-// liveInvite, liveJoin) and follows `{kind: "carton", topic: "live"}` events. Editors' words only: Share, Invite to
-// edit, Join, Syncing · Up to date · Offline: N edits waiting. Never "Carton", "host", "token" or a raw error (UI audit
-// P1-8, P2-8): the server is the "sharing server", a failure says what to do, at the field it is about.
-import { createElement as h, useEffect, useState } from "react";
-import { Button, Icon, MenuButton, MenuItem, words, initials, actorColor } from "@carton/react";
+// Share and Join (Carton UX redesign PLAN 8.1, 8.2; DESIGN §6.6): bundled into carton-ui.js by scripts/carton/build.js,
+// so it runs on the editor's own React.
+// - ShareDialog: opened by the title bar's Share icon (or, in a narrow window, the History panel's head; or the stage's
+//   Offline chip), in place of the side panel's Share tab, as a dialog in Cardboard's look. Not shared yet: the sharing
+//   server (remembered once used, then one line with Change), your name (asked once), Share project, and an invite
+//   code only when the server asks for one. Shared: its status by the title, People (You, then everyone here, with what
+//   they're doing), and, for the owner, Invite (who can do what, the link, Copy link). Offline: an amber line saying
+//   your changes are kept and sent later; the invite says when it can be made.
+// - Join: the Dashboard's "Join a shared project" (scripts/carton/ui.js JoinDialog): the invite link, who you join as,
+//   and one button, Join and open, which joins and opens the project in its tab.
+// Both talk to the library worker's live services through the pages' bridge (carton:call liveStatus, liveShare,
+// liveInvite, liveJoin, liveHostInfo) and follow `{kind: "carton", topic: "live"}` events. Editors' words only (in
+// @carton/react's words.ts: Share and Join). Never "Carton", "host", "token" or a raw error (UI audit P1-8,
+// P2-8): the server is the "sharing server", a failure says what to do, at the field it is about (shareProblem).
+import { createElement as h, useEffect, useRef, useState } from "react";
+import { Button, Dialog, Icon, MenuButton, MenuItem, words, initials, actorColor } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
-const INPUT = "h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus-visible:border-white/30 aria-[invalid=true]:border-destructive/70";
-// A text field in Cardboard's look, with its own inline message (never the browser's "Please fill out this field").
+// "Share “Weekend reel”" (a project with no name known: "Share this project")
+export const shareTitle = (name) => (name ? words.shareTitle(name) : words.shareThisProject);
+// A text field in Cardboard's look (the skin's carton-field: Cardboard's own stylesheet has no invalid or focus border
+// for these: AUDIT R3), with its own inline message (never the browser's "Please fill out this field").
 function Field({ label, hint, error, id, ...props }) {
   const msg = error ? id + "-msg" : hint ? id + "-hint" : undefined;
-  return h("div", { className: "flex flex-col gap-1" },
-    h("label", { htmlFor: id, className: "text-xs text-muted-foreground" }, label),
-    h("input", { id, className: INPUT, "aria-invalid": error ? true : undefined, "aria-describedby": msg, ...props }),
-    error ? h("p", { id: msg, className: "text-xs text-destructive", role: "alert" }, error)
-      : hint ? h("p", { id: msg, className: "text-xs text-muted-foreground" }, hint) : null);
+  return h("div", { className: "carton-field" },
+    h("label", { htmlFor: id, className: "carton-field-label" }, label),
+    h("input", { id, className: "carton-input", "aria-invalid": error ? true : undefined, "aria-describedby": msg, ...props }),
+    error ? h("p", { id: msg, className: "carton-field-error", role: "alert" }, error)
+      : hint ? h("p", { id: msg, className: "carton-field-hint" }, hint) : null);
 }
-const statusWords = (s) => (s.status === "up-to-date" && !s.pending ? words.upToDate : s.status === "offline" || s.status === "stopped" ? words.offline(s.pending ?? 0) : words.syncing);
 const errText = (e) => String(e?.message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 const isOffline = (st) => st?.status === "offline" || st?.status === "stopped";
+// An address as people say it ("share.northlight.studio") is the https one.
+export const hostAddress = (v) => {
+  const t = String(v ?? "").trim();
+  return !t || /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : "https://" + t;
+};
+const shownAddress = (v) => String(v ?? "").replace(/^https:\/\//i, "").replace(/\/$/, "");
 
 /**
  * What went wrong, in plain words, and which field it is about (`host`, `secret`, `link`, `name` or none). The
@@ -51,18 +66,23 @@ export function shareProblem(raw, where = "share") {
   return r(words.failed);
 }
 
+// One run at a time (review of feat/ux-2-8 #4: Enter in a field submitted again while the button showed busy): the guard
+// is synchronous, so the button, the form and the keyboard can't start a second run before the first renders busy.
 function useAction(fn, where) {
   const [busy, setBusy] = useState(false), [error, setError] = useState(null);
+  const running = useRef(false);
   const run = async (...a) => {
+    if (running.current) return null;
+    running.current = true;
     setBusy(true);
     setError(null);
-    try { return await fn(...a); } catch (e) { setError(shareProblem(errText(e), where)); return null; } finally { setBusy(false); }
+    try { return await fn(...a); } catch (e) { setError(shareProblem(errText(e), where)); return null; } finally { running.current = false; setBusy(false); }
   };
   return [run, busy, error, setError];
 }
 // A failure under the button, the raw text in its tooltip for support: any the form has no field for (`fields`: the
 // ones it shows; Invite and Open show none, so theirs always show here: review finding 3).
-const Problem = ({ error, fields = [] }) => (error && !fields.includes(error.field) ? h("p", { className: "text-xs text-destructive", role: "alert", title: error.raw }, error.text) : null);
+const Problem = ({ error, fields = [] }) => (error && !fields.includes(error.field) ? h("p", { className: "carton-field-error", role: "alert", title: error.raw }, error.text) : null);
 const fieldError = (error, field) => (error?.field === field ? error.text : null);
 
 // The name teammates see, asked once (an app setting): shown as a line with "Change" once it is known.
@@ -71,12 +91,16 @@ function useName() {
   const save = (v) => { try { globalThis.localStorage?.setItem("carton.name", v); } catch {} };
   return [name, setName, save];
 }
-function NameField({ id, name, setName, error, known }) {
+const ChangeLink = ({ onClick }) => h("button", { type: "button", className: "carton-link", onClick }, words.change);
+// The sentence that says the name ("Teammates see you as Vikas.", Join's "You'll join as Leo."), the name in bold.
+const teammatesSee = (name) => `Teammates see you as ${name}.`;
+function NameField({ id, name, setName, error, known, line = teammatesSee }) {
   const [editing, setEditing] = useState(!known);
-  if (!editing && name.trim())
-    return h("p", { className: "flex items-center gap-1 text-xs text-muted-foreground" }, "Teammates see you as ", h("span", { className: "font-medium text-foreground" }, name.trim()), ".",
-      h("button", { type: "button", className: "ml-1 cursor-pointer rounded-sm text-xs text-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-white/30", onClick: () => setEditing(true) }, "Change"));
-  return h(Field, { id, label: "Your name", hint: "Teammates see this next to your edits.", error, value: name, autoComplete: "name", onChange: (e) => setName(e.target.value) });
+  if (!editing && name.trim() && !error) {
+    const said = line(name.trim()), at = said.lastIndexOf(name.trim());
+    return h("p", { className: "carton-known" }, said.slice(0, at), h("span", { className: "carton-known-value" }, name.trim()), said.slice(at + name.trim().length) + " ", h(ChangeLink, { onClick: () => setEditing(true) }));
+  }
+  return h(Field, { id, label: words.yourName, hint: words.yourNameHint, error, value: name, autoComplete: "name", onChange: (e) => setName(e.target.value) });
 }
 
 // A teammate as Live.view() sends one (sync/live.js peerActor): an actor with a text `key`, `id` and `name`, and text or
@@ -92,56 +116,127 @@ function shownPeers(sent) {
   }
   return ok;
 }
-
-function Peers({ peers: sent }) {
-  const peers = shownPeers(sent);
-  if (!peers?.length) return h("p", { className: "text-xs text-muted-foreground" }, "Nobody else is here right now.");
-  return h("ul", { className: "flex flex-col gap-1.5" }, peers.map((p) => h("li", { key: p.actor.key, className: "flex items-center gap-2 text-sm", style: { opacity: p.idle ? 0.55 : 1 } },
-    h("span", { className: "carton-avatar", style: { ["--carton-actor"]: actorColor(p.actor, () => undefined), width: 22, height: 22, fontSize: 9 } }, h("span", { className: "carton-avatar-initials" }, initials(p.actor.name ?? p.actor.id))),
-    h("span", null, p.actor.name ?? p.actor.id),
-    p.activity ? h("span", { className: "text-xs text-muted-foreground" }, p.activity) : null,
-  )));
+// "Editing captions" reads "here now · editing captions" after a dot; a name or an acronym keeps its capital.
+const lower = (s) => (typeof s === "string" && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+// "You're offline. Keep editing: …": the first sentence in bold, the rest as it is.
+const firstSentence = (line) => { const i = line.indexOf(". "); return i < 0 ? [line] : [h("strong", { key: "b" }, line.slice(0, i + 1)), line.slice(i + 1)]; };
+const avatar = (actor, name, here) => h("span", { className: "carton-avatar", "data-kind": actor.kind === "human" ? "human" : "agent", "data-here": here ? "" : undefined, style: { ["--carton-actor"]: actorColor(actor, () => undefined), width: 24, height: 24, fontSize: 9.5 } },
+  h("span", { className: "carton-avatar-initials" }, initials(name)));
+function Person({ actor, name, sub, role, here, idle, you }) {
+  return h("li", { className: "carton-share-person", "data-you": you ? "" : undefined, style: idle ? { opacity: 0.55 } : undefined },
+    avatar(actor, name, here && !idle),
+    h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, you ? words.you : name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
+    role ? h("span", { className: "carton-share-role" }, role) : null);
 }
 
-const ROLES = [["editor", "Can edit"], ["commenter", "Can comment"], ["viewer", "Can watch"]];
+/** People: You (with the name teammates see and your role), then everyone here now, with what they're doing. */
+export function People({ st }) {
+  const peers = shownPeers(st.peers);
+  const me = { key: "human/you", kind: "human", name: st.name ?? "" };
+  const offline = isOffline(st);
+  return h("section", { className: "carton-share-section" },
+    h("h3", { className: "carton-share-heading" }, words.people),
+    h("ul", { className: "carton-share-people" },
+      h(Person, { key: "you", you: true, actor: me, name: st.name ?? words.you, sub: offline ? st.name : words.youHereNow(st.name), role: words.roles[st.role] ?? null, here: !offline }),
+      ...peers.map((p) => h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? words.hereNotEditing : p.activity ? `${words.hereNowLine} · ${lower(p.activity)}` : words.hereNowLine, here: true, idle: p.idle }))),
+    peers.length ? null : h("p", { className: "carton-share-none" }, words.nobodyElseHere));
+}
+
+const ROLES = [["editor", words.roles.editor], ["commenter", words.roles.commenter], ["viewer", words.roles.viewer]];
 // Who the link is for: Cardboard's own kind of picker (a menu, as its "16:9 ⌄" and model pickers), not an OS <select>.
 function RolePicker({ role, setRole }) {
   return h(MenuButton, {
-    label: "Who can do what",
-    triggerClassName: "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm text-foreground outline-none transition-colors hover:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-white/30",
+    label: words.whoCanDoWhat,
+    ariaLabel: `${words.whoCanDoWhat}: ${ROLES.find(([v]) => v === role)?.[1] ?? ROLES[0][1]}`,
+    triggerClassName: "carton-share-role-pick",
     trigger: [h("span", { key: "r" }, ROLES.find(([v]) => v === role)?.[1] ?? ROLES[0][1]), h(Icon, { key: "c", name: "caretDown", size: 12 })],
     children: (close) => ROLES.map(([v, label]) => h(MenuItem, { key: v, checked: role === v, onSelect: () => { setRole(v); close(); } }, label)),
   });
 }
 
-function Invite({ projectId, bridge, offline }) {
-  const [role, setRole] = useState("editor"), [link, setLink] = useState(null), [copied, setCopied] = useState(false);
-  const [make, busy, error] = useAction(async () => { setCopied(false); setLink((await bridge.call("liveInvite", [{ projectId, role }])).link); }, "invite");
-  return h("section", { className: "flex flex-col gap-2" },
-    h("h3", { className: "text-sm font-medium" }, "Invite to edit"),
-    h("p", { className: "text-xs text-muted-foreground" }, "Anyone with the link can join with the role you pick."),
-    h("div", { className: "flex items-center gap-2" },
-      h(RolePicker, { role, setRole }),
-      // Offline the server can't make a link: say so instead of failing after a wait.
-      h(Button, { onClick: () => make(), busy, variant: "primary", disabled: offline, description: offline ? "Available when you're back online." : undefined }, "Create link")),
-    offline ? h("p", { className: "text-xs text-muted-foreground" }, "You can create a link when you're back online.") : null,
-    link ? h("div", { className: "flex items-center gap-2" },
-      h("input", { className: INPUT + " min-w-0 flex-1 text-xs", readOnly: true, value: link, "aria-label": "Invite link", onFocus: (e) => e.target.select() }),
-      h(Button, { onClick: () => navigator.clipboard?.writeText(link).then(() => setCopied(true), () => {}) }, copied ? "Copied" : "Copy")) : null,
+/**
+ * Invite (owners): who can do what, the link and Copy link. A link is made when it is first copied (one invite on the
+ * server per role, not one per opening of the dialog), then shown, and copied again from there. Offline the server
+ * can't make one: Copy link is off and says when it can.
+ */
+export function Invite({ projectId, bridge, offline }) {
+  const [role, setRole] = useState("editor"), [links, setLinks] = useState({}), [copied, setCopied] = useState(null);
+  const field = useRef(null);
+  const link = links[role] ?? null;
+  useEffect(() => {
+    if (!copied) return undefined;
+    const t = setTimeout(() => setCopied(null), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const [copy, busy, error] = useAction(async () => {
+    let l = link;
+    if (!l) {
+      l = (await bridge.call("liveInvite", [{ projectId, role }])).link;
+      setLinks((m) => ({ ...m, [role]: l }));
+    }
+    // a clipboard that refuses (no focus) leaves the link selected in its field, to copy by hand
+    const done = await Promise.resolve(globalThis.navigator?.clipboard?.writeText(l)).then(() => true, () => false);
+    if (done) setCopied(role);
+    else requestAnimationFrame(() => field.current?.select());
+  }, "invite");
+  return h("section", { className: "carton-share-section carton-share-invite" },
+    h("h3", { className: "carton-share-heading" }, words.invite),
+    h("div", { className: "carton-share-invite-row" },
+      h(RolePicker, { role, setRole: (r) => { setRole(r); setCopied(null); } }),
+      h("input", { ref: field, className: "carton-input carton-share-link", readOnly: true, value: link ?? "", placeholder: words.copyLinkToMake, "aria-label": words.inviteLink, onFocus: (e) => e.target.select() }),
+      h(Button, { icon: copied === role ? "check" : "link", onClick: () => copy(), busy, disabled: offline, description: offline ? words.inviteWhenOnline : undefined }, copied === role ? words.copied : words.copyLink)),
+    h("p", { className: "carton-field-hint" }, offline ? words.inviteWhenOnline : words.anyoneCanJoinTo(role)),
     h(Problem, { error }));
 }
 
-function ShareForm({ projectId, bridge, onShared }) {
-  const [hostUrl, setHost] = useState(localStorage.getItem("carton.host") ?? ""), [secret, setSecret] = useState("");
+// The status by the title: Up to date, Sending N changes, Offline.
+function StatusWord({ st }) {
+  const offline = isOffline(st), sending = !offline && (st.status !== "up-to-date" || st.pending);
+  const state = offline ? "offline" : sending ? "syncing" : "upToDate";
+  const text = offline ? words.offline(0) : sending ? (st.pending ? words.sending(st.pending) : words.syncing) : words.upToDate;
+  return h("span", { className: "carton-sync carton-share-status", role: "status", "aria-live": "polite", "data-state": state },
+    h(Icon, { name: offline ? "cloudSlash" : sending ? "syncing" : "cloudCheck", size: 14 }), text);
+}
+
+/**
+ * A shared project, below the title: why sync fails when it does (offline: the amber line; another problem: its words
+ * and, when they say more, the server's own), then People. The server's raw message is the tooltip (support), never
+ * the text, unless it adds to the words (an update the server needs: its own "up to N"; P2-12, H-SV).
+ */
+export function LiveStatus({ st }) {
+  const offline = isOffline(st);
+  const problem = st.problem && !(offline && st.problem.code === "unreachable") ? st.problem : null;
+  const detailShown = problem?.detail && problem.detail !== problem.words && problem.code !== "unreachable";
+  return h("div", { className: "carton-share-live" },
+    offline
+      ? h("div", { className: "carton-share-offline", role: "status", title: st.problem?.detail ?? undefined },
+          h(Icon, { name: "cloudSlash", size: 16 }),
+          h("p", null, ...firstSentence(st.pending ? words.offlineLine(st.pending) : words.offlineLineNone)))
+      : null,
+    problem
+      ? h("div", { className: "carton-sync-problem", role: "alert", "data-code": problem.code, title: detailShown ? undefined : problem.detail ?? undefined },
+          h("p", { className: "carton-field-error" }, problem.words),
+          detailShown ? h("p", { className: "carton-sync-detail carton-field-hint" }, problem.detail) : null)
+      : null,
+    h(People, { st }));
+}
+
+/**
+ * Not shared yet: share it. A server with open creation needs only its address and a name; the invite code shows only
+ * when the server asks for one. An address that can't be reached says so at the address, never by asking for a code
+ * (P1-8). The address once used is remembered, and shown as one line with Change.
+ */
+export function ShareForm({ projectId, bridge, title, onClose, onShared }) {
+  const [saved] = useState(() => globalThis.localStorage?.getItem("carton.host") ?? "");
+  const [hostUrl, setHost] = useState(saved), [secret, setSecret] = useState("");
+  const [editHost, setEditHost] = useState(!saved);
   const [name, setName, saveName] = useName();
   const [known] = useState(() => !!name.trim());
-  const [checked, setChecked] = useState(null); // what is known about the address: null (not yet), "open", "invite", "unreachable", "bad"
+  const [checked, setChecked] = useState(null); // what is known about the address: null (not yet), "open", "invite", "unreachable"
   const [missing, setMissing] = useState(null);
-  // A server with open creation needs only its address and a name. The invite code shows only when the server asks for
-  // one. An address that can't be reached says so at the address, never by asking for a code (P1-8).
   useEffect(() => {
     setChecked(null);
-    const v = hostUrl.trim();
+    const v = hostAddress(hostUrl);
     if (!v) return undefined;
     let url;
     try { url = new URL(v); } catch { return undefined; }
@@ -151,111 +246,128 @@ function ShareForm({ projectId, bridge, onShared }) {
     return () => { live = false; clearTimeout(t); };
   }, [hostUrl, bridge]);
   const [share, busy, error, setError] = useAction(async () => {
-    localStorage.setItem("carton.host", hostUrl.trim());
+    const host = hostAddress(hostUrl);
+    try { globalThis.localStorage?.setItem("carton.host", host); } catch {}
     saveName(name.trim());
     // An owner invite from the server, or its admin token (used once to make one; never kept); neither for a server
     // with open creation.
     const s = secret.trim();
-    const r = await bridge.call("liveShare", [{ projectId, host: hostUrl.trim(), name: name.trim(), ...(s ? (s.startsWith("ct1.") ? { invite: s } : { adminToken: s }) : {}) }]);
+    const r = await bridge.call("liveShare", [{ projectId, host, name: name.trim(), ...(s ? (s.startsWith("ct1.") ? { invite: s } : { adminToken: s }) : {}) }]);
     onShared(r);
   }, "share");
   const submit = () => {
     const miss = !hostUrl.trim() ? "host" : !name.trim() ? "name" : checked === "invite" && !secret.trim() ? "secret" : null;
     setMissing(miss);
     setError(null);
+    if (miss === "host") setEditHost(true);
     if (!miss) share();
   };
-  const hostError = missing === "host" ? "Enter the sharing server's address." : fieldError(error, "host") ?? (checked === "unreachable" ? "Can't reach this address. Check it, and that the sharing server is running." : null);
+  const hostError = missing === "host" ? "Enter the sharing server's address." : fieldError(error, "host") ?? (checked === "unreachable" ? shareProblem("Couldn't reach", "share").text : null);
   // The code field: when the server asks for one, or when sharing said it was wrong.
   const askSecret = checked === "invite" || error?.field === "secret";
-  return h("form", { className: "flex flex-col gap-3", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); } },
-    h("h3", { className: "text-sm font-medium" }, "Share this project"),
-    h("p", { className: "text-xs text-muted-foreground" }, "Teammates you invite edit it with you, live, with its history. They get preview copies of your video, whose originals stay on this computer; audio and still images go as they are."),
-    h(Field, { id: "carton-share-host", label: "Sharing server", hint: "The address you were given, like https://share.example.com", error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, onChange: (e) => setHost(e.target.value), placeholder: "https://share.example.com" }),
-    askSecret ? h(Field, { id: "carton-share-secret", label: "Invite code", hint: "This server asks for one. Ask whoever runs it.", error: missing === "secret" ? "Enter the invite code." : fieldError(error, "secret"), value: secret, onChange: (e) => setSecret(e.target.value), type: "password", "data-carton-secret": "" }) : null,
-    h(NameField, { id: "carton-share-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") }),
-    h("div", { className: "flex" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Sharing…" : "Share")),
-    h(Problem, { error, fields: askSecret ? ["host", "secret"] : ["host"] }));
+  const fields = askSecret ? ["host", "secret", "name"] : ["host", "name"];
+  return h(Dialog, {
+    title, onClose, className: "carton-share-dialog",
+    footer: [
+      h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error, fields })),
+      h(Button, { key: "c", variant: "secondary", size: "md", onClick: onClose }, words.cancel),
+      h(Button, { key: "s", variant: "primary", size: "md", busy, onClick: submit }, busy ? words.sharingNow : words.shareProject),
+    ],
+  },
+    // Enter in any field shares, as the button does (a form of several fields has no implicit submit)
+    h("form", { className: "carton-share-form", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); }, onKeyDown: (e) => { if (e.key === "Enter" && e.target?.tagName === "INPUT") { e.preventDefault(); submit(); } } },
+      h("p", { className: "carton-share-lead" }, `${words.shareLead} ${words.shareLeadMore}`),
+      editHost || hostError
+        ? h(Field, { id: "carton-share-host", label: words.sharingServer, hint: words.sharingServerHint, error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, autoComplete: "url", onChange: (e) => setHost(e.target.value), placeholder: words.sharingServerPlaceholder })
+        : h("div", { className: "carton-field" }, h("span", { className: "carton-field-label" }, words.sharingServer), h("p", { className: "carton-known" }, h("span", { className: "carton-known-value" }, shownAddress(hostUrl)), " ", h(ChangeLink, { onClick: () => setEditHost(true) }))),
+      askSecret ? h(Field, { id: "carton-share-secret", label: "Invite code", hint: "This server asks for one. Ask whoever runs it.", error: missing === "secret" ? "Enter the invite code." : fieldError(error, "secret"), value: secret, onChange: (e) => setSecret(e.target.value), type: "password", "data-carton-secret": "" }) : null,
+      h(NameField, { id: "carton-share-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
 }
 
-// `startOpen`: the form at once (the Dashboard's Join dialog); `onOpened`: after Open, so a dialog can close.
-function Join({ bridge, startOpen = false, onOpened, onCancel }) {
-  const [open, setOpen] = useState(startOpen);
+/** The status of a project's sharing: the worker's liveStatus, then its live events. Null until it answers. */
+function useShareStatus(projectId, bridge) {
+  const [st, setSt] = useState(null);
+  const refresh = () => bridge.call("liveStatus", [{ projectId }]).then(setSt, (e) => setSt({ shared: false, error: errText(e) }));
+  useEffect(() => {
+    let live = true;
+    bridge.call("liveStatus", [{ projectId }]).then((s) => live && setSt(s), (e) => live && setSt({ shared: false, error: errText(e) }));
+    const off = bridge.onEvent((ev) => { if (live && ev?.id === projectId && ev.topic === "live") setSt((s) => ({ ...s, ...ev.live })); });
+    return () => { live = false; if (typeof off === "function") off(); };
+  }, [projectId, bridge]);
+  return [st, refresh];
+}
+
+/** Share, as a dialog over the editor (PLAN 8.1). `name`: the project's, for its title. */
+export function ShareDialog({ projectId, bridge, name, onClose }) {
+  useEffect(() => { injectCardboardSkin(document); }, []);
+  const [st, refresh] = useShareStatus(projectId, bridge);
+  const title = shareTitle(name);
+  if (!st) return h(Dialog, { title, onClose, className: "carton-share-dialog" }, h("div", { className: "carton-share-wait", "aria-busy": true }));
+  if (!st.shared) return h(ShareForm, { key: "form", projectId, bridge, title, onClose, onShared: () => void refresh() });
+  return h(Dialog, { key: "shared", title, onClose, className: "carton-share-dialog", aside: h(StatusWord, { st }) },
+    h(LiveStatus, { st }),
+    // Only the owner can invite (the server checks too)
+    st.role === "owner" ? h(Invite, { projectId, bridge, offline: isOffline(st) }) : null);
+}
+
+/**
+ * Join a shared project (PLAN 8.2): the invite link and who you join as, then one button, Join and open: the project
+ * comes into the library and opens in its tab, and the dialog closes. If it can't open (the tab couldn't be made), the
+ * dialog says the project is in the library, with Open to try again. Shown by the Dashboard's host (sync/patches/ui.js),
+ * which stays mounted while the library's view changes under it (final re-check N1).
+ */
+export function Join({ bridge, onOpened, onCancel: cancel }) {
   const [link, setLink] = useState(""), [done, setDone] = useState(null), [missing, setMissing] = useState(null);
+  // Cancel (or the dialog going away) while the join is answered: the project still comes into the library, but nothing
+  // opens it afterwards (review of feat/ux-2-8 #5: a dismissed Join opened a tab when its answer came).
+  const dismissed = useRef(false);
+  useEffect(() => () => { dismissed.current = true; }, []);
+  const onCancel = () => { dismissed.current = true; cancel?.(); };
   const [name, setName, saveName] = useName();
   const [known] = useState(() => !!name.trim());
+  const [openIt, opening, openError] = useAction(async (d) => {
+    if (!bridge.openProject) return;
+    await bridge.openProject(d.projectId);
+    onOpened?.();
+  }, "open");
   const [join, busy, error, setError] = useAction(async () => {
     saveName(name.trim());
-    setDone(await bridge.call("liveJoin", [{ link: link.trim(), name: name.trim() }]));
-    setLink("");
+    const d = await bridge.call("liveJoin", [{ link: link.trim(), name: name.trim() }]);
+    if (dismissed.current) return;
+    setDone(d);
+    await openIt(d);
   }, "join");
-  const [openIt, opening, openError] = useAction(async () => { await bridge.openProject(done.projectId); onOpened?.(); }, "open");
-  const top = startOpen ? "" : " border-t border-white/[0.06] pt-4";
-  if (!open && !done)
-    return h("section", { className: "flex flex-col gap-1 border-t border-white/[0.06] pt-4" },
-      h("p", { className: "text-xs text-muted-foreground" }, "Got an invite link from a teammate?"),
-      h("div", { className: "flex" }, h(Button, { variant: "ghost", icon: "link", onClick: () => setOpen(true) }, "Join a shared project")));
-  if (done)
-    // Joined: the way on is to open it, not a form left filled in.
-    return h("section", { className: "flex flex-col gap-2" + top, role: "status" },
-      h("p", { className: "text-sm" }, `“${done.name}” is in your library now.`),
-      h("p", { className: "text-xs text-muted-foreground" }, "Its footage arrives while your teammate's computer sends it: video as preview copies."),
-      h("div", { className: "flex gap-2" },
-        bridge.openProject ? h(Button, { variant: "primary", busy: opening, onClick: () => openIt() }, "Open") : null,
-        h(Button, { variant: "ghost", onClick: () => { setDone(null); setOpen(startOpen); if (startOpen) onCancel?.(); } }, "Done")),
-      h(Problem, { error: openError }));
+  if (done) {
+    const still = opening || busy;
+    return h(Dialog, {
+      title: words.joinTitle, onClose: onCancel, className: "carton-join-dialog",
+      footer: [
+        h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error: openError })),
+        h(Button, { key: "d", variant: "secondary", size: "md", onClick: onCancel, disabled: still }, "Done"),
+        bridge.openProject ? h(Button, { key: "o", variant: "primary", size: "md", busy: still, onClick: () => openIt(done) }, still ? words.openingNow : words.openIt) : null,
+      ],
+    }, h("div", { className: "carton-join-done", role: "status" },
+      h("p", null, words.inYourLibrary(done.name)),
+      h("p", { className: "carton-share-lead" }, "Its footage arrives while your teammate's computer sends it: video as preview copies.")));
+  }
   const submit = () => {
     const miss = !link.trim() ? "link" : !name.trim() ? "name" : null;
     setMissing(miss);
     setError(null);
     if (!miss) join();
   };
-  return h("form", { className: "flex flex-col gap-3" + top, noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); } },
-    startOpen ? null : h("h3", { className: "text-sm font-medium" }, "Join a shared project"),
-    h(Field, { id: "carton-join-link", label: "Invite link", error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…", autoFocus: true }),
-    h(NameField, { id: "carton-join-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") }),
-    h("div", { className: "flex gap-2" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Joining…" : "Join"), h(Button, { variant: "ghost", onClick: () => { setOpen(startOpen); setMissing(null); setError(null); if (startOpen) onCancel?.(); } }, words.cancel)),
-    h(Problem, { error, fields: ["link"] }));
+  return h(Dialog, {
+    title: words.joinTitle, onClose: onCancel, className: "carton-join-dialog",
+    footer: [
+      h("div", { key: "p", className: "carton-share-foot-note" }, h(Problem, { error, fields: ["link", "name"] })),
+      h(Button, { key: "c", variant: "secondary", size: "md", onClick: onCancel }, words.cancel),
+      h(Button, { key: "j", variant: "primary", size: "md", busy, onClick: submit }, busy ? words.joiningNow : words.joinAndOpen),
+    ],
+  },
+    h("form", { className: "carton-share-form", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); }, onKeyDown: (e) => { if (e.key === "Enter" && e.target?.tagName === "INPUT") { e.preventDefault(); submit(); } } },
+      h("p", { className: "carton-share-lead" }, words.joinLead),
+      h(Field, { id: "carton-join-link", label: words.inviteLink, error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…" }),
+      h(NameField, { id: "carton-join-name", name, setName, known, line: words.joinAs, error: missing === "name" ? "Enter your name." : fieldError(error, "name") })));
 }
 
-// The "Live" section of a shared project: status words, why sync fails when it does, who is here.
-export function LiveStatus({ st }) {
-  // A problem's own words say it once; the server's message adds to them only when it says more than the words (an
-  // update the server needs: its own "up to N"), else it is the tooltip (P2-12: no second sentence saying the same).
-  const detailShown = st.problem?.detail && st.problem.detail !== st.problem.words && st.problem.code !== "unreachable";
-  return h("section", { className: "flex flex-col gap-2" },
-    h("div", { className: "flex items-center justify-between" },
-      h("h3", { className: "text-sm font-medium" }, "Live"),
-      h("span", { className: "carton-sync text-xs", role: "status", "aria-live": "polite", "data-state": st.status }, statusWords(st))),
-    // Why sync stopped (core's sync-error): plain words for the reason, then the server's own message when it adds to
-    // them (H-SV's "…newer than this server accepts (up to N): update the server"), so nobody is left at "Syncing".
-    st.problem
-      ? h("div", { className: "carton-sync-problem flex flex-col gap-1 text-xs", role: "alert", "data-code": st.problem.code, title: detailShown ? undefined : st.problem.detail ?? undefined },
-          h("p", { className: "text-destructive" }, st.problem.words),
-          detailShown ? h("p", { className: "carton-sync-detail text-muted-foreground" }, st.problem.detail) : null)
-      : null,
-    h("p", { className: "text-xs text-muted-foreground", title: st.host }, `Teammates see you as ${st.name}.`),
-    h(Peers, { peers: st.peers }));
-}
-
-export function SharePanel({ projectId, active, bridge }) {
-  const [st, setSt] = useState(null);
-  useEffect(() => { injectCardboardSkin(document); }, []);
-  useEffect(() => {
-    if (!active) return undefined;
-    let live = true;
-    bridge.call("liveStatus", [{ projectId }]).then((s) => live && setSt(s), (e) => live && setSt({ shared: false, error: errText(e) }));
-    const off = bridge.onEvent((ev) => { if (live && ev?.id === projectId && ev.topic === "live") setSt((s) => ({ ...s, ...ev.live })); });
-    return () => { live = false; if (typeof off === "function") off(); };
-  }, [projectId, active, bridge]);
-  if (!active || !st) return null;
-  return h("div", { className: "carton-share flex h-full flex-col gap-5 overflow-y-auto p-4", "data-carton-skin": "cardboard" },
-    st.shared
-      ? h(LiveStatus, { st })
-      : h(ShareForm, { projectId, bridge, onShared: () => bridge.call("liveStatus", [{ projectId }]).then(setSt) }),
-    st.shared && st.role === "owner" ? h(Invite, { projectId, bridge, offline: isOffline(st) }) : null,
-    // Joining is for a project you don't have yet: not offered inside one that is already shared or joined.
-    st.shared ? null : h(Join, { bridge }));
-}
-
-window.__cartonSyncUi = { SharePanel, LiveStatus, shareProblem, ShareForm, Join, Invite, Problem };
+window.__cartonSyncUi = { ShareDialog, LiveStatus, People, shareProblem, ShareForm, Join, Invite, Problem, hostAddress, shareTitle };

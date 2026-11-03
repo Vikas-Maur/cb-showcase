@@ -10,6 +10,7 @@
 // `now` at 12:48 pm to read the mockups' clock times.
 
 import { TopicHub } from "./hub.ts";
+import { cutColors } from "./cuts.ts";
 import { clock, shortDate, versionLabel, versionShort } from "./format.ts";
 import type {
   Actor,
@@ -42,6 +43,8 @@ import type {
   Working,
 } from "./model.ts";
 import { diffSummary } from "./shots.ts";
+import { actorLabel } from "./actors.ts";
+import { conflictWords } from "./conflict-words.ts";
 
 function rng(seed: number) {
   let a = seed >>> 0;
@@ -366,13 +369,18 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     for (let i = all.length - 1; i >= 0; i--) if (!all[i]!.provisional) return all[i]!.ref;
     return "main@0";
   };
-  let cuts: readonly Cut[] = [
-    { id: "cut-main", name: "Main cut", label: "Main cut", current: true, readOnly: false, kind: "main", owner: people.alice, head: headOf(), updatedAt: now0 - 30_000, shared: true },
-    { id: "cut-ig", name: "30s Instagram cut", label: "30s Instagram cut", current: false, readOnly: false, kind: "cut", owner: people.alice, head: "ig@41", updatedAt: now0 - 3_600_000 },
-    { id: "cut-dir", name: "Director's cut: punchier open", label: "Director's cut: punchier open", current: false, readOnly: false, kind: "director", owner: people.director, head: "dir@12", updatedAt: now0 - 900_000 },
-    { id: "cut-offline", name: `Offline edits (${shortDate(now0 - 86_400_000)})`, label: `Offline edits (${shortDate(now0 - 86_400_000)})`, current: false, readOnly: false, kind: "offline", owner: people.alice, head: "off@9", updatedAt: now0 - 86_400_000 },
-    { id: "cut-bob-main", name: "Main cut", label: "Bob's Main cut", current: false, readOnly: true, kind: "main", owner: people.bob, head: "bobmain@88", updatedAt: now0 - 7_200_000 },
-  ];
+  // Who changed each cut last and its colour dot (the cuts menu, PLAN 6.1): Main cut has none, a teammate's cut its owner's
+  const colored = (list: Cut[]): readonly Cut[] => {
+    const colors = cutColors(list, (id) => list.find((c) => c.id === id)?.owner);
+    return list.map((c) => (colors.has(c.id) ? { ...c, color: colors.get(c.id)! } : c));
+  };
+  let cuts: readonly Cut[] = colored([
+    { id: "cut-main", name: "Main cut", label: "Main cut", current: true, readOnly: false, kind: "main", owner: people.alice, head: headOf(), updatedAt: now0 - 30_000, updatedBy: people.alice, shared: true },
+    { id: "cut-ig", name: "30s Instagram cut", label: "30s Instagram cut", current: false, readOnly: false, kind: "cut", owner: people.alice, head: "ig@41", updatedAt: now0 - 130 * MIN, updatedBy: people.director },
+    { id: "cut-dir", name: "Director's cut: punchier open", label: "Director's cut: punchier open", current: false, readOnly: false, kind: "director", owner: people.director, head: "dir@12", updatedAt: now0 - 900_000, updatedBy: people.director },
+    { id: "cut-offline", name: `Offline edits (${shortDate(now0 - 86_400_000)})`, label: `Offline edits (${shortDate(now0 - 86_400_000)})`, current: false, readOnly: false, kind: "offline", owner: people.alice, head: "off@9", updatedAt: now0 - 86_400_000, updatedBy: people.alice },
+    { id: "cut-bob-main", name: "Main cut", label: "Bob's Main cut", current: false, readOnly: true, kind: "main", owner: people.bob, head: "bobmain@88", updatedAt: now0 - 7_200_000, updatedBy: people.bob },
+  ]);
   let sync: SyncStatus = { kind: "syncing", waiting: 2 };
   let peers: readonly Peer[] = [
     { actor: people.alice, cutId: "cut-main", idle: false, activity: "Editing" },
@@ -390,8 +398,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     {
       id: "items/intro/#time",
       title: "'Intro' timing",
-      mine: { author: people.alice, summary: "Trimmed the end to 0:05.0", at: now0 - 40_000, what: "trim" },
-      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "move" },
+      mine: { author: people.alice, summary: "Trimmed the end to 0:05.0", at: now0 - 40_000, what: "trim", text: "Trimmed it to end at 0:05", did: "trimmed it" },
+      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "move", text: "Moved it to start at 0:02", did: "moved it" },
       canKeepBoth: false,
       reason: "Both changed when this clip plays. Doing both would end it before it starts.",
       provisional: "theirs",
@@ -401,8 +409,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     {
       id: "items/title-1/textContent",
       title: "Title text",
-      mine: { author: people.alice, summary: "\"Summer sale\"", at: now0 - 300_000, what: "change" },
-      theirs: { author: people.bob, summary: "\"Summer launch\"", at: now0 - 240_000, what: "change" },
+      mine: { author: people.alice, summary: "\"Summer sale\"", at: now0 - 300_000, what: "edit", text: "Changed it to “Summer sale”", did: "changed its text" },
+      theirs: { author: people.bob, summary: "\"Summer launch\"", at: now0 - 240_000, what: "edit", text: "Changed it to “Summer launch”", did: "changed its text" },
       canKeepBoth: true,
       provisional: "theirs",
       item: "item-summer",
@@ -429,7 +437,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     hub.notify("history");
     const cur = cuts.find((c) => c.current);
     if (cur && !over.provisional) {
-      cuts = cuts.map((c) => (c === cur ? { ...c, head: v.ref, updatedAt: v.at } : c));
+      cuts = cuts.map((c) => (c === cur ? { ...c, head: v.ref, updatedAt: v.at, updatedBy: v.author } : c));
       hub.notify("cuts");
     }
     if (published && cur && published.cutId === cur.id) {
@@ -542,31 +550,53 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
 
     async planFold(fromId, intoId) {
       const from = cuts.find((c) => c.id === fromId)!, into = cuts.find((c) => c.id === intoId)!;
+      // The mockups' fold (after/fold-*.png): every change as a change row, the aspect ratio locked, one conflict
+      const row = (id: string, summary: string, author: Actor, ago: number, change: Omit<Change, "key" | "text">, more: Partial<FoldPlan["changes"][number]> = {}) => ({
+        id,
+        summary,
+        author,
+        at: now0 - ago,
+        change: { key: id, text: summary, ...change },
+        ...more,
+      });
       const p: FoldPlan = {
         from,
         into,
+        // 30s Instagram cut was made from Main cut (and the other cuts from Main too), 2 h 28 min ago
+        ...(from.kind === "main" || into.kind === "main" ? { made: { which: from.kind === "main" ? ("into" as const) : ("from" as const), at: now0 - 148 * MIN } } : {}),
         changes: [
-          { id: "items/intro", summary: "Trimmed “Intro”, now ends at 0:03", author: people.director, at: now0 - 3_400_000 },
-          { id: "items/interview-a", summary: "Moved “Interview A” 4 s earlier (now starts at 0:05)", author: people.director, at: now0 - 3_300_000 },
-          { id: "items/cap-12", summary: "Added caption “built for speed”", author: people.captions, at: now0 - 3_200_000 },
-          { id: "tracks/music", summary: "Changed the volume of “Upbeat.wav” to 70%", author: people.alice, at: now0 - 3_000_000 },
-          { id: "items/logo", summary: "Removed “Logo sting”", author: people.alice, at: now0 - 2_900_000 },
-          { id: "root/aspectRatio", summary: "Changed the aspect ratio to 9:16", author: people.alice, at: now0 - 2_800_000, locked: true },
+          row("items/intro", "Trimmed “Intro”, now ends at 0:03", people.director, 130 * MIN, { kind: "change", clip: "video", itemId: "item-intro", at: 0, end: 3 }),
+          row("items/summer", "Changed “Summer launch” to “Summer sale”", people.alice, 70 * MIN, { kind: "change", clip: "title", itemId: "item-summer", at: 3, end: 7 }),
+          row("items/closeup", "Removed “Product close-up”", people.director, 65 * MIN, { kind: "remove", clip: "video", itemId: "item-closeup", at: 12, end: 16 }),
+          row("aspectRatio", "Changed the aspect ratio to 9:16", people.director, 131 * MIN, { kind: "change", clip: "project" }, { locked: true }),
         ],
         // In a fold, each side says which cut it is on: yours is the cut you fold into.
-        conflicts: [conflicts[0] ?? defaultCard(now0)].map((c) => ({ ...c, mine: { ...c.mine, where: into.label }, theirs: { ...c.theirs, where: from.label }, provisional: "mine" as const })),
+        conflicts: [
+          {
+            id: "timelineItems/item-interview-b/#time",
+            title: "'Interview B' timing",
+            clip: "Interview B",
+            item: "item-interview-b",
+            mine: { author: people.alice, summary: "starts at 0:18", at: now0 - 13 * MIN, what: "move", where: into.label },
+            theirs: { author: people.director, summary: "starts at 0:20", at: now0 - 70 * MIN, what: "move", where: from.label },
+            canKeepBoth: false,
+            provisional: "mine",
+          },
+        ],
         warnings: ["“B-roll 3” overlaps “Interview A” by 0.4 s", "The font “Denton” isn't on this computer, so the title may look different"],
       };
       return p;
     },
 
-    async switchCut(id) {
+    async switchCut(id, o) {
+      if (o?.onlyFrom !== undefined && cuts.find((c) => c.current)?.id !== o.onlyFrom) return;
       cuts = cuts.map((c) => (c.current !== (c.id === id) ? { ...c, current: c.id === id } : c));
       hub.notify("cuts");
     },
     async newCut(name, fromRef) {
-      const c: Cut = { id: `cut-${cuts.length + 1}`, name, label: name, current: true, readOnly: false, kind: "cut", owner: people.alice, head: fromRef, updatedAt: Date.now() };
-      cuts = [...cuts.map((x) => (x.current ? { ...x, current: false } : x)), c];
+      const made: Cut = { id: `cut-${cuts.length + 1}`, name, label: name, current: true, readOnly: false, kind: "cut", owner: people.alice, head: fromRef, updatedAt: Date.now(), updatedBy: people.alice };
+      cuts = colored([...cuts.map((x) => (x.current ? { ...x, current: false } : x)), made]);
+      const c = cuts[cuts.length - 1]!;
       hub.notify("cuts");
       return c;
     },
@@ -644,9 +674,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       if (target.kind === "conflict") {
         const c = conflicts.find((x) => x.id === target.conflictId);
         if (!c) throw new Error("Couldn't load this version. Try again.");
-        const side = target.side === "mine" ? c.mine : c.theirs;
-        const clip = c.clip ?? c.title;
-        const label = target.side === "mine" ? `Your ${side.what ?? "change"} of “${clip}”` : `${side.author.name}'s ${side.what ?? "change"} of “${clip}”`;
+        // the card's own words for its side (conflict-words.ts), so the card, the chip and the frame say the same
+        const label = conflictWords(c, (a) => actorLabel(a, (k) => actors.get(k), "You")).label[target.side];
         return setViewing({ ref: `see:${c.id}:${target.side}`, kind: "conflict", conflictId: c.id, side: target.side, label, short: label });
       }
       const v = versionOf(target);

@@ -240,6 +240,13 @@ export interface Cut {
   readonly updatedAt: number;
   /** "Shared" cuts sync through the server; the others live on this computer. */
   readonly shared?: boolean;
+  /** Who made its newest version (the cuts menu's "Director · 2 h ago", DESIGN §6.3), when known. */
+  readonly updatedBy?: Actor;
+  /**
+   * Its colour dot (DESIGN §4.1): every cut but Main has one, the same in the title bar's chip, the cuts menu and the
+   * History cut bar. None for Main cut. A host that leaves it out gets `cutColor()`'s (cuts.ts) from the id.
+   */
+  readonly color?: string;
 }
 
 /** The three status words of §0.1 / §13, plus "not shared" (nothing is shown). */
@@ -282,6 +289,14 @@ export interface ConflictSide {
   readonly where?: string;
   /** What this side did, as a noun for the viewing label ("Claude Code's move of “Interview B”"): "move", "trim", "change". */
   readonly what?: string;
+  /**
+   * What this side did, as a change sentence about the card's clip (DESIGN §8: "(a conflict side) Moved it to start at
+   * 0:07"): "Made it smaller (font size 80)", "Removed it". The card shows it in place of `summary` when given; the two
+   * sides' sentences never read the same. Never an id.
+   */
+  readonly text?: string;
+  /** The same as a verb phrase for the card's title: "moved it", "changed its font size" ("you and Claude Code both moved it"). */
+  readonly did?: string;
 }
 
 /** A conflict card (§7): both edits are kept, and the person picks. */
@@ -296,6 +311,8 @@ export interface Conflict {
   readonly theirs: ConflictSide;
   /** "Keep both" is offered when both can live side by side (a new track, or alternatives). */
   readonly canKeepBoth: boolean;
+  /** What "Keep both" makes, in words, when the host can say: "Leo's music on a new track under yours". */
+  readonly both?: string;
   /** Why a card instead of a merge, when it isn't plain: "The result would end before it starts". */
   readonly reason?: string;
   /** The choice already shown in the edit while undecided (§7: provisional = your side). */
@@ -405,11 +422,28 @@ export interface FoldChange {
    * the same id fold in together, or stay left out together.
    */
   readonly leftOut?: string;
+  /** When that earlier partial fold left it out (ms since the epoch): "Left out on Oct 30". */
+  readonly leftOutAt?: number;
+  /**
+   * The change as a change row (PLAN 0.1, DESIGN §6.4): its place in the edit, the kind of clip and what happened, for
+   * the Fold dialog's rows. `summary` stays the sentence; without this the row shows the sentence alone.
+   */
+  readonly change?: Change;
+}
+
+/** How the two cuts of a fold are related (DESIGN §6.4's line): one was made from the other, at `at`. */
+export interface FoldMade {
+  /** "from": the cut folded in was made from the cut it goes into; "into": the other way round. */
+  readonly which: "from" | "into";
+  /** When it was made (ms since the epoch). */
+  readonly at: number;
 }
 
 export interface FoldPlan {
   readonly from: Cut;
   readonly into: Cut;
+  /** How the cuts are related, when one was made from the other ("since it was made from Main cut at 12:20 pm"). */
+  readonly made?: FoldMade;
   readonly changes: readonly FoldChange[];
   readonly conflicts: readonly Conflict[];
   /** Soft-validator warnings on the result: overlaps, gaps, missing media (§4.1). */
@@ -493,7 +527,12 @@ export interface CartonUi {
   shotDiff(a: string, b: string): Promise<ShotDiff>;
   planFold(fromCutId: string, intoCutId: string, opts?: { allCards?: boolean }): Promise<FoldPlan>;
 
-  switchCut(cutId: string): Promise<void>;
+  /**
+   * Switch to a cut. `onlyFrom`: only if the cut you're on is still that one (a switch queued behind an agent's turn,
+   * cuts.ts switchWhenDone): checked where the cut is known (the worker), so a switch made meanwhile, by hand or by `cb
+   * cut switch`, wins; it resolves without switching then.
+   */
+  switchCut(cutId: string, opts?: { onlyFrom?: string }): Promise<void>;
   newCut(name: string, fromRef: string): Promise<Cut>;
   /** Absent when the engine can't rename cuts yet: the Cuts menu then doesn't offer it. */
   renameCut?(cutId: string, name: string): Promise<void>;

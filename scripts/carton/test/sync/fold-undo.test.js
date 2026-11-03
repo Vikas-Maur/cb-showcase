@@ -45,13 +45,14 @@ async function openPanel(pc, id, client) {
     if (!ret.ok) throw new Error(`panel ${method}: ${ret.error}`);
     return ret.value;
   };
-  /** History's newest row on the current cut once it is the version at `seq`, in words. */
-  const newest = async (seq) => {
+  /** History's newest row on the current cut once it is the version at `seq`, in words (the whole row: `newestRow`). */
+  const newestRow = async (seq) => {
     const row = await S.until(() => { const r = history().at(-1); return r?.seq === seq && r; }, 20_000, `History's row for @${seq} (newest: ${JSON.stringify(history().at(-1))})`);
     await send({ t: "want", ids: [row.id] });
-    return S.until(() => history().find((v) => v.id === row.id)?.summary, 20_000, `@${seq} in words`);
+    return S.until(() => { const v = history().find((x) => x.id === row.id); return v?.summary && v; }, 20_000, `@${seq} in words`);
   };
-  return { cuts, history, call, newest };
+  const newest = async (seq) => (await newestRow(seq)).summary;
+  return { cuts, history, call, newest, newestRow };
 }
 
 const must = (r, what) => { if (r.code !== 0) throw new Error(what + ": " + r.out + r.err); return r; };
@@ -87,15 +88,19 @@ async function foldSomeThenRest(pc, id, panel) {
   assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] }), { ok: true });
   // its row (the first fold on Main), one version for the fold and its partial revert
   const atSome = await S.until(() => { const r = panel.history().at(-1); return r?.kind === "fold" && r.seq; }, 20_000, "the partial fold's row");
-  // the app's words (UX redesign 0.2): the row says what it was, its meta "1 of 2 changes"
-  assert.equal(await panel.newest(atSome), "Folded in “Alt”");
+  // the UX redesign's words (PLAN 0.2): the row says what it was; "1 of N changes" is its counts (changes, leftOut)
+  const some = await panel.newestRow(atSome);
+  assert.equal(some.summary, "Folded in “Alt”");
+  assert.ok(some.changes === 1 && some.leftOut >= 1, "1 of N changes: " + JSON.stringify(some));
   const s1 = await S.projectOf(pc, id);
   assert.deepEqual([videos(s1), font(s1)], [1, 150], "the partial fold: the title's change, not the split");
   const again = await panel.call("planFold", alt.id, main.id);
   assert.deepEqual(again.changes.map((c) => c.summary).filter((x) => /^Split/.test(x)).length, 1, "Fold in again offers the split: " + JSON.stringify(again.changes.map((c) => c.summary)));
   assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [] }), { ok: true });
   const rest = atSome + 1;
-  assert.equal(await panel.newest(rest), "Folded in the rest of “Alt”");
+  const restRow = await panel.newestRow(rest);
+  assert.equal(restRow.summary, "Folded in the rest of “Alt”");
+  assert.equal(restRow.changes, 1, "1 change: " + JSON.stringify(restRow));
   const s2 = await S.projectOf(pc, id);
   assert.deepEqual([videos(s2), font(s2)], [2, 150], "the rest: the split too");
   return { main, alt, rest };

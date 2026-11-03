@@ -12,7 +12,7 @@
 
 import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
-import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useViewing, useWords, useWorking } from "../hooks.ts";
+import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Actor, CartonUi, Credits, HistoryFilter, Version, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
@@ -44,6 +44,11 @@ export interface HistoryPanelProps {
    * `onFoldIn`), or null for none.
    */
   cuts?: ReactNode;
+  /**
+   * Under the cut bar, above the list: what the cut on screen offers (Workstream 6's TeammateCutActions on a teammate's
+   * cut: "Fold into Main cut…", "New cut from it"). A host's element; it renders nothing on your own cuts.
+   */
+  actions?: ReactNode;
   /**
    * The clip selected on the timeline, when exactly one is: the filter menu offers "Only “clip”" (PLAN 0.8). Read when
    * the menu opens, so the list never re-renders for a selection.
@@ -363,6 +368,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const status = hist.status?.(filter) ?? { loading: false };
   const working = useWorking();
   const cutId = useCurrentCutId();
+  // A teammate's cut on screen (PLAN 6.2, Workstream 6): it stays as its owner left it, so its versions offer no
+  // Restore and no Undo this turn (fold it in or copy it as a new cut instead: TeammateCutActions above the list). Read
+  // so a head moving doesn't re-render the list.
+  const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
   const viewing = useViewing();
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -724,6 +733,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         version: v,
         group: versionsOf,
         newest: v.id === newestId,
+        readOnly: theirCut,
         mode: cardMode,
         onMode: setCardMode,
         // without the Changes view (Workstream 4), "See them" opens the Compare card, as the menu's Compare did
@@ -791,9 +801,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
           menuVersion.foldRest
             ? h(MenuItem, { icon: "foldIn", onSelect: () => (closeMenu(), void ui.foldRest(menuVersion.id).then((r) => !r.ok && setFailed(r.error ?? words.failed), (e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed))) }, words.foldRest)
             : null,
-          // the newest version is your edit: nothing to go back to. An empty one says why it can't be restored.
-          menuVersion.id === newestId && !menuVersion.empty ? null : h(MenuSeparator, null),
-          menuVersion.id === newestId && !menuVersion.empty
+          // the newest version is your edit: nothing to go back to. An empty one says why it can't be restored. A
+          // teammate's cut has no Restore at all (Workstream 6).
+          theirCut || (menuVersion.id === newestId && !menuVersion.empty) ? null : h(MenuSeparator, null),
+          theirCut || (menuVersion.id === newestId && !menuVersion.empty)
             ? null
             : h(MenuItem, { icon: "restoreArc", disabled: waiting || !!menuVersion.empty, title: menuVersion.empty ? words.emptyVersionHint : waiting ? words.availableOnceSent : words.restoreMenuHint, onSelect: () => (closeMenu(), openCard(menu.key, "restore")) }, words.restoreEllipsis),
         )
@@ -859,7 +870,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       "header",
       { className: "carton-panel-head carton-cutbar" },
       cut,
-      h("span", { className: "carton-cutbar-gap" }),
+      // (the cuts menu grows into the bar itself: its Viewing pill on a teammate's cut sits at the bar's right)
+      cut == null ? h("span", { className: "carton-cutbar-gap" }) : null,
       nothing && filter === "all"
         ? null
         : h(
@@ -883,6 +895,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
             filterPop ? h("div", { className: "carton-menu-pop" }, filterPop) : null,
           ),
     ),
+    props.actions ?? null,
     filter !== "all"
       ? h(
           "div",
@@ -957,7 +970,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           a: compareVersion.ref,
           b: props.currentRef,
           onWatch: props.onWatch,
-          ...(compareVersion.empty ? {} : { onRestore: () => void ui.restore(compareVersion.ref).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed)) }),
+          ...(compareVersion.empty || theirCut ? {} : { onRestore: () => void ui.restore(compareVersion.ref).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.failed)) }),
           onClose: () => {
             setComparing(null);
             toList();

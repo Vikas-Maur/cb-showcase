@@ -4,7 +4,7 @@
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, HistoryPanel, remoteUi, serveUi } from "../src/index.ts";
+import { CartonProvider, CutsMenu, HistoryPanel, TeammateCutActions, openCutsMenu, remoteUi, serveUi } from "../src/index.ts";
 import { createMockUi, people } from "../src/mock.ts";
 import type { CartonUi, HistorySource } from "../src/model.ts";
 
@@ -295,6 +295,48 @@ test(name("your run of changes grows as you edit: its open card and its listed v
   assert.equal(group().getAttribute("aria-expanded"), "true", "its card is still open");
   assert.ok($(m.container, ".carton-card-version"));
   assert.equal($$(m.container, ".carton-version[data-child]").length, 3, "and its versions still listed, the new one too");
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- with Workstream 6 (the integration branch)
+
+test(name("a teammate's cut (PLAN 6.2): its actions under the cut bar; no Restore and no Undo this turn, in the menu or the card"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, cuts: h(CutsMenu, {}), actions: h(TeammateCutActions, { onFoldIn: () => {} }) })));
+  await flush();
+  assert.equal($(m.container, ".carton-teammate-cut"), null, "your own cut: nothing under the bar");
+  await act(() => ui.switchCut("cut-bob-main"));
+  await flush();
+  const actions = $(m.container, ".carton-teammate-cut")!;
+  assert.ok(actions, "Bob's cut: what you can do with it");
+  assert.equal(actions.previousElementSibling, $(m.container, ".carton-cutbar"), "right under the cut bar, above the list");
+  assert.ok($(m.container, ".carton-cutbar .carton-cuts-viewing"), "the cut bar says it's viewing");
+  // the row menu of an older version: no Restore
+  await click($(row(m.container, "Add captions to the interview")!, ".carton-version-more"));
+  assert.equal(byText(m.container, "[role=menuitem]", /^Restore/), null);
+  await press(document.activeElement!, "Escape");
+  // the cards: Play stays; no Restore…, no Undo this turn
+  await click(row(m.container, "Add captions to the interview"));
+  await waitFor(() => !!byText(m.container, ".carton-card-version button", "Play all"), "the older card");
+  assert.equal(byText(m.container, ".carton-card-version button", "Restore…"), null);
+  await click(row(m.container, "Tighten the intro"));
+  await waitFor(() => !!byText(m.container, ".carton-card-version button", "Play all"), "the newest card");
+  assert.equal(byText(m.container, ".carton-card-version button", "Undo this turn"), null);
+  await m.unmount();
+});
+
+test(name("the title bar's chip opens the cuts menu in History's cut bar (openCutsMenu)"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, cuts: h(CutsMenu, {}) })));
+  await flush();
+  let opened = false;
+  await act(async () => {
+    opened = await openCutsMenu(ui, { within: 500 });
+  });
+  await flush();
+  assert.equal(opened, true);
+  assert.ok($(m.container, ".carton-cutbar [role=menu]"), "the menu, open in the cut bar");
+  assert.ok(document.activeElement?.closest(".carton-cutbar [role=menu]"), "with focus in it");
   await m.unmount();
 });
 

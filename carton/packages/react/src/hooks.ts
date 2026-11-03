@@ -126,7 +126,7 @@ const sameShownCuts = (a: readonly Cut[], b: readonly Cut[]) =>
   (a.length === b.length &&
     a.every((x, i) => {
       const y = b[i]!;
-      return x.id === y.id && x.label === y.label && x.name === y.name && x.current === y.current && x.readOnly === y.readOnly && x.kind === y.kind && x.shared === y.shared;
+      return x.id === y.id && x.label === y.label && x.name === y.name && x.current === y.current && x.readOnly === y.readOnly && x.kind === y.kind && x.shared === y.shared && x.color === y.color;
     }));
 
 /** The cuts as a menu shows them; re-renders only when what it shows changes (not when a head moves). */
