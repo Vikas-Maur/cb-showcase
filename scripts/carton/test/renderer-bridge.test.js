@@ -148,7 +148,7 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
 // "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Return to current puts it
 // back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is
 // Cardboard's `playheadTime` while paused (its `currentTime` follows the pointer's hover then: review #1) and its
-// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Watch the changes, a
+// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Play in History, a
 // comment's timecode, play) is the person's, even one that ends where the preview put it (review #3).
 function cardboardPlayhead(t, { at, hover = null }) {
   const subs = new Set();
@@ -181,7 +181,7 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
   assert.equal(p.subs.size, 0, "and nothing is left listening");
   // moved during the preview, even back to where the preview put it: the person's place stays
   await t.c.preview("p1", "main@2");
-  t.c.seek(0.5); // Watch the changes, a comment's timecode
+  t.c.seek(0.5); // Play in History, a comment's timecode
   t.state().setPlaybackPosition(1.5); // a click on the ruler, at the version's end
   await t.c.preview("p1", null);
   assert.equal(t.state().playheadTime, 1.5, "where the person put it");
@@ -217,6 +217,104 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
   await off.c.ready;
   await off.c.preview("p1", "main@3");
   assert.equal(off.state().cartonPreview, null);
+});
+
+// Play and Before (docs/carton-ux PLAN 4.3): holding Before flips the editor between two states at the same moment, so
+// neither flip may wait on the worker. Before's side is checked out ahead (prefetch, when playing starts) and kept, as is
+// every confirmed version or pin a preview shows; back to current puts the editor's own timeline back at once and only
+// then reads head, adopting it if it moved meanwhile and nothing of the person's is unsaved.
+test("Play and Before: a version checked out ahead shows without a round trip; back to current is at once, head read after", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const mine = [{ id: "mine", endTime: 5 }];
+  t.disk.doc = t.project(200, mine);
+  t.setState({ cartonBase: 200, tracks: [{ id: "t1" }], timelineItems: mine, aspectRatio: "16:9" });
+  const checkouts = () => t.calls.filter((c) => c[1] === "checkout").length;
+  const heads = () => t.calls.filter((c) => c[1] === "head").length;
+  t.c.prefetch("p1", "main@3");
+  assert.equal(checkouts(), 1, "checked out when playing starts");
+  await t.c.preview("p1", "main@3");
+  assert.equal(checkouts(), 1, "the flip didn't ask the worker again");
+  assert.deepEqual(t.state().timelineItems, [{ id: "old", endTime: 2 }]);
+  assert.equal(t.c.editLength(), 5, "your edit's length while another version shows");
+  // back: the editor's own timeline is there before any answer
+  const back = t.c.preview("p1", null);
+  assert.equal(t.state().cartonPreview, null);
+  assert.equal(t.state().timelineItems, mine, "the same timeline, at once");
+  assert.equal(t.state().cartonBase, 200);
+  await back;
+  assert.equal(heads(), 1, "head is still read");
+  assert.equal(t.log.filter((l) => l[0] === "adopt").length, 2, "head hadn't moved: not adopted again");
+  // the flip back and forth again: no checkout, no wait
+  await t.c.preview("p1", "main@3");
+  await t.c.preview("p1", null);
+  assert.equal(checkouts(), 1);
+});
+
+test("Play and Before: a change during the preview, or head moved meanwhile, still ends on head; a save under way is kept", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const mine = [{ id: "mine", endTime: 5 }];
+  t.disk.doc = t.project(200, mine);
+  t.setState({ cartonBase: 200, tracks: [{ id: "t1" }], timelineItems: mine, aspectRatio: "16:9" });
+  // a change came while it showed (stale): back reads head first, as before
+  await t.c.preview("p1", "main@3");
+  t.disk.doc = t.project(300, [{ id: "theirs", endTime: 6 }]);
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 300, carton: true });
+  const back = t.c.preview("p1", null);
+  assert.deepEqual(t.state().cartonPreview, { ref: "main@3" }, "no fast step after a change");
+  await back;
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [300, [{ id: "theirs", endTime: 6 }]]);
+  // head moved with no event seen (one in flight): the fast step, then head
+  t.setState({ cartonBase: 300 });
+  await t.c.preview("p1", "main@3");
+  t.disk.doc = t.project(400, [{ id: "newer", endTime: 7 }]);
+  await t.c.preview("p1", null);
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]]);
+  // the person edited right after the fast step (a save armed when head answers): their edit stays; its save goes
+  // first and its echo brings head
+  await t.c.preview("p1", "main@3");
+  t.answers.head = () => (t.setArmed(true), t.project(500, [{ id: "other", endTime: 8 }]));
+  await t.c.preview("p1", null);
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]], "not overwritten under the person");
+});
+
+test("Play and Before: only versions that never change are kept, a few at a time; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const checkouts = (ref) => t.calls.filter((c) => c[1] === "checkout" && c[2].ref === ref).length;
+  // a cut's head moves: never kept
+  t.c.prefetch("p1", "cut-main");
+  await t.c.preview("p1", "cut-main");
+  await t.c.preview("p1", "cut-main");
+  assert.equal(checkouts("cut-main"), 2);
+  // a pin's header is kept, like a seq
+  const pin = "main@57~3f9a1c0e b:3f9a1c0e p:ab by person";
+  t.c.prefetch("p1", pin);
+  await t.c.preview("p1", pin);
+  assert.equal(checkouts(pin), 1);
+  // at most four: the oldest goes
+  for (const r of ["main@1", "main@2", "main@3", "main@4", "main@5"]) t.c.prefetch("p1", r);
+  await t.c.preview("p1", "main@1");
+  assert.equal(checkouts("main@1"), 2, "evicted, checked out again");
+  await t.c.preview("p1", "main@5");
+  assert.equal(checkouts("main@5"), 1, "still kept");
+  // another project's version is its own
+  t.c.prefetch("p2", "main@5");
+  assert.equal(t.calls.filter((c) => c[1] === "checkout" && c[2].projectId === "p2").length, 1);
+  // a failed checkout isn't kept
+  let fail = true;
+  t.answers.checkout = () => { if (fail) { fail = false; throw new Error("gone"); } return t.project(150, []); };
+  t.c.prefetch("p1", "main@9");
+  await new Promise((r) => setTimeout(r, 0));
+  await t.c.preview("p1", "main@9");
+  assert.equal(checkouts("main@9"), 2);
+  // Carton off: nothing at all
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.c.prefetch("p1", "main@3");
+  assert.equal(off.c.editLength(), undefined);
+  assert.deepEqual(off.calls.map((c) => c[1]), ["enabled"]);
 });
 
 // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
