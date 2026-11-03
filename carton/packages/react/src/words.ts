@@ -587,9 +587,11 @@ export const words = {
   // "Search every cut" (DESIGN-V2 §2.3; design QA v2 G13)
   searchEveryCut: "Search every cut",
   findingEveryCut: "Searching every cut…",
-  findNoneAnywhere: (q: string) => `No other cut mentions “${q}” either.`,
+  // ("either" only when this cut has none: a filter may hide this cut's own; review of fix/ux2-last #3)
+  findNoneAnywhere: (q: string, either: boolean) => `No other cut mentions “${q}”${either ? " either" : ""}.`,
   findOnOtherCuts: (n: number) => `${plural(n, "version", "versions")} on other cuts`,
-  compareAcrossCuts: "Compare it with your edit",
+  seeOnItsCut: "See it as it was on its cut",
+  versionOnCut: (cut: string, time: string) => `${cut} at ${time}`,
   findFields: { name: "Name", prompt: "Prompt", clip: "Clip name", text: "Title or caption text", person: "Person", day: "Day" } as Record<"name" | "prompt" | "clip" | "text" | "person" | "day", string>,
   wasHere: (clip: string, span: string) => `“${clip}” was ${span} here`,
   findMore: (n: number) => `${n} more`,

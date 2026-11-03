@@ -282,7 +282,11 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const measures = !!mark && !!p.narrow && !p.naming && !p.child;
   const { onWrap, rowKey } = p;
   useLayoutEffect(() => {
-    if (!measures || !titleRef.current) return;
+    // (a row that is no landmark now, or being named, takes one line again: review of fix/ux2-last #1)
+    if (!measures || !titleRef.current) {
+      if (p.wrap) onWrap?.(rowKey, false);
+      return;
+    }
     const over = titleOverflows(titleRef.current);
     if (over !== !!p.wrap) onWrap?.(rowKey, over);
   }, [measures, title, mark?.kind, p.narrow, p.wrap, onWrap, rowKey]);
@@ -494,6 +498,7 @@ const RunRow = memo(function RunRow({ row, domId, active, onToggle }: { row: Run
 /** "Search every cut" (DESIGN-V2 §2.3): what it found, the other cuts' versions. */
 interface EveryCut {
   readonly q: string;
+  readonly cutId: string | undefined;
   readonly status: "loading" | "ready" | "error";
   readonly hits: readonly FindHit[];
 }
@@ -501,18 +506,26 @@ interface EveryCut {
  * The other cuts' versions a search found once "Search every cut" was asked (DESIGN-V2 §2.3; design QA v2 G13): each
  * says which cut it is on (its dot and name) in its meta line; a click compares it with your edit, across cuts.
  */
-function EveryCutHits({ found, onOpen }: { found: EveryCut; onOpen: (hit: FindHit) => void }) {
+function EveryCutHits({ found, here, onOpen }: { found: EveryCut; here: boolean; onOpen: (hit: FindHit) => void }) {
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
+  // the keyboard stays here: the link it was on goes once asked (review of fix/ux2-last #5)
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    const a = document.activeElement;
+    // (the link that went: focus fell to the body, still names the removed button, or is on "Searching every cut…")
+    if (el && (!a || a === document.body || !a.isConnected || el.contains(a))) (el.querySelector<HTMLElement>(".carton-find-every-row") ?? el.querySelector<HTMLElement>("[tabindex]"))?.focus();
+  }, [found.status]);
   if (found.status !== "ready" || !found.hits.length)
-    return h("p", { className: "carton-find-empty-body carton-find-every-status", role: "status" }, found.status === "loading" ? words.findingEveryCut : found.status === "error" ? words.findFailed : words.findNoneAnywhere(found.q.trim()));
+    return h("div", { ref: box, className: "carton-find-every" }, h("p", { className: "carton-find-empty-body carton-find-every-status", role: "status", tabIndex: -1 }, found.status === "loading" ? words.findingEveryCut : found.status === "error" ? words.findFailed : words.findNoneAnywhere(found.q.trim(), !here)));
   const cuts = ui.cuts();
   return h(
     "div",
-    { className: "carton-find-every" },
-    h("p", { className: "carton-find-every-head", role: "status" }, words.findOnOtherCuts(found.hits.length)),
+    { ref: box, className: "carton-find-every" },
+    h("p", { className: "carton-find-every-head", role: "status", tabIndex: -1 }, words.findOnOtherCuts(found.hits.length)),
     h(
       "ul",
       { className: "carton-find-every-list" },
@@ -525,7 +538,7 @@ function EveryCutHits({ found, onOpen }: { found: EveryCut; onOpen: (hit: FindHi
           { key: `${x.cutId}:${x.ref}` },
           h(
             "button",
-            { type: "button", className: "carton-find-every-row", title: words.compareAcrossCuts, onClick: () => onOpen(x) },
+            { type: "button", className: "carton-find-every-row", title: words.seeOnItsCut, onClick: () => onOpen(x) },
             h("span", { className: "carton-find-every-title" }, highlight(x.snippet, found.q)),
             // (a long cut name gives way, never who or when: "“Director's cut: punch…” · Director · 1:39 pm")
             h(
@@ -1042,6 +1055,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
         else if (r?.kind === "version" && r.child) {
           // from one of a group's versions, back to its group
           for (let k = i - 1; k >= 0; k--) if (rows![k]!.kind === "group") return setActiveKey(rows![k]!.key), true;
+        } else if (r?.kind === "version" || r?.kind === "group") {
+          // from a row of an open run (a past day's changes between two landmarks), back to its run: up past its other
+          // rows, never past a landmark or a day (review of fix/ux2-last #7)
+          for (let k = i - 1; k >= 0; k--) {
+            const x = rows![k]!;
+            if (x.kind === "run") return x.open && x.ids.includes(r.id) ? (setActiveKey(x.key), true) : true;
+            if ((x.kind !== "version" && x.kind !== "group") || marks.ids.has(x.id)) break;
+          }
         }
         return true;
       }
@@ -1063,7 +1084,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       }
       return false;
     },
-    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, ui, pick, peek, peekable],
+    [rows, count, keyAt, openKey, closeCard, toggleDay, toggleGroup, openCard, versionAt, playing, pause, compare, ui, pick, peek, peekable, marks],
   );
   const onActivate = useCallback(
     (i: number) => {
@@ -1101,14 +1122,24 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // "Search every cut": the other cuts' versions (this cut's are the list's); a click compares one with your edit
   const searchEveryCut = useCallback(() => {
     const q = query;
-    setEveryCut({ q, status: "loading", hits: [] });
-    const done = (e: EveryCut) => setEveryCut((x) => (x && x.q === q ? e : x));
-    ui.find!(q.trim(), { allCuts: true, limit: 50 }).then(
-      (r) => done({ q, status: "ready", hits: r.hits.filter((x) => x.cutId !== cutId) }),
-      () => done({ q, status: "error", hits: [] }),
+    setEveryCut({ q, cutId, status: "loading", hits: [] });
+    const done = (e: EveryCut) => setEveryCut((x) => (x && x.q === q && x.cutId === cutId ? e : x));
+    // (the newest hits of every cut, this one's too: asked for past this cut's own, so 50 of the others' remain;
+    // review of fix/ux2-last #3)
+    const mine = found.status === "ready" ? found.total : 0;
+    ui.find!(q.trim(), { allCuts: true, limit: Math.min(5000, 50 + mine) }).then(
+      (r) => done({ q, cutId, status: "ready", hits: r.hits.filter((x) => x.cutId !== cutId).slice(0, 50) }),
+      () => done({ q, cutId, status: "error", hits: [] }),
     );
-  }, [ui, query, cutId]);
-  const elsewhere = everyCut && everyCut.q === query ? everyCut : null;
+  }, [ui, query, cutId, found]);
+  // (for this query on this cut: another cut switched to starts over, review of fix/ux2-last #4)
+  const elsewhere = everyCut && everyCut.q === query && everyCut.cutId === cutId ? everyCut : null;
+  // a click views that version, as a teammate's cut opens (DESIGN-V2 §2.3; review of fix/ux2-last #2)
+  const viewElsewhere = useCallback((x: FindHit) => {
+    const cut = ui.cuts().find((c) => c.id === x.cutId);
+    setFailed(null);
+    void ui.view({ kind: "version", ref: x.ref, label: words.versionOnCut(cut ? cutRef(cut) : words.anotherCut, clockOfDay(x.at, locale)) }).catch((e: unknown) => setFailed(e instanceof Error && e.message ? e.message : words.findFailed));
+  }, [ui, words, locale]);
 
   // ---------------------------------------------------------------- what the list shows
   const active = activeKey ? (rowIndex ? (rowIndex.get(activeKey) ?? -1) : hist.indexOf(filter, activeKey)) : -1;
@@ -1127,7 +1158,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
       else closeCard();
     }
     if (activeKey && !rowIndex.has(activeKey)) {
-      const k = follow(activeKey);
+      // (a row of a run closed meanwhile: the run, review of fix/ux2-last #7)
+      const id = activeKey.startsWith("group:") ? activeKey.slice(6) : activeKey;
+      const k = follow(activeKey) ?? rows.find((x) => x.kind === "run" && x.ids.includes(id))?.key;
       if (k) setActiveKey(k);
     }
     // (a group hidden by a folded day or a filter is closed: review #1, a key kept that no row has looped renders)
@@ -1146,15 +1179,21 @@ export function HistoryPanel(props: HistoryPanelProps) {
   }, [openKey, openAt, rows, closeCard]);
   const expanded = openAt >= 0 ? { index: openAt, extra: cardHeight + CARD_GAP } : null;
   const wrapping = narrow ? wraps : NO_WRAPS;
+  // (a landmark row's own: a key left in `wraps` by a row no longer a landmark gives no height; review of fix/ux2-last #1)
+  const wrapsAt = useCallback((r: Row | undefined) => {
+    if (!r || r.kind !== "version" || r.child || !wrapping.has(r.key)) return false;
+    const mk = marks.byVersion.get(r.id)?.[0];
+    return !!mk && mk.kind !== "turn";
+  }, [wrapping, marks]);
   const heightOf = useCallback(
     (i: number) => {
       const r = rows?.[i];
-      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "run" ? RUN_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : wrapping.has(r.key) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT;
+      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "run" ? RUN_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : wrapsAt(r) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT;
     },
-    [rows, wrapping],
+    [rows, wrapsAt],
   );
   // the tops are rebuilt when a row's height changes: the rows, or which landmarks wrap
-  const layoutKey = useMemo(() => [rows, wrapping], [rows, wrapping]);
+  const layoutKey = useMemo(() => [rows, wrapsAt], [rows, wrapsAt]);
   // the row of what the editor shows: never a version still loading, nor one that failed to (design QA G1, review #1)
   const shown = stageRef === undefined ? viewing : stageRef === null ? null : viewing?.ref === stageRef ? viewing : ((ui as StageUi).stageView?.() ?? null);
   const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
@@ -1180,7 +1219,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       v,
       rowKey: key,
       domId,
-      height: child ? CHILD_ROW_HEIGHT : wrapping.has(key) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT,
+      height: child ? CHILD_ROW_HEIGHT : wrapsAt(r) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT,
       narrow,
       wrap: wrapping.has(key),
       onWrap,
@@ -1513,6 +1552,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
         )
       : empty && searching
         ? h(
+            Fragment,
+            null,
+            h(
             "div",
             { className: "carton-find-empty", role: "status" },
             h("p", { className: "carton-find-empty-title" }, found.status === "error" ? words.findFailed : words.findNone(query.trim())),
@@ -1524,10 +1566,12 @@ export function HistoryPanel(props: HistoryPanelProps) {
               // (once asked, what it found is under these lines; one cut only: nothing more to search)
               !elsewhere && found.status === "ready" && ui.cuts().length > 1 ? [" ", h("button", { key: "every", type: "button", className: "carton-link carton-find-every-btn", onClick: searchEveryCut }, words.searchEveryCut)] : null,
             ),
-            elsewhere ? h(EveryCutHits, { found: elsewhere, onOpen: (x: FindHit) => void compareTo(x.ref, null) }) : null,
             // (a filter on top of the newest results only: the rest may hold what it looks for)
             found.status === "ready" && found.total > found.hits.length ? h(Button, { onClick: () => setFindAll(query) }, words.findShowAll) : null,
             h(Button, { onClick: () => (search.current?.clear(), search.current?.focus()) }, words.clearFind),
+            ),
+            // (beside the status line, not in it: the list isn't read out as one announcement, review #5)
+            elsewhere ? h(EveryCutHits, { found: elsewhere, here: found.status === "ready" && found.total > 0, onOpen: viewElsewhere }) : null,
           )
       : empty && marksOnly
         ? h("p", { className: "carton-empty" }, words.landmarksEmpty)

@@ -2,7 +2,7 @@
 // Bring back one clip, search, landmark rows and the Landmarks filter, pick mode and the Compare button (through the
 // editor's openCompare, or the panel's own Changes view without it), and hold to peek. `npm test` runs it on React 19
 // and on preact/compat.
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, mutationsDuring, render, runtime, type, waitFor } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, FIND_DEBOUNCE_MS, HistoryPanel, PEEK_HOLD_MS } from "../src/index.ts";
@@ -220,10 +220,11 @@ test(name("search: nothing found says what to try and where it searched, with Cl
   await m.unmount();
 });
 
-test(name("design QA v2 G13: Search every cut from the empty state: the other cuts' versions say which cut; a click compares across cuts"), async () => {
+test(name("design QA v2 G13: Search every cut from the empty state: the other cuts' versions say which cut; a click views it, as a teammate's cut opens"), async () => {
   const ui = story();
-  const opened: [string, string | null | undefined][] = [];
-  (ui as { openCompare?: CartonUi["openCompare"] }).openCompare = async (from, to) => void opened.push([from, to]);
+  const viewed: ViewTarget[] = [];
+  const view = ui.view.bind(ui);
+  ui.view = (t) => (t && viewed.push(t), view(t));
   const asked: unknown[] = [];
   const find = ui.find!.bind(ui);
   ui.find = (q, o) => (asked.push(o), find(q, o));
@@ -247,17 +248,23 @@ test(name("design QA v2 G13: Search every cut from the empty state: the other cu
     assert.match($(r, ".carton-find-every-title")!.textContent ?? "", /city/i);
   }
   assert.ok($(rows[0]!, ".carton-cut-dot") || !cuts.some((c) => c.color), "the cut's dot");
-  // a click compares that version with your edit, across cuts (Compare in the editor)
+  // the keyboard stays in the results (the link it was on went): on the first one
+  assert.equal(document.activeElement, rows[0], "focus on the first result");
+  // a click views that version (DESIGN-V2 §2.3: "as a teammate's cut does"), named by its cut and time
   await click(rows[0]);
   await flush();
-  assert.equal(opened.length, 1);
-  assert.equal(opened[0]![1], null, "with your edit");
-  assert.ok(opened[0]![0] && !opened[0]![0].startsWith("cut-"), "a version's ref");
+  assert.equal(viewed.length, 1);
+  const t = viewed[0]! as Extract<ViewTarget, { kind: "version" }>;
+  assert.equal(t.kind, "version");
+  assert.ok(t.ref && !t.ref.startsWith("cut-"), "a version's ref");
+  assert.ok(cuts.some((c) => (t.label ?? "").includes(c.label)) && / at \d/.test(t.label ?? ""), `labelled by its cut and time: ${t.label}`);
+  // (the results aren't inside the empty state's status line: not read out as one announcement)
+  assert.equal(rows[0]!.closest("[role=status]"), null);
   // a new query starts over: the link is back, the old results gone
   await type($(m.container, ".carton-search-input"), "nothing like this");
   await waitFor(() => !!$(m.container, ".carton-find-every-btn") && !$(m.container, ".carton-find-every-row"), "the link again");
   await click($(m.container, ".carton-find-every-btn"));
-  await waitFor(() => /No other cut mentions “nothing like this” either\./.test($(m.container, ".carton-find-empty")?.textContent ?? ""), "nothing anywhere");
+  await waitFor(() => /^No other cut mentions “nothing like this” either\.$/.test($(m.container, ".carton-find-every-status")?.textContent ?? ""), "nothing anywhere");
   await m.unmount();
 });
 
@@ -546,6 +553,19 @@ test(name("design QA v2 G9: under 340 px only the landmarks whose tag and title 
     assert.deepEqual(titles(), wide, "no row went missing (design QA v2: Today's rows vanished after the re-layout)");
     const vs = vrows();
     for (let i = 1; i < vs.length; i++) assert.equal(vs[i]!.top, vs[i - 1]!.top + vs[i - 1]!.height, `row ${i} right under row ${i - 1}`);
+    // review of fix/ux2-last #1: the landmarks go away (a name cleared elsewhere, a day's start moved): one line again
+    // at once, no 18 px left under a plain row
+    await act(() => ui.setLandmarks(false));
+    await waitFor(() => !$(m.container, ".carton-version[data-landmark]"), "the landmarks gone");
+    await flush();
+    assert.equal($$(m.container, ".carton-version[data-wrap]").length, 0);
+    assert.ok(vrows().every((x) => x.height !== 74), "no row kept its two-line height");
+    const ps = vrows();
+    for (let i = 1; i < ps.length; i++) assert.equal(ps[i]!.top, ps[i - 1]!.top + ps[i - 1]!.height, `row ${i} right under row ${i - 1}`);
+    await act(() => ui.setLandmarks(true));
+    await waitFor(() => !!$(m.container, ".carton-version[data-landmark=before]"), "the landmarks back");
+    await flush();
+    assert.ok($$(m.container, ".carton-version[data-wrap]").length >= 1, "and the long ones wrap again");
     // wide again: back to one line
     await resize(384);
     assert.equal($$(m.container, ".carton-version[data-wrap]").length, 0);
@@ -597,6 +617,17 @@ for (const n of [1_200, 12_000])
     const next = opened.closest(".carton-vrow")!.nextElementSibling;
     assert.ok(next && $(next, ".carton-version") && !$(next, ".carton-version[data-landmark]"), "its first change follows it");
     assert.ok(count() >= Math.min(before, max - 1) && count() <= max, `opened: ${count()} rows in the DOM`);
+    // review of fix/ux2-last #7: ← from one of its rows goes back to the run (the first ← closes that row's card)
+    const list = $(m.container, ".carton-history-list")!;
+    await click($(next!, ".carton-version"));
+    await flush();
+    await key(list, "ArrowLeft");
+    await key(list, "ArrowLeft");
+    assert.equal(list.getAttribute("aria-activedescendant"), opened.id, "back on its run");
+    await key(list, "ArrowLeft");
+    assert.equal($(m.container, ".carton-run[data-open]"), null, "and ← on the run closes it");
+    await key(list, "ArrowRight");
+    assert.ok($(m.container, ".carton-run[data-open]"), "→ opens it again");
     await click(opened);
     await flush();
     assert.equal($(m.container, ".carton-run[data-open]"), null, "closed again");
@@ -605,7 +636,7 @@ for (const n of [1_200, 12_000])
     await click(item(m.container, "Agent turns"));
     await flush();
     assert.equal($$(m.container, ".carton-run").length, 0, "a filtered list has no runs");
-    assert.deepEqual([ui.counts.changes, ui.counts.changesIn], [0, 0], "nothing described: no card open");
+    assert.ok(ui.counts.changes <= 1 && ui.counts.changesIn <= 1, "nothing described but the one card opened on purpose");
     await m.unmount();
   });
 

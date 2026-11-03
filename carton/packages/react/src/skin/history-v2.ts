@@ -33,7 +33,8 @@ export const historyV2Css = `
 
 /* "Search every cut" (§2.3): the other cuts' versions, each with its cut's dot and name */
 :where(${S}) :where(.carton-find-every-btn){font-size:12.5px}
-:where(${S}) :where(.carton-find-every){margin-top:10px;width:100%}
+:where(${S}) :where(.carton-find-every){margin:0 12px 12px;padding:0 10px}
+:where(${S}) :where(.carton-find-every-head:focus, .carton-find-every-status:focus){outline:none}
 :where(${S}) :where(.carton-find-every-head){margin:0 0 4px;font-size:12px;font-weight:500;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-find-every-list){list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
 :where(${S}) :where(.carton-find-every-row){display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:none;
