@@ -32,7 +32,7 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-version[data-landmark]:not([data-child])){grid-template-columns:44px minmax(0,1fr) auto}
 :where(${S}) :where(.carton-landmark-tile){grid-row:1 / span 2;align-self:center;display:flex;align-items:center;justify-content:center;width:44px;height:25px;overflow:hidden;
   border-radius:5px;background:#1d2533;color:var(--cb-fg-3);box-shadow:inset 0 0 0 1px #ffffff14}
-:where(${S}) :where(.carton-landmark-tile[data-kind=safety], .carton-landmark-tile[data-kind=session]:not([data-picture])){background:var(--cb-raised)}
+:where(${S}) :where(.carton-landmark-tile[data-kind=before], .carton-landmark-tile[data-kind=start]:not([data-picture])){background:var(--cb-raised)}
 :where(${S}) :where(.carton-landmark-tile img){display:block;width:100%;height:100%;object-fit:cover}
 :where(${S}) :where(.carton-landmark-tag){display:inline-block;margin-right:6px;padding:0 5px;border-radius:4px;font-size:10px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;vertical-align:1px;
   background:#ffffff12;color:var(--cb-fg-2)}
@@ -85,6 +85,8 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-bringback-row:hover .carton-bringback-btn, .carton-bringback-btn:focus-visible){opacity:1}
 @media (hover: none){ :where(${S}) :where(.carton-bringback-btn){opacity:1} }
 :where(${S}) :where(.carton-bringback-confirm){padding:10px;border-radius:8px;background:var(--cb-raised);box-shadow:inset 0 0 0 1px #ffffff10}
+
+:where(${S}) :where(.carton-bringback-same){margin:8px 0 0!important;font-size:11.5px;line-height:16px;color:var(--cb-fg-3)}
 
 /* ---------------------------------------------------------------- Compare and pick mode (§4) */
 :where(${S}) :where(.carton-compare-anchor){flex:none;align-self:flex-start;margin-top:1px}

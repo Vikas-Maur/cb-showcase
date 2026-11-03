@@ -11,7 +11,7 @@
 // A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
 import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
+import { clock, clockOfDay, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Actor, CartonUi, Credits, FindHit, HistoryFilter, Landmark, Version, Working } from "../model.ts";
@@ -140,15 +140,19 @@ function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string
   return h(
     Fragment,
     null,
-    mark.kind === "safety" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
-    mark.team ? null : h("span", { className: "carton-version-count" }, words.onlyYouSee),
+    mark.kind === "before" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
+    mark.personal ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
     also ? h("span", { className: "carton-version-count" }, words.alsoLandmark(also)) : null,
   );
 }
 
-/** Why a search found a version (DESIGN-V2 §2.3): "Prompt · 4 changes", "Caption text · “in half” · Leo", "Clip name · You". */
+/**
+ * Why a search found a version (DESIGN-V2 §2.3): "Prompt · 4 changes", "Caption text · “in half” · Leo", "Clip name ·
+ * You"; a clip with its place then: "“Intro” was 0:00–0:06 here".
+ */
 function HitMeta({ hit, v }: { hit: FindHit; v: Version }) {
   const words = useWords();
+  if (hit.field === "clip" && hit.clipName && hit.span) return h("span", { className: "carton-find-snippet" }, words.wasHere(hit.clipName, `${timecode(hit.span.start)}–${timecode(hit.span.end)}`));
   const shows = hit.field === "clip" || hit.field === "text";
   return h(
     Fragment,
@@ -964,7 +968,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       alsoMark: (() => {
         const xs = marks.byVersion.get(v.id);
         // ("also exported", "also sent"; a day's start under another landmark is no news)
-        return xs && xs.length > 1 && xs[0]!.kind !== "turn" && xs[1]!.kind !== "session" ? words.landmarkTags[xs[1]!.kind] || undefined : undefined;
+        return xs && xs.length > 1 && xs[0]!.kind !== "turn" && xs[1]!.kind !== "start" ? words.landmarkTags[xs[1]!.kind] || undefined : undefined;
       })(),
       hit: searching ? found.byId.get(v.id) : undefined,
       query: searching ? query : undefined,
@@ -1126,7 +1130,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const empty = !status.loading && !findWaits && (shown === 0 || (filter === "all" && !only && onlyStart));
   const loading = (status.loading && count === 0) || (findWaits && found.status !== "ready" && shown === 0);
   // "“Intro”, the clip" first, when the newest hits name one clip (DESIGN-V2 §2.3)
-  const clipHit = searching && found.status === "ready" ? found.hits.find((x) => x.field === "clip" && x.itemId) : undefined;
+  const clipHit = searching && found.status === "ready" ? (found.clips[0] ?? null) : null;
   // ← History from the Changes view: back on the row it came from (a run of changes: its group's row)
   const closeChanges = () => {
     const from = changesView?.from;
@@ -1228,8 +1232,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       ? h(
           "div",
           { className: "carton-find-clip" },
-          h(ClipCredits, { key: clipHit.itemId, item: clipHit.itemId!, name: clipHit.clipName ?? "", title: words.findClip(clipHit.clipName ?? "") }),
-          h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId! }, clipHit.clipName ?? "")) }, words.onlyThisClip),
+          h(ClipCredits, { key: clipHit.itemId, item: clipHit.itemId, name: clipHit.name, title: words.findClip(clipHit.name) }),
+          clipHit.deleted ? null : h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId }, clipHit.name)) }, words.onlyThisClip),
         )
       : null,
     searching && found.status === "ready" && shown ? h("p", { className: "carton-find-count", role: "status" }, words.findCount(found.total)) : null,

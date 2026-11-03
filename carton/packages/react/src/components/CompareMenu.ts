@@ -65,9 +65,9 @@ export function CompareButton(p: { landmarks: readonly Landmark[]; today: number
   const cuts = useCuts();
   const [open, setOpen] = useState<null | "menu" | "cuts">(null);
   const btn = useRef<HTMLButtonElement>(null);
-  const sent = newest(p.landmarks, ["sent", "shared", "published"]) ?? newest(p.landmarks, ["named"]);
+  const sent = newest(p.landmarks, ["sent"]) ?? newest(p.landmarks, ["named"]);
   const exported = newest(p.landmarks, ["exported"]);
-  const morning = p.landmarks.find((l) => l.kind === "session" && p.dayOf(l.at) === p.today);
+  const morning = p.landmarks.find((l) => l.kind === "start" && p.dayOf(l.at) === p.today);
   const other = others(cuts);
   const entries = [sent, exported, morning].filter((x): x is Landmark => !!x);
   const close = (why?: string) => {
@@ -86,7 +86,7 @@ export function CompareButton(p: { landmarks: readonly Landmark[]; today: number
   const line = (l: Landmark) => {
     const v = p.findVersion(l.versionId);
     const title = landmarkTitle(l, words, v ? versionLabel(v, { locale, actor: ui.actor.bind(ui) }) : "");
-    return l.kind === "session" ? words.whenYouOpened(clockOfDay(l.at, locale)) : `${title} · ${clockOfDay(l.at, locale)}`;
+    return l.kind === "start" ? words.whenYouOpened(clockOfDay(l.at, locale)) : `${title} · ${clockOfDay(l.at, locale)}`;
   };
   const item = (key: string, l: Landmark, name: string) =>
     h(

@@ -16,7 +16,7 @@ import { clockOfDay, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import { actorLabel } from "../actors.ts";
-import type { Actor, BringBack, Change, ClipKind, Version } from "../model.ts";
+import type { Actor, BringBack, BringBackChoices, Change, ClipKind, Version } from "../model.ts";
 import { Button, radioKeys } from "./ui.ts";
 
 /** A choice of Go back… (DESIGN-V2 §3.1), smallest first. */
@@ -38,6 +38,34 @@ export interface ClipChoice {
   readonly when?: number;
   /** The newest sentence about it, for a change with no timing to show ("Changed caption to “in half”"). */
   readonly text: string;
+  /** A title's or caption's text then ("Then “Summer sale”"), when the engine says. */
+  readonly thenText?: string;
+}
+
+const NOUN_KIND: Record<string, ClipKind> = { title: "title", "lower third": "title", caption: "caption", audio: "audio", music: "audio", image: "image", "code graphic": "code", code: "code" };
+
+/**
+ * The engine's "Choose a clip…" (`CartonUi.bringBackChoices`, N0) as the list's rows, in its order within each group:
+ * how each clip was then and is now, who deleted or added it, a title's text then.
+ */
+export function fromBringBack(c: BringBackChoices): ClipChoice[] {
+  const span = (x?: { start?: number; end?: number }): readonly [number, number] | undefined => (x && x.start !== undefined ? [x.start, x.end ?? x.start] : undefined);
+  const row = (how: ClipChoice["how"]) => (x: BringBackChoices["changed"][number]): ClipChoice => {
+    const then = span(x.then), now = span(x.now);
+    return {
+      itemId: x.itemId,
+      name: x.name,
+      clip: NOUN_KIND[(x.noun ?? "").toLowerCase()] ?? "video",
+      how,
+      ...(then ? { then } : {}),
+      ...(now ? { now } : {}),
+      ...(x.by ? { author: x.by } : {}),
+      ...(x.at !== undefined ? { when: x.at } : {}),
+      text: "",
+      ...(x.then?.text !== undefined && x.then.text !== x.now?.text ? { thenText: x.then.text } : {}),
+    };
+  };
+  return [...c.changed.map(row("changed")), ...c.deleted.map(row("deleted")), ...c.added.map(row("added"))];
 }
 
 const NAME = /“([^”]+)”/;
@@ -148,12 +176,18 @@ export function GoBack(p: GoBackProps) {
 
   // What differs since (only once the chooser is open): forward for the list, backward for how each clip was then
   const head = p.head;
-  const differ = useAsync<ClipChoice[] | null>(async () => {
+  const differ = useAsync<{ list: ClipChoice[]; same: number | null } | null>(async () => {
     if (!canClip || !head || head === v.ref) return null;
+    // the engine's own list when it has one (N0's bringBackChoices), else from what changed, both ways
+    if (typeof ui.bringBackChoices === "function") {
+      const r = await ui.bringBackChoices(v.ref);
+      return { list: fromBringBack(r), same: r.same };
+    }
     const [fwd, back] = await Promise.all([ui.changes(v.ref, head), ui.changes(head, v.ref).catch(() => [] as readonly Change[])]);
-    return clipChoices(fwd, back);
+    return { list: clipChoices(fwd, back), same: null };
   }, [ui, v.ref, head, canClip]);
-  const clips = differ.status === "ready" ? differ.value : null;
+  const clips = differ.status === "ready" ? (differ.value?.list ?? null) : null;
+  const same = differ.status === "ready" ? (differ.value?.same ?? null) : null;
   // A clip selected on the timeline that differs since: Bring back one clip, for it (DESIGN-V2 §3.1's exception)
   const selected = useMemo(() => (p.selectedClip && clips ? (clips.find((c) => c.itemId === p.selectedClip!.id) ?? null) : null), [clips, p.selectedClip]);
   const autoPicked = useRef(false);
@@ -238,7 +272,7 @@ export function GoBack(p: GoBackProps) {
     );
   }
 
-  if (step.kind === "clips") return h(ClipList, { root, clips, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c }), onBack: back, onKeyDown, failure });
+  if (step.kind === "clips") return h(ClipList, { root, clips, same, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c }), onBack: back, onKeyDown, failure });
 
   // the choices, smallest first
   const after = p.after ?? 0;
@@ -287,7 +321,7 @@ export function GoBack(p: GoBackProps) {
 }
 
 /** Choose a clip… (§3.2): the clips that differ, in three plain groups; past 8, a field to find one. */
-function ClipList(p: { root: { current: HTMLDivElement | null }; clips: ClipChoice[] | null; loading: boolean; failed: boolean; time: string; onPick: (c: ClipChoice) => void; onBack: () => void; onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void; failure: ReactNode }) {
+function ClipList(p: { root: { current: HTMLDivElement | null }; clips: ClipChoice[] | null; same: number | null; loading: boolean; failed: boolean; time: string; onPick: (c: ClipChoice) => void; onBack: () => void; onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => void; failure: ReactNode }) {
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
@@ -305,7 +339,8 @@ function ClipList(p: { root: { current: HTMLDivElement | null }; clips: ClipChoi
     const when = c.when !== undefined ? clockOfDay(c.when, locale) : null;
     if (c.how === "deleted") return [c.then ? words.wasAt(spanText(c.then)) : null, who && when ? words.deletedBy(who, when) : null].filter(Boolean).join(" · ") || c.text;
     if (c.how === "added") return who && when ? words.addedByAt(who, when) : c.text;
-    return c.then && c.now && !sameSpan(c.then, c.now) ? words.thenNow(spanText(c.then), spanText(c.now)) : c.text;
+    if (c.then && c.now && !sameSpan(c.then, c.now)) return words.thenNow(spanText(c.then), spanText(c.now));
+    return c.thenText !== undefined ? words.thenText(c.thenText) : c.text;
   };
   return h(
     "div",
@@ -346,6 +381,8 @@ function ClipList(p: { root: { current: HTMLDivElement | null }; clips: ClipChoi
                   : [],
               ),
             ),
+    // "14 other clips are the same as now." (when the engine counts them)
+    p.same ? h("p", { className: "carton-bringback-same" }, words.sameAsNow(p.same)) : null,
     p.failure,
   );
 }

@@ -2,7 +2,7 @@
 // capture rig and tests. Plain and in-memory, the shapes the real engine answers (`@carton/core` find.ts,
 // landmarks.ts, bring-back.ts, through the worker): never the engine's matching rules, only enough to show every state.
 
-import type { Actor, BringBack, Change, FindField, FindHit, FindHits, Landmark, Made, Version } from "./model.ts";
+import type { Actor, BringBack, BringBackChoices, Change, FindField, FindHit, FindHits, Landmark, Made, Version } from "./model.ts";
 import { actorLabel } from "./actors.ts";
 
 export interface MockFindState {
@@ -51,11 +51,12 @@ export function mockFind(st: MockFindState) {
     const all = st.all();
     const named = all.filter((v) => v.name && v.kind !== "turn");
     const sent = named[named.length - 1];
-    if (sent) recorded.set(sent.id, [{ kind: "shared", label: "Leo", by: st.me }]);
+    if (sent) recorded.set(sent.id, [{ kind: "sent", label: "Leo", by: st.me }]);
     // the fold an hour ago was exported (1080p); an older version of the generated history was sent too
     const fold = [...all].reverse().find((v) => v.kind === "fold");
     if (fold) recorded.set(fold.id, [{ kind: "exported", label: "1080p for the client", by: st.me }]);
-    const old = all[Math.floor(all.length * 0.6)];
+    // (a long history's older export: the gallery's folded days; a short one has none)
+    const old = all.length > 40 ? all[Math.floor(all.length * 0.6)] : undefined;
     if (old && !recorded.has(old.id)) recorded.set(old.id, [{ kind: "exported", label: "720p draft", by: st.me }]);
   };
 
@@ -64,7 +65,7 @@ export function mockFind(st: MockFindState) {
     const all = st.all();
     const out: Landmark[] = [];
     const add = (v: Version, kind: Landmark["kind"], extra: Partial<Landmark> = {}) =>
-      out.push({ id: `${kind}:${v.id}`, kind, versionId: v.id, ref: v.ref, at: v.at, by: v.author, team: kind === "named" || kind === "turn" || kind === "published", picture: v.ref, ...extra });
+      out.push({ id: `${kind}:${v.id}`, kind, versionId: v.id, ref: v.ref, at: v.at, by: v.author, personal: kind === "start" || kind === "before", local: kind !== "named" && kind !== "turn", picture: v.ref, ...extra });
     let lastDay = NaN;
     for (let i = 0; i < all.length; i++) {
       const v = all[i]!;
@@ -72,14 +73,14 @@ export function mockFind(st: MockFindState) {
       if (v.provisional || v.start || v.empty) continue;
       const day = Math.floor(v.at / DAY);
       // each day's first version: how it was when you opened it (yours only)
-      if (day !== lastDay) add(v, "session", { by: st.me, team: false });
+      if (day !== lastDay && v.kind !== "import" && v.author.kind !== "system") add(v, "start", { by: st.me });
       lastDay = day;
       if (v.name && v.kind !== "turn") add(v, "named", { label: v.name });
       if (v.kind === "turn") add(v, "turn", { label: v.turn?.label ?? v.name ?? "" });
-      for (const r of recorded.get(v.id) ?? []) add(v, r.kind, { ...(r.label ? { label: r.label } : {}), by: r.by ?? st.me, team: false });
+      for (const r of recorded.get(v.id) ?? []) add(v, r.kind, { ...(r.label ? { label: r.label } : {}), by: r.by ?? st.me });
       // just before a restore or a Bring back that you made: a safety point (yours only)
       const next = all[i + 1];
-      if (next && next.kind === "restore" && next.author.isYou && next.author.kind === "human") add(v, "safety", { before: next.summary.startsWith("Brought back") ? "bring-back" : "restore", by: st.me, team: false });
+      if (next && next.kind === "restore" && next.author.isYou && next.author.kind === "human") add(v, "before", { before: next.summary.startsWith("Brought back") ? "bring-back" : "restore", after: next.ref, by: st.me });
     }
     out.reverse();
     const kinds = o.kinds;
@@ -90,7 +91,8 @@ export function mockFind(st: MockFindState) {
   const find = async (text: string, o: { limit?: number; fields?: readonly FindField[] } = {}): Promise<FindHits> => {
     const tokens = fold(text).split(/\s+/).filter(Boolean);
     const all = st.all();
-    if (!tokens.length) return { hits: [], total: 0, versions: all.length };
+    if (!tokens.length) return { clips: [], hits: [], total: 0, versions: all.length };
+    const clips = new Map<string, { itemId: string; name: string; cutId: string }>();
     const hits: FindHit[] = [];
     let total = 0;
     for (let i = all.length - 1; i >= 0; i--) {
@@ -110,14 +112,14 @@ export function mockFind(st: MockFindState) {
       fields.push({ field: "person", text: who(v.author) });
       const all_ = fields.map((f) => f.text).join(" ");
       if (!tokens.every((t) => wordAt(all_, t) >= 0)) continue;
-      const order: FindField[] = ["name", "prompt", "clip", "text", "person"];
+      const order: FindField[] = ["clip", "text", "prompt", "name", "person"];
       const matched = order.filter((f) => fields.some((x) => x.field === f && tokens.some((t) => wordAt(x.text, t) >= 0)));
       if (o.fields && !matched.some((f) => o.fields!.includes(f))) continue;
       total++;
       if (hits.length >= (o.limit ?? 50)) continue;
       const best = fields.find((x) => x.field === matched[0] && tokens.some((t) => wordAt(x.text, t) >= 0))!;
-      const t = tokens.find((x) => wordAt(best.text, x) >= 0)!;
-      const at = wordAt(best.text, t);
+      const ranges = tokens.map((x) => [wordAt(best.text, x), x.length] as const).filter(([a]) => a >= 0).map(([a, n]) => [a, a + n] as const);
+      if (best.field === "clip" && best.itemId && best.clipName && !clips.has(best.itemId)) clips.set(best.itemId, { itemId: best.itemId, name: best.clipName, cutId: "cut-main" });
       hits.push({
         versionId: v.id,
         ref: v.ref,
@@ -126,12 +128,13 @@ export function mockFind(st: MockFindState) {
         field: best.field,
         fields: matched,
         snippet: best.text,
-        hit: [at, at + t.length],
+        cutId: "cut-main",
+        hits: ranges,
         ...(best.itemId ? { itemId: best.itemId } : {}),
         ...(best.clipName ? { clipName: best.clipName } : {}),
       });
     }
-    return { hits, total, versions: all.length };
+    return { clips: [...clips.values()].slice(0, 1), hits, total, versions: all.length };
   };
 
   const restoreClip = async (ref: string, itemId: string, o: { remove?: boolean } = {}): Promise<BringBack> => {
@@ -161,7 +164,7 @@ export function mockFind(st: MockFindState) {
     if (pictures.has(key)) return pictures.get(key)!;
     // a safety point's picture isn't made in the gallery: its shield shows (the fallback, DESIGN-V2 §2.2)
     const all = await landmarks();
-    const l = all.find((x) => x.picture === key && x.kind !== "safety" && x.kind !== "turn");
+    const l = all.find((x) => x.picture === key && x.kind !== "before" && x.kind !== "turn");
     return l ? tile(key) : null;
   };
   const saveLandmarkPicture = async (key: string, jpeg: string) => {
@@ -175,5 +178,22 @@ export function mockFind(st: MockFindState) {
     recorded.set(versionId, xs);
     st.notify("landmarks");
   };
-  return { find, landmarks, restoreClip, landmarkPicture, saveLandmarkPicture, mark };
+  /** "Choose a clip…" as the engine answers it: from what changed since, by clip (the mock's between()). */
+  const bringBackChoices = async (ref: string): Promise<BringBackChoices> => {
+    const by = new Map<string, Change[]>();
+    for (const c of st.between(ref, st.head())) if (c.itemId) by.set(c.itemId, [...(by.get(c.itemId) ?? []), c]);
+    const out: { changed: BringBackChoices["changed"][number][]; deleted: BringBackChoices["changed"][number][]; added: BringBackChoices["changed"][number][] } = { changed: [], deleted: [], added: [] };
+    for (const [itemId, list] of by) {
+      const last = list[list.length - 1]!;
+      const name = list.map((c) => /“([^”]+)”/.exec(c.text)?.[1]).find(Boolean) ?? "";
+      const noun = last.clip === "video" ? "clip" : last.clip;
+      const span = last.at !== undefined ? { start: last.at, end: last.end ?? last.at } : undefined;
+      const row = { itemId, name, noun, ...(last.author ? { by: last.author } : {}), ...(last.when !== undefined ? { at: last.when } : {}) };
+      if (list.some((c) => c.kind === "remove")) out.deleted.push({ ...row, ...(span ? { then: span } : {}) });
+      else if (list.some((c) => c.kind === "add")) out.added.push({ ...row, ...(span ? { now: span } : {}) });
+      else out.changed.push({ ...row, ...(span ? { now: span } : {}) });
+    }
+    return { ...out, same: 14 };
+  };
+  return { find, landmarks, restoreClip, bringBackChoices, landmarkPicture, saveLandmarkPicture, mark };
 }

@@ -226,7 +226,8 @@ test(name("landmarks: tagged rows with a picture tile; the Landmarks filter list
   const exported = $(m.container, ".carton-version[data-landmark=exported]")!;
   assert.equal($(exported, ".carton-landmark-tag")!.textContent, "Exported");
   assert.match(exported.textContent ?? "", /1080p for the client/);
-  assert.match(exported.textContent ?? "", /only you see this/);
+  assert.doesNotMatch(exported.textContent ?? "", /only you see this/, "an export is everyone's (DESIGN-V2 §2.1)");
+  assert.match($(m.container, ".carton-version[data-landmark=before]")!.textContent ?? "", /Kept for you.*only you see this/, "a Before is yours only");
   assert.ok($(exported, ".carton-landmark-tile"), "a picture tile in place of the avatar");
   await waitFor(() => !!$(exported, ".carton-landmark-tile img"), "its picture, read once its row shows");
   const named = row(m.container, "Sent to client")!;

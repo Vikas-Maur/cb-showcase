@@ -20,11 +20,13 @@ export const FIND_LIMIT = 200;
 export interface Found {
   readonly q: string;
   readonly status: "idle" | "loading" | "ready" | "error";
+  /** "A clip first": the clips the words name (the engine's `FindHits.clips`), best first. */
+  readonly clips: FindHits["clips"];
   readonly hits: readonly FindHit[];
   readonly byId: ReadonlyMap<string, FindHit>;
   readonly total: number;
 }
-const IDLE: Found = { q: "", status: "idle", hits: [], byId: new Map(), total: 0 };
+const IDLE: Found = { q: "", status: "idle", clips: [], hits: [], byId: new Map(), total: 0 };
 
 /** A query worth searching: from the second letter (DESIGN-V2 §2.3). */
 export const searchable = (q: string) => q.trim().length >= 2;
@@ -46,7 +48,7 @@ export function useFind(q: string, cutId: string | undefined): Found {
         if (mine !== seq.current) return;
         const byId = new Map<string, FindHit>();
         for (const x of r.hits) if (!byId.has(x.versionId)) byId.set(x.versionId, x);
-        setFound({ q, status: "ready", hits: r.hits, byId, total: r.total });
+        setFound({ q, status: "ready", clips: r.clips ?? [], hits: r.hits, byId, total: r.total });
       },
       () => mine === seq.current && setFound({ ...IDLE, q, status: "error" }),
     );
@@ -170,9 +172,20 @@ export function highlight(text: string, q: string): ReactNode {
   return h(Fragment, null, ...out);
 }
 
-/** A hit's own snippet with its match marked (`FindHit.hit`, [lo, hi) in UTF-16). */
+/** A hit's own snippet with each word's match marked (`FindHit.hits`, [lo, hi) in UTF-16, any order, may overlap). */
 export function snippetOf(x: FindHit): ReactNode {
-  const [lo, hi] = x.hit;
-  if (!(hi > lo) || lo < 0 || hi > x.snippet.length) return x.snippet;
-  return h(Fragment, null, x.snippet.slice(0, lo), h("mark", { className: "carton-hit" }, x.snippet.slice(lo, hi)), x.snippet.slice(hi));
+  const s = x.snippet;
+  const ranges = [...(x.hits ?? [])].filter(([lo, hi]) => hi > lo && lo >= 0 && hi <= s.length).sort((a, b) => a[0] - b[0]);
+  if (!ranges.length) return s;
+  const out: ReactNode[] = [];
+  let pos = 0;
+  for (const [lo, hi] of ranges) {
+    const a = Math.max(lo, pos);
+    if (hi <= a) continue;
+    if (a > pos) out.push(s.slice(pos, a));
+    out.push(h("mark", { key: a, className: "carton-hit" }, s.slice(a, hi)));
+    pos = hi;
+  }
+  if (pos < s.length) out.push(s.slice(pos));
+  return h(Fragment, null, ...out);
 }

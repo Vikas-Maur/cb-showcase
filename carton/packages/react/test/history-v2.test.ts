@@ -32,16 +32,16 @@ test("clipChoices: one row per clip, in three groups by what happened, with how 
   assert.deepEqual(clipChoices([]), []);
 });
 
-const lm = (kind: Landmark["kind"], versionId: string, at: number, o: Partial<Landmark> = {}): Landmark => ({ id: `${kind}:${versionId}`, kind, versionId, ref: `main@${versionId}`, at, by: people.alice, team: kind === "named" || kind === "turn", picture: `main@${versionId}`, ...o });
+const lm = (kind: Landmark["kind"], versionId: string, at: number, o: Partial<Landmark> = {}): Landmark => ({ id: `${kind}:${versionId}`, kind, versionId, ref: `main@${versionId}`, at, by: people.alice, personal: kind === "start" || kind === "before", local: kind !== "named" && kind !== "turn", picture: `main@${versionId}`, ...o });
 
 test("indexLandmarks: by version, each row's best first (Named, Sent, Exported, Before, Start)", () => {
-  const idx = indexLandmarks([lm("session", "5", 5), lm("exported", "5", 5), lm("named", "5", 5), lm("safety", "3", 3)]);
-  assert.deepEqual(idx.byVersion.get("5")!.map((l) => l.kind), ["named", "exported", "session"]);
+  const idx = indexLandmarks([lm("start", "5", 5), lm("exported", "5", 5), lm("named", "5", 5), lm("before", "3", 3)]);
+  assert.deepEqual(idx.byVersion.get("5")!.map((l) => l.kind), ["named", "exported", "start"]);
   assert.deepEqual([...idx.ids].sort(), ["3", "5"]);
   assert.equal(landmarkTitle(lm("exported", "1", 1, { label: "1080p for the client" }), words, "x"), "1080p for the client");
-  assert.equal(landmarkTitle(lm("shared", "1", 1, { label: "Leo" }), words, "x"), "Shared with Leo");
-  assert.equal(landmarkTitle(lm("session", "1", 1), words, "x"), "How it was when you opened it");
-  assert.equal(landmarkTitle(lm("safety", "1", 1, { before: "restore" }), words, "x"), "Restoring an earlier version");
+  assert.equal(landmarkTitle(lm("sent", "1", 1, { label: "Leo" }), words, "x"), "Shared with Leo");
+  assert.equal(landmarkTitle(lm("start", "1", 1), words, "x"), "How it was when you opened it");
+  assert.equal(landmarkTitle(lm("before", "1", 1, { before: "restore" }), words, "x"), "Restoring an earlier version");
 });
 
 const v = (n: number, at: number, o: Partial<Version> = {}): Version => ({ id: `v${n}`, seq: n, ref: `main@${n}`, at, author: people.alice, kind: "edit", summary: `change ${n}`, changes: 1, ...o });

@@ -14,10 +14,10 @@ import type { CartonUi, Landmark, LandmarkKind } from "../model.ts";
 import type { Words } from "../words.ts";
 
 /** The order a row shows its landmarks in, when it is more than one (DESIGN-V2 §2.1): Named, Sent, Exported, Before, Start, then a turn. */
-const RANK: Record<LandmarkKind, number> = { named: 0, sent: 1, shared: 1, published: 1, exported: 2, safety: 3, session: 4, turn: 5 };
+const RANK: Record<LandmarkKind, number> = { named: 0, sent: 1, exported: 2, before: 3, start: 4, turn: 5 };
 /** Each landmark's tag colour and its icon, the fallback tile's (DESIGN-V2 §2.1, §2.2). */
-export const LANDMARK_TONE: Record<LandmarkKind, string> = { exported: "ok", sent: "info", shared: "info", published: "info", named: "warn", safety: "warn", session: "muted", turn: "muted" };
-const LANDMARK_ICON: Record<LandmarkKind, IconName> = { exported: "exportUp", sent: "send", shared: "send", published: "send", named: "bookmarkFill", safety: "shield", session: "sun", turn: "sparkle" };
+export const LANDMARK_TONE: Record<LandmarkKind, string> = { exported: "ok", sent: "info", named: "warn", before: "warn", start: "muted", turn: "muted" };
+const LANDMARK_ICON: Record<LandmarkKind, IconName> = { exported: "exportUp", sent: "send", named: "bookmarkFill", before: "shield", start: "sun", turn: "sparkle" };
 
 /** The landmarks by History row id, each row's best first; `ids`: every landmark's row (the Landmarks filter). */
 export interface LandmarkIndex {
@@ -74,13 +74,10 @@ export function landmarkTitle(l: Landmark, words: Words, fallback: string): stri
     case "exported":
       return words.exportedTitle(l.label);
     case "sent":
-    case "shared":
       return words.sharedWith(l.label);
-    case "published":
-      return l.label || words.publishedTitle;
-    case "session":
+    case "start":
       return words.sessionTitle;
-    case "safety":
+    case "before":
       return l.before ? words.safetyTitle[l.before] : (l.label ?? fallback);
     default:
       return l.label || fallback;
