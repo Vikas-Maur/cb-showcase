@@ -146,6 +146,22 @@ export interface CartonUiHandle extends CartonUi {
 const IDLE_MS = 30_000;
 const PENDING_PREFIX = "pending:";
 
+/**
+ * The change a write made (PLAN 5.3: what a toast's Undo takes back), or undefined when it made none: a commit that
+ * found nothing to change (`empty`), a conflict, a refusal, a fold with nothing new. A shared cut's change waiting to
+ * sync is the person's newest one already (Ctrl+Z takes it back), by its id.
+ */
+function madeBy(r: { status: string; change?: { id: string } | null; empty?: boolean; id?: string } | null | undefined): string | undefined {
+  if (r?.status === "confirmed") return !r.empty && r.change?.id ? r.change.id : undefined;
+  if (r?.status === "pending") return r.id;
+  return undefined;
+}
+/** `made` for an action's answer: the versions it made on `cut`, oldest first; none: nothing to undo. */
+const madeOn = (cut: string, ids: readonly (string | undefined)[], by?: "redo"): { made: { cut: string; changes: string[]; by?: "redo" } } | Record<string, never> => {
+  const changes = ids.filter((x): x is string => typeof x === "string");
+  return changes.length ? { made: { cut, changes, ...(by ? { by } : {}) } } : {};
+};
+
 /** Split a path key back into segments (`~1` → `/`, `~0` → `~`), the inverse of core's pathKey(). */
 export function splitPathKey(key: string): string[] {
   return key.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
@@ -1749,9 +1765,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await refreshUndo();
       if (res.status === "rejected") return { ok: false, error: res.reason };
       const cards = [...byPath.values(), ...(res.status === "conflicts" ? res.cards : [])];
-      if (!cards.length) return { ok: true };
+      // the undo's own version, for its toast's Undo (PLAN 5.3); none when it changed nothing. It is an undo change
+      // (`undoOf`), off the undo stack: redo is what puts the turn back
+      const made = madeOn(onCut, [madeBy(res)], "redo");
+      if (!cards.length) return { ok: true, ...made };
       addCards(cards, undefined, onCut);
-      return { ok: true, conflicts };
+      return { ok: true, conflicts, ...made };
     },
     async clipVersions(itemId, o) {
       const record = pathKey([tl?.collection ?? "items", itemId]);
@@ -2052,6 +2071,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // the changes shown (a revert would also take back what was changed on the cut since: a card the plan never
       // showed, review #1). A clash with an edit made since the plan is a card in the stack, as Fold in the rest's.
       let carded = false;
+      // the versions it makes, oldest first (PLAN 5.3: its toast's Undo takes back all of them, and nothing else)
+      const ids = [madeBy(r as Parameters<typeof madeBy>[0])];
       for (const [inverse, x] of rests) {
         const res = x.whole ? await carton.revert(inverse, { author: opts.me, cut: intoId }) : await carton.commit({ cut: intoId, ops: x.ops, author: opts.me });
         if (res.status === "conflicts") {
@@ -2060,15 +2081,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           continue;
         }
         if (res.status === "rejected") return await refresh(), { ok: false, error: res.reason };
+        ids.push(madeBy(res));
         if (x.whole) markRestDone(inverse);
       }
       await refresh();
-      return carded ? { ok: true, conflicts } : { ok: true };
+      const made = madeOn(intoId, ids);
+      return carded ? { ok: true, conflicts, ...made } : { ok: true, ...made };
     },
     async resolve(id, choice) {
       const entry = cardEntries.get(id);
       if (!entry) return;
       // The other side is already on screen (head); only the person's own side needs a commit.
+      let made: string | undefined;
       if (choice !== "theirs") {
         const card = entry.card;
         let value: unknown = choice === "mine" ? card[entry.mineSide] : undefined;
@@ -2080,9 +2104,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const r = await carton.commit({ cut: entry.cut, ops: cardOps(card, value), author: opts.me });
         if (r.status === "rejected") throw new Error(r.reason);
         if (r.status === "conflicts") addCards(r.cards, undefined, entry.cut);
+        made = madeBy(r);
       }
       cardEntries.delete(id);
       publishConflicts();
+      // what the pick made (PLAN 5.3): nothing for the side on screen, so its toast has no Undo (WS7's note: an Undo
+      // there would take back an earlier change)
+      return madeOn(entry.cut, [made]);
     },
     async foldRest(versionId) {
       const i = pos.get(versionId);
@@ -2105,7 +2133,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         markRestDone(r.core.change);
         // its Undo is offered when the call returns, not a debounce later: a page that reads Undo then gets this one
         await refreshUndo();
-        return { ok: true };
+        return { ok: true, ...madeOn(r.core.ref.branchId, [madeBy(res)]) };
       }
       if (res.status === "conflicts") {
         addCards(res.cards, undefined, r.core.ref.branchId);
@@ -2115,10 +2143,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     },
     async restore(ref) {
       if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
-      await carton.restore(ref, { author: opts.me });
+      // (the handle's cut, which a restore with no cut writes)
+      const onCut = carton.cut;
+      const res = await carton.restore(ref, { author: opts.me });
       // Its Undo is offered when the call returns (panel-author: Undo read right after a restore was the version
       // before it's, and the panel then refused it, "Something changed")
       await refreshUndo();
+      // the version it made (PLAN 5.3: its toast's Undo); a restore of what head already is makes one too (allowEmpty)
+      return madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
     },
     async nameVersion(id, name) {
       const i = pos.get(id);

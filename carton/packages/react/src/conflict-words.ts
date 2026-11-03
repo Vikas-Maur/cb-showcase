@@ -342,3 +342,15 @@ export function keptText(c: Conflict, choice: ConflictChoice, byKey?: (key: stri
   const cw = conflictWords(c, (a) => actorLabel(a, byKey, w.you), w, locale);
   return w.keptToast(midSentence(cw.label[choice]));
 }
+
+/**
+ * After a pick's Undo (PLAN 5.3): the side in the timeline again, the one shown before the pick (`provisional`):
+ * "Pick undone. Claude Code's move of “Interview B” is back." Just "Pick undone." when the card didn't say which side
+ * was shown, or both were.
+ */
+export function pickUndoneText(c: Conflict, byKey?: (key: string) => Actor | undefined, w: Words = defaultWords, locale?: string): string {
+  const side = c.provisional;
+  if (side !== "mine" && side !== "theirs") return w.pickUndone(null);
+  const cw = conflictWords(c, (a) => actorLabel(a, byKey, w.you), w, locale);
+  return w.pickUndone(cw.label[side]);
+}

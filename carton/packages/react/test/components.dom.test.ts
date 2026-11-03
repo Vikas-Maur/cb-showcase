@@ -235,7 +235,8 @@ test(name("fold in (PLAN 6.3): from/into, the line, change rows, a lock, leave o
   assert.equal(go().disabled, false);
   assert.equal($(dialog, ".carton-fold-later")!.textContent, "1 change is left out. It stays on “30s Instagram cut”, and you can fold it in later.");
   await click(go());
-  assert.deepEqual(call, { leaveOut: ["items/summer"], choices: { "timelineItems/item-interview-b/#time": "mine" } });
+  // `count`: the button's "Fold in 3 changes", which the fold's toast repeats (PLAN 5.3)
+  assert.deepEqual(call, { leaveOut: ["items/summer"], choices: { "timelineItems/item-interview-b/#time": "mine" }, count: 3 });
   await m.unmount();
 });
 

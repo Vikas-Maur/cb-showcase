@@ -247,7 +247,9 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
 
     /**
      * The person picked on an agent's card ("mine": keep the person's value, "theirs": take the agent's). Returns false
-     * when the card isn't an agent's (the facade's own path then).
+     * when the card isn't an agent's (the facade's own path then), else `{ answer }`: the panel's answer to the pick, with
+     * the version it made (`made`, UX redesign PLAN 5.3: its toast's Undo takes back exactly that), or none when the
+     * value was there already.
      */
     async resolve(lc, handle, id, choice) {
       const card = handle.cardFor(id);
@@ -258,11 +260,14 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       // A side's value, committed by the person who chose it, as a document: when it is there already core finds nothing
       // to change and History gets no version (ops setting a field to the value it has would make one). A clash with a
       // change made since (a moment's window) comes back as the person's own card.
+      let made = null;
       const take = async (value) => {
         const head = await lc.carton.head(cut);
         const r = await lc.carton.commit({ cut, doc: apply(structuredClone(head.doc), cardOps(c, value), lc.carton.schema), base: head.ref, author: me });
         if (r.status === "rejected") throw new Error(r.reason);
         if (r.status === "conflicts") handle.reportConflicts(r.cards);
+        const changeId = r.status === "confirmed" ? (!r.empty && r.change?.id) || null : r.status === "pending" ? r.id : null;
+        if (changeId) made = { cut, changes: [changeId] };
       };
       if (choice === "theirs") await take(c.theirs);
       else {
@@ -280,7 +285,7 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       // fromCarton's own resolve with its "theirs" (the side on screen) drops the card from this panel and commits nothing
       await raw(id, "theirs");
       await close(lc, c, agentKey, cut);
-      return true;
+      return { answer: made ? { made } : {} };
     },
   };
 }

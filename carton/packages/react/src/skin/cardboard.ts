@@ -536,6 +536,8 @@ export const cardboardSkin = `
 /* a failure or a refusal (a save that failed, an undo refused): the warning look of the Offline chip */
 :where(${S}) :where(.carton-toast[data-tone=warning]){border-color:color-mix(in srgb, var(--cb-warn) 35%, transparent)}
 :where(${S}) :where(.carton-toast[data-tone=warning] > .carton-icon){color:var(--cb-warn)}
+/* an undo's own toast ("Restore undone." [Redo]): the grey undo arrow, not the ✓ (after/toasts.png) */
+:where(${S}) :where(.carton-toast[data-icon=undo] > .carton-icon){color:var(--cb-fg-3)}
 /* a shared project's status over the preview (scripts/carton/ui.js LiveChip): who is here, Offline / Syncing */
 :where(.carton-stage${S}) > :where(.carton-stage-live){position:absolute;left:12px;bottom:12px;pointer-events:none}
 :where(${S}) :where(.carton-live-chip){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 8px;border:1px solid #ffffff14;border-radius:999px;background:#1b1b1be6;

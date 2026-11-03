@@ -37,7 +37,7 @@ function fakeUi() {
   return {
     calls,
     history: () => ({ all: () => [{ id: "v1", ref: "main@3", at, author: claude, summary: "Moved 'clip.mp4' 0.0 s → 2.0 s" }, { id: "v2", ref: "main@4", at, author: you, name: "Sent to client" }] }),
-    cuts: () => [{ id: "main", label: "Main cut", current: false }, { id: "ig", label: "Client review", current: true }],
+    cuts: () => [{ id: "main", label: "Main cut", kind: "main", readOnly: false, current: false }, { id: "ig", label: "Client review", kind: "cut", readOnly: false, current: true }],
     conflicts: () => [{ id: "c1", title: "'W6' timing", mine: { author: you, summary: "7 s" }, theirs: { author: claude, summary: "9 s" } }],
     actor: () => undefined,
     restore: async (ref) => { calls.push(["restore", ref]); },
@@ -63,7 +63,11 @@ test("P2-4: Fold in says what went where, and offers to switch to the cut it wen
   T.confirmations(ui);
   const r = await ui.fold("ig", "main", { leaveOut: ["items/w4"], choices: {} });
   assert.deepEqual(r, { ok: true });
-  assert.equal(T.toasts.value.text, "Folded “Client review” into Main cut. Some changes were left out.");
+  // PLAN 5.3: the Fold dialog's count, when it gives one ("Fold in 3 changes"); the cuts as cutRef() names them
+  assert.equal(T.toasts.value.text, "Folded “Client review” into Main cut.");
+  await ui.fold("ig", "main", { leaveOut: [], choices: {}, count: 3 });
+  assert.equal(T.toasts.value.text, "Folded 3 changes from “Client review” into Main cut.");
+  assert.deepEqual(T.toasts.value.actions.map((a) => a.label), ["Switch to Main cut"], "made nothing it says: no Undo");
   assert.equal(T.toasts.value.action.label, "Switch to Main cut");
   await T.toasts.value.action.run();
   assert.deepEqual(ui.calls.at(-1), ["switch", "main"]);
@@ -90,7 +94,215 @@ test("P2-4: a conflict card's pick says whose change was kept, as the card named
   ui.conflicts = () => [plain];
   await ui.resolve("c1", "theirs");
   assert.equal(T.toasts.value.text, "Kept Claude Code's edit.");
-  assert.ok(!T.toasts.value.action, "no Undo yet (PLAN 5.3): a pick of the side shown commits nothing to undo");
+  assert.ok(!T.toasts.value.action, "PLAN 5.3: a pick that made nothing (the side shown) has no Undo");
+});
+
+// UX redesign PLAN 5.3: the toasts' Undo is the bridge's, Ctrl+Z's path, for exactly what the action made (`made`); the
+// toast after it says what was undone, with Redo, and so on. Something on top since: nothing done, and the toast says so.
+function stepBridge() {
+  const calls = [];
+  const answers = { undo: [], redo: [] };
+  const step = (which) => async (made) => {
+    calls.push([which, made]);
+    return answers[which].shift() ?? { status: "confirmed", made: { cut: made.cut, changes: [which + calls.length] } };
+  };
+  return { calls, answers, undoMade: step("undo"), redoMade: step("redo") };
+}
+const madeOf = (...changes) => ({ cut: "ig", changes });
+
+test("PLAN 5.3: the restore toast's Undo takes back exactly the restore; then Redo, then Undo again", opt, async () => {
+  const ui = fakeUi(), bridge = stepBridge();
+  ui.restore = async () => ({ made: madeOf("c-restore") });
+  T.confirmations(ui, bridge);
+  await ui.restore("main@4");
+  assert.equal(T.toasts.value.text, "Restored “Sent to client”. Later changes are in History.");
+  assert.deepEqual(T.toasts.value.actions.map((a) => a.label), ["Undo"]);
+  bridge.answers.undo.push({ status: "confirmed", told: "undo-restore", made: madeOf("u1") });
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls, [["undo", madeOf("c-restore")]], "the bridge's undo, for the restore's own version");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.icon, T.toasts.value.actions.map((a) => a.label)], ["Restore undone.", "undo", ["Redo"]]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls.at(-1), ["redo", madeOf("u1")], "Redo takes back that undo, by its own version");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Restore redone.", ["Undo"]]);
+  // something landed on top meanwhile: the worker did nothing, and the toast says so
+  bridge.answers.undo.push({ status: "moved" });
+  await T.toasts.value.action.run();
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.tone, T.toasts.value.action], ["Not undone: something changed since. History has every version.", "warning", undefined]);
+  // refused (the bridge tells why) or a clash (the conflict stack shows the cards): no toast of its own
+  ui.restore = async () => ({ made: madeOf("c2") });
+  T.confirmations(ui, bridge);
+  await ui.restore("main@4");
+  bridge.answers.undo.push({ status: "conflicts", conflicts: [{}] });
+  await T.toasts.value.action.run();
+  assert.equal(T.toasts.value, null);
+  // a restore that made nothing it can name, or a host with no such undo (the gallery): no Undo
+  ui.restore = async () => undefined;
+  T.confirmations(ui, bridge);
+  await ui.restore("main@4");
+  assert.equal(T.toasts.value.action, undefined);
+  ui.restore = async () => ({ made: madeOf("c3") });
+  T.confirmations(ui, {});
+  await ui.restore("main@4");
+  assert.equal(T.toasts.value.action, undefined, "no bridge undo: no Undo");
+});
+
+test("PLAN 5.3: a fold's toast: Undo (all it made), and the cut it went into; Fold in the rest too", opt, async () => {
+  const ui = fakeUi(), bridge = stepBridge();
+  ui.fold = async () => ({ ok: true, made: madeOf("c-fold", "c-rest") });
+  ui.foldRest = async () => ({ ok: true, made: madeOf("c-rest2") });
+  ui.history = () => ({ all: () => [{ id: "v9", ref: "main@9", at: Date.now(), author: you, kind: "fold", leftOut: 2 }] });
+  T.confirmations(ui, bridge);
+  await ui.fold("ig", "main", { leaveOut: [], choices: {}, count: 2 });
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Folded 2 changes from “Client review” into Main cut.", ["Undo", "Switch to Main cut"]]);
+  bridge.answers.undo.push({ status: "confirmed", told: "undo-fold", made: madeOf("u2", "u1") });
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls, [["undo", madeOf("c-fold", "c-rest")]], "both versions the fold made, in one Undo");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Fold undone.", ["Redo"]]);
+  await ui.foldRest("v9");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Folded in the rest: 2 changes.", ["Undo"]]);
+});
+
+test("PLAN 5.3: a conflict pick's Undo only when the pick made a version; after it, the side that is back", opt, async () => {
+  const ui = fakeUi(), bridge = stepBridge();
+  const [plain] = ui.conflicts();
+  ui.conflicts = () => [{ ...plain, clip: "W6", provisional: "theirs", mine: { ...plain.mine, what: "move" }, theirs: { ...plain.theirs, what: "move" } }];
+  ui.resolve = async (id, choice) => (choice === "theirs" ? {} : { made: madeOf("c-pick") });
+  T.confirmations(ui, bridge);
+  await ui.resolve("c1", "theirs");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.action], ["Kept Claude Code's move of “W6”.", undefined], "the side already shown: nothing to undo");
+  await ui.resolve("c1", "mine");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Kept your move of “W6”.", ["Undo"]]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls, [["undo", madeOf("c-pick")]]);
+  assert.equal(T.toasts.value.text, "Pick undone. Claude Code's move of “W6” is back.");
+  await T.toasts.value.action.run();
+  assert.equal(T.toasts.value.text, "Pick redone.");
+});
+
+test("PLAN 5.3, 5.4: Undo this turn's toast, and its Undo puts the turn back", opt, async () => {
+  const ui = fakeUi(), bridge = stepBridge();
+  const turn = { id: "t1", ref: "main@7", at: Date.now(), author: claude, kind: "turn", turn: { label: "Tighten the intro and add a lower third", edits: 4 }, changes: 4 };
+  ui.history = () => ({ all: () => [turn] });
+  // taking a turn out is an undo itself (off the undo stack): redo puts it back (`by`, the view model's)
+  ui.undoTurnOf = async () => ({ ok: true, made: { ...madeOf("c-out"), by: "redo" } });
+  T.confirmations(ui, bridge);
+  await ui.undoTurnOf("t1");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Took out Claude Code's “Tighten the intro…” (4 changes).", ["Undo"]]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls.map((c) => c[0]), ["redo"], "its Undo is the editor's redo, for the take-out's own version");
+  assert.deepEqual(bridge.calls[0][1].changes, ["c-out"]);
+  assert.equal(T.toasts.value.text, "Claude Code's “Tighten the intro…” is back.");
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls.map((c) => c[0]), ["redo", "undo"], "and its Redo the editor's undo, for what that redo made");
+  assert.equal(T.toasts.value.text, "Took out Claude Code's “Tighten the intro…” again.");
+  // it failed: the card says so, no toast
+  T.toasts.set(null);
+  ui.undoTurnOf = async () => ({ ok: false, error: "This turn is undone already" });
+  T.confirmations(ui, bridge);
+  await ui.undoTurnOf("t1");
+  assert.equal(T.toasts.value, null);
+});
+
+test("PLAN 5.2, DESIGN §6.3: a new cut and a switch say where you are now, with the way back", opt, async () => {
+  const at = new Date(2026, 10, 2, 12, 20).getTime();
+  let current = "main";
+  const cut = (id, label, o = {}) => ({ id, label, name: label, kind: id === "main" ? "main" : "cut", readOnly: false, current: current === id, head: id + "@5", ...o });
+  const calls = [];
+  const ui = {
+    history: () => ({ all: () => [{ id: "d1", ref: "main@3", at, author: { key: "agent/director", kind: "agent", name: "Director" }, kind: "turn", turn: { label: "Add captions to the interview", edits: 12 } }] }),
+    cuts: () => [cut("main", "Main cut"), cut("ig", "30s Instagram cut"), cut("leo", "Leo's Main cut", { kind: "main", readOnly: true }), ...(calls.some((c) => c[0] === "newCut") ? [cut("new", "30s Instagram cut v2")] : [])],
+    conflicts: () => [],
+    actor: () => undefined,
+    newCut: async (name, from) => { calls.push(["newCut", name, from]); current = "new"; return cut("new", name); },
+    switchCut: async (id, o) => { calls.push(["switch", id, o]); if (!o?.onlyFrom || o.onlyFrom === current) current = id; },
+  };
+  T.confirmations(ui, stepBridge());
+  await ui.newCut("30s Instagram cut v2", "main@3");
+  assert.equal(T.toasts.value.text, "You're on “30s Instagram cut v2”, made from Director's “Add captions…”. Main cut is unchanged.");
+  assert.deepEqual(T.toasts.value.actions.map((a) => a.label), ["Switch back to Main cut"]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(calls.at(-1), ["switch", "main", undefined]);
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.action.label], ["You're on Main cut now.", "Switch back to 30s Instagram cut v2"], "the way back is a switch too");
+  // from your edit as it is (the cut's head): no "made from"
+  current = "main";
+  await ui.newCut("Trailer", "main@5");
+  assert.equal(T.toasts.value.text, "You're on “Trailer” now. Main cut is unchanged.");
+  // a switch: the cuts menu's
+  current = "main";
+  await ui.switchCut("ig");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.action.label], ["You're on “30s Instagram cut” now.", "Switch back to Main cut"]);
+  // a teammate's cut is viewing, and the way back from it isn't news: no toast
+  T.toasts.set(null);
+  await ui.switchCut("leo");
+  assert.equal(T.toasts.value, null);
+  await ui.switchCut("main");
+  assert.equal(T.toasts.value, null);
+  // a queued switch passes its onlyFrom on; one a switch by hand overtook (the worker didn't switch) says nothing
+  await ui.switchCut("ig", { onlyFrom: "elsewhere" });
+  assert.deepEqual(calls.at(-1), ["switch", "ig", { onlyFrom: "elsewhere" }]);
+  assert.equal(T.toasts.value, null);
+  await ui.switchCut("ig", { onlyFrom: "main" });
+  assert.equal(T.toasts.value.text, "You're on “30s Instagram cut” now.");
+  // a copy of a teammate's cut (PLAN 6.2: New cut from it): yours now, and theirs was only viewed: no way back to offer
+  current = "leo";
+  await ui.newCut("Leo's copy", "leo@5");
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.action], ["You're on “Leo's copy” now.", undefined]);
+});
+
+test("PLAN 5.3: Ctrl+Z of a restore or a fold (the bridge's onStep): \"Restore undone.\" with Redo, \"Fold redone.\" with Undo", opt, async () => {
+  const bridge = stepBridge();
+  T.tellStep(bridge, { which: "undo", told: "undo-restore", made: madeOf("u1") });
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Restore undone.", ["Redo"]]);
+  await T.toasts.value.action.run();
+  assert.deepEqual(bridge.calls, [["redo", madeOf("u1")]]);
+  assert.equal(T.toasts.value.text, "Restore redone.");
+  T.tellStep(bridge, { which: "redo", told: "redo-fold", made: madeOf("r1") });
+  assert.deepEqual([T.toasts.value.text, T.toasts.value.actions.map((a) => a.label)], ["Fold redone.", ["Undo"]]);
+  T.toasts.set(null);
+});
+
+test("PLAN 5.3: a hovered toast stays; it goes once the pointer leaves; an action shows it is running", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = globalThis.document;
+  globalThis.document = w.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const el = w.document.createElement("div");
+  w.document.body.appendChild(el);
+  const root = client.createRoot(el);
+  const was = T.toasts.ms;
+  const wait = (ms) => React.act(() => new Promise((r) => setTimeout(r, ms)));
+  try {
+    T.toasts.ms = 60;
+    T.toasts.set(null);
+    await React.act(async () => root.render(React.createElement(T.Toast)));
+    let release;
+    await React.act(async () => T.toasts.show("Restored “Sent to client”. Later changes are in History.", { label: "Undo", run: () => new Promise((r) => (release = r)) }));
+    const box = () => el.querySelector(".carton-toast");
+    await React.act(async () => box().dispatchEvent(new w.MouseEvent("mouseover", { bubbles: true, relatedTarget: w.document.body })));
+    await wait(150);
+    assert.ok(box(), "hovered: still there after its time");
+    await React.act(async () => box().dispatchEvent(new w.MouseEvent("mouseout", { bubbles: true, relatedTarget: w.document.body })));
+    await wait(150);
+    assert.equal(box(), null, "left: it goes");
+    // an action running holds it, and shows it is busy; the toast goes when it is done and nothing took its place
+    await React.act(async () => T.toasts.show("Folded 2 changes from “30s cut” into Main cut.", { label: "Undo", run: () => new Promise((r) => (release = r)) }));
+    await React.act(async () => box().querySelector("button").click());
+    await wait(150);
+    assert.ok(box(), "running: still there");
+    assert.equal(box().querySelector("button").getAttribute("aria-busy"), "true");
+    await React.act(async () => release());
+    await wait(20);
+    assert.equal(box(), null, "done, with nothing after it: gone");
+  } finally {
+    T.toasts.ms = was;
+    T.toasts.set(null);
+    await React.act(async () => root.unmount());
+    globalThis.document = keep;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    await w.happyDOM.close();
+  }
 });
 
 // A teammate as Live.view() sends one (sync/live.js peerActor).

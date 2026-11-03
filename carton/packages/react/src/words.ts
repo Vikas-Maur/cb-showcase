@@ -499,6 +499,23 @@ export const words = {
   tookOutToast: (label: string, n: number) => `Took out ${label} (${plural(n, "change", "changes")}).`,
   restoreUndone: "Restore undone.",
   foldUndone: "Fold undone.",
+  // Workstream 5 (PLAN 5.2, 5.3): the toasts' other forms, with the cuts named as cutRef() names them (Main cut bare,
+  // any other cut in curly quotes)
+  foldedInto: (n: number | null, from: string, into: string) => (n ? `Folded ${plural(n, "change", "changes")} from ${from} into ${into}.` : `Folded ${from} into ${into}.`),
+  foldedRestToast: (n: number | null) => (n ? `Folded in the rest: ${plural(n, "change", "changes")}.` : "Folded in the rest."),
+  onCutRefNow: (cut: string) => `You're on ${cut} now.`,
+  onCutMadeFrom: (cut: string, from: string) => `You're on “${cut}”, made from ${from}.`,
+  restoreRedone: "Restore redone.",
+  foldRedone: "Fold redone.",
+  pickUndone: (back: string | null) => (back ? `Pick undone. ${back} is back.` : "Pick undone."),
+  pickRedone: "Pick redone.",
+  turnBack: (label: string) => `${label} is back.`,
+  tookOut: (label: string) => `Took out ${label}.`,
+  stepDone: (which: "undo" | "redo") => (which === "undo" ? "Undone." : "Redone."),
+  tookOutAgain: (label: string) => `Took out ${label} again.`,
+  // a toast's Undo (or Redo) after something else landed on top: nothing is done (the worker checked)
+  stepMoved: (which: "undo" | "redo") => `Not ${which === "undo" ? "undone" : "redone"}: something changed since. History has every version.`,
+  stepFailed: (which: "undo" | "redo") => `Couldn't ${which}. Try again.`,
   saveFailed: "Your last change wasn't saved. Do it again, or reopen the project.",
   restoreFailed: "Couldn't restore this version. Try again.",
 

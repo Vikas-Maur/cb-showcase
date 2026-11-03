@@ -29,6 +29,7 @@ import type {
   Ghost,
   HistoryFilter,
   HistorySource,
+  Made,
   Peer,
   Preview,
   Published,
@@ -448,6 +449,9 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     return v;
   };
 
+  // What an action made (PLAN 5.3), as the real view model says it: the version it added, on the cut you're on
+  const madeHere = (v: Version): Made => ({ cut: cuts.find((c) => c.current)?.id ?? "main", changes: [v.id] });
+
   /** The index in `all` of a ref; -1 when it isn't a version here. */
   const indexOfRef = (ref: string) => {
     for (let i = all.length - 1; i >= 0; i--) if (all[i]!.ref === ref) return i;
@@ -607,12 +611,17 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     async fold(fromId, intoId, o): Promise<FoldResult> {
       const from = cuts.find((c) => c.id === fromId);
       const left = o.leaveOut.length;
-      addVersion({ author: people.alice, kind: "fold", summary: `Folded in “${from?.label}”`, ...(left ? { leftOut: left, foldRest: true } : {}) });
+      const v = addVersion({ author: people.alice, kind: "fold", summary: `Folded in “${from?.label}”`, ...(left ? { leftOut: left, foldRest: true } : {}) });
       if (conflicts.length) set("conflicts", () => (conflicts = conflicts.filter((c) => !(c.id in o.choices))));
-      return { ok: true };
+      return { ok: true, made: madeHere(v) };
     },
-    async resolve(id, _choice: ConflictChoice) {
-      set("conflicts", () => (conflicts = conflicts.filter((c) => c.id !== id)));
+    async resolve(id, choice: ConflictChoice) {
+      const c = conflicts.find((x) => x.id === id);
+      set("conflicts", () => (conflicts = conflicts.filter((x) => x.id !== id)));
+      // the side already in the timeline makes no version (PLAN 5.3: so no Undo); any other pick makes one
+      // (the mock's History gets no row for it, as before: the change's id stands for the version)
+      if (!c || choice === (c.provisional ?? "theirs")) return {};
+      return { made: { cut: cuts.find((x) => x.current)?.id ?? "main", changes: [`pick-${id}`] } };
     },
     async foldRest(versionId) {
       const p = pos.get(versionId);
@@ -620,12 +629,11 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       const { foldRest: _f, ...v } = all[p]!;
       all[p] = v;
       revision++;
-      addVersion({ author: people.alice, kind: "fold", summary: "Folded in the rest of “30s Instagram cut”" });
-      return { ok: true };
+      return { ok: true, made: madeHere(addVersion({ author: people.alice, kind: "fold", summary: "Folded in the rest of “30s Instagram cut”" })) };
     },
     async restore(ref) {
       const v = all.find((x) => x.ref === ref);
-      addVersion({ author: people.alice, kind: "restore", summary: v?.name ? `Restored “${v.name}”` : `Restored the ${clock(v?.at ?? Date.now(), { now: Date.now() })} version` });
+      return { made: madeHere(addVersion({ author: people.alice, kind: "restore", summary: v?.name ? `Restored “${v.name}”` : `Restored the ${clock(v?.at ?? Date.now(), { now: Date.now() })} version` })) };
     },
     async nameVersion(id, name) {
       const p = pos.get(id);
@@ -650,8 +658,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       const v = p === undefined ? undefined : all[p];
       if (!v || v.kind !== "turn") return { ok: false, error: "That isn't an agent turn" };
       const n = did.get(versionId)?.length ?? 0;
-      addVersion({ author: people.alice, kind: "undo", summary: `Took out ${versionLabel(v, labelCtx)}`, changes: n }, [...(did.get(versionId) ?? [])]);
-      return { ok: true };
+      return { ok: true, made: madeHere(addVersion({ author: people.alice, kind: "undo", summary: `Took out ${versionLabel(v, labelCtx)}`, changes: n }, [...(did.get(versionId) ?? [])])) };
     },
     async publish(cutId) {
       const c = cuts.find((x) => x.id === cutId);

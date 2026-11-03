@@ -14,45 +14,152 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu, cutRef, pickUndoneText, commentWords } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
-// person couldn't tell they had worked. One at a time, gone after 6 s; Fold in offers to switch to the cut it went into.
+// person couldn't tell they had worked. One at a time, gone after 6 s, and kept while the pointer or the keyboard is on
+// one (UX redesign PLAN 5.3). Each says what happened and offers the useful next step (DESIGN §6.7): Undo, Redo, the
+// cut to switch (back) to. `actions`: its buttons, `{label, run}`; `icon`: "undo" for an undo's own toast.
 // `tone` "warning": a failure or a refusal the bridge tells (a save that failed, an undo refused), with the warning
 // look Carton's other failures have (the conflict stack, footage still on its way, Offline), not the ✓ of a
 // confirmation (laptop, merge/prod-2 N-3), and said at once to a screen reader (role alert).
-const toasts = { value: null, seq: 0, subs: new Set(), show(text, action, tone) { this.set({ id: ++this.seq, text, action, ...(tone ? { tone } : {}) }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
+const toasts = {
+  // ms: how long one stays when nothing holds it (DESIGN §6.7: 6 s)
+  value: null, seq: 0, subs: new Set(), ms: 6000,
+  show(text, actions, tone, icon) {
+    const list = (Array.isArray(actions) ? actions : actions ? [actions] : []).filter(Boolean);
+    this.set({ id: ++this.seq, text, ...(list.length ? { actions: list, action: list[0] } : {}), ...(tone ? { tone } : {}), ...(icon ? { icon } : {}) });
+  },
+  set(v) { this.value = v; for (const f of this.subs) f(v); },
+};
 // what the bridge tells (scripts/carton/renderer-bridge.js notice: a save that failed, an undo refused)
 const tellFailure = (text) => toasts.show(text, null, "warning");
-function confirmations(ui) {
-  const versionByRef = (ref) => (ui.history().all?.() ?? []).find((v) => v.ref === ref);
-  const restore = ui.restore.bind(ui);
-  ui.restore = async (ref) => {
-    const v = versionByRef(ref);
-    await restore(ref);
-    // a version named one way everywhere (UX redesign 0.9: its name, an agent's prompt, or "your edit from 12:41 pm")
-    toasts.show(words.restoredToast(v ? versionLabel(v, { actor: ui.actor.bind(ui) }) : "an earlier version"));
+
+/**
+ * The toasts' Undo and Redo (UX redesign PLAN 5.3): the bridge's undo, Ctrl+Z's own path, for exactly the versions an
+ * action made (`made`, the view model's answer). Only an action that made a version offers Undo: a conflict pick of the
+ * side already in the timeline makes none, and an Undo there would take back an earlier change (Workstream 7's note).
+ * The worker checks that those versions are still what that step would take back; if something landed on top since, it
+ * does nothing, and the toast says so. Then the toast says what the step did, with the step back: "Restore undone."
+ * [Redo], "Restore redone." [Undo]. `kind`: what the action was (restore, fold, pick, turn); `said`: its words for it.
+ * `which` is the person's word (Undo, Redo), `op` the step that does it: Ctrl+Z's undo, unless the action is an undo
+ * itself (Undo this turn: `made.by` "redo", the editor's own redo puts the turn back). Each step's answer says what it
+ * made in turn, which the other step takes back.
+ */
+function stepper(bridge) {
+  if (typeof bridge?.undoMade !== "function") return null;
+  const other = (x) => (x === "undo" ? "redo" : "undo");
+  const after = (which, op, kind, said, r) => {
+    if (r?.status === "moved") return toasts.show(words.stepMoved(which), null, "warning");
+    // refused: the bridge tells why (its notice); a clash: the conflict stack shows the cards, each saying why
+    if (r?.status === "refused" || r?.status === "conflicts") return toasts.set(null);
+    if (r?.status !== "confirmed" && r?.status !== "pending") return toasts.show(words.stepFailed(which), null, "warning");
+    // core's own word for what an undo of a restore or a fold was (its log's title) wins over the page's guess
+    const k = /restore$/.test(r.told ?? "") ? "restore" : /fold$/.test(r.told ?? "") ? "fold" : kind;
+    const text = k === "restore" ? (which === "undo" ? words.restoreUndone : words.restoreRedone)
+      : k === "fold" ? (which === "undo" ? words.foldUndone : words.foldRedone)
+      : ((which === "undo" ? said?.undone : said?.redone) ?? words.stepDone(which));
+    toasts.show(text, r.made ? action(other(which), other(op), kind, said, r.made) : null, null, which === "undo" ? "undo" : null);
   };
-  const fold = ui.fold.bind(ui);
-  ui.fold = async (from, into, opts) => {
+  const action = (which, op, kind, said, made) => ({
+    label: which === "undo" ? words.undo : words.redo,
+    run: () => (op === "undo" ? bridge.undoMade(made) : bridge.redoMade(made)).then((r) => after(which, op, kind, said, r), () => toasts.show(words.stepFailed(which), null, "warning")),
+  });
+  return {
+    undo: (kind, said, made) => (made?.changes?.length ? action("undo", made.by === "redo" ? "redo" : "undo", kind, said, made) : null),
+    // Ctrl+Z or redo itself (the bridge's onStep): its step was the person's word
+    after: (which, kind, r) => after(which, which, kind, null, r),
+  };
+}
+
+function confirmations(ui, bridge) {
+  const steps = stepper(bridge);
+  const undo = (kind, said, made) => steps?.undo(kind, said, made) ?? null;
+  const actor = (key) => ui.actor?.(key);
+  const all = () => ui.history?.().all?.() ?? [];
+  const versionByRef = (ref) => all().find((v) => v.ref === ref);
+  const versionById = (id) => all().find((v) => v.id === id);
+  // each action the view model has, wrapped once with its toast (a host without one keeps going without it)
+  const wrap = (name, make) => { if (typeof ui[name] === "function") ui[name] = make(ui[name].bind(ui)); };
+  wrap("restore", (restore) => async (ref) => {
+    const v = versionByRef(ref);
+    const r = await restore(ref);
+    // a version named one way everywhere (UX redesign 0.9: its name, an agent's prompt, or "your edit from 12:41 pm")
+    toasts.show(words.restoredToast(v ? versionLabel(v, { actor }) : "an earlier version"), undo("restore", null, r?.made));
+    return r;
+  });
+  // "Folded 2 changes from “30s cut” into Main cut." The count is the Fold dialog's (Workstream 6: its button's, which
+  // counts as History does), passed with the fold; Undo, and the cut it went into when you're not on it.
+  wrap("fold", (fold) => async (from, into, opts) => {
     const r = await fold(from, into, opts);
     if (r?.ok) {
       const cuts = ui.cuts(), a = cuts.find((c) => c.id === from), b = cuts.find((c) => c.id === into);
-      const left = opts?.leaveOut?.length ? " Some changes were left out." : "";
-      toasts.show(`Folded “${a?.label ?? "the cut"}” into ${b?.label ?? "the cut"}.${left}`, b && !b.current ? { label: `Switch to ${b.label}`, run: () => ui.switchCut(into) } : null);
+      const n = Number.isInteger(opts?.count) && opts.count > 0 ? opts.count : null;
+      toasts.show(words.foldedInto(n, a ? cutRef(a) : "the cut", b ? cutRef(b) : "this cut"), [
+        undo("fold", null, r.made),
+        b && !b.current ? { label: words.switchToCut(b.label), run: () => ui.switchCut(into) } : null,
+      ]);
     }
     return r;
-  };
+  });
+  // "Fold in the rest" from a partial fold's row: the changes it left out
+  wrap("foldRest", (foldRest) => async (versionId) => {
+    const v = versionById(versionId);
+    const r = await foldRest(versionId);
+    if (r?.ok) toasts.show(words.foldedRestToast(v?.leftOut ?? null), undo("fold", null, r.made));
+    return r;
+  });
   // A conflict card's pick names what was kept, as the card named it (docs/carton-ux DESIGN §6.7): "Kept Claude Code's
-  // move of “Interview B”." No Undo on it yet (PLAN 5.3): a pick of the side already shown commits nothing, so the
-  // editor's undo would take back an earlier change instead.
-  const resolve = ui.resolve.bind(ui);
-  ui.resolve = async (id, choice) => {
+  // move of “Interview B”." Undo only when the pick made a version (`made`): one of the side already shown makes none.
+  wrap("resolve", (resolve) => async (id, choice) => {
     const c = ui.conflicts().find((x) => x.id === id);
-    await resolve(id, choice);
-    if (c) toasts.show(keptText(c, choice, ui.actor.bind(ui)));
-  };
+    const r = await resolve(id, choice);
+    if (c) toasts.show(keptText(c, choice, actor), undo("pick", { undone: pickUndoneText(c, actor), redone: words.pickRedone }, r?.made));
+    return r;
+  });
+  // Undo this turn (PLAN 5.4): "Took out Claude Code's “Tighten the intro…” (4 changes)." [Undo], which puts it back
+  wrap("undoTurnOf", (undoTurnOf) => async (versionId) => {
+    const v = versionById(versionId);
+    const r = await undoTurnOf(versionId);
+    if (r?.ok && v) {
+      const label = versionLabel(v, { actor }), n = v.changes ?? v.turn?.edits ?? 0;
+      const said = { undone: words.turnBack(versionLabel(v, { actor, start: true })), redone: words.tookOutAgain(label) };
+      toasts.show(n ? words.tookOutToast(label, n) : words.tookOut(label), undo("turn", said, r.made));
+    }
+    return r;
+  });
+  // New cut from this version (PLAN 5.2): you're on it now, and the cut you came from is unchanged; Switch back to it
+  wrap("newCut", (newCut) => async (name, fromRef) => {
+    const home = ui.cuts().find((c) => c.current), v = versionByRef(fromRef);
+    const cut = await newCut(name, fromRef);
+    if (cut && home && !home.readOnly) {
+      // made from your edit as it is now: "You're on “30s Instagram cut” now."; from an older version, which one
+      const older = v && fromRef !== home.head;
+      const first = older ? words.onCutMadeFrom(cut.label ?? name, versionLabel(v, { actor })) : words.onCutNow(cut.label ?? name);
+      toasts.show(`${first} ${words.cutUnchanged(cutRef(home))}`, { label: words.switchBackTo(home.label), run: () => ui.switchCut(home.id) });
+    } else if (cut && home) {
+      // a copy of a teammate's cut (PLAN 6.2's New cut from it): yours now; theirs was only viewed, so nothing to go back to
+      toasts.show(words.onCutNow(cut.label ?? name));
+    }
+    return cut;
+  });
+  // Switching cuts (DESIGN §6.3): "You're on “30s Instagram cut” now." [Switch back to Main cut]. Not for a teammate's
+  // cut, which is viewing (the chip and the frame say it), nor for the way back from one. A switch that didn't happen
+  // (a queued switch a switch by hand overtook: its `onlyFrom`, passed on) says nothing.
+  wrap("switchCut", (switchCut) => async (id, o) => {
+    const cuts = ui.cuts(), from = cuts.find((c) => c.current), to = cuts.find((c) => c.id === id);
+    const r = await switchCut(id, ...(o !== undefined ? [o] : []));
+    if (from && to && from.id !== id && !from.readOnly && !to.readOnly && ui.cuts().find((c) => c.current)?.id === id)
+      toasts.show(words.onCutRefNow(cutRef(to)), { label: words.switchBackTo(from.label), run: () => ui.switchCut(from.id) });
+    return r;
+  });
+}
+/** Ctrl+Z or redo of a restore or a fold (the bridge's onStep): "Restore undone." [Redo], "Fold redone." [Undo]. */
+function tellStep(bridge, s) {
+  const steps = stepper(bridge);
+  if (!steps || !s?.made) return;
+  steps.after(s.which, /restore$/.test(s.told) ? "restore" : "fold", { status: "confirmed", told: s.told, made: s.made });
 }
 
 function connect(projectId, bridge) {
@@ -69,25 +176,66 @@ function connect(projectId, bridge) {
     await view(target);
     return bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
   };
-  confirmations(r.ui);
+  confirmations(r.ui, bridge);
   return { ...r, close: off };
 }
 
-/** The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. */
+/**
+ * The confirmation over the stage: Cardboard's toast look, a polite status, its actions as buttons, ✕ to close. It goes
+ * after 6 s, but not while the pointer is on it or the keyboard is in it (PLAN 5.3: a hovered toast stays); the 6 s
+ * start again when they leave. An action (Undo) shows it is running, and the toast its answer gives takes this one's
+ * place; one that gives none closes it.
+ */
+const keyboardFocus = (el) => { try { return !!el?.matches?.(":focus-visible"); } catch { return true; } };
 function Toast() {
   const [t, setT] = useState(toasts.value);
+  const [hover, setHover] = useState(false), [focus, setFocus] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const box = useRef(null), inside = useRef(false);
   useEffect(() => { toasts.subs.add(setT); return () => { toasts.subs.delete(setT); }; }, []);
+  // A new toast: any action shown running was the last one's. Gone: nothing holds the next one (its element went, and
+  // with it the pointer and the focus, without a leave or a blur). One that takes the place of another the keyboard was
+  // in (its Undo pressed with Enter): the keyboard stays, on its first button, else nothing holds it.
+  useLayoutEffect(() => {
+    setBusy(null);
+    if (!t) { setHover(false); setFocus(false); inside.current = false; return; }
+    const el = box.current;
+    if (inside.current && el && !el.contains(document.activeElement)) {
+      const b = el.querySelector("button");
+      if (b) b.focus({ preventScroll: true });
+      else { inside.current = false; setFocus(false); }
+    }
+  }, [t?.id]);
+  const held = hover || focus || busy !== null;
   useEffect(() => {
-    if (!t) return undefined;
-    const id = t.id, timer = setTimeout(() => { if (toasts.value?.id === id) toasts.set(null); }, 6000);
+    if (!t || held) return undefined;
+    const id = t.id, timer = setTimeout(() => { if (toasts.value?.id === id) toasts.set(null); }, toasts.ms);
     return () => clearTimeout(timer);
-  }, [t]);
+  }, [t, held]);
   if (!t) return null;
   const warn = t.tone === "warning";
-  return h("div", { className: "carton-toast", "data-tone": warn ? "warning" : undefined, role: warn ? "alert" : "status", "aria-live": warn ? "assertive" : "polite" },
-    h(Icon, { name: warn ? "warning" : "check", size: 14 }),
+  const run = (a, i) => {
+    if (busy !== null) return;
+    const id = t.id;
+    setBusy(i);
+    Promise.resolve().then(() => a.run()).catch(() => {}).finally(() => {
+      setBusy(null);
+      // nothing took its place: done
+      if (toasts.value?.id === id) toasts.set(null);
+    });
+  };
+  const actions = t.actions ?? (t.action ? [t.action] : []);
+  return h("div", {
+    ref: box, className: "carton-toast", "data-tone": warn ? "warning" : undefined, role: warn ? "alert" : "status", "aria-live": warn ? "assertive" : "polite",
+    "data-held": held ? "" : undefined, "data-icon": t.icon,
+    onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false),
+    // the keyboard's focus only (a click focuses the button too: then the pointer's leaving lets it go)
+    onFocus: (e) => { if (keyboardFocus(e.target)) { inside.current = true; setFocus(true); } },
+    onBlur: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) { inside.current = false; setFocus(false); } },
+  },
+    h(Icon, { name: warn ? "warning" : t.icon === "undo" ? "undo" : "check", size: 14 }),
     h("span", { className: "carton-toast-text" }, t.text),
-    t.action ? h(Button, { onClick: () => { toasts.set(null); void t.action.run(); } }, t.action.label) : null,
+    ...actions.map((a, i) => h(Button, { key: `${t.id}:${i}`, busy: busy === i, disabled: busy !== null && busy !== i, onClick: () => run(a, i) }, a.label)),
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
 }
 
@@ -328,7 +476,11 @@ function useComments(projectId, bridge) {
 function CommentsSide({ projectId, bridge }) {
   const conn = useComments(projectId, bridge);
   const [selected, setSelected] = useState(null);
-  return h(CommentsPanel, { className: "carton-sidebar-comments", comments: conn.ui, at: () => bridge.playhead?.() ?? null, onSeek: (t) => bridge.seek?.(t), selected, onSelect: setSelected });
+  // "See it as it was" (UX redesign PLAN 9.1, DESIGN §6.8): the version the note was made on, viewed as any version is
+  // (ui.view: the editor swaps through the bridge's preview, connect()); a History row's label when it is one
+  const ui = useCartonUi();
+  const seeAsItWas = useCallback((t) => (t.made ? ui.view({ kind: "version", ref: `${t.made.cut}@${t.made.seq}`, label: commentWords.asItWas }) : undefined), [ui]);
+  return h(CommentsPanel, { className: "carton-sidebar-comments", comments: conn.ui, at: () => bridge.playhead?.() ?? null, onSeek: (t) => bridge.seek?.(t), selected, onSelect: setSelected, onSeeAsItWas: seeAsItWas });
 }
 
 /** The chat sidebar's resize handle: drag its left edge. The width is kept for next time. */
@@ -637,6 +789,8 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
+  // Ctrl+Z or redo of a restore or a fold (UX redesign PLAN 5.3): "Restore undone." with Redo
+  useEffect(() => bridge.onStep?.((s) => tellStep(bridge, s)), [bridge]);
   // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the side's timeline, read-only, with the card's clip in view,
   // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
   // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
@@ -665,4 +819,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor };
+export const __forTests = { confirmations, toasts, tellFailure, tellStep, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor };

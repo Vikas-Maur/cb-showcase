@@ -9,6 +9,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const S = require("./support.js");
+// A fold's answer says which versions it made too (UX redesign PLAN 5.3: its toast's Undo takes back exactly those):
+// the rest of the answer, as before, and that it made one or more
+const folded = (r) => { const { made, ...rest } = r ?? {}; assert.ok(!rest.ok || (made && Array.isArray(made.changes) && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r)); return rest; };
 
 const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS * 2 };
 let b;
@@ -85,7 +88,7 @@ async function foldSomeThenRest(pc, id, panel) {
   const plan = await panel.call("planFold", alt.id, main.id);
   const split = plan.changes.find((c) => /^Split “clip\.mp4”/.test(c.summary));
   assert.ok(split, "the split is a row: " + JSON.stringify(plan.changes.map((c) => c.summary)));
-  assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] }), { ok: true });
+  assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] })), { ok: true });
   // its row (the first fold on Main), one version for the fold and its partial revert
   const atSome = await S.until(() => { const r = panel.history().at(-1); return r?.kind === "fold" && r.seq; }, 20_000, "the partial fold's row");
   // the UX redesign's words (PLAN 0.2): the row says what it was; "1 of N changes" is its counts (changes, leftOut)
@@ -96,7 +99,7 @@ async function foldSomeThenRest(pc, id, panel) {
   assert.deepEqual([videos(s1), font(s1)], [1, 150], "the partial fold: the title's change, not the split");
   const again = await panel.call("planFold", alt.id, main.id);
   assert.deepEqual(again.changes.map((c) => c.summary).filter((x) => /^Split/.test(x)).length, 1, "Fold in again offers the split: " + JSON.stringify(again.changes.map((c) => c.summary)));
-  assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [] }), { ok: true });
+  assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [] })), { ok: true });
   const rest = atSome + 1;
   const restRow = await panel.newestRow(rest);
   assert.equal(restRow.summary, "Folded in the rest of “Alt”");

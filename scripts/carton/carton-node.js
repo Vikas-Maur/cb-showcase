@@ -1595,9 +1595,10 @@ export const cardboard14 = {
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).
           const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
-          // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
+          // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js). Its answer
+          // says what the pick made, if anything (`made`, for its toast's Undo: PLAN 5.3), as fromCarton's own does.
           const agents = views.isAgent(card);
-          const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
+          const r = agents ? (await views.resolve(lc, handle, a[0], a[1])).answer : await f.apply(ui, a);
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
           else if (headRefusals.has(bundlePath)) throw new Error(HEAD_REFUSED);
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
@@ -1693,28 +1694,59 @@ export const cardboard14 = {
       const [u, r] = await Promise.all([lc.carton.undoStack(group, { ...scope, limit: 1 }), lc.carton.redoStack(group, { ...scope, limit: 1 })]);
       return { undo: u.length > 0, redo: r.length > 0 };
     };
-    const step = async (which, projectId, since) => {
+    // A toast's Undo or Redo (UX redesign PLAN 5.3) is Ctrl+Z's own step for exactly what one action made (`only`: its
+    // cut and change ids, oldest first): only while those are still the newest things this step would take back (or put
+    // again) on that cut, newest first, is anything done; else nothing is written ("moved": a later edit, the person's
+    // own or an agent's they started, is on top, and an Undo now would take that back instead). Ctrl+Z itself still
+    // takes the newest. The ids are the action's (fromCarton's `made`) or a step's own (this answer's `made`).
+    const onStack = async (lc, which, since, only) => {
+      const { group, ...scope } = scopeOf(since);
+      const n = only.changes.length;
+      const top = await (which === "undo" ? lc.carton.undoStack(group, { ...scope, cut: only.cut, limit: n }) : lc.carton.redoStack(group, { ...scope, cut: only.cut, limit: n }));
+      return top.length === n && top.every((e, i) => e.changeId === only.changes[n - 1 - i]);
+    };
+    // What a Ctrl+Z or redo took back or put again, when it was a restore or a fold (PLAN 5.3: "Restore undone."
+    // [Redo]): core's own words for the version the step made (log's `title`, which follows an undo of a redo of a
+    // restore back to the restore), read for that one version, while head goes into project.json.
+    const STEPPED = /^(undo|redo)-(restore|fold)$/;
+    const toldOf = async (lc, cut, r) => {
+      if (r?.status !== "confirmed" || r.empty || !r.id) return null;
+      const [v] = await lc.carton.log({ cut, limit: 1, summary: true, rows: true });
+      return v?.change === r.id && STEPPED.test(v.title?.kind ?? "") ? v.title.kind : null;
+    };
+    const step = async (which, projectId, since, only) => {
       const lc = await lcOf(projectId);
       if (!lc) return { status: "unavailable" };
-      const op = { kind: which, ...scopeOf(since) }, actor = actorOf("person");
+      const valid = only && typeof only.cut === "string" && Array.isArray(only.changes) && only.changes.length > 0 && only.changes.every((x) => typeof x === "string");
+      if (only && !valid) return { status: "moved" };
+      const cut = valid ? only.cut : lc.carton.cut;
+      if (valid && !(await onStack(lc, which, since, only))) return { status: "moved", ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+      const op = { kind: which, ...scopeOf(since), ...(valid ? { cut } : {}) }, actor = actorOf("person");
       const here = extensions.find((e) => typeof e.serveHere === "function");
       const bundlePath = bundleOf(projectId);
       // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
       let r;
-      try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
-      catch (e) {
-        // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
-        // page says so, and never falls back to Cardboard's own undo
-        if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
-        throw e;
+      const made = [];
+      // (an action that made several versions, a fold with what earlier partial folds left out, takes as many steps)
+      for (let i = 0; i < (valid ? only.changes.length : 1); i++) {
+        try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
+        catch (e) {
+          // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
+          // page says so, and never falls back to Cardboard's own undo
+          if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+          throw e;
+        }
+        if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+        if ((r?.status !== "confirmed" && r?.status !== "pending") || !r.id || r.empty) break;
+        made.push(r.id);
       }
-      if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
       // local's write path answers a clash as `conflicts` (the cards)
       if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
-      // what is left to undo and redo, read while head goes into project.json
-      const [project, can] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null)]);
+      // what is left to undo and redo, and what the step was, read while head goes into project.json
+      const [project, can, told] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null), toldOf(lc, cut, r).catch(() => null)]);
       if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}) };
+      // `made`: the versions the step made (oldest first), what its toast's Redo or Undo takes back in turn
+      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}), ...(made.length ? { made: { cut, changes: made } } : {}), ...(told ? { told } : {}) };
     };
     return {
       ping: async () => "pong",
@@ -1731,9 +1763,10 @@ export const cardboard14 = {
       // so where this worker's View holds the project's lease its holder serves the step here, in this process (request
       // R4: local's write path would reach that same holder through its control socket); anywhere else (another
       // process holds the lease, no View runs) it goes through local's write path as before. `since`: when the editor's
-      // session began (the bridge's); the answer says what is left to undo and redo (`can`).
-      undo: ({ projectId, since }) => step("undo", projectId, since),
-      redo: ({ projectId, since }) => step("redo", projectId, since),
+      // session began (the bridge's); the answer says what is left to undo and redo (`can`). `only` (a toast's Undo or
+      // Redo, PLAN 5.3): exactly those versions, or nothing ("moved"); the answer's `made` and `told` say what it did.
+      undo: ({ projectId, since, only }) => step("undo", projectId, since, only),
+      redo: ({ projectId, since, only }) => step("redo", projectId, since, only),
       // What Ctrl+Z and redo can do now, for the editor's buttons and shortcuts.
       undoState: async ({ projectId, since }) => {
         const lc = await lcOf(projectId);

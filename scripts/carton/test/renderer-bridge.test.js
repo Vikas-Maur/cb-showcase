@@ -127,6 +127,67 @@ test("H6 (laptop bugs 3, 4): the session's start goes with each step; the projec
   assert.ok(!t.log.some((l) => l[0] === "replace"), "the project wasn't fetched again");
 });
 
+// UX redesign PLAN 5.3: a toast's Undo is Ctrl+Z's own path (the pending save first, the session, the project adopted,
+// the buttons) for exactly what one action made; the worker answers "moved" when that isn't on top any more, and
+// Cardboard's own undo never runs for it. Ctrl+Z of a restore or a fold tells the page, with the step's own versions.
+test("PLAN 5.3: a toast's Undo and Redo: Ctrl+Z's path, for exactly what one action made", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.setState({ cartonSince: 1234 });
+  t.setArmed(true);
+  const made = { cut: "main", changes: ["c-restore"] };
+  t.answers.undo = () => ({ status: "confirmed", id: "u1", project: t.project(300, [{ id: "b", endTime: 6 }]), can: { undo: true, redo: true }, made: { cut: "main", changes: ["u1"] }, told: "undo-restore" });
+  const r = await t.c.undoMade(made);
+  assert.equal(t.log[0][0], "flush", "the waiting save goes first");
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "undo", { projectId: "p1", since: 1234, only: { cut: "main", changes: ["c-restore"] } }]);
+  assert.deepEqual([r.status, r.told, r.made], ["confirmed", "undo-restore", { cut: "main", changes: ["u1"] }], "the worker's answer, for the toast");
+  assert.deepEqual(t.state().timelineItems, [{ id: "b", endTime: 6 }], "the project adopted, as Ctrl+Z's is");
+  assert.deepEqual([t.state().cartonCanUndo, t.state().cartonCanRedo], [true, true]);
+  // Redo: the same, the other way
+  t.answers.redo = () => ({ status: "confirmed", id: "r1", can: { undo: true, redo: false } });
+  await t.c.redoMade(r.made);
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "redo", { projectId: "p1", since: 1234, only: { cut: "main", changes: ["u1"] } }]);
+  // something on top since: nothing done, and never Cardboard's own undo
+  const own = [];
+  t.setState({ undo: () => own.push("undo") });
+  t.answers.undo = () => ({ status: "moved", can: { undo: true, redo: false } });
+  assert.equal((await t.c.undoMade(made)).status, "moved");
+  t.answers.undo = () => ({ status: "unavailable" });
+  assert.equal((await t.c.undoMade(made)).status, "unavailable");
+  t.answers.undo = () => { throw new Error("worker gone"); };
+  await assert.rejects(t.c.undoMade(made), /worker gone/);
+  assert.deepEqual(own, [], "Cardboard's undo never ran");
+  await assert.rejects(t.c.undoMade(null), /Nothing to undo/);
+  await assert.rejects(t.c.undoMade({ cut: "main", changes: [] }), /Nothing to undo/);
+  // Ctrl+Z still falls back to Cardboard's own when Carton can't
+  assert.equal(t.c.undo(), true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(own, ["undo"], "Ctrl+Z whose step failed: Cardboard's own undo, as before");
+});
+
+test("PLAN 5.3: Ctrl+Z or redo of a restore or a fold tells the page what it was, with the step's own versions", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const seen = [];
+  const off = t.c.onStep((s) => seen.push(s));
+  t.answers.undo = () => ({ status: "confirmed", id: "u1", made: { cut: "main", changes: ["u1"] }, told: "undo-fold" });
+  t.c.undo();
+  await new Promise((r) => setTimeout(r, 10));
+  // a plain edit's undo: nothing to tell (the editor's own undo is seen on the timeline)
+  t.answers.undo = () => ({ status: "confirmed", id: "u2", made: { cut: "main", changes: ["u2"] } });
+  t.c.undo();
+  await new Promise((r) => setTimeout(r, 10));
+  // a toast's own Undo is told by the toast, not again here
+  t.answers.undo = () => ({ status: "confirmed", id: "u3", made: { cut: "main", changes: ["u3"] }, told: "undo-restore" });
+  await t.c.undoMade({ cut: "main", changes: ["x"] });
+  assert.deepEqual(seen, [{ which: "undo", told: "undo-fold", made: { cut: "main", changes: ["u1"] } }]);
+  off();
+  t.answers.redo = () => ({ status: "confirmed", id: "r1", made: { cut: "main", changes: ["r1"] }, told: "redo-fold" });
+  t.c.redo();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(seen.length, 1, "unsubscribed");
+});
+
 test("a preview is read-only: changes wait, undo doesn't take it, and Back to my edit takes head", async () => {
   const t = load({ enabled: true });
   await t.c.ready;

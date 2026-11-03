@@ -80,7 +80,8 @@ export function FoldInDialog(p: FoldInDialogProps) {
     setAllCards(false);
   }, [pairKey]);
   const [fold, busy] = useAction(async () => {
-    const r = await ui.fold(pair.from, pair.into, { leaveOut: [...left], choices: choicesFor(planRef.current), ...(allCards ? { allCards } : {}) });
+    // `count`: what the button said it folds in, which its confirmation repeats (PLAN 5.3: "Folded 3 changes from …")
+    const r = await ui.fold(pair.from, pair.into, { leaveOut: [...left], choices: choicesFor(planRef.current), ...(allCards ? { allCards } : {}), ...(coming > 0 ? { count: coming } : {}) });
     setResult(r);
     // Done: hand the result to the host, or just close.
     if (r.ok) (p.onDone ?? p.onClose)(r);

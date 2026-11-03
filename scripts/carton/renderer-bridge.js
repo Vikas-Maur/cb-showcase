@@ -59,6 +59,8 @@ module.exports = String.raw`window.__carton = (() => {
   const timelineOf = (p) => ({ tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: typeof p.aspectRatio === "string" && p.aspectRatio ? p.aspectRatio : "16:9" });
   // What the person is told over the stage (scripts/carton/ui.js shows each as a toast); the console has it too.
   const noticeSubs = new Set();
+  // ... and what Ctrl+Z or redo took back or put again, when it was a restore or a fold (ui.js: its toast with Redo)
+  const stepSubs = new Set();
   const notice = (text) => {
     console.info("[carton] " + text);
     for (const f of noticeSubs) try { f(text); } catch {}
@@ -269,16 +271,38 @@ module.exports = String.raw`window.__carton = (() => {
       const st = store.state();
       if (!st.projectId || st.cartonPreview) return false;
       const own = () => { bypass = true; try { store.state()[which](); } finally { bypass = false; } };
-      const id = st.projectId;
-      store.flush().then(() => {
+      // Ctrl+Z of a restore or a fold says so over the stage (UX redesign PLAN 5.3: "Restore undone." with Redo), with
+      // the step the worker made, which its Redo (or Undo) takes back in turn
+      this.run(which, st.projectId, null, own).then((r) => {
+        if (r?.told && r.made) for (const f of stepSubs) try { f({ which, told: r.told, made: r.made }); } catch {}
+      }, () => {});
+      return true;
+    },
+    // A toast's Undo or Redo (UX redesign PLAN 5.3): Ctrl+Z's own path (the editor's undo session, its flush first, the
+    // project the step wrote adopted at once, the buttons' state) for exactly what one action made ("made": its cut and
+    // change ids, as the view model's actions answer). The worker does nothing unless those are still the newest things
+    // Ctrl+Z would take back there ({status: "moved"}). Never Cardboard's own undo. While viewing it still runs: the
+    // editor keeps what it shows, and Back to my edit takes head (stale). Resolves with the worker's answer.
+    undoMade(made) { return this.made("undo", made); },
+    redoMade(made) { return this.made("redo", made); },
+    made(which, made) {
+      if (!on || !store) return Promise.reject(new Error("Carton isn't on for this project"));
+      const id = store.state().projectId;
+      if (!id || !made || typeof made.cut !== "string" || !Array.isArray(made.changes) || !made.changes.length) return Promise.reject(new Error("Nothing to " + which));
+      return this.run(which, id, made, null);
+    },
+    // Ctrl+Z, redo and a toast's Undo or Redo: what the stage says about a step (ui.js), { which, told, made }
+    onStep(f) { stepSubs.add(f); return () => stepSubs.delete(f); },
+    run(which, id, only, own) {
+      return store.flush().then(() => {
         stepping = id;
         const since = store.state().cartonSince;
-        return call(which, { projectId: id, ...(since != null ? { since } : {}) });
+        return call(which, { projectId: id, ...(since != null ? { since } : {}), ...(only ? { only: { cut: only.cut, changes: [...only.changes] } } : {}) });
       }).then((r) => {
-        if (r?.status === "unavailable") return own();
+        if (r?.status === "unavailable") { if (own) own(); return r; }
         if (r?.can) this.setCan(r.can);
         // refused (P2-1: it would leave the project empty): nothing changed, and Cardboard's own undo doesn't run either
-        if (r?.status === "refused") return notice(r.error);
+        if (r?.status === "refused") { notice(r.error); return r; }
         // the project the step wrote, adopted now, unless the person edited meanwhile (their save goes first: the
         // change event's path below then reads head again)
         const now = store.state();
@@ -291,13 +315,18 @@ module.exports = String.raw`window.__carton = (() => {
         }
         // a conflict: the cards are in the conflict stack, each saying why (the worker kept them for the person)
         if (r?.status === "conflicts") console.info("[carton] " + which + " didn't change anything: " + (r.conflicts?.length ?? 0) + " card(s) in the conflict stack");
-      }, (e) => { console.warn("[carton] " + which + " failed:", e?.message ?? e); own(); }).finally(() => {
+        return r;
+      }, (e) => {
+        console.warn("[carton] " + which + " failed:", e?.message ?? e);
+        // Ctrl+Z falls back to Cardboard's own; a toast's Undo says it failed (its caller)
+        if (own) return own();
+        throw e;
+      }).finally(() => {
         if (stepping === id) stepping = null;
         const d = deferred;
         deferred = null;
         if (d) this.receive(d.host, d.ev).catch(() => {});
       });
-      return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
     // A version shorter than the playhead takes it to its end, where Cardboard's own "jump to end" puts it (final
