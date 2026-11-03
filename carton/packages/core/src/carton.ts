@@ -23,7 +23,7 @@ import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, 
 import * as E from "./engine/index.ts";
 import { FIND_FIELDS, FindIndex, dayWords, findWords, hayOf, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
 import { LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
-import { bringBack, partsDiffer, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
+import { bringBack, ChangedSince, clipToken, partsDiffer, recordName, type BringBackHistory, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -58,6 +58,7 @@ import type {
   SyncError,
   UndoEntry,
   Version,
+  RemapMaps,
 } from "./types.ts";
 
 export interface OpenOptions {
@@ -2031,16 +2032,26 @@ class CartonImpl implements Carton {
       return { doc: this.#doc(t), of: of ?? this.#node(t) };
     };
     let brought!: BroughtBack;
+    // what deleted it, or added it, did to the rest of its track (DESIGN-V2 §3.2's ripple, N0b): read once, before the write
+    const thenOf = then().of;
     const plan = (head: Doc) => {
       const t = then();
-      const p = bringBack(head, t.doc, coll, id, this.schema, { remove: !!opts.remove });
+      // it changed again since the person was shown it (N0b): refused, nothing written
+      if (opts.expect !== undefined) {
+        const token = clipToken(this.schema, coll, id, head);
+        if (token !== opts.expect) throw new ChangedSince(E.pathKey([coll, id]), recordName(this.schema, coll, (E.getIn(head, [coll, id], this.schema) ?? E.getIn(t.doc, [coll, id], this.schema)) as Rec | undefined, head), token);
+      }
+      const p = bringBack(head, t.doc, coll, id, this.schema, { remove: !!opts.remove, history: this.#lifeEvents(cut, coll, new Set([id]), thenOf, this.#isShared(cut) ? this.#pendingTail(cut) : null).get(id) ?? {} });
       brought = { ...p.brought, of: t.of };
-      return { doc: p.doc, extra: { restoreOf: t.of, restoreRecord: p.brought.record, ...(p.brought.name ? { restoreName: p.brought.name } : {}) } };
+      return { doc: p.doc, ...(p.intent ? { intent: p.intent } : {}), extra: { restoreOf: t.of, restoreRecord: p.brought.record, ...(p.brought.name ? { restoreName: p.brought.name } : {}) } };
     };
     if (this.#isShared(cut)) {
       // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); the server keeps no
       // restoreOf, so History reads it as a restore there, as it does a shared cut's restore
-      const r = await this.#planShared(cut, opts.id, (tail) => ({ doc: plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!).doc, author, kind: "restore" }));
+      const r = await this.#planShared(cut, opts.id, (tail) => {
+        const p = plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!);
+        return { doc: p.doc, author, kind: "restore", ...(p.intent ? { intent: p.intent } : {}) };
+      });
       return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
     }
     const r = await this.#mutate(
@@ -2049,18 +2060,82 @@ class CartonImpl implements Carton {
         const done = this.#h.confirmedById(opts.id);
         if (done) return done;
         const p = plan(this.#h.viewOf(this.#h.head(cut))!);
-        return this.#h.commit(cut, { doc: p.doc, author, kind: "restore", ...(opts.id ? { id: opts.id } : {}), extra: p.extra });
+        return this.#h.commit(cut, { doc: p.doc, author, kind: "restore", ...(p.intent ? { intent: p.intent } : {}), ...(opts.id ? { id: opts.id } : {}), extra: p.extra });
       },
       { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
     );
     return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
+  }
+  /** The remap a change recorded (its intent's, or the one op it was stored as): a ripple's, if it was one. */
+  #remapOf(c: ConfirmedChange | undefined): RemapMaps | null {
+    if (!c) return null;
+    const op = c.ops.find((x) => x.op === "remap") as { maps?: RemapMaps } | undefined;
+    const maps = c.intent?.maps ?? op?.maps;
+    return maps && Object.keys(maps).length ? maps : null;
+  }
+  /** A shared cut's pending changes as History's newest rows, with the state after each (null: none, or still loading). */
+  #pendingTail(cut: string): Tail | null {
+    const sc = this.#shared.get(cut);
+    if (!sc) return null;
+    try {
+      return this.#tail(cut, sc);
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * The changes that made each record's current life (N0b, review of N0b #3, #5): the newest that removed it, with the
+   * record as it was just before (its timing then, for a ripple's range), and the newest that inserted it, each with
+   * its remap. Read newest first over a shared cut's pending changes (`tail`), this cut's rows back to `then` (when it
+   * is on this cut), then the cuts it was made from, up to each fork point. bringBack's ripple, for restoreClip and
+   * bringBackChoices alike.
+   */
+  #lifeEvents(cut: string, coll: string, ids: ReadonlySet<string>, then: NodeId, tail: Tail | null): Map<string, BringBackHistory> {
+    const out = new Map<string, BringBackHistory>();
+    const at = parseNode(this.#h.canon(then));
+    let complete = 0;
+    const done = () => complete >= ids.size;
+    const look = (c: ConfirmedChange, before: () => Doc | null) => {
+      for (const op of c.ops) {
+        if ((op.op !== "insert" && op.op !== "remove") || op.path.length !== 2 || op.path[0] !== coll) continue;
+        const id = String(op.path[1]);
+        if (!ids.has(id)) continue;
+        const h = out.get(id) ?? {};
+        if (op.op === "remove" && h.deletedWith === undefined) {
+          const b = before();
+          const rec = b ? (E.getIn(b, [coll, id], this.schema) as Rec | undefined) : undefined;
+          Object.assign(h, { deletedWith: this.#remapOf(c), ...(rec ? { deletedRec: rec } : {}) });
+        }
+        if (op.op === "insert" && h.addedWith === undefined) h.addedWith = this.#remapOf(c);
+        if (!out.has(id) || (h.deletedWith !== undefined && h.addedWith !== undefined && !(h as { full?: true }).full)) {
+          if (h.deletedWith !== undefined && h.addedWith !== undefined) ((h as { full?: true }).full = true), complete++;
+        }
+        out.set(id, h);
+      }
+    };
+    // a shared cut's pending changes, newest first (the state before each: the one after the previous, or the head)
+    if (tail) for (let i = tail.rows.length - 1; i >= 0 && !done(); i--) look(tail.rows[i]!, () => (i > 0 ? tail.states[i - 1]! : this.#h.viewOf(this.#h.head(cut))));
+    // this cut, then the cuts it was made from, each up to its fork point and down to `then` where it is on it
+    let c: string | null = cut, upTo = Infinity;
+    for (let depth = 0; c && depth < 16 && !done(); depth++) {
+      const log = this.#h.changes(c), name: string = c;
+      const lo = at.branchId === c ? at.seq : 0;
+      for (let s = Math.min(log.length, upTo); s > lo && !done(); s--) look(log[s - 1]!, () => this.#h.viewOf(nodeId(name, s - 1)));
+      if (at.branchId === c) break;
+      const fork = this.#h.cut(c)?.forkOf;
+      if (!fork) break;
+      const f = parseNode(this.#h.canon(fork));
+      [c, upTo] = [f.branchId, f.seq];
+    }
+    return out;
   }
   async bringBackChoices(ref: StateRef | string, opts: { cut?: string } = {}): Promise<BringBackChoices> {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     await this.#refresh();
     const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
-    const then = this.#doc(t), now = this.#h.viewOf(this.#h.head(cut))!;
+    // (a shared cut's head with its pending edits: what the panel shows, and what a bring-back is made on)
+    const then = this.#doc(t), now = (await this.head(cut)).doc;
     const tl = this.schema.timeline;
     // the clips: the timeline's collection, else the one whose records sit on another's (items on tracks)
     const colls = Object.entries(this.schema.collections);
@@ -2070,11 +2145,28 @@ class CartonImpl implements Carton {
     const a = byId(then), b = byId(now);
     // who deleted or added it, and when: the versions since `ref` on this cut that touched it (newest, oldest)
     const node = parseNode(typeof t === "string" ? (NODE_RE.test(t) ? t : this.#node(t)) : nodeId(t.branchId, t.seq));
-    const since = new Map<PathKey, { first: { author: Actor | null; at: number }; last: { author: Actor | null; at: number } }>();
+    const since = new Map<PathKey, { first: { author: Actor | null; at: number; seq: number }; last: { author: Actor | null; at: number; seq: number } }>();
     if (node.branchId === cut) for (const v of await this.touched({ cut, after: node.seq })) for (const k of v.records) {
-      const x = since.get(k), w = { author: v.author, at: v.at };
+      const x = since.get(k), w = { author: v.author, at: v.at, seq: v.seq };
       since.set(k, { first: x?.first ?? w, last: w });
     }
+    // what bringing it back would do with the rest (N0b): where it would go and what would move, for the confirmation,
+    // from the same history a bring-back reads (review of N0b #6)
+    const thenNode = typeof t === "string" ? (NODE_RE.test(t) ? t : this.#node(t)) : nodeId(t.branchId, t.seq);
+    // (only the clips deleted since or added since: a changed one moves nothing else)
+    const ids = new Set<string>();
+    for (const k of a.keys()) if (!b.has(k)) ids.add(k);
+    for (const k of b.keys()) if (!a.has(k)) ids.add(k);
+    const life = this.#lifeEvents(cut, coll, ids, thenNode, this.#isShared(cut) ? this.#pendingTail(cut) : null);
+    const preview = (id: string) => {
+      try {
+        const p = bringBack(now, then, coll, id, this.schema, { remove: true, history: life.get(id) ?? {} });
+        return { ...(p.brought.place ? { place: p.brought.place } : {}), ...(p.brought.ripple !== undefined ? { ripple: p.brought.ripple } : {}) };
+      } catch {
+        return {};
+      }
+    };
+    const token = (id: string) => ({ token: clipToken(this.schema, coll, id, now) });
     const side = (r: Rec) => {
       const text = this.schema.collections[coll]?.words?.(r)?.[0];
       return {
@@ -2094,15 +2186,15 @@ class CartonImpl implements Carton {
       const y = b.get(id);
       if (!y) {
         const w = since.get(E.pathKey([coll, id]))?.last;
-        out.deleted.push({ ...row(id, x, then), then: side(x), ...(w ? { by: w.author, at: w.at } : {}) });
+        out.deleted.push({ ...row(id, x, then), then: side(x), ...(w ? { by: w.author, at: w.at } : {}), ...token(id), ...preview(id) });
       } else if (E.deepEqual(x, y) && !partsDiffer(this.schema, coll, x, then, y, now)) out.same++;
       // (its own parts too: a title's text entry, as restoreClip covers them: review N0 #4)
-      else out.changed.push({ ...row(id, y, now), then: side(x), now: side(y) });
+      else out.changed.push({ ...row(id, y, now), then: side(x), now: side(y), ...token(id), ...preview(id) });
     }
     for (const [id, y] of b) {
       if (a.has(id) || spec.nounOf?.(y) === null) continue;
       const w = since.get(E.pathKey([coll, id]))?.first;
-      out.added.push({ ...row(id, y, now), now: side(y), ...(w ? { by: w.author, at: w.at } : {}) });
+      out.added.push({ ...row(id, y, now), now: side(y), ...(w ? { by: w.author, at: w.at } : {}), ...token(id), ...preview(id) });
     }
     const at = (c: { then?: { start?: number }; now?: { start?: number } }) => c.now?.start ?? c.then?.start ?? 0;
     for (const l of [out.changed, out.deleted, out.added]) l.sort((x, y) => at(x) - at(y));
@@ -2126,13 +2218,45 @@ class CartonImpl implements Carton {
       const p = (await this.pendingChanges(cut)).changes.find((x) => x.id === (r as { id?: string }).id);
       if (p) [before, after] = [p.before, p.after];
     }
+    // the change as recorded: confirmed, or still waiting in a shared cut's queue (its intent there: review of N0b #8)
+    const row = change ?? (r.status === "pending" ? this.#pendingTail(cut)?.rows.find((x) => x.id === (r as { id?: string }).id) ?? null : null);
     const get = (d: Doc | null) => (d ? (E.getIn(d, [coll, id], this.schema) as Rec | undefined) : undefined);
     const was = get(before), is = get(after);
     const name = change?.restoreName ?? recordName(this.schema, coll, is ?? was ?? (E.getIn(this.#doc(t), [coll, id], this.schema) as Rec | undefined), after ?? undefined);
     if (!before || !after) return { record, name, how: "same", parts: [], of };
     const how: BroughtBack["how"] = !is ? "removed" : !was ? "added" : "changed";
-    const parts = [...new Set(E.diff(before, after, this.schema).flatMap((op) => (op.op === "remap" ? [] : [E.pathKey(op.path.slice(0, 2).map(String))])))].filter((k) => k !== record && !!this.schema.collections[k.split("/")[0]!]);
-    return { record, name, how, parts, of };
+    const parts = [...new Set(E.diff(before, after, this.schema).flatMap((op) => (op.op === "remap" ? [] : [E.pathKey(op.path.slice(0, 2).map(String))])))].filter((k) => k !== record && !!this.schema.collections[k.split("/")[0]!] && k.split("/")[0] !== E.pathKey([coll]));
+    // (another clip of its collection is no part of it: one a ripple moved is in `ripple`)
+    // where it went and what else moved (N0b), read back the same way
+    const tl = this.schema.timeline?.collection === coll ? this.schema.timeline : null;
+    const key = this.schema.collections[coll]!.key;
+    const ext = (r: Rec | undefined) => (tl && r && typeof r[tl.start] === "number" && typeof r[tl.end] === "number" ? { lane: String(r[tl.lane]), start: r[tl.start] as number, end: r[tl.end] as number } : null);
+    const maps = this.#remapOf(row ?? undefined);
+    let ripple: BroughtBack["ripple"] = null;
+    if (tl && maps && Object.keys(maps).length) {
+      const step = Object.values(maps)[0]![0];
+      const range = step?.i[0] ? { direction: "later" as const, at: step.i[0][0], by: step.i[0][1] } : step?.d[0] ? { direction: "earlier" as const, at: step.d[0][0], by: step.d[0][1] - step.d[0][0] } : null;
+      if (range) {
+        let moved = 0;
+        for (const r of (before[coll] as Rec[] | undefined) ?? []) {
+          if (String(r[key]) === id) continue;
+          const a = ext(r), b = ext(E.getIn(after, [coll, String(r[key])], this.schema) as Rec | undefined);
+          if (a && b && Math.abs(a.start - b.start) > 1e-9) moved++;
+        }
+        ripple = { ...range, tracks: Object.keys(maps), moved };
+      }
+    }
+    let place: BroughtBack["place"];
+    const e = ext(is);
+    if (tl && e && how !== "removed") {
+      const newTrack = !E.getIn(before, [tl.lanes, e.lane], this.schema);
+      const thenDoc = this.#doc(t), x = ext(E.getIn(thenDoc, [coll, id], this.schema) as Rec | undefined);
+      const over = (r: Rec | undefined) => { const o = ext(r); return !!r && String(r[key]) !== id && !!o && !!x && o.lane === x.lane && o.start < x.end - 0.05 && o.end > x.start + 0.05; };
+      place = newTrack && x
+        ? { placed: "new-track", track: e.lane, takenBy: ((after[coll] as Rec[] | undefined) ?? []).filter((r) => over(r) && !over(E.getIn(thenDoc, [coll, String(r[key])], this.schema) as Rec | undefined)).map((r) => ({ record: E.pathKey([coll, String(r[key])]), name: recordName(this.schema, coll, r, after!) })) }
+        : { placed: "same" };
+    }
+    return { record, name, how, parts, of, ...(place ? { place } : {}), ripple };
   }
 
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */

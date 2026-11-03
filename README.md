@@ -490,6 +490,9 @@ What changes with it on:
     agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
   - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
     takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+    It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
+    time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
+    taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
   - `cb compare <project> <left> [right] --show` opens the comparison in your editor, also between two cuts.
   - In place of a version you can write `sent`, `exported`, `today`, `now`, a version's name or a cut's name.
   - The agents' instructions say when to use these ("go back to the version I sent the client", "bring back the old

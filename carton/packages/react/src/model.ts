@@ -188,6 +188,35 @@ export interface BringBackChoice {
   /** Deleted since: by whom and when; not there yet: who added it and when. */
   readonly by?: Actor | null;
   readonly at?: number;
+  /**
+   * The clip as it is now (N0b): pass it back as `restoreClip`'s `expect`, so a clip that changed again since the
+   * confirmation showed is refused ("“Intro” just changed again"), never brought back over the newer edit.
+   */
+  readonly token: string;
+  /** What bringing it back would do (N0b), for the confirmation's line: where it goes, and what else moves. */
+  readonly place?: BringBackPlace;
+  readonly ripple?: BringBackRipple | null;
+}
+/**
+ * Where a brought-back clip goes (DESIGN-V2 §3.2): its own place, or (`new-track`) a new track just above its own at the
+ * same time, its place being taken now by `takenBy` ("Its place is taken by “Drone shot”, so it goes on a new track
+ * above, at 0:06"). It never lands on top of another clip.
+ */
+export interface BringBackPlace {
+  readonly placed: "same" | "new-track";
+  readonly trackId?: string;
+  readonly takenBy?: readonly { readonly itemId: string; readonly name: string }[];
+}
+/**
+ * What else moves (DESIGN-V2 §3.2): deleted with a ripple, the rest of its track moves back `later` ("Everything after it
+ * moves 3 s later"); added with one, taking it out moves the rest `earlier`. By `by` seconds from `at`; `moved` clips.
+ * Null: nothing else moves.
+ */
+export interface BringBackRipple {
+  readonly direction: "later" | "earlier";
+  readonly by: number;
+  readonly at: number;
+  readonly moved: number;
 }
 export interface BringBackChoices {
   readonly changed: readonly BringBackChoice[];
@@ -219,6 +248,9 @@ export interface BringBack extends ActionResult {
   readonly how: "changed" | "added" | "removed" | "same";
   /** The clip's name ("Intro"). */
   readonly clipName: string;
+  /** Where it went and what else moved (N0b), as `BringBackChoice` previewed them. */
+  readonly place?: BringBackPlace;
+  readonly ripple?: BringBackRipple | null;
 }
 
 /**
@@ -817,7 +849,7 @@ export interface CartonUi {
    * wasn't there then, so bringing it back removes it (only when the person said so: without it, the call rejects
    * with the words that say so).
    */
-  restoreClip?(ref: string, itemId: string, opts?: { remove?: boolean }): Promise<BringBack>;
+  restoreClip?(ref: string, itemId: string, opts?: { remove?: boolean; expect?: string }): Promise<BringBack>;
   /** "Choose a clip…" (DESIGN-V2 §3.2): the clips that differ between version `ref` and your edit now. */
   bringBackChoices?(ref: string): Promise<BringBackChoices>;
   /** The clip-by-clip match between two versions, any two cuts (DESIGN-V2 §1.15). Cached per (a, b). */
