@@ -24,7 +24,7 @@ test(name("PLAN 1.1: the frame while viewing, its label tab with the one label a
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h(ViewingFrame, null)));
   assert.equal($(m.container, ".carton-frame"), null, "your edit: nothing");
-  await act(async () => { await ui.view({ kind: "version", versionId: ui.history().all().at(-4)!.id }); });
+  await act(async () => { await ui.view({ kind: "version", versionId: ui.history().all!().at(-4)!.id }); });
   await flush();
   const frame = $(m.container, ".carton-frame")!;
   assert.ok(frame, "the frame");
