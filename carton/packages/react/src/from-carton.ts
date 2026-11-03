@@ -417,7 +417,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   type Words = { summary: string; details?: readonly string[]; changes?: number; leftOut?: number; start?: "created" | "imported" };
   const byId = new Map<string, Words & { turn?: Words & { base: string } }>();
   /** A turn row's base when its changes are several versions' (they're then the whole turn's), else undefined. */
-  const turnBase = (v: Pick<Version, "kind" | "base" | "ref" | "seq">) => (v.kind === "turn" && v.base && v.base !== `${v.ref.slice(0, v.ref.lastIndexOf("@"))}@${(v.seq ?? 0) - 1}` ? v.base : undefined);
+  const turnBase = (v: Pick<Version, "id" | "kind" | "base" | "ref" | "seq">) => {
+    if (v.kind !== "turn" || !v.base) return undefined;
+    const c = rows[pos.get(v.id) ?? -1]?.core;
+    const own = c ? baseOf(c) : `${v.ref.slice(0, v.ref.lastIndexOf("@"))}@${(v.seq ?? 0) - 1}`;
+    return v.base !== own ? v.base : undefined;
+  };
   // "Fold in the rest" (R2-9, R3-5, R4-2, R5-1..3). Per partial fold (its inverse change id):
   // - restInfo: what it set back, read once from history (immutable);
   // - restDecision: whether the head still holds those values (left out), valid until a change on its cut touches
@@ -442,9 +447,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // The ref a version's changes start from: the version before it (a fold-some's: before its fold); a turn's, before its
   // first version (PLAN 0.1: `changes(base, ref)` is what the row did)
+  // (core says where a version's changes start when it isn't the seq before: a fold-some's, a compacted run's; review
+  // of the UX data #5, #6)
+  const startOf = (c: CoreVersion) => c.startsAt ?? c.ref.seq - (c.rejected ? 2 : 1);
   const baseOf = (c: CoreVersion, runStart?: CoreVersion): string | undefined => {
     const first = runStart ?? c;
-    const s = first.ref.seq - (first === c && c.rejected ? 2 : 1);
+    const s = startOf(first);
     return first.ref.seq > 0 && s >= 0 ? `${first.ref.branchId}@${s}` : undefined;
   };
   // An agent turn's versions share a key (PLAN 0.4): its turn and where it started
@@ -464,7 +472,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const base = kind === "turn" ? baseOf(c, runStart) : baseOf(c);
     const run = runOf(c, runStart);
     // the whole turn's words while it is a turn of several versions from this base; else its own
-    const tb = turnBase({ kind, base, ref: `${c.ref.branchId}@${c.ref.seq}`, seq: c.ref.seq });
+    const tb = kind === "turn" && base && base !== baseOf(c) ? base : undefined;
     const w = tb ? (prev?.turn?.base === tb ? prev.turn : undefined) : prev;
     return {
       id,
@@ -651,11 +659,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const wantSummary = (v: Version) => {
     if (v.provisional || queued.has(v.id)) return;
     const known = byId.get(v.id);
-    // described: unless it has since become a turn of several versions whose words aren't known yet
-    if (known && (!turnBase(v) || known.turn?.base === turnBase(v))) return;
-    // an import and a new cut's start have words at once, said better once read (PLAN 0.2: "History starts here",
-    // "Made this cut from Main cut at 12:20 pm")
-    if (v.summary) {
+    if (known) {
+      // described: unless it has since become a turn of several versions whose words aren't known yet (a turn whose
+      // start moved too: review of the UX data #7)
+      const tb = turnBase(v);
+      if (!tb || known.turn?.base === tb) return;
+    } else if (v.summary) {
+      // an import and a new cut's start have words at once, said better once read (PLAN 0.2: "History starts here",
+      // "Made this cut from Main cut at 12:20 pm")
       const k = rows[pos.get(v.id) ?? -1]?.core?.kind;
       if (k !== "import" && k !== "fork") return;
     }
@@ -705,7 +716,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
 
   // "Only “clip”" (PLAN 0.8): the versions that touched a clip, from the per-version index (clipVersions)
-  const items = itemFilter({ ask: (item) => handle.clipVersions(item), pos: (id) => pos.get(id), revision: () => revision, changed: () => hub.notify("history") });
+  // asked again when versions are added or go, not when a row is described
+  const lastConfirmed = () => {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.core) return rows[i]!.v.id;
+    return undefined;
+  };
+  const items = itemFilter({ ask: (item, o) => handle.clipVersions(item, o), pos: (id) => pos.get(id), structure: () => `${rows.length}|${lastConfirmed() ?? ""}`, newest: lastConfirmed, changed: () => hub.notify("history") });
   const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
   const history: HistorySource = {
     status: (f) => (typeof f === "object" ? items.status(f.item) : { loading: false }),
@@ -1016,7 +1032,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
             hub.notify("working");
           }
         }
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])] } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}) });
+        // what an undo undid, and a redo's undo, as log() says them (undoTurnOf skips what is out already)
+        const undoes = c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
+        const redoOf = c.kind === "revert" && typeof c.reverts === "string" && rows[pos.get(c.reverts) ?? -1]?.core?.kind === "undo" ? c.reverts : undefined;
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -1334,7 +1353,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const v = r.v, c = r.core;
     const p = (async (): Promise<readonly Change[]> => {
       // a turn of several versions: what the whole turn changed, each change by whoever in it made it last
-      if (v.kind === "turn" && v.base && v.base !== `${c.ref.branchId}@${c.ref.seq - 1}`) return changesBetween(v.base, v.ref);
+      const tb = turnBase(v);
+      if (tb) return changesBetween(tb, v.ref);
       const got = c.ref.seq > 0 ? (await carton.log({ cut: c.ref.branchId, before: c.ref.seq + 1, limit: 1, summary: true, rows: true }))[0] : undefined;
       const list = got?.ref.seq === c.ref.seq ? (got.rows ?? []) : [];
       return list.map((x) => toChange(x, { author: v.author, when: v.at })).sort(byPlace);
@@ -1637,10 +1657,24 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (r.v.provisional) return { ok: false, error: "Available once it's sent" };
       // the turn's versions, newest first, each inverted onto head: what a later change changed again keeps that newer
       // value and becomes a card (base: the turn's value, ours: head's, theirs: before the turn), the rest is undone
-      // (core's turn undo, as `cb undo --turn` does it)
-      const run = r.v.run;
-      const members = (run ? rows.filter((x) => x.core && x.v.run === run) : [r]).sort((a, b) => b.core!.ref.seq - a.core!.ref.seq);
-      const onCut = r.core.ref.branchId;
+      // (core's turn undo, as `cb undo --turn` does it). The whole turn: a turn's id takes its versions however other
+      // edits interleave them (review of the UX data #4); a run with no turn id (an agent that names none) is its run.
+      const key = r.turnKey, run = r.v.run;
+      const inTurn = (x: Row) => !!x.core && (key && !key.startsWith("run:") ? x.turnKey === key : run ? x.v.run === run : x === r);
+      // what an undo since took out (and no redo put back) is out already: never inverted twice, so an edit made since
+      // to the same value stays (review #2)
+      const redone = new Set<string>();
+      for (const x of rows) if (x.core?.redoOf) redone.add(x.core.redoOf);
+      const undone = new Set<string>();
+      for (const x of rows) if (x.core?.kind === "undo" && x.core.change && !redone.has(x.core.change)) for (const id of x.core.undoes ?? []) undone.add(id);
+      const members: Row[] = [];
+      for (let k = rows.length - 1; k >= 0; k--) {
+        const x = rows[k]!;
+        if (inTurn(x) && !(x.core!.change && undone.has(x.core!.change))) members.push(x);
+      }
+      if (!members.length) return { ok: false, error: "This turn is undone already" };
+      // the cut on screen: a turn inherited from the cut this one was made from is taken out here, never there (#1)
+      const onCut = cutId;
       const head = await carton.head(onCut);
       let doc: Doc = head.doc;
       const byPath = new Map<string, ConflictCard>();
@@ -1650,7 +1684,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // a fold-some's version is its fold and its partial revert: undone from before the fold, both named
         const pair = c.rejected && c.change?.endsWith(".inverse") ? [c.change, c.change.slice(0, -".inverse".length)] : c.change ? [c.change] : [];
         ids.push(...pair);
-        const [before, after] = await Promise.all([carton.checkout(`${c.ref.branchId}@${c.ref.seq - Math.max(1, pair.length)}`), carton.checkout(`${c.ref.branchId}@${c.ref.seq}`)]);
+        const [before, after] = await Promise.all([carton.checkout(`${c.ref.branchId}@${startOf(c)}`), carton.checkout(`${c.ref.branchId}@${c.ref.seq}`)]);
         const mg = merge3(after, doc, before, schema, { infer: false });
         doc = mg.doc;
         for (const card of mg.conflicts) {
@@ -1672,9 +1706,16 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       addCards(cards, undefined, onCut);
       return { ok: true, conflicts };
     },
-    async clipVersions(itemId) {
+    async clipVersions(itemId, o) {
       const record = pathKey([tl?.collection ?? "items", itemId]);
       const out: string[] = [];
+      // only the versions after one the filter already holds (on this cut): the index's tail, never the whole of it
+      const held = o?.after !== undefined ? rows[pos.get(o.after) ?? -1]?.core : undefined;
+      if (held && held.ref.branchId === cutId && typeof carton.touched === "function") {
+        const list = await carton.touched({ cut: cutId, record, after: held.ref.seq });
+        for (let k = list.length - 1; k >= 0; k--) if (pos.has(list[k]!.change)) out.push(list[k]!.change);
+        return { ids: out };
+      }
       if (typeof carton.touched !== "function") {
         // no index here: the last day's versions only, read one by one, and the filter says so
         const since = clock() - 86_400_000;
@@ -1732,9 +1773,37 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         return;
       }
       const since = turn.since ?? clock();
-      workingTurn = { actors: new Set(turn.actors?.length ? turn.actors : [turn.actor.id]), since, records: new Set(), ...(turn.cut ? { cut: turn.cut } : {}) };
-      working = { actor: ui(turn.actor), label: turn.label, edits: 0, since, ...(turn.cut ? { cutId: turn.cut } : {}) };
+      const actorsNow = new Set(turn.actors?.length ? turn.actors : [turn.actor.id]);
+      const actor = ui(turn.actor);
+      // the same turn again (a panel told twice): what it changed so far stays (review of the UX data #9)
+      const same = !!workingTurn && !!working && working.actor.key === actor.key && workingTurn.since === since && (workingTurn.cut ?? null) === (turn.cut ?? null);
+      const records = same ? workingTurn!.records : new Set<string>();
+      workingTurn = { actors: actorsNow, since, records, ...(turn.cut ? { cut: turn.cut } : {}) };
+      working = { actor, label: turn.label, edits: records.size, since, ...(turn.cut ? { cutId: turn.cut } : {}) };
       hub.notify("working");
+      if (same) return;
+      // a panel opened during the turn: what it changed before, from the per-version index (the versions since it
+      // began only)
+      const mine = workingTurn;
+      const onCut = turn.cut ?? cutId;
+      let after = rows.length;
+      while (after > 0 && (rows[after - 1]!.v.at >= since - 1000 || !rows[after - 1]!.core)) after--;
+      const fromSeq = after > 0 ? (rows[after - 1]!.core?.ref.branchId === onCut ? rows[after - 1]!.core!.ref.seq : 0) : 0;
+      if (typeof carton.touched !== "function") return;
+      void track(
+        carton.touched({ cut: onCut, after: fromSeq }).then((list) => {
+          if (workingTurn !== mine || !working) return;
+          const was = mine.records.size;
+          for (const t of list) {
+            const id = t.author?.id ?? "";
+            if (t.at >= since - 1000 && (mine.actors.has(id) || mine.actors.has(id.replace(/\/sub-[^/]*$/, "")))) for (const k of t.records) mine.records.add(k);
+          }
+          if (mine.records.size !== was) {
+            working = { ...working, edits: mine.records.size };
+            hub.notify("working");
+          }
+        }, () => {}),
+      );
     },
 
     async compare(a, b) {
@@ -2020,17 +2089,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     openPreview(ref, label) {
       // A provisional version has no state to rebuild yet (L5): there is nothing to preview.
       if (ref?.startsWith(PENDING_PREFIX)) return;
-      viewGen++;
+      const gen = ++viewGen;
       const v = ref ? versionAt(ref) : undefined;
       setViewing(ref ? { ref, kind: "version", label: label ?? (v ? versionLabel(v, { ...labelCtx(), start: true }) : ref), short: v ? versionShort(v, labelCtx()) : (label ?? ref), ...(v ? { versionId: v.id } : {}) } : null);
       if (!opts.onPreview) return;
       if (!ref) opts.onPreview(null);
       else
         carton.preview(ref).then(
-          (p) => preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }),
+          // a newer view or preview since (even of the same ref) owns the stage (review of the UX data #10)
+          (p) => gen === viewGen && preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }),
           () => {
             // The state can't be rebuilt (expired pin, unknown ref): close the preview rather than show a wrong one.
-            if (preview?.ref !== ref) return;
+            if (gen !== viewGen || preview?.ref !== ref) return;
             setViewing(null);
             opts.onPreview!(null);
           },

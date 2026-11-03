@@ -633,7 +633,7 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
       return "a new track";
     }
     const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
-    return t ? `track ${curly(label(tl!.lanes, t))}` : "another track";
+    return t ? `track ${quoted(tl!.lanes, t)}` : "another track";
   };
   const num = (x: number) => (Number.isInteger(x) ? String(x) : String(+x.toFixed(2)));
   const words = (key: string, v: unknown, doc: Doc): string | null => {
@@ -652,9 +652,22 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
     if (tl && coll === tl.collection) return own || undefined;
     return own || cs.noun || undefined;
   };
+  // a record by its name in curly quotes; one whose only name is its own id (a schema with no label for it) by what it
+  // is ("a clip"): never an id (review of the UX data #11)
+  const quoted = (coll: string, rec: Rec | undefined): string => {
+    const l = label(coll, rec);
+    const k = schema.collections[coll]?.key ?? "id";
+    // its own id, when that is what an id looks like (a hex run, or a long token): a name that happens to be its key
+    // ("W1") is still a name
+    const idLike = !!rec && l === String(rec[k]) && (/[0-9a-f]{12,}/i.test(l) || (l.length >= 16 && !/\s/.test(l)));
+    if (l !== "?" && !idLike && !HASHY.test(l)) return curly(l);
+    const n = nounOf(coll, rec) ?? schema.collections[coll]?.noun ?? "item";
+    return `${/^[aeiou]/i.test(n) ? "an" : "a"} ${n}`;
+  };
   const called = (coll: string, rec: Rec | undefined) => {
     const n = nounOf(coll, rec);
-    return `${n ? `${n} ` : ""}${curly(label(coll, rec))}`;
+    const q = quoted(coll, rec);
+    return q.startsWith("“") && n ? `${n} ${q}` : q;
   };
   const place = (coll: string | null, rec: Rec | undefined): { at?: number; end?: number } => {
     if (!tl || coll !== tl.collection || !rec) return {};
@@ -805,10 +818,10 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
   for (const [gk, g] of groups) {
     const sp = split.get(gk);
     if (sp === null) continue; // a split's part, or a part held by another record: told with it
-    // the record's path key, escaped as everywhere else (`touched`, cards, the Fold dialog's rows)
-    const key = g.coll ? pathKey([g.coll, g.id as string]) : gk;
+    // the record's path key, escaped as everywhere else (`touched`, cards, the Fold dialog's rows); a root field's too
+    const key = g.coll ? pathKey([g.coll, g.id as string]) : pathKey([gk]);
     if (sp) {
-      const name = curly(label(sp.coll, sp.rec));
+      const name = quoted(sp.coll, sp.rec);
       const said: string[] = [`Split ${name} at ${and(sp.at.map(timecode))}`];
       const drops = new Set((tl!.splitDrops ?? EMPTY).filter((f) => sp.rec[f] !== undefined && sp.parts.every((p) => p.rec[f] === undefined)));
       sp.parts.forEach(({ rec, ideal }, i) => {
@@ -866,7 +879,7 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
     // the record as it is after: its place in the edit is where it is now
     const after: Rec = { ...(before ?? {}) };
     for (const op of g.ops) if (op.path.length === 3 && (op.op === "set" || op.op === "unset")) after[op.path[2] as string] = op.op === "set" ? op.value : undefined;
-    const name = tl && g.coll === tl.lanes ? called(g.coll, before) : curly(label(g.coll, before));
+    const name = tl && g.coll === tl.lanes ? called(g.coll, before) : quoted(g.coll, before);
     const l = fieldSentence(g.coll, g.ops, before, base, name, after);
     // a record whose ops say nothing an editor reads (a field nobody labels): still a change, so the counts agree
     out.push({ key, text: l?.text ?? `Changed ${name}`, kind: "change", coll: g.coll, id, rec: after, ...place(g.coll, after), verb: l?.verb ?? "Changed %s", one: name });

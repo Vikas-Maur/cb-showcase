@@ -516,9 +516,10 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       const v = all[i]!;
       return [...(did.get(versionId) ?? [])].map((c) => ({ ...c, author: v.author, when: v.at })).sort((x, y) => (x.at ?? Infinity) - (y.at ?? Infinity));
     },
-    async clipVersions(itemId): Promise<ClipVersions> {
+    async clipVersions(itemId, o): Promise<ClipVersions> {
       counts.clipVersions++;
-      return { ids: itemView(itemId).map((i) => all[i]!.id).reverse() };
+      const from = o?.after !== undefined ? pos.get(o.after) ?? -1 : -1;
+      return { ids: itemView(itemId).filter((i) => i > from).map((i) => all[i]!.id).reverse() };
     },
 
     async credits(itemId) {
