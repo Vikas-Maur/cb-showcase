@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { CartonProvider, CompareList, CompareMarks, CompareStageView } from "../src/index.ts";
 import { createMockUi } from "../src/mock.ts";
 import type { Change } from "../src/model.ts";
+import { compareMarks } from "../src/compare.ts";
 
 const h = React.createElement;
 afterEach(cleanup);
@@ -157,6 +158,26 @@ test(name("the marks sit at start × pixels per second on their track's row; a s
   await click(moved);
   assert.deepEqual(picked, ["k3", "k1"]);
   assert.equal($(m.container, ".carton-tl-marks")?.getAttribute("aria-hidden"), "true");
+});
+
+test(name("design QA v2 G17: a removed clip's ghost names it from 24 px wide (a narrow caption too); narrower, its tooltip does"), async () => {
+  const marks = compareMarks(
+    [
+      { key: "timelineItems/cap", itemId: "cap", kind: "remove", clip: "caption", text: "Removed “our new”", at: 4, end: 5 },
+      { key: "timelineItems/cap2", itemId: "cap2", kind: "remove", clip: "caption", text: "Removed “in half”", at: 8, end: 8.5 },
+    ],
+    { timelineItems: [{ id: "cap", trackId: "t", startTime: 4, endTime: 5 }, { id: "cap2", trackId: "t", startTime: 8, endTime: 8.5 }], tracks: [{ id: "t" }] },
+    { timelineItems: [], tracks: [{ id: "t" }] },
+  );
+  assert.deepEqual(marks.map((x) => x.name), ["our new", "in half"]);
+  const m = await render(wrap(h(CompareMarks, { pps: 30, rows: new Map([["t", { top: 0, height: 24 }]]), marks })));
+  const ghosts = $$(m.container, ".carton-tl-rem");
+  assert.equal(ghosts.length, 2);
+  // 1 s at 30 px a second: 30 px, under the tags' 36 px, and named
+  assert.equal($(ghosts[0]!, ".carton-tl-ghost-name")?.textContent, "our new");
+  // 0.5 s: 15 px, no room for words; the tooltip says what it was
+  assert.equal($(ghosts[1]!, ".carton-tl-ghost-name"), null);
+  assert.equal(ghosts[1]!.getAttribute("title"), "Removed “in half”");
 });
 
 test(name("Play both's slates (DESIGN-V2 §1.4): a side with no shot there shows one in every mode, the right side's too, and “waiting” on the side that holds"), async () => {

@@ -104,14 +104,9 @@ const WS1 = [
   W("ws1-editor-comments-see", "ux-history", "Comments open, a version viewed without a row (as Comments' See it as it was views one): the frame's label tab.", async (p) => { await p.locator('[role=tab][aria-label="Comments"]').click(); await p.waitForTimeout(200); await p.evaluate(() => window.__cap.ui.view({ kind: "version", ref: "main@20", label: "Your edit from 11:02 am" })); await p.waitForTimeout(300); }),
   { name: "ws1-titlebar-viewing", s: "ux-history", how: "The title bar while viewing the Director's turn: the chip's second part, 👁 label ✕.", target: "titlebar", steps: playDirector },
 ];
-// Workstream 4: the Changes view, Play and Before (after/changes-384.png, changes-300.png, changes-playing-384.png, changes-none-384.png)
-const WS4 = [
-  P("changes", "changes-story", "History, ⋯ → Compare with your edit on the Director's “Add captions to the interview”: the Changes view in place of the list.", (p) => changes(p)),
-  P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),
-  P("changes-before", "changes-story", "changes-playing, then Before pressed and held.", async (p) => { await changes(p); await playAll(p); await holdBefore(p); }, { keepHover: true }),
-  P("changes-none", "changes-story", "⋯ → Compare with your edit on the newest version (Claude Code's turn): no differences.", (p) => changes(p, "Tighten the intro and add a lower third")),
-  P("changes-two", "changes-story", "A click on “Sent to client”, then Shift+click on the Director's turn: the Changes view between two versions.", async (p) => { await row(p, "Sent to client").click(); await row(p, "Add captions to the interview").click({ modifiers: ["Shift"] }); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }),
-];
+// Workstream 4's in-panel Changes view (changes, changes-playing, changes-before, changes-none, changes-two) is retired:
+// "Compare with your edit" and Shift+click open Compare in the editor now (DESIGN-V2 §1.2, N1), so the view those
+// shots waited for never comes (design QA v2 §6). N1's own states shoot Compare (states/n1.shots.mjs).
 // Workstream 6: the cuts menu and Fold in, redesigned (PLAN 6.1–6.3)
 const WS6 = [
   P("ws6-cuts-menu", "ws6-cuts", "History's cut button → the cuts menu: who and when per cut, dots, From teammates (View only), one Fold entry, the agents line.", (p) => cutsMenu(p)),
@@ -161,7 +156,7 @@ const HELPERS = { P, T, W, B, D, ED, WIDTHS, row, vrow, rowMenu, menuItem, tab, 
 const states = join(here, "states");
 const FEATURES = [];
 for (const f of readdirSync(states).filter((x) => x.endsWith(".shots.mjs")).sort()) FEATURES.push(...(await import(pathToFileURL(join(states, f)).href)).shots(HELPERS).map((x) => ({ ...x, from: `states/${f}` })));
-const SHOTS = [...AFTER, ...WS1, ...WS59, ...WS4, ...WS6, ...KEPT, ...FEATURES];
+const SHOTS = [...AFTER, ...WS1, ...WS59, ...WS6, ...KEPT, ...FEATURES];
 // a name shot twice would overwrite its PNG: say which file added it
 const seen = new Map();
 for (const x of SHOTS) {

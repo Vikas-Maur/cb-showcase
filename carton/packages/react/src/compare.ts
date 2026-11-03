@@ -88,6 +88,8 @@ export interface TimelineMark {
   readonly delta?: number;
   /** The change row's sentence, for the mark's tooltip. */
   readonly text: string;
+  /** A removed clip's name, from its row's sentence ("Removed “our new”"): its ghost shows it (design QA v2 G17). */
+  readonly name?: string;
 }
 
 const EPS = 0.01;
@@ -125,7 +127,8 @@ export function compareMarks(changes: readonly Change[], from: CompareDoc | null
       const e2 = hunk && hunk.kind === "change" ? s2 : Math.max(s2, toB(e));
       const end = e2 - s2 > EPS ? e2 : s2;
       const track = a?.trackId && (tracksB.size === 0 || tracksB.has(a.trackId)) ? a.trackId : undefined;
-      out.push({ key: c.key, itemId: id, kind: "removed", ...(track ? { trackId: track } : {}), start: s2, end, text: c.text });
+      const name = /“([^”]+)”/.exec(c.text)?.[1];
+      out.push({ key: c.key, itemId: id, kind: "removed", ...(track ? { trackId: track } : {}), start: s2, end, text: c.text, ...(name ? { name } : {}) });
       continue;
     }
     const s = b ? b.startTime : c.at, e = b ? b.endTime : c.end;

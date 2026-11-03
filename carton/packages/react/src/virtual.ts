@@ -89,6 +89,11 @@ export interface VirtualListProps {
   scrollTopRef?: { current: (() => void) | null };
   /** The row at the top of the view changed (History's sticky day header): called only when it does. */
   onFirstVisible?: (index: number) => void;
+  /**
+   * How far down the view `onFirstVisible`'s row is read, in px (default 0): History's pinned day header covers the
+   * view's top 32 px, so its day is the row under its bottom edge (design QA v2 G16: it lagged a header's height).
+   */
+  firstVisibleAt?: number;
 }
 
 export function VirtualList(p: VirtualListProps) {
@@ -139,7 +144,8 @@ export function VirtualList(p: VirtualListProps) {
       onScrolledChange.current?.(scrolled.current);
     }
     if (onFirstVisible.current && p.count > 0) {
-      const first = tops ? rowAt(tops, p.count, st) : Math.min(p.count - 1, Math.floor(st / p.rowHeight));
+      const y = st + (st > 0 ? (p.firstVisibleAt ?? 0) : 0);
+      const first = tops ? rowAt(tops, p.count, y) : Math.min(p.count - 1, Math.floor(y / p.rowHeight));
       if (first !== firstShown.current) {
         firstShown.current = first;
         onFirstVisible.current(first);
@@ -147,7 +153,7 @@ export function VirtualList(p: VirtualListProps) {
     }
     setRange((prev) => (prev[0] === next[0] && prev[1] === next[1] ? prev : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewport, p.rowHeight, p.count, overscan, tops]);
+  }, [viewport, p.rowHeight, p.count, overscan, tops, p.firstVisibleAt]);
 
   // A scroll's new rows are rendered in a task after the frame (as React's scheduler does for scroll), never inside
   // it: preact/compat renders state set in a scroll handler at once, which put a whole window of row mounts on the

@@ -410,6 +410,8 @@ export function CompareRowDetail(p: { then: string; now: string; action?: string
 export interface TrackRow { readonly top: number; readonly height: number }
 
 const TAG_MIN = 36;
+/** A removed clip's ghost names it from this wide (the tag's 36 px is for tags; design QA v2 G17). */
+const GHOST_NAME_MIN = 24;
 const MARK_CLASS: Record<MarkKind, string> = { added: "add", removed: "rem", moved: "chg", trimmed: "chg", changed: "chg" };
 
 /**
@@ -441,7 +443,7 @@ export const CompareMarks = memo(function CompareMarks(p: { marks: readonly Time
             title: m.text,
             style: { left, width, top: row.top + 1, height: Math.max(4, row.height - 2) },
             onClick: () => p.onPick?.(m.key),
-          }, tag && width >= TAG_MIN ? h("span", { className: "carton-tl-tag" }, tag) : null),
+          }, tag && width >= TAG_MIN ? h("span", { className: "carton-tl-tag" }, tag) : m.kind === "removed" && m.name && width >= GHOST_NAME_MIN ? h("span", { className: "carton-tl-ghost-name" }, m.name) : null),
     );
   }
   return h("div", { className: "carton-tl-marks", "aria-hidden": true }, ...out);
@@ -549,6 +551,7 @@ ${SK} .carton-compare-foot{border-top:1px solid var(--cb-line);padding:10px 12px
 .carton-tl-mark[data-selected]{outline:2px solid #fff;outline-offset:1px}
 .carton-tl-tag{position:absolute;right:3px;top:3px;height:15px;padding:0 4px;border-radius:4px;font:700 10.5px/15px var(--font-sans,system-ui);color:#1d1400;background:#fbbd23;white-space:nowrap}
 .carton-tl-add .carton-tl-tag{background:#4ade80;color:#06240f}
+.carton-tl-ghost-name{position:absolute;left:4px;right:3px;top:50%;transform:translateY(-50%);overflow:hidden;text-overflow:clip;white-space:nowrap;font:500 11px/14px var(--font-sans,system-ui);color:#f19a9a}
 .carton-tl-seam{position:absolute;width:0;border-left:2px dashed #e37878;pointer-events:auto;cursor:pointer}
 .carton-tl-seam>span{position:absolute;top:-1px;left:-9px;width:16px;height:16px;border-radius:9px;background:#e37878;color:#2a0b0b;font:800 12px/16px system-ui;text-align:center}
 .carton-tl-seam[data-selected]>span{box-shadow:0 0 0 2px #fff}

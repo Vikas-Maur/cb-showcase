@@ -1412,6 +1412,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
               onKey,
               scrollTopRef: scrollTop,
               onFirstVisible: setTopRow,
+              firstVisibleAt: DAY_ROW_HEIGHT,
               rowKey: keyAt,
               renderRow,
             }),

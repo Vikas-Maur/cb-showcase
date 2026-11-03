@@ -4,6 +4,7 @@
 
 import type { Actor, BringBack, BringBackChoices, Change, Cut, CutHistoryPage, FindField, FindHit, FindHits, Landmark, Made, Version } from "./model.ts";
 import { actorLabel } from "./actors.ts";
+import { clockOfDay } from "./format.ts";
 
 export interface MockFindState {
   all(): readonly Version[];
@@ -170,8 +171,11 @@ export function mockFind(st: MockFindState) {
     const added = list.some((c) => c.kind === "add");
     if (added && !o.remove) throw Object.assign(new Error(`“${name}” wasn't in this version. Bringing it back means taking it out.`), { code: "NOT_IN_VERSION" });
     const how = added ? "removed" : list.some((c) => c.kind === "remove") ? "added" : "changed";
+    // (as the real view model words it, from-carton.ts: "Brought back “Intro” from 10:20 am", or from the version's name)
+    const was = st.all().find((x) => x.ref === ref);
+    const from = was?.name ? `“${was.name}”` : was ? clockOfDay(was.at) : "an earlier version";
     const v = st.addVersion(
-      { author: st.me, kind: "restore", summary: added ? `Took out “${name}”` : `Brought back “${name}” from an earlier version` },
+      { author: st.me, kind: "restore", summary: added ? `Took out “${name}”` : `Brought back “${name}” from ${from}` },
       list.map((c) => ({ ...c, kind: added ? "remove" : c.kind === "remove" ? "add" : "change", text: added ? `Removed “${name}”` : `Brought back “${name}”` })),
     );
     st.notify("landmarks");

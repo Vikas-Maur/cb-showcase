@@ -220,3 +220,29 @@ test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolle
   assert.equal(list.scrollTop, before + 3 * 56, "moved only by the three rows that arrived above, never back to Yesterday's header");
   await m.unmount();
 });
+
+// Design QA v2 G16: the pinned day header said "Today" for a header's height after yesterday's rows reached the top. Its
+// day is the row under its bottom edge (32 px down), not the row at the very top, which the pinned header covers.
+test(name("design QA v2 G16: the first visible row is read under the pinned header's bottom edge"), async () => {
+  // rows: Today's header (32), two versions (56 each), Yesterday's header (32), its versions; tops 0, 32, 88, 144, 176…
+  const heights = [32, 56, 56, 32, 56, 56, 56, 56, 56, 56];
+  const seen: number[] = [];
+  const view = (at?: number) => h(VirtualList, { count: heights.length, rowHeight: 56, heightOf: (i: number) => heights[i]!, layoutKey: "same", rowKey: (i: number) => `r${i}`, label: "History", initialHeight: 200, renderRow: (i: number) => h("div", null, `r${i}`), onFirstVisible: (i: number) => seen.push(i), ...(at === undefined ? {} : { firstVisibleAt: at }) });
+  for (const at of [undefined, 32]) {
+    seen.length = 0;
+    const m = await render(view(at));
+    const list = $(m.container, ".carton-vlist") as HTMLElement;
+    let st = 0;
+    Object.defineProperty(list, "scrollTop", { get: () => st, set: (v: number) => (st = v), configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
+    // 120 px down: the top is inside Today's last version (88–144); 32 px lower is Yesterday's header (144–176)
+    st = 120;
+    await act(() => {
+      list.dispatchEvent(new Event("scroll"));
+    });
+    await flush();
+    await act(() => new Promise<void>((r) => setTimeout(r, 20)));
+    assert.equal(seen.at(-1), at === undefined ? 2 : 3, at === undefined ? "without an offset: the row at the top" : "History's: the row under the header");
+    await m.unmount();
+  }
+});
