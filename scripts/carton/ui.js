@@ -125,6 +125,7 @@ function viewAndSwap(view, viewing, preview) {
   };
 }
 
+/**
  * The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. The
  * edit-attempt toast (tone "viewing") has its action as the primary button and Esc, its key, in place of the ✕.
  */
