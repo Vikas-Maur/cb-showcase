@@ -635,7 +635,11 @@ export function CompareSide({ bridge, onFoldIn }) {
   const n = data?.changes?.length ?? null;
   const len = bridge?.editLength?.();
   const countWord = n == null ? null : c.acrossCuts ? words.differences(n) : words.changes(n);
-  const count = countWord ? (len > 0 ? words.compareCountLength(countWord, timecode(len)) : countWord) : null;
+  // across cuts, each cut's length, left first ("7 differences · 0:30 and 0:36", §1.12): the cuts differ in length
+  const endOfDoc = (doc) => (doc?.timelineItems ?? []).reduce((m, x) => Math.max(m, Number(x?.endTime) || 0), 0);
+  const leftLen = c.acrossCuts ? endOfDoc(data?.leftDoc) : 0;
+  const lengths = len > 0 ? (leftLen > 0 ? `${timecode(leftLen)} and ${timecode(len)}` : timecode(len)) : null;
+  const count = countWord ? (lengths ? words.compareCountLength(countWord, lengths) : countWord) : null;
   const strong = (s) => h("b", null, s);
   const range = c.acrossCuts
     ? [h("span", null, strong(c.left.name ?? c.left.label), c.left.detail ? ` · ${c.left.detail}` : ""), h("span", null, `${words.compareWithWord} `, strong(c.right.name ?? c.right.label), c.right.detail ? ` · ${c.right.detail}` : "")]

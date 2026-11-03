@@ -192,6 +192,10 @@ test("N1 §1.1: openCompare puts the sides the right way round and names them on
     assert.equal(c.acrossCuts, true);
     assert.equal(c.right.title, "Main cut");
     assert.equal(m.compare().querySelector(".carton-compare-count").textContent, `${ROWS.length} differences`);
+    // the panel's count gives each cut's length, left first (§1.12; design QA v2 G14)
+    await m.cmd("carton-history");
+    await m.settle(60);
+    assert.equal(m.list().querySelector(".carton-compare-n")?.textContent, `${ROWS.length} differences · 0:20 and 0:16`);
   } finally { await m.done(); }
 });
 
