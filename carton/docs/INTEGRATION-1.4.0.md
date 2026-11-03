@@ -68,7 +68,7 @@ with a plain rename. It says so once in the log. The tests check that `cb` then 
 - **Carton off.** Each hooked method runs Cardboard's original code at once, and nothing of Carton is loaded. The cost
   is one extra property read per hook.
 - **Mixed states are safe by construction.** Some writers don't run Carton: an old `cb`, a text editor, a terminal `cb`
-  without the variable. Each of those is a *foreign writer*. Carton displaces its save and imports it as an attributed
+  with `CARDBOARD_CARTON=0`. Each of those is a *foreign writer*. Carton displaces its save and imports it as an attributed
   change. It never overwrites it (§6.4).
 - **Always on.** H11's `.cbproj` exclusions apply even with Carton off. A project that was ever tracked must not ship
   its `.carton/` database, which holds local paths and device pins.

@@ -162,7 +162,7 @@ Not run yet:
 
 ## Our Windows build (for reference)
 
-With Carton off (the default), every Carton hook there runs Cardboard's own code, except three changes that apply
+With Carton off (`CARDBOARD_CARTON=0`; it is on by default), every Carton hook there runs Cardboard's own code, except three changes that apply
 either way: the staging folder's removal after Open Project retries on Windows; Open Project of a `.cbproj` that holds
 Carton's data removes, from the staged copy only, the `.carton\` folder and the view files Carton wrote in
 `.scratch\views\` (a person's or an agent's own files there stay; a stock `.cbproj` opens as before); and Save As of a
