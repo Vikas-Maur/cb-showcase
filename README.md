@@ -529,14 +529,22 @@ What changes with it on:
   and back where it came from as it closes, and Esc closes the innermost one only.
   Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
   with its text up to about eight lines, then scrolls, and has no resize grip.
-- **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
-  your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
-  once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
-  it. **See it:** "Preview" shows the timeline with that side kept, read-only, with the clip in view; "Show on
-  timeline" selects the clip and moves the playhead to it. On an agent's card your value is the
-  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
-  side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
-  two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
+- **Conflict cards** sit in the preview's bottom-right corner, one at a time: your own edits that clashed, and an
+  agent's view edit that clashed with yours (see "An agent's edit and yours at once" below). A card says in words what
+  each side did to which clip: "“Interview B”: you and Claude Code both moved it", then "Yours · 2 min ago: Moved it to
+  start at 0:18" and "Claude Code's · just now: Moved it to start at 0:20" ("Made it bigger (font size 120)", "Set its
+  opacity to 50%", "Removed it"; a clip by its name or file, never an id), and which side the timeline shows until you
+  pick ("Until you pick, yours is in the timeline."). The sides are radio buttons that only pick, starting on the side
+  shown; the one main button names the pick ("Keep yours", "Keep Claude Code's", "Keep both") and Enter presses it.
+  **See it** on a side shows that side on the preview, read-only, with the clip in view ("Seeing it"; again, Esc, or
+  deciding brings your edit back); "On timeline" selects the clip and moves the playhead to it. "Keep Director's" puts
+  the agent's in as your own version (Ctrl+Z takes it back), and the confirmation names it ("Kept Claude Code's move
+  of “Interview B”."). Two changes of your own read "Your earlier change · 10:04 am" and "Your later change", with
+  "Keep earlier" and "Keep later". While the agent is still working, the card says so; if it changes the same thing
+  again, a pick you made on the old values is dropped ("Claude Code changed it again. Pick again."). "1/2 ›" steps
+  through the cards; "Not now" folds them into a "2 conflicts to pick" pill and sends that card to the back, deciding
+  nothing. While History is open or you're looking at another version, the cards wait as the pill, whose click brings
+  your edit back and opens them.
 - **Who made each version** reads as you'd say it: "You" (a `cb` you typed included), a teammate's name, "Director",
   "Claude Code", "Codex", and a teammate's agent as theirs ("Leo's Director"). A subagent shows as the agent that
   started it; its type and the model are in the tooltip. The project's import reads "Imported the project" by you;

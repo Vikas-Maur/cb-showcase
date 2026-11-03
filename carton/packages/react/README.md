@@ -55,7 +55,8 @@ Cardboard's own team, which has the source, would use React directly with no cha
 | `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's), who and when down to the subagent, "Not sent yet" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
 | `CutsMenu` | Switch cuts, new cut from here, rename, fold into Main. Someone else's cuts are read-only and named by owner ("Bob's Main cut") |
 | `FoldInDialog` | What folding in brings, in plain words. Leave changes out (fold in some of it), pick on conflict cards first, "You can fold in the rest later". §13's missing-base text when the copy builds on a version you don't have |
-| `ConflictCard`, `ConflictList` | Both edits, who made each and which one shows now. Keep mine / Keep theirs / Keep both |
+| `ConflictCard`, `ConflictList` | What each side did to which clip, in words ("“Interview B”: you and Claude Code both moved it"; "Moved it to start at 0:20"), and which side the timeline shows. Sides as a radio group that only picks; See it views a side (`view({ kind: "conflict" })`, or the host's deprecated `onPreview`); one Keep that names the pick; the line during the other side's agent turn, and "Pick again" when its values changed. With `onPick` (the Fold dialog): the pre-redesign card, until the dialog's own pick rows |
+| `ConflictStack` | One card at a time with "1/2 ›"; "Not now" folds it into the "N conflicts to pick" pill and sends it to the back. Waits as the pill while the host folds it or the stage shows anything else; the pill brings your edit back |
 | `CompareCard` | Time, author, clip count, length, and "N shots / X s of Y s differ" |
 | `CreditsPopover` | Who last changed each part of a clip ("Director › Explore") |
 | `UndoTurnButton` | "Undo Director: tighter intro": the whole turn |
@@ -87,6 +88,13 @@ mockups' story (Main cut today, a 0:38 edit), so components can be built before 
 
 Version rows carry `changes` (how many), `leftOut` (a partial fold's), `base` (where their changes start), `run` (the
 turn they're part of) and `start`. Every sentence comes from core's `changeList` (one table, DESIGN §8).
+
+A conflict card's sides carry their change sentence about the card's clip (`ConflictSide.text`: "Moved it to start at
+0:20"), a verb phrase for its title (`did`: "moved it") and a noun for the viewing label (`what`: "move"); the card
+carries the clip's name (`clip`) and, when the host can say, what Keep both makes (`both`). `cardSentences(card, schema,
+doc, valueWords)` reads them from one of core's cards; `conflictWords(conflict, nameOf)` is everything a card says (title,
+lead, side names, Keep names, viewing labels), so the card, `view()`'s label and the pick's toast (`keptText`) agree.
+`summary` stays core's describeCard.
 
 ## Performance, by design
 
