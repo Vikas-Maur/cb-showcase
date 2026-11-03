@@ -143,6 +143,7 @@ test("Play both: a shot only one side has plays there, and the other side shows 
   assert.deepEqual(s.map((x) => [x.start, x.dur, x.aLen, x.bLen]), [[0, 4, 4, 4], [4, 3, 3, 0], [7, 5, 5, 5]]);
   let at = sidesAt(s, 5);
   assert.deepEqual([at.a.t, at.a.slate], [5, false], "the pier plays on the left");
+  assert.equal(storyAt(s, "b", 4), 4, "the right side's playhead at the join (the removed pier picked): the pier's stretch, not the Outro after it");
   assert.deepEqual([at.b.t, at.b.slate, at.b.missing], [4, true, "B-roll pier"], "the right side's slate: “B-roll pier” isn't in …");
   // and the mirror: a shot only the right side has
   const added: ShotDiff = { a: B2, b: A2, matches: [[0, 0], [1, 2]], aLabel: "a", bLabel: "b" };

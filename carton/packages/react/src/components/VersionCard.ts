@@ -323,7 +323,7 @@ export function VersionCard(p: VersionCardProps) {
                 : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
             p.loading ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
             v.empty ? null : (p.before ?? null),
-            playing && !p.newest && !v.empty && p.onSideBySide ? h(Button, { variant: "ghost", icon: "compare", className: "carton-card-side", onClick: () => p.onSideBySide!(oldest.base ?? v.ref, v.ref) }, words.sideBySideBtn) : null,
+            playing && !p.newest && !v.empty && p.onSideBySide && oldest.base ? h(Button, { variant: "ghost", icon: "compare", className: "carton-card-side", onClick: () => p.onSideBySide!(oldest.base!, v.ref) }, words.sideBySideBtn) : null,
             // (no Go back… while its Play runs: Restore… stays in ⋯, and Go back… comes back on Pause: design QA G18)
             p.readOnly || (playing && !p.newest)
               ? null

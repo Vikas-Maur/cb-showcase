@@ -216,6 +216,9 @@ const stretchAt = (s: readonly PlayStretch[], T: number): PlayStretch | null => 
 export function storyAt(s: readonly PlayStretch[], side: "a" | "b", t: number): number {
   for (const x of s) {
     const s0 = side === "a" ? x.a0 : x.b0, len = side === "a" ? x.aLen : x.bLen;
+    // exactly at a join where this side has no shot (a removed clip picked: the playhead at its join): that stretch,
+    // so the other side's shot plays there (review of feat/ux2-n1b #1)
+    if (len <= EPS && Math.abs(t - s0) <= EPS) return x.start;
     if (len > EPS && t < s0 + len) return x.start + Math.max(0, t - s0);
   }
   return playLength(s);

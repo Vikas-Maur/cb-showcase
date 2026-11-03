@@ -717,7 +717,8 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const onCompare = useCallback((a, b) => void Promise.resolve(ui.openCompare?.(a, b)).catch(() => {}), [ui]);
   const foldIds = useCallback((from, into) => setFold({ from, into }), []);
   // Fold in's See them side by side (DESIGN-V2 §1.2): the dialog closes, Compare opens; its Back to Fold in… reopens it
-  const foldSideBySide = useCallback((from, into) => { setFold(null); void Promise.resolve(ui.openCompare?.(from, into, { back: "fold" })).catch(() => {}); }, [ui]);
+  // (the dialog closes once Compare has opened; if it can't, the dialog stays: review of feat/ux2-n1b #11)
+  const foldSideBySide = useCallback((from, into) => { void Promise.resolve(ui.openCompare?.(from, into, { back: "fold", fold: { from, into } })).then(() => setFold(null), () => {}); }, [ui]);
   const backToFold = useCallback((from, into) => { void Promise.resolve(ui.closeCompare?.()).then(() => setFold({ from, into })); }, [ui]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
     comparing ? h(CompareSide, { bridge, onFoldIn: foldIds, onBackToFold: backToFold }) : null,
