@@ -402,6 +402,11 @@ export interface Version {
    * it as the fold it is, not as an undo (final re-check, baseline P3-12b). Its undo and the redo of that have none.
    */
   restOf?: ChangeId;
+  /**
+   * A redo (a `revert` of an undo change): the undo it takes back. A list shows it as a redo, as it shows an undo as an
+   * undo (laptop: `cb history` listed it as `revert`). Set by `Carton.log()`.
+   */
+  redoOf?: ChangeId;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";

@@ -12,7 +12,7 @@
 // whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
 // report, never another call's.
 import { merge3, EmptyVersion } from "@carton/core";
-import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef, Version } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
 import type { ShowTarget, Showing } from "@carton/cardboard/node";
@@ -654,8 +654,12 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   // first card's base is the turn's last value and ours is head's; each older change's card only moves theirs back to
   // the value before it, so picking the undo restores the value from before the turn, not one of the turn's own
   const byPath = new Map<string, ConflictCard>();
+  // P2-1: a fold-some's version (`rejected`) is its fold and the partial revert right after it: undone from before the
+  // fold, and both named in `undoOf` (the partial revert's id is always `<fold's id>.inverse`), never the partial
+  // revert alone, which would bring in what the fold left out
+  const pair = (v: Version) => (v.rejected && v.change!.endsWith(".inverse") ? [v.change!, v.change!.slice(0, -".inverse".length)] : [v.change!]);
   for (const v of mine) {
-    const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
+    const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - pair(v).length }), carton.checkout(v.ref)]);
     // base: the turn's change; ours: head (a clash keeps head's newer value); theirs: before the change
     const m = merge3(after, doc, before, carton.schema, { infer: false });
     doc = m.doc;
@@ -691,7 +695,7 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
       }
     }
   }
-  return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) }), cards };
+  return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.flatMap(pair) }), cards };
 }
 /** The cards an `undo --turn` request raised (local `notices` table, no actor reads it): its retry answers with them. */
 const undoCardsKey = (id: ChangeId) => ["@undo-cards", id];

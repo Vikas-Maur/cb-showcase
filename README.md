@@ -562,8 +562,13 @@ What changes with it on:
   row, left out together. The Fold dialog names a track the same fold adds ("Moved 'W1' to track 'Text 1'", as
   History's row says it; it read "to track another track"). Every undo or redo of a restore says so ("Undid the
   restore", "Redid the restore"), also the second and later ones (they read as fresh edits), and the undo of a fold or
-  of "Folded the rest…" reads "Undid the fold of 'Alt' into 'Main cut'". `cb history` lists "Folded the rest" as
-  `merge (the rest)` (it read `revert`). **You can fold in the rest later** is true now: the next Fold in lists what
+  of "Folded the rest…" reads "Undid the fold of 'Alt' into 'Main cut'". **Fold in some of it is one undo**
+  (laptop P2-1): after "Fold in 2 of 3" and then the rest, Ctrl+Z takes back the rest, and the next Ctrl+Z the whole
+  partial fold, leaving Main as it was before it. The second press used to bring the rest back in (the two presses
+  flipped between the same two states, the second misnamed) and a third undid the fold; a partial fold on its own
+  undid to the rest brought in. Redo walks forward the same way, and `cb undo`, `cb undo --turn` and History's Undo
+  do the same, also on a shared cut with a teammate's edits in between. `cb history` lists "Folded the rest" as
+  `merge (the rest)` (it read `revert`), and a redo as `redo` (it read `revert` too), as an undo reads `undo`. **You can fold in the rest later** is true now: the next Fold in lists what
   was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
   in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
   recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the
@@ -670,7 +675,9 @@ run below.
    (Claude Code's `if` conditions, checked inside Claude Code): a call on any other file starts no process, so an
    agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
    answers.
-5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
+5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent (and so does a hook
+   on Claude Code's PowerShell tool, which Cardboard's hooks don't cover: `$env:CARDBOARD_ACTOR` there, left out of a
+   script that must open with `using` or `param(...)`; `cb` is found in any case and as a quoted path); `Stop` and
    `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
    Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below). Cardboard 1.4.0 runs your
    own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it
@@ -701,9 +708,16 @@ run below.
    opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
    Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
    `timeline.tsx` holds back other people's changes, so it doesn't change under the agent: a turn of the Director or of
-   your own Claude Code in the app from its first `cb` call or read of the file until its turn ends; anyone without hooks
-   (Codex, a Claude Code in a terminal without Carton's hooks, a `cb` you type) until a minute after their last `cb`
-   edit. The person's edits go on in the editor and `project.json` meanwhile, and reach the file when that ends. An agent can also print its own copy, `cb source print <project> --view
+   your own Claude Code in the app from its first `cb` call or read of the file until its turn ends, whatever runs in
+   between: a `cb source print` holds it as a write does, `cb` in Claude Code's PowerShell tool as in Bash, and a long
+   call that isn't `cb` (a ping, a render, a command the agent left running in the background) doesn't end it. Before,
+   a real turn on the laptop let the person's mute into the file mid-turn: its first print and a 30 s ping ran in
+   PowerShell, which the app's hooks didn't cover, so nothing held the file until a later Bash command; and the worker
+   let go of an agent it hadn't heard from for a minute, so any longer call would have done the same. Now, while the
+   turn runs, the app tells the worker so every 20 s; the turn's Stop or end lets go at once, and if the app goes away
+   the worker lets go a minute after the last word, so no hold outlives its turn. Anyone without hooks
+   (Codex, a Claude Code in a terminal without Carton's hooks, a `cb` you type) holds it until a minute after their last
+   `cb` edit. The person's edits go on in the editor and `project.json` meanwhile, and reach the file when that ends. An agent can also print its own copy, `cb source print <project> --view
    <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
    `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the
    agent's (`cb conflicts`, the Stop hook) and the person's (History). That worker is also the project's one lease
@@ -735,7 +749,12 @@ run below.
    computer's history is never used. Cardboard's reader still decides, and a project it reads costs nothing more.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
-thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
+thread and helper beside it, and `carton-ui.js` beside the editor's code. **A `cb` call with Carton on starts faster**
+(perf/apply-latency): it used to compile all of `carton-node.cjs` from source on every call, twice per agent's print
+and apply; Node's compile cache (in `%TEMP%\node-compile-cache`, checked against the file's contents) now keeps that
+work between calls. And a `cb` call no longer runs a checkpoint of the project's `carton.db` log when it opens it (it
+copied and synced the log, even for a read-only `cb source print`): while the log is small, the app's worker does it
+on its own timer; a log past 4 MiB is still checkpointed by whoever opens it. `build-windows.js --no-carton` leaves Carton
 out entirely, and `--baseline` does too.
 
 #### Testing Carton
