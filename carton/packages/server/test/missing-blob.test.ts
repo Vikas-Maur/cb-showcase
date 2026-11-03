@@ -5,17 +5,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { sync } from "@carton/core";
-import type { SequencerEvent } from "../src/index.ts";
+import type { SequencerEvent, SequencerOptions } from "../src/index.ts";
 import { BRANCH, clip, doc, fakeConn, memoryBlobs, push, set, verdict, world, type FakeConn } from "./helpers.ts";
 
 const HASH = (c: string) => c.repeat(64);
 
 /** A cut with `n` confirmed rows on a sequencer with a blob store, and keyframes uploaded at 64 and 128 (as replicas do). */
-async function history(n: number) {
+async function history(n: number, o: Partial<SequencerOptions> = {}) {
   const d0 = doc([clip("c0", 0, 5), clip("c1", 5, 10)]);
   const blobs = memoryBlobs();
   const events: SequencerEvent[] = [];
-  const { seq } = await world(d0, { blobs, onEvent: (e) => events.push(e) });
+  const { seq } = await world(d0, { blobs, onEvent: (e) => events.push(e), ...o });
   const writer = fakeConn("writer/1");
   for (let i = 0; i < n; i++) assert.equal(verdict(await push(seq, writer, d0, [set(`c${i % 2}`, "name", `v${i}`)])), "ack");
   for (const at of [64, 128]) if (at <= n) await seq.handle(writer, { type: "keyframe", branchId: BRANCH, keyframe: { seq: at, stateHash: HASH(String(at % 10)), doc: d0 as never } });
@@ -101,4 +101,41 @@ test("archived rows whose segment is gone: a catch-up that needs them is refused
   assert.ok(reply, `a history reply: ${JSON.stringify(h.inbox)}`);
   assert.equal(reply.req, 7);
   assert.match(String(reply.error), /history can't be loaded/);
+});
+
+test("review #1: a catch-up of many pages reads each lost keyframe once, not once per page", async () => {
+  const { seq, blobs } = await history(130, { catchupLimit: 10 });
+  drop(blobs, "keyframes/");
+  const r = await catchUp(seq, fakeConn("joiner/1"), 0);
+  assert.equal(r.error, null);
+  assert.ok(r.welcomes.length >= 13, `paged (${r.welcomes.length} pages)`);
+  assert.deepEqual(r.welcomes.flatMap((w) => w.rows).map((x) => x.seq), Array.from({ length: 130 }, (_, i) => i + 1));
+  assert.equal(seq.stats.missingBlobs, 2, "the keyframes at 64 and 128, each read once");
+  // a second replica's catch-up reads none of them again
+  const r2 = await catchUp(seq, fakeConn("joiner/2"), 0);
+  assert.equal(r2.error, null);
+  assert.equal(seq.stats.missingBlobs, 2);
+  // a joiner from nothing still learns the root's state is gone too (it is read once, then known)
+  assert.equal((await catchUp(seq, fakeConn("joiner/3"), -1)).error?.code, "history-missing");
+  assert.equal((await catchUp(seq, fakeConn("joiner/4"), -1)).error?.code, "history-missing");
+  assert.equal(seq.stats.missingBlobs, 3);
+});
+
+test("review #2: a history request whose range is intact is answered, though a later row's body is gone", async () => {
+  const { seq, blobs } = await history(0, { maxInlineBytes: 1000 });
+  const d0 = doc([clip("c0", 0, 5), clip("c1", 5, 10)]);
+  const writer = fakeConn("writer/1");
+  assert.equal(verdict(await push(seq, writer, d0, [set("c0", "name", "small")])), "ack");
+  assert.equal(verdict(await push(seq, writer, d0, [set("c1", "name", "x".repeat(5000))])), "ack");
+  assert.equal(drop(blobs, "changes/").length, 1, "row 2's body was a blob");
+  const h = fakeConn("reader/1");
+  await seq.handle(h, { type: "hello", branchId: BRANCH, have: 2, pending: [], rids: [], schemaVersion: 1 });
+  h.inbox.length = 0;
+  await seq.handle(h, { type: "history", branchId: BRANCH, req: 1, after: 0, upTo: 1 } as sync.ClientMessage);
+  const reply = h.inbox.find((m) => m.type === "history") as sync.HistoryReplyMsg;
+  assert.equal(reply.error, undefined, `answered: ${reply.error}`);
+  assert.deepEqual(reply.rows.map((r) => r.seq), [1]);
+  h.inbox.length = 0;
+  await seq.handle(h, { type: "history", branchId: BRANCH, req: 2, after: 0, upTo: 2 } as sync.ClientMessage);
+  assert.match(String((h.inbox.find((m) => m.type === "history") as sync.HistoryReplyMsg).error), /history can't be loaded/, "the lost row itself is refused");
 });

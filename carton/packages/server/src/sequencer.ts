@@ -501,6 +501,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     for (let i = 0; i < rows.length; i++) if (!(await take(rows[i]!, sizes[i]!))) break;
     return out;
   }
+  /**
+   * Per branch, a stretch of keyframe seqs `[lo, hi]` whose every keyframe's blob was found gone. In memory only: a
+   * restart (a Durable Object's wake) reads them again, so a blob an operator restores is found then.
+   */
+  const lostKeyframes = new Map<string, { lo: number; hi: number }>();
   /** `e` is a blob the tables refer to that the store no longer has: counted and told (`missingBlob`), else rethrown. */
   function missingBlob(branchId: string, e: unknown): MissingBlob {
     if (!(e instanceof MissingBlob)) throw e;
@@ -824,14 +829,26 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       // the newest keyframe whose state can still be read: one whose blob is gone from the store (deleted under the
       // sequencer) is passed over for an older one, or for the rows alone when the client holds a state they extend.
       // A keyframe only shortens a catch-up; the rows are the history (stuck-sync: a replica stayed "syncing" forever)
+      // The keyframes found missing are remembered (one stretch per branch, in memory), so a catch-up of many pages
+      // reads each lost blob once, not once per page (review #1)
       let lost = false;
+      const known = lostKeyframes.get(m.branchId);
+      let run = null as { lo: number; hi: number } | null;
       for (let k = tables.latestKeyframe(m.branchId, head); k && k.seq > from; k = k.seq > 0 ? tables.latestKeyframe(m.branchId, k.seq - 1) : null) {
+        if (known && k.seq >= known.lo && k.seq <= known.hi) {
+          // every keyframe in the stretch is known gone: skip to the one below it, unread
+          lost = true;
+          run = { lo: known.lo, hi: run?.hi ?? known.hi };
+          k = { ...k, seq: known.lo };
+          continue;
+        }
         let loaded: Awaited<ReturnType<typeof loadKeyframe>>;
         try {
           loaded = await loadKeyframe(m.branchId, k);
         } catch (e) {
           missingBlob(m.branchId, e);
           lost = true;
+          run = { lo: k.seq, hi: run?.hi ?? k.seq };
           continue;
         }
         keyframe = loaded.keyframe;
@@ -839,6 +856,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         from = k.seq;
         break;
       }
+      if (run) lostKeyframes.set(m.branchId, run);
       if (!keyframe && from < b.root) return lost ? historyMissing(c, m.branchId) : send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
@@ -1055,7 +1073,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const lost = (e: unknown) => (missingBlob(m.branchId, e), reply({ rows: [], error: HISTORY_MISSING_WORDS }));
     let rows: Row[];
     try {
-      rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+      // no further than `upTo` (rows are dense by seq): a lost blob past the range asked for is not this request's (review #2)
+      rows = after < upTo ? (await readRows(m.branchId, after, Math.min(catchup, upTo - after), catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
     } catch (e) {
       return lost(e);
     }
