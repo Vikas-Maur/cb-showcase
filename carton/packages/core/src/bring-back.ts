@@ -201,11 +201,16 @@ export function clipToken(schema: Schema, coll: string, id: string, doc: Doc): s
 export interface BringBackHistory {
   /** The change that deleted it (it is gone now): its recorded or inferred remap. */
   deletedWith?: RemapMaps | null;
+  /** The clip just before that change deleted it: its timing then, which a ripple's range is matched against. */
+  deletedRec?: Rec;
   /** The change that added it (it wasn't there then). */
   addedWith?: RemapMaps | null;
 }
 
-const EPS = 0.05;
+/** How far apart two times of one edit are the same (a ripple's range against a clip's ends). */
+const EPS = 1e-3;
+/** How far two clips may touch and not overlap: the engine's (none: [a, b) and [b, c) only touch). */
+const TOUCH = 1e-9;
 /**
  * Head with one record as it was in `then`: the record itself (every field: keyframes, captions, effects), its own parts
  * (`partOf`, held by it alone: a title's text entry) as they were then, and what it needs that is gone from head (its
@@ -286,7 +291,8 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
   if (tl && was && !now && o.history?.deletedWith) {
     // the deletion's own lane took out a range holding the clip: that range comes back (and on every lane its ripple
     // took the same range from)
-    const x = extent(was)!, w = o.history.deletedWith;
+    // its timing just before the change that deleted it (it may have been trimmed since `then`: review of N0b #4)
+    const x = extent(o.history.deletedRec ?? was)!, w = o.history.deletedWith;
     const d = (w[x.lane] ?? []).flatMap((st) => st.d).find(([a, b]) => a <= x.start + EPS && b >= x.end - EPS);
     if (d) {
       const same = (r: [number, number]) => Math.abs(r[0] - d[0]) < EPS && Math.abs(r[1] - d[1]) < EPS;
@@ -312,6 +318,32 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
     return all.length ? E.apply(E.fork(head, schema), all, schema) : head;
   };
   let doc = build();
+  // a ripple that would put two other clips on top of each other (one straddling its point stays, the next moves into
+  // it: review of N0b #1) isn't done: nothing else moves then
+  if (ripple && tl) {
+    const lanes = new Set(ripple.tracks);
+    const overlaps = (d: Doc) => {
+      const by = new Map<string, { id: string; s: number; e: number }[]>();
+      for (const r of (d[coll] as Rec[] | undefined) ?? []) {
+        const e = extent(r), rid = String(r[spec.key]);
+        if (!e || rid === id || !lanes.has(e.lane)) continue;
+        (by.get(e.lane) ?? by.set(e.lane, []).get(e.lane)!).push({ id: rid, s: e.start, e: e.end });
+      }
+      const pairs = new Set<string>();
+      for (const list of by.values()) {
+        list.sort((p, q) => p.s - q.s);
+        for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length && list[j]!.s < list[i]!.e - TOUCH; j++) pairs.add([list[i]!.id, list[j]!.id].sort().join("\u0000"));
+      }
+      return pairs;
+    };
+    const had = overlaps(head);
+    if ([...overlaps(doc)].some((p) => !had.has(p))) {
+      ripple = null;
+      maps = null;
+      remap.length = 0;
+      doc = build();
+    }
+  }
   // never on top of another clip: its place taken now, it goes on a new track just above its own, at the same time
   let place: BroughtPlace | undefined;
   const at = extent(clip);
@@ -320,7 +352,7 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
     // one track, is no place taken since)
     const over = (r: Rec | undefined, x: { lane: string; start: number; end: number }) => {
       const e = extent(r);
-      return !!r && String(r[spec.key]) !== id && !!e && e.lane === x.lane && e.start < x.end - EPS && e.end > x.start + EPS;
+      return !!r && String(r[spec.key]) !== id && !!e && e.lane === x.lane && e.start < x.end - TOUCH && e.end > x.start + TOUCH;
     };
     const thenAt = extent(was);
     const taken = ((doc[coll] as Rec[] | undefined) ?? []).filter((r) => over(r, at) && !(thenAt && over(get(then, coll, r[spec.key]), thenAt)));
