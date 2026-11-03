@@ -87,3 +87,4 @@ export { LandmarkTag, LandmarkTile, landmarkTitle, indexLandmarks, useLandmarks,
 export { CompareButton, PickLine, openCompareVia, type CompareTo, type Picking } from "./components/CompareMenu.ts";
 export { usePeek, PEEK_HOLD_MS, PEEK_PREFETCH_MS, type PeekOptions } from "./components/peek.ts";
 export { historyV2Css } from "./skin/history-v2.ts";
+export { CutPicker, CUT_PAGE } from "./components/CutPicker.ts";

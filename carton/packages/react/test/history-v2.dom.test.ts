@@ -305,7 +305,10 @@ test(name("the Compare button: the version you sent, the last export, another cu
   assert.deepEqual(opened[0], [lands.find((l) => l.kind === "exported")!.ref, null], "that version with your edit now");
   await click($(m.container, ".carton-compare-btn"));
   await click(byText(m.container, ".carton-compare-menu .carton-menu-item", /^Another cut/));
-  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "30s Instagram cut"));
+  // (N2c) another cut's History to pick from; its first row is that cut as it is now
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 1, "that cut's History");
+  await click($(m.container, ".carton-cut-pick-row[data-now]"));
   await waitFor(() => opened.length === 2, "openCompare across cuts");
   assert.deepEqual(opened[1], ["cut-ig", null]);
   await click($(m.container, ".carton-compare-btn"));
@@ -540,5 +543,66 @@ test(name("review #12: a cancelled press ends a peek but swallows no later click
   assert.equal(ui.viewing(), null, "back to your edit");
   await click(r);
   assert.ok($(m.container, ".carton-card-version"), "the next click opens the card");
+  await m.unmount();
+});
+
+// ------------------------------------------------------------------ N2c: Compare with… a version on another cut
+
+test(name("N2c: Compare with… on another cut shows its History to pick from: a version there opens Compare across cuts; Back returns"), async () => {
+  const ui = story();
+  const opened: [string, string | null | undefined][] = [];
+  ui.openCompare = async (a, b) => void opened.push([a, b]);
+  const asked: [string, unknown][] = [];
+  const cutHistory = ui.cutHistory!.bind(ui);
+  ui.cutHistory = (cut, o) => (asked.push([cut, o]), cutHistory(cut, o));
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900 })));
+  await flush();
+  assert.deepEqual(asked, [], "nothing read until a cut is picked");
+  const sent = ui.history().all!().find((v) => v.name === "Sent to client")!;
+  await menuOf(m.container, "Sent to client");
+  await click(item(m.container, "Compare with…"));
+  await click($(m.container, ".carton-pick-cut-btn"));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 1, "its History");
+  assert.equal($(m.container, ".carton-cut-picker-title")!.textContent, "Pick a version on “30s Instagram cut”");
+  assert.equal($(m.container, ".carton-cut-picker-back")!.textContent, "Back to Main cut");
+  assert.equal($(m.container, ".carton-cut-pick-row[data-now] .carton-version-title")!.textContent, "“30s Instagram cut” as it is now", "as it is now, first");
+  assert.deepEqual(asked[0], ["cut-ig", { limit: 100 }]);
+  assert.ok($(m.container, ".carton-pick-line"), "still picking, from “Sent to client”");
+  // Back: your cut's list again, still picking
+  await click($(m.container, ".carton-cut-picker-back"));
+  assert.equal($(m.container, ".carton-cut-picker"), null);
+  assert.ok(row(m.container, "Sent to client"));
+  // again, and a version there: Compare between the two cuts' versions
+  await click($(m.container, ".carton-pick-cut-btn"));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 1, "its History again");
+  const second = $$(m.container, ".carton-cut-pick-row")[2]!;
+  await click(second);
+  await waitFor(() => opened.length === 1, "openCompare");
+  assert.equal(opened[0]![0], sent.ref);
+  assert.match(opened[0]![1] ?? "", /^ig@\d+$/, "a version of the other cut");
+  assert.equal($(m.container, ".carton-cut-picker"), null, "pick mode is over");
+  assert.equal($(m.container, ".carton-pick-line"), null);
+  await m.unmount();
+});
+
+test(name("N2c: a cut of 12,000 versions is read a page at a time (the first when shown), and stays virtual"), async () => {
+  const ui = story();
+  const big = ui.cuts().map((c) => (c.id === "cut-ig" ? { ...c, head: "ig@12000" } : c));
+  ui.cuts = () => big;
+  const asked: unknown[] = [];
+  const cutHistory = ui.cutHistory!.bind(ui);
+  ui.cutHistory = (cut, o) => (asked.push(o), cutHistory(cut, o));
+  const m = await render(wrap(ui, h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  await click($(m.container, ".carton-compare-btn"));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", /^Another cut/));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 1, "its first page");
+  assert.equal(asked.length, 1, "one page");
+  const max = Math.ceil(600 / 52) + 1 + 2 * 6;
+  // (the next page as the list nears its end: needsMore, below; in a real browser: the capture page's n2c states)
+  assert.ok($$(m.container, ".carton-vrow").length <= max, `${$$(m.container, ".carton-vrow").length} rows in the DOM`);
   await m.unmount();
 });

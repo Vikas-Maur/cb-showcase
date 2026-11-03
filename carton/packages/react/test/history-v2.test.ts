@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bringBackLine, clipChoices, type ClipChoice } from "../src/components/GoBack.ts";
 import { remoteUi, serveUi } from "../src/remote.ts";
+import { needsMore } from "../src/components/CutPicker.ts";
 import { indexLandmarks, landmarkTitle } from "../src/components/LandmarkRow.ts";
 import { openCompareVia } from "../src/components/CompareMenu.ts";
 import { groupHistory } from "../src/history-groups.ts";
@@ -108,4 +109,11 @@ test("N0b: a refusal crosses the worker bridge with its code and the new token (
   assert.equal(e.message, "“Intro” just changed again. Nothing was brought back.");
   assert.deepEqual([e.code, e.token], ["CHANGED_SINCE", "t2"]);
   server.close();
+});
+
+test("N2c: another cut's next page is read when the first row on screen nears the end of what is loaded", () => {
+  assert.equal(needsMore(0, 100, 11901), false, "the top of the first page");
+  assert.equal(needsMore(59, 100, 11901), false);
+  assert.equal(needsMore(61, 100, 11901), true, "40 rows from the end");
+  assert.equal(needsMore(95, 100, undefined), false, "the cut's start is loaded");
 });

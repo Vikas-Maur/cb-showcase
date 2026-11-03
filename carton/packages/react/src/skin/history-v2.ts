@@ -119,5 +119,18 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-history[data-picking] .carton-version-more){display:none}
 :where(${S}) :where(.carton-version[data-pick-from]){background:#8ab4ff0f;box-shadow:inset 2px 0 0 #8ab4ff}
 :where(${S}) :where(.carton-pick-from){margin-right:2px}
+/* Compare with… on another cut (N2c): its History to pick from */
+:where(${S}) :where(.carton-cut-picker){display:flex;flex-direction:column;flex:1 1 0;min-height:0}
+:where(${S}) :where(.carton-cut-picker-head){display:flex;flex-direction:column;gap:2px;margin:0 12px 6px}
+:where(${S}) :where(.carton-cut-picker-back){display:inline-flex;align-items:center;gap:5px;align-self:flex-start;height:24px;padding:0 6px 0 4px;margin-left:-4px;border:0;border-radius:5px;
+  background:none;font:inherit;font-size:12px;color:var(--cb-fg-2);cursor:pointer}
+:where(${S}) :where(.carton-cut-picker-back:hover){background:#ffffff10;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-cut-picker-title){margin:0!important;font-size:13px;line-height:18px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-cut-picker-loading){margin:8px 14px;font-size:12px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-cut-pick-row){cursor:pointer}
+:where(${S}) :where(.carton-cut-pick-row:hover .carton-cut-pick-go, .carton-cut-picker-list:focus-within .carton-cut-pick-row[aria-selected=true] .carton-cut-pick-go){display:inline-flex}
+:where(${S}) :where(.carton-cut-pick-row:hover .carton-version-when){display:none}
+:where(${S}) :where(.carton-cut-pick-row[data-now] .carton-version-title){grid-row:1 / span 2;align-self:center;font-weight:500}
+:where(${S}) :where(.carton-cut-pick-row[data-now] .carton-cut-pick-go){grid-row:1 / span 2;align-self:center}
 :where(${S}) :where(.carton-panel-head.carton-cutbar){container-type:inline-size}
 `;

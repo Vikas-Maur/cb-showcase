@@ -1927,6 +1927,50 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const made = res.brought.how === "same" ? {} : madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
       return { ...made, how: res.brought.how, clipName: res.brought.name, ...placeOf(res.brought) };
     },
+    // Another cut's History (N2c), a page at a time: its own log, each version described as History describes its rows
+    // (wordsFor: the app's sentences, a fold's or a restore's title), its landmarks with the first page. Read when the
+    // person picks that cut in Compare with…; nothing kept.
+    async cutHistory(cut, o) {
+      const limit = Math.min(Math.max(Math.floor(o?.limit ?? 100), 1), 500);
+      const got = await carton.log({ cut, limit, ...(o?.before !== undefined ? { before: o.before } : {}), summary: true, rows: true });
+      const versions: Version[] = [];
+      for (const c of got) {
+        const v = toVersion(c);
+        let w: Partial<Version> = {};
+        try {
+          const { turn: _turn, base: _base, ...own } = (await wordsFor({ core: c, turnKey: null, v }, c)) as Words & { turn?: unknown; base?: string };
+          w = own;
+        } catch {
+          w = c.summary ? { summary: c.summary } : {};
+        }
+        versions.push({ ...v, ...w });
+      }
+      const last = got[got.length - 1];
+      const marks = o?.before === undefined && typeof carton.landmarks === "function" ? await carton.landmarks({ cut, limit: 500 }).catch(() => []) : [];
+      return {
+        cutId: cut,
+        versions,
+        ...(got.length === limit && last && last.ref.seq > 0 ? { before: last.ref.seq } : {}),
+        ...(marks.length
+          ? {
+              landmarks: marks.map((l): Landmark => ({
+                id: l.id,
+                kind: l.kind,
+                versionId: l.change ?? `${l.ref.branchId}@${l.ref.seq}`,
+                ref: `${l.ref.branchId}@${l.ref.seq}`,
+                at: l.at,
+                by: l.by ? ui(l.by) : null,
+                ...(l.label ? { label: l.label } : {}),
+                ...(l.before ? { before: l.before } : {}),
+                ...(l.after ? { after: l.after } : {}),
+                personal: l.personal,
+                local: l.local,
+                picture: l.picture,
+              })),
+            }
+          : {}),
+      };
+    },
     async bringBackChoices(ref) {
       const r = await carton.bringBackChoices(ref, { cut: cutId });
       const row = (c: (typeof r.changed)[number]): BringBackChoice => ({

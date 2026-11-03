@@ -31,6 +31,7 @@ import { LandmarkTag, LandmarkTile, landmarkTitle, useLandmarks, useStagePicture
 import { SearchBox, highlight, searchable, snippetOf, useFind, type SearchBoxHandle } from "./SearchBox.ts";
 import { CompareButton, PickLine, openCompareVia, type Picking } from "./CompareMenu.ts";
 import { usePeek } from "./peek.ts";
+import { CutPicker } from "./CutPicker.ts";
 import type { ClipChoice } from "./GoBack.ts";
 
 /** A version's row (DESIGN §6.1: 56 px). */
@@ -1260,7 +1261,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     props.actions ?? null,
     // the search field, always shown under the cut bar (DESIGN-V2 §2.3), once there is something to find
     typeof ui.find === "function" && !nothing ? h(SearchBox, { handle: search, onQuery: setQuery, onDown: toList }) : null,
-    pick ? h(PickLine, { pick, onCompare: compareTo, onLeave: () => setPick(null) }) : null,
+    pick ? h(PickLine, { pick, onCompare: compareTo, onLeave: () => setPick(null), onCut: (c) => setPick({ from: pick.from, cut: c }) }) : null,
     filter !== "all" || marksOnly
       ? h(
           "div",
@@ -1292,7 +1293,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
         )
       : null,
     failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
-    loading
+    // Compare with… on another cut (N2c): that cut's History, to pick the second version from
+    pick?.cut
+      ? h(CutPicker, {
+          key: pick.cut.id,
+          cut: pick.cut,
+          initialHeight: props.initialHeight,
+          onBack: () => setPick({ from: pick.from }),
+          onPick: (ref: string) => {
+            const from = pick.from;
+            setPick(null);
+            void compareTo(from ? from.ref : ref, from ? ref : null);
+          },
+        })
+      : loading
       ? h(
           "div",
           { className: "carton-history-skeleton", role: "status", "aria-label": words.history },
