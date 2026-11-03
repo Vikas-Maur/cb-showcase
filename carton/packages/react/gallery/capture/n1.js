@@ -101,6 +101,7 @@ export function addN1(S, { ux, setCuts, CUTS, newest, people }) {
 /** The bridge's Compare half (renderer-bridge.js), on the page's fake bridge. */
 export function n1Bridge(api, sc) {
   let t = 1.2, playing = false;
+  const preview = api.preview.bind(api);
   // the worker's carton:event, for the agent's request (N0's OpenCompare)
   const evs = new Set(), onEvent = api.onEvent.bind(api);
   api.onEvent = (f) => { evs.add(f); const off = onEvent(f); return () => { evs.delete(f); off(); }; };
@@ -108,7 +109,8 @@ export function n1Bridge(api, sc) {
   const subs = new Set();
   const tell = () => { for (const f of [...subs]) f(); };
   Object.assign(api, {
-    hold() { window.__cap.held = (window.__cap.held ?? 0) + 1; window.__cap.previewRef = null; return Promise.resolve(); },
+    // your edit held: the stand-in stage shows it (as the base bridge's preview(null) tells it)
+    hold(p) { window.__cap.held = (window.__cap.held ?? 0) + 1; return preview(p, null); },
     compareDoc: (_p, ref) => Promise.resolve(ref == null ? doc(RIGHT) : doc(sc.n1?.from === "cut-ig" ? LEFT.filter((i) => i.id !== "item-pier") : LEFT)),
     togglePlay() { playing = !playing; tell(); },
     pause() { if (playing) { playing = false; tell(); } },
@@ -126,12 +128,9 @@ export function n1Bridge(api, sc) {
  * inset-0`, the picture), the picture sized to the stage div's content box as Cardboard sizes it (a container query
  * here, its ResizeObserver there). `left`: the left side shown (a Flip, the previewed ref).
  */
-export function N1Stage() {
+export function N1Stage({ subscribe }) {
   const [ref, setRef] = useState(null);
-  useEffect(() => {
-    const id = setInterval(() => setRef(window.__cap?.previewRef ?? null), 50);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => subscribe(setRef), [subscribe]);
   const left = !!ref;
   return h("div", { className: "relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6 cap-n1-stage" },
     h("div", { className: "absolute inset-0 flex items-center justify-center cap-n1-wrap", style: { width: "100%", height: "100%" } },

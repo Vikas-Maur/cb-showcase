@@ -509,6 +509,7 @@ function Library() {
 
 // Compare's stage host (N1), as editor-panel.js's __cbCartonStageHost renders it (data-carton-compare and the hole's
 // insets from window.__cartonStageMode), with the stand-in stage and second player; react-dom's portal for the marks.
+const subscribePreview = (f) => { previewSubs.add(f); return () => { previewSubs.delete(f); }; };
 function N1Host({ pid }) {
   const [mode, setMode] = useState(null);
   useEffect(() => {
@@ -519,7 +520,7 @@ function N1Host({ pid }) {
   const hole = mode?.hole;
   const style = hole ? { "--carton-hole-t": hole.top + "px", "--carton-hole-r": hole.right + "px", "--carton-hole-b": hole.bottom + "px", "--carton-hole-l": hole.left + "px" } : undefined;
   return h("div", { className: "bg-muted/60 relative flex min-w-0 flex-1 flex-col overflow-hidden", "data-carton-stage-host": "", "data-carton-compare": mode?.mode || undefined, style },
-    h(N1Stage), h(CartonStage, { projectId: pid, bridge, key: pid, player: scenario.n1.player ? N1Player : null, portal: createPortal }));
+    h(N1Stage, { subscribe: subscribePreview }), h(CartonStage, { projectId: pid, bridge, key: pid, player: scenario.n1.player ? N1Player : null, portal: createPortal }));
 }
 function Editor() {
   const strip = useStrip();
