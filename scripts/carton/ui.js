@@ -783,7 +783,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     const key = JSON.stringify([r.panel, r.live, r.share, r.chip]);
     if (key === r.sent) return;
     r.sent = key;
-    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null, comparing: r.chip?.comparing ?? null });
+    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null, ...(r.chip?.comparing ? { comparing: r.chip.comparing } : {}) });
   }, [bridge]);
   useEffect(() => {
     Object.assign(report.current, { panel, live: summaryKey ? JSON.parse(summaryKey) : null, share });
