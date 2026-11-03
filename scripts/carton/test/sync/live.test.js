@@ -125,6 +125,12 @@ test("presence: what Alice is doing shows on Bob's computer, and goes when she s
   await alice.call("carton.livePresence", { projectId: id, state: { activity: "Editing captions" } });
   const peer = await S.until(() => bob.events().filter((e) => e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]?.find((p) => p.activity === "Editing captions"), 10_000, "alice's presence at bob");
   assert.equal(peer.actor.id, "Alice");
+  // QA G3: with what each may do, as their invite says (Alice shared it; Bob joined from an editor's invite)
+  assert.equal(peer.role, "owner", JSON.stringify(peer));
+  await bob.call("carton.livePresence", { projectId: id, state: { activity: "Trimming" } });
+  const bobAt = await S.until(() => alice.events().filter((e) => e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]?.find((p) => p.activity === "Trimming"), 10_000, "bob's presence at alice");
+  assert.deepEqual([bobAt.actor.id, bobAt.role], ["Bob", "editor"], JSON.stringify(bobAt));
+  await bob.call("carton.livePresence", { projectId: id, state: null });
   await alice.call("carton.livePresence", { projectId: id, state: null });
   await S.until(() => { const last = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]; return last && !last.some((p) => p.actor.id === "Alice"); }, 10_000, "alice gone at bob");
 });

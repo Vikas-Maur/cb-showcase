@@ -37,7 +37,7 @@ export class Live {
     this.lease = null;
     this.off = null;
     this.timer = null;
-    this.peers = new Map(); // actor key → {actor: peerActor(), cuts: Map(cut → {activity, idle, at}), the latest last}
+    this.peers = new Map(); // actor key → {actor: peerActor(), role, cuts: Map(cut → {activity, idle, at}), the latest last}
     this.skippedPeer = false;
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
     this.error = lc.carton.sync?.error?.() ?? null;
@@ -134,6 +134,8 @@ export class Live {
           if (actor) {
             const p = peer ?? { actor, cuts: new Map() };
             p.actor = actor;
+            // what they may do, as their app says it (QA G3): a person's, never their agent's (it acts as them)
+            p.role = actor.kind === "human" ? roleOf(e.state.who?.role) : null;
             p.cuts.delete(e.branchId); // the latest goes last
             p.cuts.set(e.branchId, { activity: typeof e.state.activity === "string" ? e.state.activity : null, idle: e.state.idle === true, at: Date.now() });
             this.peers.set(key, p);
@@ -167,12 +169,16 @@ export class Live {
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
   }
 
-  /** The state the Share panel shows; each of `peers` is `{actor: {key, kind, id, name}, cut, activity, idle}`. */
+  /**
+   * The state the Share panel shows; each of `peers` is `{actor: {key, kind, id, name, parent?, owner?}, cut, activity,
+   * idle, role?}`: `role` ("owner", "editor", "commenter" or "viewer") only when the teammate's app told it, and an
+   * agent's `parent` is its person's key.
+   */
   view() {
     const now = Date.now();
     const peers = [...this.peers.values()].map((p) => {
       const [cut, c] = [...p.cuts].at(-1);
-      return { actor: p.actor, cut, activity: c.activity, idle: !!c.idle || now - c.at > PEER_IDLE_MS };
+      return { actor: p.actor, cut, activity: c.activity, idle: !!c.idle || now - c.at > PEER_IDLE_MS, ...(p.role ? { role: p.role } : {}) };
     });
     return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
@@ -195,10 +201,11 @@ export class Live {
   }
 }
 
-// Why sync is failing, in the words the Share panel shows (null when it isn't).
+// Why sync is failing, in the words the Share panel shows (null when it isn't): its one amber line, the first sentence in
+// bold (QA G9).
 // In editors' words: the "sharing server", never "host" (UI audit P2-8).
 const PROBLEM = {
-  "update-server": "The sharing server is older than this app. It needs an update before this project can sync.",
+  "update-server": "Can't sync: the sharing server needs an update. Your changes are saved here.",
   unauthorized: "The sharing server no longer accepts this computer. Ask for a new invite.",
   unreachable: "The sharing server can't be reached. Your edits wait here and go out when it's back.",
   "unknown-cut": "The sharing server doesn't have this cut.",
@@ -210,17 +217,29 @@ export const problemOf = (err) => (err ? { code: err.code, words: PROBLEM[err.co
 export const actorKey = (a) => [a?.kind, a?.id, a?.agentId].filter(Boolean).join("/");
 
 const text = (s) => typeof s === "string" && s.trim() !== "";
+// A teammate's role, as their presence tells it (worker.js livePresence: the role their invite gave them); anything else
+// is unknown, and the Share panel shows none.
+const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
+export const roleOf = (r) => (typeof r === "string" && ROLES.has(r) ? r : null);
+const AGENTS = new Set(["agent", "subagent"]);
 /**
  * A teammate as the Share panel shows them (UI audit P1-1): an actor as @carton/react's helpers take one (`key`, `kind`,
  * `name`; actorColor hashes the `key`), keyed as History keys the same person (fromCarton's toUiActor: core's
  * actorKey), so their colour is the same in both, plus the `id`. The person (`who`) when the sender told one, else the
- * actor the host relayed. Only text is kept, the name falling back to the id; null with no id to show.
+ * actor the host relayed. An agent's presence stays the agent's (QA G3), with its person, when told (`who`, or the
+ * actor's `owner`), as its `parent` (their key) and `owner` ({id, name}), so it shows under them as theirs ("Leo's
+ * Director"). Only text is kept, the name falling back to the id; null with no id to show.
  */
 export function peerActor(actor, who) {
-  const a = text(who?.id) ? { kind: "human", id: who.id, name: who.name } : actor && typeof actor === "object" && text(actor.id) ? actor : null;
+  const agent = actor && typeof actor === "object" && AGENTS.has(actor.kind) && text(actor.id) ? actor : null;
+  // an agent's person: the sender's `who`, else the `owner` core tells an agent's actor with
+  const told = text(who?.id) ? who : agent && text(agent.owner?.id) ? agent.owner : null;
+  const person = told ? { kind: "human", id: told.id, name: text(told.name) ? told.name : told.id } : null;
+  const a = agent ?? person ?? (actor && typeof actor === "object" && text(actor.id) ? actor : null);
   if (!a) return null;
   const kind = text(a.kind) ? a.kind : "human", agentId = text(a.agentId) ? a.agentId : undefined;
-  return { key: actorKey({ kind, id: a.id, agentId }), kind, id: a.id, name: text(a.name) ? a.name : a.id };
+  const out = { key: actorKey({ kind, id: a.id, agentId }), kind, id: a.id, name: text(a.name) ? a.name : a.id };
+  return agent && person ? { ...out, parent: actorKey(person), owner: { id: person.id, name: person.name } } : out;
 }
 
 /**

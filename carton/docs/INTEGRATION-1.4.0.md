@@ -433,7 +433,7 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 
 **Telling the person (final candidate P1-1).**
 - `Jt`, the editor store's scoped save, logs a failure and rethrows; its catch also calls the bridge's `saveFailed`,
-  which shows "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." over the stage
+  which shows "Your last change wasn't saved. Do it again, or reopen the project." over the stage
   (at most every 20 s, again once a save has landed), with the warning look of Carton's other failures (N-3: it showed
   a confirmation's ✓), as does an undo refused. Such a failure happens in the page, before anything reaches the
   worker, so only the page can tell: a recovered project's date-less media made every save throw there, unseen.

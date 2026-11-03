@@ -239,9 +239,52 @@ test("two agents of one teammate (same id, their own agentId) are two rows, each
   console.error = (...a) => { errors.push(a.join(" ")); };
   const m = await openShare(status(l));
   try {
-    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["CCClaude CodeHere now · editing captions", "CCClaude CodeHere now · trimming"]);
+    // an agent wears its own mark (no letters), and its line is what it's doing (QA G3)
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["Claude CodeEditing captions", "Claude CodeTrimming"]);
     assert.ok(!errors.some((e) => /same key/.test(e)), "no duplicate React keys: " + errors.join("\n"));
   } finally { console.error = was; await m.done(); }
+});
+
+test("QA G3, G11: each teammate with their role, their agent under them as theirs (\"Alice's Director\"), and You as History draws you", opt, async () => {
+  const { live: l, presence } = await live();
+  const who = (id, name, role) => ({ id, name, ...(role ? { role } : {}) });
+  presence(ALICE, { activity: "Editing", who: who("alice", "Alice", "editor") });
+  // her Director's presence: the agent's own actor, told as hers
+  presence({ kind: "agent", id: "director", agentId: "t1", name: "Director", group: "alice-pc/alice", app: true }, { activity: "Working on “Add a title card”", who: who("alice", "Alice", "editor") });
+  presence({ kind: "human", id: "mia", name: "Mia" }, { activity: null, idle: true, who: who("mia", "Mia", "commenter") });
+  // a role this app doesn't know, and none at all (an older app): no role shown
+  presence({ kind: "human", id: "bo", name: "Bo" }, { activity: "Editing", who: who("bo", "Bo", "admin") });
+  presence({ kind: "human", id: "cy", name: "Cy" }, { activity: "Editing", who: who("cy", "Cy") });
+  // a Director whose person isn't here, told with its owner as core tells an agent's actor
+  presence({ kind: "agent", id: "director", agentId: "t9", name: "Director", owner: { id: "dee", name: "Dee Ray" } }, { activity: "Working on “Trim the intro”" });
+  const st = status(l);
+  assert.deepEqual(st.peers.map((p) => [p.actor.key, p.actor.parent ?? null, p.role ?? null]), [
+    ["human/alice", null, "editor"], ["agent/director/t1", "human/alice", null], ["human/mia", null, "commenter"], ["human/bo", null, null], ["human/cy", null, null], ["agent/director/t9", "human/dee", null],
+  ]);
+  assert.deepEqual(st.peers[1].actor.owner, { id: "alice", name: "Alice" });
+  const m = await openShare({ ...st, role: "owner", name: "Bob" });
+  try {
+    assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
+    const rows = [...m.container.querySelectorAll(".carton-share-dialog li")].map((li) => [li.querySelector(".carton-share-name")?.textContent, li.querySelector(".carton-share-sub")?.textContent, li.querySelector(".carton-share-role")?.textContent ?? null, li.hasAttribute("data-under")]);
+    assert.deepEqual(rows, [
+      ["You", "Bob · here now", "Owner", false],
+      ["Alice", "Here now · editing", "Can edit", false],
+      ["Alice's Director", "Working on “Add a title card”", null, true],
+      ["Mia", "Here, not editing", "Can comment", false],
+      ["Bo", "Here now · editing", null, false],
+      ["Cy", "Here now · editing", null, false],
+      ["Dee Ray's Director", "Working on “Trim the intro”", null, false],
+    ]);
+    const lis = [...m.container.querySelectorAll(".carton-share-dialog li")];
+    // You: "Y", as History draws you, before and after a share (not the account's initial)
+    assert.equal(lis[0].querySelector(".carton-avatar-initials")?.textContent, "Y");
+    // the Director's own mark, not a letter, in Alice's colour
+    const mark = lis[2].querySelector(".carton-avatar");
+    assert.equal(mark?.getAttribute("data-agent"), "director");
+    assert.equal(lis[2].querySelector(".carton-avatar-initials"), null);
+    assert.equal(mark.style.getPropertyValue("--carton-actor"), lis[1].querySelector(".carton-avatar").style.getPropertyValue("--carton-actor"), "her agent in her colour");
+    assert.ok(lis[1].querySelector("[data-here]"), "who is here wears the ring");
+  } finally { await m.done(); }
 });
 
 test("boundary, stage layer: a throw over the stage shows a small Try again there, never takes the editor tab down", opt, async () => {

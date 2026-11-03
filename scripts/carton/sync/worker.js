@@ -26,7 +26,7 @@ import * as host from "./host.js";
 import * as store from "./store.js";
 // views.js first: its onOpen starts a project's View (the holder) before Live looks for it.
 import { viewOf } from "./views.js";
-import { Live, caughtUp } from "./live.js";
+import { Live, caughtUp, roleOf } from "./live.js";
 import * as media from "./media.js";
 import "./cbproj.js";
 
@@ -597,12 +597,15 @@ extend({
         const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId));
         return p ? { url: await media.toolUrl(bundlePath, projectId, p), ...p } : null;
       },
-      /** The person's presence while they edit (the pages send it at most once a second; null when idle). */
+      /**
+       * The person's presence while they edit (the pages send it at most once a second; null when idle), told as them:
+       * their account, name, and the role their invite gave them (teammates' Share shows it: QA G3).
+       */
       async livePresence({ projectId, state }) {
         const bundlePath = api.bundleOf(projectId);
         const live = bundlePath ? await lives.get(bundlePath) : null;
-        const p = person(bundlePath, projectId);
-        live?.presence(state, p && { id: p.id, name: p.name });
+        const cfg = bundlePath && projectId ? store.readConfig(bundlePath, projectId) : null;
+        live?.presence(state, cfg && { id: cfg.account, name: cfg.name ?? cfg.account, ...(roleOf(cfg.role) ? { role: cfg.role } : {}) });
         return { ok: !!live };
       },
     };

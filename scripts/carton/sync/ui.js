@@ -4,8 +4,9 @@
 //   Offline chip), in place of the side panel's Share tab, as a dialog in Cardboard's look. Not shared yet: the sharing
 //   server (remembered once used, then one line with Change), your name (asked once), Share project, and an invite
 //   code only when the server asks for one. Shared: its status by the title, People (You, then everyone here, with what
-//   they're doing), and, for the owner, Invite (who can do what, the link, Copy link). Offline: an amber line saying
-//   your changes are kept and sent later; the invite says when it can be made.
+//   they're doing and their role, each with their agents under them), and, for the owner, Invite (who can do what, the
+//   link, made as the dialog opens, Copy link). Offline: an amber line saying your changes are kept and sent later; the
+//   invite says when it can be made. Sync failing for another reason: that amber line says why instead.
 // - Join: the Dashboard's "Join a shared project" (scripts/carton/ui.js JoinDialog): the invite link, who you join as,
 //   and one button, Join and open, which joins and opens the project in its tab.
 // Both talk to the library worker's live services through the pages' bridge (carton:call liveStatus, liveShare,
@@ -13,7 +14,7 @@
 // @carton/react's words.ts: Share and Join). Never "Carton", "host", "token" or a raw error (UI audit P1-8,
 // P2-8): the server is the "sharing server", a failure says what to do, at the field it is about (shareProblem).
 import { createElement as h, useEffect, useRef, useState } from "react";
-import { Button, Dialog, Icon, MenuButton, MenuItem, words, initials, actorColor } from "@carton/react";
+import { Avatar, Button, CartonProvider, Dialog, Icon, MenuButton, MenuItem, words, actorLabel } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // "Share “Weekend reel”" (a project with no name known: "Share this project")
@@ -118,28 +119,57 @@ function shownPeers(sent) {
 }
 // "Editing captions" reads "here now · editing captions" after a dot; a name or an acronym keeps its capital.
 const lower = (s) => (typeof s === "string" && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+const upFirst = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 // "You're offline. Keep editing: …": the first sentence in bold, the rest as it is.
 const firstSentence = (line) => { const i = line.indexOf(". "); return i < 0 ? [line] : [h("strong", { key: "b" }, line.slice(0, i + 1)), line.slice(i + 1)]; };
-const avatar = (actor, name, here) => h("span", { className: "carton-avatar", "data-kind": actor.kind === "human" ? "human" : "agent", "data-here": here ? "" : undefined, style: { ["--carton-actor"]: actorColor(actor, () => undefined), width: 24, height: 24, fontSize: 9.5 } },
-  h("span", { className: "carton-avatar-initials" }, initials(name)));
-function Person({ actor, name, sub, role, here, idle, you }) {
-  return h("li", { className: "carton-share-person", "data-you": you ? "" : undefined, style: idle ? { opacity: 0.55 } : undefined },
-    avatar(actor, name, here && !idle),
-    h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, you ? words.you : name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
+// What someone may do, in words ("Can edit"); nothing for a role that isn't known.
+const roleWords = (r) => (typeof r === "string" && Object.hasOwn(words.roles, r) ? words.roles[r] : null);
+const RING = "0 0 0 2px var(--cb-dialog), 0 0 0 3.5px var(--cb-ok)";
+/**
+ * One row of People: the avatar as History draws the same actor (@carton/react's Avatar: You are "Y" before and after a
+ * share, an agent its own mark: QA G11), with the green ring of who is here; the name, what they're doing, and their
+ * role. An agent sits under its person, smaller (QA G3).
+ */
+function Person({ actor, name, sub, role, here, idle, you, under }) {
+  return h("li", { className: "carton-share-person", "data-you": you ? "" : undefined, "data-under": under ? "" : undefined, style: { ...(idle ? { opacity: 0.55 } : null), ...(under ? { marginLeft: 36, minHeight: 40 } : null) } },
+    h("span", { "data-here": here ? "" : undefined, style: { display: "inline-flex", flex: "none", borderRadius: 999, boxShadow: here ? RING : undefined } }, h(Avatar, { actor, size: under ? 20 : 24, named: true })),
+    h("span", { className: "carton-share-who" }, h("span", { className: "carton-share-name" }, name), sub ? h("span", { className: "carton-share-sub" }, sub) : null),
     role ? h("span", { className: "carton-share-role" }, role) : null);
 }
 
-/** People: You (with the name teammates see and your role), then everyone here now, with what they're doing. */
+/**
+ * People: You (with the name teammates see and your role), then everyone here now, with what they're doing and their
+ * role, each followed by their agents ("Leo's Director · Working on “Add a title card”": an agent's `parent` is its
+ * person's key). An agent whose person isn't here is named by its `owner` all the same, never as a bare "Director".
+ */
 export function People({ st }) {
   const peers = shownPeers(st.peers);
-  const me = { key: "human/you", kind: "human", name: st.name ?? "" };
+  const me = { key: "human/you", kind: "human", id: "you", name: st.name ?? "", isYou: true };
   const offline = isOffline(st);
-  return h("section", { className: "carton-share-section" },
-    h("h3", { className: "carton-share-heading" }, words.people),
-    h("ul", { className: "carton-share-people" },
-      h(Person, { key: "you", you: true, actor: me, name: st.name ?? words.you, sub: offline ? st.name : words.youHereNow(st.name), role: words.roles[st.role] ?? null, here: !offline }),
-      ...peers.map((p) => h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? words.hereNotEditing : p.activity ? `${words.hereNowLine} · ${lower(p.activity)}` : words.hereNowLine, here: true, idle: p.idle }))),
-    peers.length ? null : h("p", { className: "carton-share-none" }, words.nobodyElseHere));
+  const people = peers.filter((p) => p.actor.kind === "human");
+  const byKey = new Map(people.map((p) => [p.actor.key, p.actor])), here = new Set(byKey.keys());
+  const under = new Map(), alone = [];
+  for (const p of peers) {
+    if (p.actor.kind === "human") continue;
+    const parent = typeof p.actor.parent === "string" ? p.actor.parent : null, owner = p.actor.owner;
+    if (parent && !byKey.has(parent) && typeof owner?.name === "string") byKey.set(parent, { key: parent, kind: "human", id: owner.id, name: owner.name });
+    if (parent && here.has(parent)) under.set(parent, [...(under.get(parent) ?? []), p]);
+    else alone.push(p);
+  }
+  // actorLabel and the Avatar look an agent's person up here: "Leo's Director", in Leo's colour
+  const ui = { actor: (k) => byKey.get(k) };
+  const agent = (p) => h(Person, { key: p.actor.key, under: under.has(p.actor.parent), actor: p.actor, name: actorLabel(p.actor, ui.actor, words.you), sub: p.activity ? upFirst(p.activity) : words.hereNowLine, here: true, idle: p.idle });
+  return h(CartonProvider, { ui },
+    h("section", { className: "carton-share-section" },
+      h("h3", { className: "carton-share-heading" }, words.people),
+      h("ul", { className: "carton-share-people" },
+        h(Person, { key: "you", you: true, actor: me, name: words.you, sub: offline ? st.name : words.youHereNow(st.name), role: roleWords(st.role), here: !offline }),
+        ...people.flatMap((p) => [
+          h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? words.hereNotEditing : p.activity ? `${words.hereNowLine} · ${lower(p.activity)}` : words.hereNowLine, role: roleWords(p.role), here: true, idle: p.idle }),
+          ...(under.get(p.actor.key) ?? []).map(agent),
+        ]),
+        ...alone.map(agent)),
+      peers.length ? null : h("p", { className: "carton-share-none" }, words.nobodyElseHere)));
 }
 
 const ROLES = [["editor", words.roles.editor], ["commenter", words.roles.commenter], ["viewer", words.roles.viewer]];
@@ -154,10 +184,29 @@ function RolePicker({ role, setRole }) {
   });
 }
 
+// The invite links made, by bridge, project and role: one invite on the server per role while the app runs (an hour at
+// most; an invite lasts days), not one per opening of the dialog. A failed one is made again when next asked.
+const madeLinks = new WeakMap();
+const LINK_MS = 3_600_000;
+function linkFor(bridge, projectId, role) {
+  let m = madeLinks.get(bridge);
+  if (!m) madeLinks.set(bridge, (m = new Map()));
+  const k = projectId + "\n" + role, had = m.get(k);
+  if (had && Date.now() - had.at < LINK_MS) return had.p;
+  const p = Promise.resolve().then(() => bridge.call("liveInvite", [{ projectId, role }])).then((r) => {
+    if (typeof r?.link !== "string") throw new Error("no invite link");
+    return r.link;
+  });
+  m.set(k, { at: Date.now(), p });
+  p.catch(() => { if (m.get(k)?.p === p) m.delete(k); });
+  return p;
+}
+
 /**
- * Invite (owners): who can do what, the link and Copy link. A link is made when it is first copied (one invite on the
- * server per role, not one per opening of the dialog), then shown, and copied again from there. Offline the server
- * can't make one: Copy link is off and says when it can.
+ * Invite (owners): who can do what, the link and Copy link. Online, the link for the role picked is made as the dialog
+ * opens (QA G24: never an empty field that reads as disabled), and copied from there; a link that couldn't be made then
+ * is made again by Copy link, which says why if it fails again. Offline the server can't make one: Copy link is off and
+ * says when it can.
  */
 export function Invite({ projectId, bridge, offline }) {
   const [role, setRole] = useState("editor"), [links, setLinks] = useState({}), [copied, setCopied] = useState(null);
@@ -168,10 +217,16 @@ export function Invite({ projectId, bridge, offline }) {
     const t = setTimeout(() => setCopied(null), 2000);
     return () => clearTimeout(t);
   }, [copied]);
+  useEffect(() => {
+    if (offline || link) return undefined;
+    let live = true;
+    linkFor(bridge, projectId, role).then((l) => { if (live) setLinks((m) => ({ ...m, [role]: l })); }, () => {});
+    return () => { live = false; };
+  }, [offline, link, role, projectId, bridge]);
   const [copy, busy, error] = useAction(async () => {
     let l = link;
     if (!l) {
-      l = (await bridge.call("liveInvite", [{ projectId, role }])).link;
+      l = await linkFor(bridge, projectId, role);
       setLinks((m) => ({ ...m, [role]: l }));
     }
     // a clipboard that refuses (no focus) leaves the link selected in its field, to copy by hand
@@ -183,7 +238,7 @@ export function Invite({ projectId, bridge, offline }) {
     h("h3", { className: "carton-share-heading" }, words.invite),
     h("div", { className: "carton-share-invite-row" },
       h(RolePicker, { role, setRole: (r) => { setRole(r); setCopied(null); } }),
-      h("input", { ref: field, className: "carton-input carton-share-link", readOnly: true, value: link ?? "", placeholder: words.copyLinkToMake, "aria-label": words.inviteLink, onFocus: (e) => e.target.select() }),
+      h("input", { ref: field, className: "carton-input carton-share-link", readOnly: true, value: link ?? "", "aria-label": words.inviteLink, "aria-busy": !link && !offline ? true : undefined, onFocus: (e) => e.target.select() }),
       h(Button, { icon: copied === role ? "check" : "link", onClick: () => copy(), busy, disabled: offline, description: offline ? words.inviteWhenOnline : undefined }, copied === role ? words.copied : words.copyLink)),
     h("p", { className: "carton-field-hint" }, offline ? words.inviteWhenOnline : words.anyoneCanJoinTo(role)),
     h(Problem, { error }));
@@ -199,24 +254,19 @@ function StatusWord({ st }) {
 }
 
 /**
- * A shared project, below the title: why sync fails when it does (offline: the amber line; another problem: its words
- * and, when they say more, the server's own), then People. The server's raw message is the tooltip (support), never
- * the text, unless it adds to the words (an update the server needs: its own "up to N"; P2-12, H-SV).
+ * A shared project, below the title: one amber line (QA G9) that says why sync fails when it does, or, offline, that
+ * your changes are kept and sent later (an unreachable server while offline is that line), then People. The server's
+ * own message is that line's tooltip, for support, never its text (P2-12, H-SV).
  */
 export function LiveStatus({ st }) {
   const offline = isOffline(st);
   const problem = st.problem && !(offline && st.problem.code === "unreachable") ? st.problem : null;
-  const detailShown = problem?.detail && problem.detail !== problem.words && problem.code !== "unreachable";
+  const line = problem ? problem.words : st.pending ? words.offlineLine(st.pending) : words.offlineLineNone;
   return h("div", { className: "carton-share-live" },
-    offline
-      ? h("div", { className: "carton-share-offline", role: "status", title: st.problem?.detail ?? undefined },
-          h(Icon, { name: "cloudSlash", size: 16 }),
-          h("p", null, ...firstSentence(st.pending ? words.offlineLine(st.pending) : words.offlineLineNone)))
-      : null,
-    problem
-      ? h("div", { className: "carton-sync-problem", role: "alert", "data-code": problem.code, title: detailShown ? undefined : problem.detail ?? undefined },
-          h("p", { className: "carton-field-error" }, problem.words),
-          detailShown ? h("p", { className: "carton-sync-detail carton-field-hint" }, problem.detail) : null)
+    problem || offline
+      ? h("div", { className: "carton-share-offline", role: problem ? "alert" : "status", "data-code": problem?.code, title: st.problem?.detail ?? undefined },
+          h(Icon, { name: problem ? "warning" : "cloudSlash", size: 16 }),
+          h("p", null, ...firstSentence(line)))
       : null,
     h(People, { st }));
 }
@@ -276,7 +326,7 @@ export function ShareForm({ projectId, bridge, title, onClose, onShared }) {
   },
     // Enter in any field shares, as the button does (a form of several fields has no implicit submit)
     h("form", { className: "carton-share-form", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); }, onKeyDown: (e) => { if (e.key === "Enter" && e.target?.tagName === "INPUT") { e.preventDefault(); submit(); } } },
-      h("p", { className: "carton-share-lead" }, `${words.shareLead} ${words.shareLeadMore}`),
+      h("p", { className: "carton-share-lead" }, words.shareLead),
       editHost || hostError
         ? h(Field, { id: "carton-share-host", label: words.sharingServer, hint: words.sharingServerHint, error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, autoComplete: "url", onChange: (e) => setHost(e.target.value), placeholder: words.sharingServerPlaceholder })
         : h("div", { className: "carton-field" }, h("span", { className: "carton-field-label" }, words.sharingServer), h("p", { className: "carton-known" }, h("span", { className: "carton-known-value" }, shownAddress(hostUrl)), " ", h(ChangeLink, { onClick: () => setEditHost(true) }))),

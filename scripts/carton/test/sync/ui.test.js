@@ -34,20 +34,27 @@ test.before(async () => {
 const base = { shared: true, status: "syncing", pending: 0, host: "https://host.example", name: "Bob", peers: [] };
 const html = (st) => render(React.createElement(LiveStatus, { st }));
 
-test("a host too old for the app: the words say it needs an update, then the host's own message", () => {
+test("QA G9: a server too old for the app: one amber line says so, with what still holds; the server's own message only in its tooltip", () => {
   const detail = "this client's documents are schema version 2, newer than this server accepts (up to 1): update the server";
-  const out = html({ ...base, problem: { code: "update-server", words: "The host is older than this app: it needs an update before this project can sync.", detail } });
-  assert.match(out, /role="alert"/);
-  assert.match(out, /data-code="update-server"/);
-  assert.match(out, /needs an update before this project can sync/);
-  assert.match(out, /class="carton-sync-detail[^"]*">this client&#x27;s documents are schema version 2, newer than this server accepts \(up to 1\): update the server</);
+  const words = "Can't sync: the sharing server needs an update. Your changes are saved here.";
+  // offline (sync stopped), as the server's refusal leaves it: one box, not the offline line and an alert both
+  for (const status of ["offline", "syncing"]) {
+    const out = html({ ...base, status, pending: 1, problem: { code: "update-server", words, detail } });
+    assert.equal((out.match(/class="carton-share-offline"/g) ?? []).length, 1, status + ": one amber box");
+    assert.match(out, /class="carton-share-offline" role="alert" data-code="update-server" title="this client&#x27;s documents are schema version 2/, "the detail only in its title");
+    assert.match(out, /<strong>Can&#x27;t sync: the sharing server needs an update\.<\/strong> Your changes are saved here\./);
+    assert.doesNotMatch(out, /carton-sync-detail|carton-field-error|You&#x27;re offline|newer than this server accepts \(up to 1\): update the server</);
+  }
 });
 
 test("no problem: no alert; a problem without a message of its own shows the words once", () => {
-  assert.doesNotMatch(html({ ...base, status: "up-to-date", problem: null }), /role="alert"/);
+  const ok = html({ ...base, status: "up-to-date", problem: null });
+  assert.doesNotMatch(ok, /role="alert"/);
+  assert.doesNotMatch(ok, /carton-share-offline/, "nothing to say: no box");
   const out = html({ ...base, problem: { code: "unreachable", words: "The host can't be reached.", detail: null } });
   assert.match(out, /role="alert"/);
-  assert.doesNotMatch(out, /carton-sync-detail/);
+  assert.equal((out.match(/can&#x27;t be reached/g) ?? []).length, 1);
+  assert.doesNotMatch(out, /carton-sync-detail|title=/);
 });
 
 // UI audit 2026-11-02, P1-8, P2-8, P2-9, P2-10, P2-12: words an editor reads, and a failure that says what to do.
@@ -97,6 +104,7 @@ test("P2-8, P2-10: the Share form asks in editors' words, validates inline, and 
   assert.match(invite, /aria-haspopup="menu"/);
   assert.match(invite, /Can edit/);
   assert.match(invite, />Copy link</);
+  assert.doesNotMatch(invite, /placeholder|Copy link to make one/, "no placeholder that reads as a disabled field (QA G24)");
   assert.match(invite, /Anyone with this link can join and edit\./);
   // offline: no link can be made, and it says when it can
   const off = render(React.createElement(ui.Invite, { projectId: "p", bridge, offline: true }));
@@ -114,17 +122,20 @@ test("PLAN 8.1: a sharing server once used is one line with Change; an address w
   assert.equal(ui.hostAddress(""), "");
 });
 
-test("PLAN 8.1: People: You with the name teammates see and your role, then everyone here with what they're doing", () => {
+test("PLAN 8.1, QA G3, G11: People: You, then each teammate with what they're doing and their role, their agents under them", () => {
   const st = { ...base, status: "up-to-date", name: "Vikas", role: "owner", peers: [
-    { actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, activity: "Editing captions", idle: false },
-    { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia" }, activity: null, idle: true },
-    { actor: { key: "agent/director/leo", kind: "agent", id: "director", name: "Director" }, activity: "Working on “Add a title card”", idle: false },
+    { actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, activity: "Editing captions", idle: false, role: "editor" },
+    { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia" }, activity: null, idle: true, role: "commenter" },
+    { actor: { key: "agent/director/t1", kind: "agent", id: "director", name: "Director", parent: "human/leo", owner: { id: "leo", name: "Leo" } }, activity: "Working on “Add a title card”", idle: false },
+    // a role this app doesn't know, or one that would read from the object's prototype: none shown
+    { actor: { key: "human/bo", kind: "human", id: "bo", name: "Bo" }, activity: null, idle: false, role: "constructor" },
   ] };
   const out = render(React.createElement(ui.People, { st }));
   const rows = [...out.matchAll(/<li class="carton-share-person"[^>]*>([\s\S]*?)<\/li>/g)].map((m) => m[1].replace(/<[^>]+>/g, "|").replace(/\|+/g, "|"));
-  assert.deepEqual(rows, ["|V|You|Vikas · here now|Owner|", "|L|Leo|Here now · editing captions|", "|M|Mia|Here, not editing|", "|D|Director|Here now · working on “Add a title card”|"]);
+  assert.deepEqual(rows, ["|Y|You|Vikas · here now|Owner|", "|L|Leo|Here now · editing captions|Can edit|", "|Leo&#x27;s Director|Working on “Add a title card”|", "|M|Mia|Here, not editing|Can comment|", "|B|Bo|Here now|"]);
   assert.match(out, /data-you=""/);
   assert.match(out, /data-here=""/, "who is here wears the green ring");
+  assert.match(out, /data-under=""[^>]*>[\s\S]*?data-agent="director"/, "the Director, under Leo, with its own mark");
   assert.doesNotMatch(out, /Nobody else is here/);
   assert.match(render(React.createElement(ui.People, { st: { ...st, peers: [] } })), /Nobody else is here right now\./);
 });
@@ -157,8 +168,9 @@ test("review finding 3: an Invite or Open failure shows under its button, whatev
   assert.equal(render(React.createElement(ui.Problem, { error: p, fields: ["host"] })), "");
 });
 
-test("review finding 8: the Share form doesn't claim every original stays here: audio and stills go as they are", () => {
+test("QA G24: the Share form's lead is DESIGN's: the originals of your video stay here, nothing more", () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {}, onClose() {} }));
-  assert.match(form, /Teammates get preview copies of your video; the originals stay on this computer\. Audio and still images go as they are\./);
+  assert.match(form, />Edit together, live, with the whole history\. Teammates get preview copies of your video; the originals stay on this computer\.</);
+  assert.doesNotMatch(form, /Audio and still images/);
 });

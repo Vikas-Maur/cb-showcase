@@ -665,8 +665,8 @@ What changes with it on:
   both: the clip's own when the file or `.carton\media.json` has them, else the project's own date (no clip is older
   than its project); a title also gets what Cardboard's own titles have. A project already saved that way (one an
   earlier build recovered) gets them as Cardboard reads it, and its next save writes them. If a save still fails in
-  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check): "Your
-  last change couldn't be saved. It's on screen, but it isn't in the project yet." A refused undo says so the same way.
+  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check), and
+  says what to do: "Your last change wasn't saved. Do it again, or reopen the project." A refused undo says so the same way.
 - **Undo never empties a project.** Ctrl+Z (or `cb undo`) right after recovering such a project undid the Restore,
   back into the state the bug left (a name, and no aspect ratio, tracks, clips or media), and the open tab crashed
   ("This tab hit a snag"). Now an undo, redo or revert that would leave the project with nothing in it is refused
