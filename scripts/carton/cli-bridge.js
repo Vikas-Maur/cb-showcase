@@ -78,7 +78,9 @@ module.exports = String.raw`var __cartonCli = (() => {
     // timeline_publish) in Cardboard's table; Cardboard's own check_timeline stays and goes through Carton (H3).
     mcp(tool, { z, project, resolve, lib, result }) {
       if (!on || !carton()) return;
-      carton().registerMcp(tool, { z, projectParam: project, result, open: (ref) => target(lib, (l, r) => resolve(r), ref), after, skip: ["check_timeline"] });
+      // lib: the server's library, read when a tool is called (a getter: the server sets it after registering tools)
+      const libNow = () => (typeof lib === "function" ? lib() : lib);
+      carton().registerMcp(tool, { z, projectParam: project, result, open: (ref) => target(libNow(), (l, r) => resolve(r), ref), after, skip: ["check_timeline"] });
     },
   };
 })();

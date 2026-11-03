@@ -481,6 +481,22 @@ What changes with it on:
   turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). Your
   own Claude Code's edits are credited to "Claude Code" (they used to read "Director (chat …)", and its turns went
   unnamed). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one agent turn.
+- **Finding a version, and bringing back one clip** (Carton UX v2). Every change is a version, so a long history
+  needs finding, by you or your agent:
+  - `cb history <project> --find <words>` finds versions by a clip's name (before or after the change), title and
+    caption text they set, an agent's request, a version's name, a person or a day. Every word matches the start of
+    a word, in any order ("intr cap" finds "Add captions to the intro").
+  - `cb history <project> --landmarks` lists the versions people remember: exported, sent (a link made), named,
+    agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
+  - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
+    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+  - `cb compare <project> <left> [right] --show` opens the comparison in your editor, also between two cuts.
+  - In place of a version you can write `sent`, `exported`, `today`, `now`, a version's name or a cut's name.
+  - The agents' instructions say when to use these ("go back to the version I sent the client", "bring back the old
+    intro", "show me what changed"). The History panel gets the same through its view model (`find`, `landmarks`,
+    `restoreClip`, the Bring back choices, `align`).
+  - The search index is built the first time you search, then kept and extended; nothing is added to saving or opening.
+    Exported and Sent landmarks stay on this computer until the sync server carries them.
 - **The History panel** (Ctrl+Shift+H) reads as a list of what happened, by day: each row says who (an agent's own
   mark), what (an agent's prompt in quotes, a version's name, or the change itself: "Moved “Interview B” 2 s later")
   and when (always with am/pm; the newest says **Now**). Your run of edits is one row ("You · 6 changes ›"), an agent

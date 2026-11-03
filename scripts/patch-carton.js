@@ -242,7 +242,10 @@ if (mode === "--cli") {
     // and adds its tools before list_media.
     replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
     replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
-    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
+    // (`lib` as a getter, Carton UX v2 N0: the server's library `s` is set after its tools are registered, so a value
+    // taken here was undefined and every Carton tool failed with "reading 'projects'"; Cardboard's own tools read it
+    // when called, as this does now)
+    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:()=>s,result:Y}),p("list_media",');
     // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
     // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
     // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
@@ -365,6 +368,10 @@ if (mode === "--cli") {
     replace('e().pushTimelineHistory("rippleDeleteAllGaps"),t({timelineItems:i.timelineItems})', 'e().pushTimelineHistory("rippleDeleteAllGaps"),window.__carton.intent({kind:"remap",tracks:[n],gaps:r}),t({timelineItems:i.timelineItems})');
     replace('return e().pushTimelineHistory("removeSilences"),t(c=>({', 'return e().pushTimelineHistory("removeSilences"),r.results.forEach(c=>window.__carton.intent({kind:"remap",tracks:[c.sourceItem.trackId],at:c.sourceItem.endTime,delta:-c.timeSaved,lineage:{from:c.itemId,to:c.newItemIds}})),t(c=>({');
     replace('i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")', 'window.__carton.intent({kind:"split",id:n,at:r,into:[a.firstClip.id,a.secondClip.id]}),i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")');
+    // Carton UX v2 (N0, DESIGN-V2 §2.1): an export that finished is an Exported landmark. Rx is where the editor hands
+    // every telemetry event to main (export_completed: the Export dialog's, with its resolution); the bridge only notes
+    // it (one worker call, not awaited), and Cardboard's own capture runs as before.
+    replace("Rx=(t,e)=>{const n=ree(t,e)??nee(t,e)", 'Rx=(t,e)=>{t==="export_completed"&&window.__carton?.exported?.(e);const n=ree(t,e)??nee(t,e)');
     prepend(require("./carton/renderer-bridge"));
   });
   // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.

@@ -464,6 +464,13 @@ module.exports = String.raw`window.__carton = (() => {
       return guard;
     },
     onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
+    // Carton UX v2 (N0): an export finished (Cardboard's export_completed, patch-carton): an Exported landmark, its
+    // preset as its words. Never waits, never fails the export.
+    exported(p) {
+      if (!on || !store) return;
+      const projectId = store.state().projectId;
+      if (projectId) call("mark", { projectId, kind: "exported", ...(typeof p?.resolution === "string" ? { label: p.resolution } : {}) }).catch(() => {});
+    },
     // Play and Before (PLAN 4.3): check a version out now, so a preview of it later doesn't wait on the worker. A
     // confirmed version or a pin only (they never change); nothing with Carton off.
     prefetch(projectId, ref) {

@@ -31,8 +31,9 @@ export interface Landmark {
   /** Stable key: `<kind>:<cut>@<seq>`, and `:<at>` for a recorded one (a version exported twice is two landmarks). */
   id: string;
   kind: LandmarkKind;
-  /** The version. */
+  /** The version, and its change (null: a cut's start). */
   ref: StateRef;
+  change?: string | null;
   /** When it happened (an export's time; a derived one's: its version's). */
   at: number;
   /** Who did it: exported, sent, named, made the turn, the restore. */

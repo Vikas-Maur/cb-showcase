@@ -305,7 +305,14 @@ module.exports = String.raw`var __cartonMain = (() => {
         " prints it and answers with the file to edit and its status file. Save it as you would " + q("timeline.tsx") + "; each save is applied as your change, and the status file says how it landed: " +
         q("confirmed") + ", " + q("conflicts") + " (someone else changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). " +
         "While your turn runs, " + q("timeline.tsx") + " holds back the person's and teammates' changes, so it doesn't change under you, and shows your own: a " + q("cb") + " write's (" + q("cb source apply") + " and the others) by the time it returns (if it can't yet, its result says so), a view save's by the time its status file says how it landed. The others' changes reach it when your turn ends. " +
-        q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person."];
+        q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.",
+        // Carton UX v2 (N0, DESIGN-V2 §5): finding a version the person means, bringing back one clip, showing a comparison
+        "Every change is a version, so find the one the person means rather than reading the whole history: " + q("cb history " + id + " --find <words>") +
+        " (a clip's name, words from a title or caption, a request, a version's name, a person, a day) and " + q("cb history " + id + " --landmarks") +
+        " (what was exported, sent, named, each agent turn, how it was when they opened it, and before each restore). In place of a " + q("<cut>@<seq>") +
+        " you can write sent, exported, today, now, a version's name or a cut's name. To bring back one clip as it was (\"bring back the old intro\"), " + q("cb restore " + id + " <version> --clip <name>") +
+        ": only that clip changes. " + q("cb restore " + id + " <version>") + " rolls the whole edit back. When the person asks to show or compare something (\"show me what changed since I sent it\", \"compare the Instagram cut with Main\"), run " +
+        q("cb compare " + id + " <left> [right] --show") + ": it opens in their editor; tell them what its first line says. Say names and times to the person, never a " + q("<cut>@<seq>") + "."];
     },
     // H8: the file tools of the transport's agents (the Director, the person's own Claude Code), beside its Bash hook: a
     // Read or Write/Edit of timeline.tsx reaches the worker's Materializer, and a Write/Edit of project.json is refused
