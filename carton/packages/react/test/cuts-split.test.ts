@@ -25,7 +25,7 @@ const doc0 = (): Doc => ({ name: "Film", tracks: [{ id: "t1", [POS]: "V" }], ite
 const alice: Actor = { kind: "human", id: "alice", name: "Alice", group: "alice@laptop" };
 // A fold's answer says which versions it made too (UX redesign PLAN 5.3: its toast's Undo takes back exactly those):
 // the rest of the answer, as before, and that it made one or more
-const folded = (r: { ok: boolean; made?: { changes: readonly string[] } }) => {
+const foldAnswer = (r: { ok: boolean; made?: { changes: readonly string[] } }) => {
   const { made, ...rest } = r;
   assert.ok(!rest.ok || (made && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r));
   return rest;
@@ -87,7 +87,7 @@ test("#2: a split is one change in the Fold dialog, 'Split “clip.mp4” at 0:0
     assert.equal(split.author.name, "Alice", "credited to who split it");
 
     // left out: none of its three records comes in
-    assert.deepEqual(folded(await ui.fold(alt.id, main, { choices: {}, leaveOut: [split.id] })), { ok: true });
+    assert.deepEqual(foldAnswer(await ui.fold(alt.id, main, { choices: {}, leaveOut: [split.id] })), { ok: true });
     const ids = ((await carton.head(main)).doc.items as Rec[]).map((r) => r.id).sort();
     assert.deepEqual(ids, ["a", "b"], "the split stays out whole");
     // folded in later (Fold in the rest): one row again, and the parts come in
@@ -118,7 +118,7 @@ test("review P2: a split row left out stays out whole when its part was split ag
     // while the dialog is open, the right part is split again on the cut folded in
     await carton.commit({ cut: alt.id, ops: [{ op: "remove", path: ["items", "p2"] }, { op: "insert", path: ["items", "p3"], value: { ...p2, id: "p3", endTime: 4, trimEnd: 4 } }, { op: "insert", path: ["items", "p4"], value: { ...p2, id: "p4", startTime: 4, trimStart: 4 } }] });
     const r = await ui.fold(alt.id, main, { choices: {}, leaveOut: [split.id] });
-    assert.deepEqual(folded(r), { ok: true });
+    assert.deepEqual(foldAnswer(r), { ok: true });
     const ids = ((await carton.head(main)).doc.items as Rec[]).map((x) => x.id).sort();
     assert.deepEqual(ids, ["a", "b"], "none of the split's parts came in");
   } finally {
@@ -154,7 +154,7 @@ test("N-1: a title deleted with its own media entry is one row in the Fold dialo
     await ui.settled();
     const plan = await ui.planFold(alt.id, main);
     assert.deepEqual(plan.changes.map((c) => c.summary), ["Removed “W2”"], "one row, the title's");
-    assert.deepEqual(folded(await ui.fold(alt.id, main, { choices: {}, leaveOut: [plan.changes[0]!.id] })), { ok: true });
+    assert.deepEqual(foldAnswer(await ui.fold(alt.id, main, { choices: {}, leaveOut: [plan.changes[0]!.id] })), { ok: true });
     const head = (await carton.head(main)).doc;
     assert.deepEqual([(head.items as Rec[]).map((r) => r.id).sort(), (head.media as Rec[]).map((r) => r.id).sort()], [["w1", "w2"], ["tm1", "tm2"]], "left out together");
   } finally {
@@ -181,7 +181,7 @@ test("N-1 (review #2): an entry two titles share (a duplicate) is its own row: l
     const copy = plan.changes.find((c) => c.id.includes("w1copy"))!;
     assert.ok(entry && copy, JSON.stringify(plan.changes.map((c) => [c.id, c.summary])));
     // the duplicate's delete and the entry left out: the duplicate keeps its entry
-    assert.deepEqual(folded(await ui.fold(alt.id, main, { choices: {}, leaveOut: [copy.id, entry.id] })), { ok: true });
+    assert.deepEqual(foldAnswer(await ui.fold(alt.id, main, { choices: {}, leaveOut: [copy.id, entry.id] })), { ok: true });
     const head = (await carton.head(main)).doc;
     assert.deepEqual([(head.items as Rec[]).map((r) => r.id), (head.media as Rec[]).map((r) => r.id)], [["w1copy"], ["tm1"]]);
   } finally {

@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 const S = require("./support.js");
 // A fold's answer says which versions it made too (UX redesign PLAN 5.3: its toast's Undo takes back exactly those):
 // the rest of the answer, as before, and that it made one or more
-const folded = (r) => { const { made, ...rest } = r ?? {}; assert.ok(!rest.ok || (made && Array.isArray(made.changes) && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r)); return rest; };
+const foldAnswer = (r) => { const { made, ...rest } = r ?? {}; assert.ok(!rest.ok || (made && Array.isArray(made.changes) && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r)); return rest; };
 
 const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS * 2 };
 let b;
@@ -122,7 +122,7 @@ for (const [name, env] of [["no agent environment (the Start menu)", {}], ["CLAU
       // Fold into Main cut, the Fold dialog's "Fold in".
       const plan = await panel.call("planFold", alt.id, main.id);
       assert.ok(plan.changes.length >= 1, "the fold brings the edit in: " + JSON.stringify(plan));
-      assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [] })), { ok: true });
+      assert.deepEqual(foldAnswer(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [] })), { ok: true });
       const folded = newest(pc, main.id);
       assert.equal(folded.kind, "merge", "Main cut gets the fold: " + who(folded));
       assert.ok(isPerson(folded), "the Fold in is the person's: " + who(folded));
@@ -133,12 +133,12 @@ for (const [name, env] of [["no agent environment (the Start menu)", {}], ["CLAU
       const plan2 = await panel.call("planFold", alt.id, main.id);
       assert.ok(plan2.changes.length >= 2, "two records to fold: " + JSON.stringify(plan2.changes));
       const left = plan2.changes.find((c) => /opacity|0\.5/i.test(c.summary)) ?? plan2.changes[1];
-      assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [left.id] })), { ok: true });
+      assert.deepEqual(foldAnswer(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [left.id] })), { ok: true });
       assert.ok(isPerson(newest(pc, main.id)), "the partial fold is the person's: " + who(newest(pc, main.id)));
       await panel.call("switchCut", main.id);
       const rest = await S.until(() => panel.state().history.find((v) => v.foldRest), 20_000, "Fold in the rest offered");
       assert.equal(S.videoOf(await S.projectOf(pc, id)).opacity ?? 1, 1, "the left-out change isn't in Main yet");
-      assert.deepEqual(folded(await panel.call("foldRest", rest.id)), { ok: true });
+      assert.deepEqual(foldAnswer(await panel.call("foldRest", rest.id)), { ok: true });
       // "Fold in the rest" reaches the project the editor shows (Main is the cut shown)
       assert.ok(isPerson(newest(pc, main.id)), "Fold in the rest is the person's: " + who(newest(pc, main.id)));
       await S.until(async () => S.videoOf(await S.projectOf(pc, id)).opacity === 0.5, 20_000, "the rest in project.json");
@@ -207,7 +207,7 @@ test("Fold in the rest never puts an older timeline over a save made while it ra
     const plan = await panel.call("planFold", alt.id, main.id);
     const left = plan.changes.find((c) => /opacity|0\.5/i.test(c.summary)) ?? plan.changes[1];
     assert.ok(plan.changes.length >= 2 && left, "two records to fold: " + JSON.stringify(plan.changes));
-    assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [left.id] })), { ok: true });
+    assert.deepEqual(foldAnswer(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [left.id] })), { ok: true });
     await panel.call("switchCut", main.id);
     const rest = await S.until(() => panel.state().history.find((v) => v.foldRest), 20_000, "Fold in the rest offered");
     const fontSize = S.textOf(await S.projectOf(pc, id)).fontSize;
@@ -221,7 +221,7 @@ test("Fold in the rest never puts an older timeline over a save made while it ra
     const saved = await S.projectOf(pc, id);
     assert.equal(S.textOf(saved).fontSize, fontSize + 26, "the save is in project.json");
     await pc.call("test.releaseMaterialize");
-    assert.deepEqual(folded(await resting), { ok: true });
+    assert.deepEqual(foldAnswer(await resting), { ok: true });
 
     // project.json has both: the rest, and the save made while it ran (never the older timeline over it)
     const after = await S.projectOf(pc, id);

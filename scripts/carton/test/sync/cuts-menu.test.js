@@ -15,7 +15,7 @@ const assert = require("node:assert/strict");
 const S = require("./support.js");
 // A fold's answer says which versions it made too (UX redesign PLAN 5.3: its toast's Undo takes back exactly those):
 // the rest of the answer, as before, and that it made one or more
-const folded = (r) => { const { made, ...rest } = r ?? {}; assert.ok(!rest.ok || (made && Array.isArray(made.changes) && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r)); return rest; };
+const foldAnswer = (r) => { const { made, ...rest } = r ?? {}; assert.ok(!rest.ok || (made && Array.isArray(made.changes) && made.changes.length > 0), "a fold says what it made: " + JSON.stringify(r)); return rest; };
 
 const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS * 2 };
 let b;
@@ -172,7 +172,7 @@ test("#3: a fold with its split left out counts the split as one change in the F
     assert.equal(plan.changes.length, 2, "two rows: " + JSON.stringify(plan.changes.map((c) => c.summary)));
     const split = plan.changes.find((c) => /^Split “clip\.mp4”/.test(c.summary));
     assert.ok(split, "the split is one row: " + JSON.stringify(plan.changes.map((c) => c.summary)));
-    assert.deepEqual(folded(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] })), { ok: true });
+    assert.deepEqual(foldAnswer(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [split.id] })), { ok: true });
 
     // History on Main: the fold's row
     await panel.call("switchCut", main.id);
