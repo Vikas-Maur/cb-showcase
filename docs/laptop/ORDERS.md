@@ -400,3 +400,49 @@ green.
    - that the keep-awake and the task are stopped.
 
    Then you're done. Thank you, an excellent run.
+
+### Update 8 (2026-11-03 ~03:55 UTC): the follow-up release `66ee2f3f`: diagnose the slow trips, then reinstall
+The user approved:
+- merging three follow-ups into `main` and reinstalling;
+- one diagnostic timing run on this laptop.
+
+`merge/prod-3` = **`66ee2f3f`** = `main` `2ccfe9b4` plus:
+- `fix/sync-missing-blob`: a lost keyframe no longer leaves editors "syncing" forever;
+- `fix/react-date-tests`: test only;
+- `perf/apply-tail`: the worker logs every read-your-writes wait of 500 ms or more, step by step, and `writers.js` splits the
+  print and the apply.
+
+`main` will fast-forward to exactly this commit once the Linux suite (running now) is green, so one build serves both the
+timing and the install.
+
+1. **Device:** check power (mains) and disk, and start the keep-awake again for this run.
+2. **Build** `66ee2f3f` the default way (`git fetch && git checkout --detach origin/merge/prod-3`, then
+   `node scripts/build-windows.js`). `build-info.json`: commit 66ee2f3f, carton true.
+3. **Diagnostic timing B,** with test profiles:
+   - `writers.js run` at 1 and 4 writers, `--rate 1 --seconds 60`, Carton on vs off;
+   - **at least 6 alternated pairs per writer count** (24 runs), alternating which side goes first;
+   - idle-gated, on mains;
+   - the compile cache warmed with one `cb` command after the build;
+   - the network on, as in the earlier runs (no dead proxy).
+   
+   For every trip of 3 s or more, report:
+   - (a) whether the print or the apply holds the extra time (the new samples split them);
+   - (b) the apply's `timeline` answer: `later` means cb's 2 s wait ran out;
+   - (c) the worker's `[carton] a cb write waited N ms …` line from that run's `logs/activity-<date>.jsonl`, matched by
+     timestamp: it names the step.
+
+   Also report the same medians, the tail counts and the per-run p95 as Update 6b. A separate fast-mode subagent re-checks
+   every number from the raw `--out` files and the logs before you quote them.
+4. **Spot checks on the same build:**
+   - the share crash 3/3 (one side);
+   - Join → Open on a fresh profile;
+   - page shortcuts 25/25;
+   - one title delete and its Ctrl+Z.
+5. **Wait for my message "main is pushed".** Then install this same build at `D:\cardboard\Cardboard`, with the same rules as
+   Update 7:
+   - not if the user's app is running;
+   - no older copy kept;
+   - app files only;
+   - check `build-info.json` (66ee2f3f).
+6. **Clean up** as in Update 7 (profiles, `out\`, scratch; keep `dl\`, the clips and the reports), stop the keep-awake, then
+   report.
