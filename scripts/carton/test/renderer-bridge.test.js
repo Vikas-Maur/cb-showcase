@@ -20,7 +20,7 @@ const load = ({ enabled }) => {
     adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; },
     armed: () => armed,
     flush: async () => { log.push(["flush", armed]); armed = false; },
-    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
+    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head" && !answers.head) return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
     on: () => () => {},
     deserialize: (d) => d,
     projects: { getState: () => ({ projects: [disk.doc] }), setState: (s) => log.push(["projects", s.projects.length]) },
@@ -291,29 +291,36 @@ test("Play and Before: a change during the preview, or head moved meanwhile, sti
   // the person edited right after the fast step (a save armed when head answers): their edit stays; its save goes
   // first and its echo brings head
   await t.c.preview("p1", "main@3");
-  t.answers.head = () => (t.setArmed(true), t.project(500, [{ id: "other", endTime: 8 }]));
+  let ran = 0;
+  t.answers.head = () => (ran++, t.setArmed(true), t.project(500, [{ id: "other", endTime: 8 }]));
   await t.c.preview("p1", null);
+  assert.equal(ran, 1, "the simulated edit ran while head was read");
   assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]], "not overwritten under the person");
   // their save went out and was done before head answered (nothing armed or in flight by then): head was read before
   // it, so it isn't adopted over it either; the save's own events bring head
   t.setArmed(false);
   await t.c.preview("p1", "main@3");
-  t.answers.head = () => (t.c.saveMeta({ id: "p1", stateUpdatedAt: 401 }, { ownedFields: ["tracks", "timelineItems"] }), t.project(500, [{ id: "other", endTime: 8 }]));
+  t.answers.head = () => (ran++, t.c.saveMeta({ id: "p1", stateUpdatedAt: 401 }, { ownedFields: ["tracks", "timelineItems"] }), t.project(500, [{ id: "other", endTime: 8 }]));
   await t.c.preview("p1", null);
+  assert.equal(ran, 2, "the save ran while head was read");
   assert.deepEqual(t.state().timelineItems, [{ id: "newer", endTime: 7 }], "a save made since the fast step: head not adopted over it");
   // an undo or redo under way for the project: its answer is adopted, not this head
-  t.answers.head = () => t.project(600, [{ id: "late", endTime: 9 }]);
+  // (head read before the undo, answered after it: older than what the undo adopted)
+  let headDone;
+  t.answers.head = () => new Promise((r) => (headDone = r));
   let stepDone;
   t.answers.undo = () => new Promise((r) => (stepDone = r));
   await t.c.preview("p1", "main@3");
   const back2 = t.c.preview("p1", null); // the fast step: back on the editor's own timeline
   assert.equal(t.c.undo(), true); // Ctrl+Z at once, before head answers
   await new Promise((r) => setTimeout(r, 5));
-  await back2;
-  assert.deepEqual(t.state().timelineItems, [{ id: "newer", endTime: 7 }], "head isn't adopted while the undo steps");
   stepDone({ status: "confirmed", project: t.project(700, [{ id: "undone", endTime: 3 }]) });
   await new Promise((r) => setTimeout(r, 5));
-  assert.deepEqual(t.state().timelineItems, [{ id: "undone", endTime: 3 }], "the undo's answer is");
+  assert.deepEqual(t.state().timelineItems, [{ id: "undone", endTime: 3 }], "the undo's answer is adopted");
+  // head answers only now, older than the undo (review #1): the undo's result stays
+  headDone(t.project(600, [{ id: "late", endTime: 9 }]));
+  await back2;
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [700, [{ id: "undone", endTime: 3 }]], "a late head never replaces the undo");
 });
 
 test("Play and Before: only versions that never change are kept, a few at a time; nothing with Carton off", async () => {

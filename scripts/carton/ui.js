@@ -63,14 +63,40 @@ function connect(projectId, bridge) {
   const openPreview = r.ui.openPreview.bind(r.ui);
   r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
   // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
-  // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
-  const view = r.ui.view.bind(r.ui);
-  r.ui.view = async (target) => {
-    await view(target);
-    return bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
-  };
+  // editor swaps (viewAndSwap, below).
+  r.ui.view = viewAndSwap(r.ui.view.bind(r.ui), () => r.ui.viewing(), (ref) => bridge.preview(projectId, ref));
   confirmations(r.ui);
   return { ...r, close: off };
+}
+
+/**
+ * view() and the editor's swap. The worker labels a view and checks it loads; its viewing topic arrives before its
+ * answer, so the ref shown is the one it settled on. A target that names its state (Play's and Before's, a comment's
+ * "See it as it was": `ref`), and your edit (null), swap the stage at once, while the worker labels it: Before's flip
+ * waits on nothing but the bridge's cache, which Play filled ahead (docs/carton-ux PLAN 4.3; review #7: every flip
+ * waited a worker round trip first). If the worker can't load it, the stage goes back to what viewing() says; if it
+ * settled on another state (a newer view since: the view model and the bridge are both latest-wins), the stage shows
+ * that one.
+ */
+function viewAndSwap(view, viewing, preview) {
+  return async (target) => {
+    const early = target === null ? preview(null) : typeof target?.ref === "string" ? preview(target.ref) : null;
+    try {
+      await view(target);
+    } catch (e) {
+      if (early) {
+        await early.catch(() => {});
+        await preview(viewing()?.ref ?? null).catch(() => {});
+      }
+      throw e;
+    }
+    const settled = target ? (viewing()?.ref ?? null) : null;
+    if (early) {
+      await early;
+      if (settled === (target ? target.ref : null)) return;
+    }
+    return preview(settled);
+  };
 }
 
 /** The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. */
@@ -661,4 +687,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor };
+export const __forTests = { confirmations, toasts, tellFailure, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap };

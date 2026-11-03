@@ -86,6 +86,11 @@ export interface BeforeControl {
   press(): void;
   /** `hold`: the B key, which only holds (a quick tap of it comes back, never latches). */
   release(opts?: { hold?: boolean }): void;
+  /**
+   * B pressed: a hold that lets go on B's key-up wherever focus went, or when the window loses focus or hides (review
+   * #5: a key-up outside the list never reached it, and Before stayed on).
+   */
+  pressKey(): void;
   /** A keyboard click (Enter or Space on the button): latch on or off. */
   toggle(): void;
   /** Focus left while held (a key up that never came): back. */
@@ -115,34 +120,28 @@ export function usePlayChanges(o: PlayOptions): Playback {
   opts.current = o;
   const lengthRef = useRef(o.length ?? 0);
   lengthRef.current = o.length ?? 0;
-  // A session's own id: an answer from a session given up meanwhile (stopped, or another Play) does nothing.
+  // A session's own id: an answer from a session given up meanwhile (stopped, or another Play) does nothing. `began`:
+  // the newest Play asked for (a stop doesn't move it), and the list it plays: ▶ on a row of another list (another
+  // card) is a new Play, never this session's pause (review #2).
   const run = useRef(0);
+  const began = useRef(0);
+  const sessionList = useRef<readonly Change[] | null>(null);
 
-  // ---------------------------------------------------------------- views, one at a time, the latest one wins
+  // ---------------------------------------------------------------- views: straight through, the latest one wins
   // What Play last asked the stage to show; a viewing that matches none of Play's targets came from elsewhere (Esc,
-  // a row's ✕, a conflict's See it).
+  // a row's ✕, a conflict's See it). Each ask goes at once (a flip never waits behind the last one's worker answer:
+  // review #7): the view model's view() and the host's swap are both latest-wins, so a quick B, B, B ends where it ends.
   const wanted = useRef<{ target: PlayTarget | null } | null>(null);
-  const queue = useRef<{ busy: boolean; next: { target: PlayTarget | null; done: (e?: unknown) => void } | null }>({ busy: false, next: null });
+  const pending = useRef(0);
   const show = useCallback(
-    (target: PlayTarget | null): Promise<void> =>
-      new Promise((resolve, reject) => {
-        wanted.current = { target };
-        const q = queue.current;
-        // A newer ask replaces one still waiting (a quick B, B, B flips once, to where it ends).
-        q.next?.done();
-        q.next = { target, done: (e?: unknown) => (e ? reject(e) : resolve()) };
-        const pump = () => {
-          if (q.busy || !q.next) return;
-          const { target: t, done } = q.next;
-          q.next = null;
-          q.busy = true;
-          (matches(ui.viewing(), t) ? Promise.resolve() : ui.view(t)).then(
-            () => ((q.busy = false), done(), pump()),
-            (e) => ((q.busy = false), done(e), pump()),
-          );
-        };
-        pump();
-      }),
+    (target: PlayTarget | null): Promise<void> => {
+      wanted.current = { target };
+      if (matches(ui.viewing(), target)) return Promise.resolve();
+      pending.current++;
+      return ui.view(target).finally(() => {
+        pending.current--;
+      });
+    },
     [ui],
   );
 
@@ -158,17 +157,24 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const lastTime = useRef<number | null>(null);
   const lastProgress = useRef(0);
   const root = useRef<HTMLElement | null>(null);
-  // The rows being played (ChangeRow's data-playing) and the change map, found after each render, never per frame.
-  const marks = useRef<{ rows: HTMLElement[]; map: HTMLElement | null }>({ rows: [], map: null });
+  // The rows being played (ChangeRow's data-playing), the change map and its playhead with the map's scale: found
+  // after a render while a session is on, never per frame (review #10); nothing at all is looked up while none is.
+  const NO_MARKS = { rows: [] as HTMLElement[], map: null as HTMLElement | null, head: null as HTMLElement | null, len: 1 };
+  const marks = useRef(NO_MARKS);
   const rootRef = useCallback((el: HTMLElement | null) => {
     root.current = el;
   }, []);
   useLayoutEffect(() => {
     const el = root.current;
-    marks.current = el ? { rows: [...el.querySelectorAll<HTMLElement>(".carton-change[data-playing]")], map: el.querySelector<HTMLElement>(".carton-map") } : { rows: [], map: null };
-    const on = player.state.step >= 0;
-    for (const r of marks.current.rows) setChangeProgress(r, on ? lastProgress.current : 0);
-    moveMapPlayhead(marks.current.map, on ? lastTime.current : null);
+    if (!el || player.state.step < 0) {
+      if (marks.current.map) moveMapPlayhead(marks.current.map, null);
+      marks.current = NO_MARKS;
+      return;
+    }
+    const map = el.querySelector<HTMLElement>(".carton-map");
+    marks.current = { rows: [...el.querySelectorAll<HTMLElement>(".carton-change[data-playing]")], map, head: map?.querySelector<HTMLElement>(".carton-map-playhead") ?? null, len: Number(map?.dataset.length) || 1 };
+    for (const r of marks.current.rows) setChangeProgress(r, lastProgress.current);
+    moveMapPlayhead(map, lastTime.current);
   });
   useEffect(
     () =>
@@ -178,7 +184,10 @@ export function usePlayChanges(o: PlayOptions): Playback {
         for (const r of m.rows) setChangeProgress(r, p);
         if (t === null) return;
         lastTime.current = t;
-        moveMapPlayhead(m.map, t);
+        if (m.head) {
+          if (m.head.hidden) m.head.hidden = false;
+          m.head.style.transform = `translateX(${Math.max(0, Math.min(100, (t / m.len) * 100))}%)`;
+        }
         host.current?.onFrame?.(t);
       }),
     [player],
@@ -189,6 +198,12 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const latchedRef = useRef(false);
   const downAt = useRef(0);
   const unlatchOnUp = useRef(false);
+  // a B held: the listeners that let it go wherever its key-up lands, or when the window loses focus or hides
+  const keyHold = useRef<(() => void) | null>(null);
+  const endKeyHold = () => {
+    keyHold.current?.();
+    keyHold.current = null;
+  };
   const setBefore = useCallback(
     (on: boolean, latch: boolean) => {
       latchedRef.current = on && latch;
@@ -231,6 +246,7 @@ export function usePlayChanges(o: PlayOptions): Playback {
         setBefore(true, false);
       },
       release(opts) {
+        if (opts?.hold) endKeyHold();
         if (unlatchOnUp.current) {
           unlatchOnUp.current = false;
           setBefore(false, false);
@@ -245,8 +261,27 @@ export function usePlayChanges(o: PlayOptions): Playback {
         setBefore(!latchedRef.current, true);
       },
       cancel() {
+        endKeyHold();
         unlatchOnUp.current = false;
         if (bOnRef.current && !latchedRef.current) setBefore(false, false);
+      },
+      pressKey() {
+        if (!availableRef.current && !latchedRef.current) return;
+        this.press();
+        if (keyHold.current || typeof window === "undefined") return;
+        const up = (e: globalThis.KeyboardEvent) => {
+          if (e.key === "b" || e.key === "B") this.release({ hold: true });
+        };
+        const lost = () => this.cancel();
+        const hidden = () => document.visibilityState === "hidden" && this.cancel();
+        window.addEventListener("keyup", up, true);
+        window.addEventListener("blur", lost);
+        document.addEventListener("visibilitychange", hidden);
+        keyHold.current = () => {
+          window.removeEventListener("keyup", up, true);
+          window.removeEventListener("blur", lost);
+          document.removeEventListener("visibilitychange", hidden);
+        };
       },
     }),
     [bOn, latched, available, setBefore],
@@ -259,6 +294,9 @@ export function usePlayChanges(o: PlayOptions): Playback {
       if (!changes?.length) return;
       const steps = row == null ? playSteps(changes, { ...so, length: lengthRef.current || undefined }) : [stepFor(changes, row, { ...so, length: lengthRef.current || undefined })].filter((x) => x != null);
       const id = ++run.current;
+      began.current = id;
+      sessionList.current = changes;
+      const prior = ui.viewing();
       setError(null);
       setOne(row);
       // Before's side, loaded now, so holding Before later doesn't wait for it
@@ -275,7 +313,11 @@ export function usePlayChanges(o: PlayOptions): Playback {
           setError(words.loadFailed);
           return;
         }
-        if (id !== run.current) return;
+        if (id !== run.current) {
+          // given up while it loaded (stopped, the view left) and no other Play since: what it opened goes (review #4)
+          if (began.current === id && newer && !prior && matches(ui.viewing(), newer)) void ui.view(null).catch(() => {});
+          return;
+        }
         setLoading(false);
       }
       player.start(steps);
@@ -288,14 +330,25 @@ export function usePlayChanges(o: PlayOptions): Playback {
     run.current++;
     setLoading(false);
     player.stop();
-  }, [player]);
+    // Before goes with the session (review #3: a card closed with Before latched left the older side on the stage
+    // with no control to let it go): back on the side it played
+    endKeyHold();
+    unlatchOnUp.current = false;
+    if (bOnRef.current) {
+      bOnRef.current = false;
+      latchedRef.current = false;
+      setBOn(false);
+      setLatched(false);
+      void show(opts.current.newer).catch(() => {});
+    }
+  }, [player, show]);
 
   const playAll = useCallback(() => void begin(null), [begin]);
   const playRow = useCallback(
     (row: number) => {
       // the lit row's own button is the transport's: Pause, and on again
       const s = player.state;
-      if (s.step >= 0 && (one === row || s.rows.includes(row))) return s.playing ? player.pause() : player.resume();
+      if (s.step >= 0 && opts.current.changes === sessionList.current && (one === row || s.rows.includes(row))) return s.playing ? player.pause() : player.resume();
       void begin(row);
     },
     [player, begin, one],
@@ -315,7 +368,7 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const viewing = useTopic("viewing", (u) => u.viewing());
   useEffect(() => {
     const w = wanted.current;
-    if (!w || queue.current.busy || queue.current.next) return;
+    if (!w || pending.current) return;
     if (matches(viewing, w.target)) return;
     const { newer } = opts.current;
     if (matches(viewing, newer)) {
@@ -339,8 +392,10 @@ export function usePlayChanges(o: PlayOptions): Playback {
   useEffect(
     () => () => {
       run.current++;
+      endKeyHold();
       if (bOnRef.current) void show(opts.current.newer).catch(() => {});
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [show],
   );
 
@@ -409,12 +464,16 @@ export function playKeys(play: Playback, e: KeyboardEvent<HTMLElement>, up = fal
     e.preventDefault();
     e.stopPropagation();
     if (up) play.before.release({ hold: true });
-    else if (!e.repeat) play.before.press();
+    else if (!e.repeat) play.before.pressKey();
     return true;
   }
   if (up) return false;
-  // a button's own Space presses it
-  if (e.key === " " && t.tagName !== "BUTTON") {
+  // a button's own Space or Enter presses it, and goes no further: Cardboard's own Space (play) never also acts (review #8)
+  if ((e.key === " " || e.key === "Enter") && t.tagName === "BUTTON") {
+    e.stopPropagation();
+    return true;
+  }
+  if (e.key === " ") {
     e.preventDefault();
     e.stopPropagation();
     play.toggle();

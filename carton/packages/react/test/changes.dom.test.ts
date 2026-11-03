@@ -432,3 +432,96 @@ test(name("History's card: See them opens the Changes view in place of the list,
   assert.equal(ui.viewing(), null, "none of it changed the stage");
   await m.unmount();
 });
+
+// ---------------------------------------------------------------- the review of the final head (GPT-6.1 Sol)
+
+test(name("review #2, #3: another card's ▶ is its own play, never the last card's pause; a card closed lets its Before go"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const { director } = story(ui);
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800, play: host().play })));
+  await flush();
+  await openCardOf(m.container, "Add captions to the interview");
+  await click($(card(m.container), ".carton-change .carton-change-play"));
+  await waitFor(() => ui.viewing()?.ref === director.ref, "the older card's first change, viewing it");
+  // another card (the newest), its first change: a new play on your edit, not the older card's pause
+  await openCardOf(m.container, "Tighten the intro");
+  await click($(card(m.container), ".carton-change .carton-change-play"));
+  await waitFor(() => ui.viewing() === null, "back on your edit");
+  assert.ok($(card(m.container), ".carton-change[data-playing]"), "the newest card's row plays");
+  // Before latched in a card, then the card closed with Esc: Before goes with it
+  await openCardOf(m.container, "Add captions to the interview");
+  await click(byText(card(m.container), "button", "Play all"));
+  await waitFor(() => ui.viewing()?.ref === director.ref, "viewing the Director's version");
+  await hold($(card(m.container), ".carton-before")!, 50); // a click: latched
+  assert.equal(ui.viewing()?.kind, "before");
+  await key(card(m.container), "Escape");
+  await waitFor(() => !card(m.container), "the card closed");
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref, "Before let go: back on the version played, never left on the older side");
+  await m.unmount();
+});
+
+test(name("review #4: a load given up (the view left) doesn't take the stage when it lands"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const { director, yours } = story(ui);
+  let land: (() => void) | null = null;
+  const slow = Object.assign(Object.create(ui), { view: (t: ViewTarget | null) => (t ? new Promise<void>((r) => (land = () => void ui.view(t).then(r))) : ui.view(null)) }) as CartonUi;
+  const m = await render(wrap(slow, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: host().play })));
+  await flush();
+  await click(byText($(m.container, ".carton-changes-view")!, "button", "Play all"));
+  assert.ok(land, "loading the newer side");
+  await m.unmount(); // ← History before it loaded
+  await act(async () => land!());
+  await flush();
+  assert.equal(ui.viewing(), null, "it landed, and went: the editor stays on your edit");
+});
+
+test(name("review #5: B held, then let go with focus elsewhere: Before goes back"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const { director, yours } = story(ui);
+  const m = await render(wrap(ui, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: host().play })));
+  await flush();
+  const root = $(m.container, ".carton-changes-view")!;
+  await click(byText(root, "button", "Play all"));
+  await waitFor(() => ui.viewing()?.ref === yours.ref, "viewing the newer side");
+  await act(() => void $(root, ".carton-change")!.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true })));
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref, "held");
+  // focus went to the editor: B's key-up lands on the page, not the list
+  const real = Date.now;
+  Date.now = () => real() + 600;
+  await act(() => void document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "b", bubbles: true, cancelable: true })));
+  Date.now = real;
+  await flush();
+  assert.equal(ui.viewing()?.ref, yours.ref, "let go");
+  // held again, then the window loses focus: let go too
+  await act(() => void $(root, ".carton-change")!.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true })));
+  await flush();
+  assert.equal(ui.viewing()?.ref, director.ref);
+  await act(() => void window.dispatchEvent(new Event("blur")));
+  await flush();
+  assert.equal(ui.viewing()?.ref, yours.ref, "the window lost focus: let go");
+  await m.unmount();
+});
+
+test(name("review #6, #8: History's card says a version couldn't load; Space on a transport button stays in the panel"), async () => {
+  const ui = createMockUi({ versions: 20 });
+  const failing = Object.assign(Object.create(ui), { view: (t: ViewTarget | null) => (t ? Promise.reject(new Error("gone")) : ui.view(null)) }) as CartonUi;
+  const m = await render(wrap(failing, h(HistoryPanel, { initialHeight: 800, play: host().play })));
+  await flush();
+  await openCardOf(m.container, "Add captions to the interview");
+  await click(byText(card(m.container), "button", "Play all"));
+  await flush();
+  assert.equal($(m.container, ".carton-history-error")?.textContent, "Couldn't load this version. Try again.");
+  assert.equal(ui.viewing(), null, "the editor stays on your edit");
+  await m.unmount();
+  // Space on Play all: the button's own, and Cardboard's Space (play) never also sees it
+  const { director } = story(ui);
+  const v = await render(wrap(ui, h(ChangesView, { from: director, onBack: () => {}, host: host().play })));
+  await flush();
+  let reached = 0;
+  v.container.parentElement!.addEventListener("keydown", () => reached++);
+  await key(byText($(v.container, ".carton-changes-view")!, "button", "Play all"), " ");
+  assert.equal(reached, 0);
+  await v.unmount();
+});

@@ -349,10 +349,11 @@ module.exports = String.raw`window.__carton = (() => {
         const h = held;
         release();
         // Back to current: the project record and the editor take head, with its base. After the fast step, only if
-        // head moved meanwhile and the person has nothing unsaved (their save goes first; its echo brings head), and
-        // no preview opened again since.
+        // head moved and the editor still shows exactly what the fast step put there: its base unchanged (an undo or
+        // redo, or a change from elsewhere, adopted meanwhile moves it: theirs is newer than this read), no save made
+        // since, nothing armed or in flight, no undo or redo stepping, and no preview opened again (review #1).
         const now = store.state();
-        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.() && saves === saves0 && stepping !== projectId);
+        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && (now.cartonBase ?? null) === mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.() && saves === saves0 && stepping !== projectId);
         if (moved) {
           store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
           store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });

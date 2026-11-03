@@ -507,7 +507,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // Before shows how it was before the card's changes (a run of changes: before its oldest) at the same moment. The card
   // lights the row playing (`playing`); Play all again on the version paused in goes on from there.
   const onSeek = props.onSeek ?? props.play?.seek;
-  const [playReq, setPlayReq] = useState<{ req: PlayRequest; base?: string; n: number } | null>(null);
+  // (`key`: the card it came from; a play belongs to its card)
+  const [playReq, setPlayReq] = useState<{ req: PlayRequest; key: string | null; base?: string; n: number } | null>(null);
   const pv = playReq?.req.version;
   const yourLength = playReq?.req.newest ? props.play?.length?.() : undefined;
   const beforeRef = playReq?.base ?? pv?.base;
@@ -531,7 +532,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       // a person's run of changes (a group row): Before is before its oldest version
       const r = rowOf(openKeyRef.current);
       const oldest = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : undefined;
-      setPlayReq((p) => ({ req, ...(oldest?.base ? { base: oldest.base } : {}), n: (p?.n ?? 0) + 1 }));
+      setPlayReq((p) => ({ req, key: openKeyRef.current, ...(oldest?.base ? { base: oldest.base } : {}), n: (p?.n ?? 0) + 1 }));
     },
     [rowOf, find],
   );
@@ -543,12 +544,18 @@ export function HistoryPanel(props: HistoryPanelProps) {
     else cardPlayRef.current.playAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playReq?.n]);
-  // the card closed: its play is over
+  // the card closed, or another one opened: its play is over, and Before lets go (review #2, #3)
   useEffect(() => {
-    if (openKey) return;
+    const r = playReqRef.current;
+    if (!r || r.key === openKey) return;
     cardPlayRef.current.stop();
     setPlayReq(null);
   }, [openKey]);
+  // a version that couldn't be loaded says so, in History's words (review #6)
+  useEffect(() => {
+    if (cardPlay.error) setFailed(cardPlay.error);
+  }, [cardPlay.error]);
+  const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
   let litKey: string | null = null;
   for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
   const playOn = !!playReq && (cardPlay.status === "playing" || cardPlay.status === "loading");
@@ -570,7 +577,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     e.preventDefault();
     e.stopPropagation();
     if (up) cardPlay.before.release({ hold: true });
-    else if (!e.repeat) cardPlay.before.press();
+    else if (!e.repeat) cardPlay.before.pressKey();
   };
   const sectionRef = useCallback((el: HTMLElement | null) => {
     (panel as { current: HTMLElement | null }).current = el;
@@ -818,6 +825,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
         onPlay,
         onPause: pause,
         playing,
+        loading: playLoading === v.id,
         before: beforeBtn,
         autoPlay: autoPlay === key,
         onSeek,
