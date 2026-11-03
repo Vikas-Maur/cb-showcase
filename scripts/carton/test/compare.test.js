@@ -517,3 +517,47 @@ test("N1b §1.4: the shorter side holds its last frame (waiting) until the longe
     await act(async () => { m.page().comparePlayBoth(); await sleep(10); });
   } finally { await m.done(); }
 });
+
+test("N1b §1.5: a picked row's detail: Then / Now, and Bring back with N0b's token, place and ripple words; Take out for a clip that wasn't there", opt, async () => {
+  const m = await mount();
+  try {
+    const ref = m.older().ref;
+    const asked = [], brought = [];
+    m.ui.bringBackChoices = async (r) => {
+      asked.push(r);
+      return {
+        changed: [{ itemId: "intro", name: "Intro", noun: "video", then: { start: 0, end: 6 }, now: { start: 0, end: 5 }, token: "t-intro", place: { placed: "same" }, ripple: null }],
+        deleted: [{ itemId: "pier", name: "B-roll pier", noun: "video", then: { start: 6, end: 9 }, token: "t-pier", place: { placed: "new-track", takenBy: [{ itemId: "drone", name: "Drone shot" }] }, ripple: { direction: "later", by: 3, at: 6, moved: 2 } }],
+        added: [{ itemId: "drone", name: "Drone shot", noun: "video", now: { start: 5, end: 9 }, token: "t-drone", ripple: { direction: "earlier", by: 4, at: 5, moved: 1 } }],
+        same: 3,
+      };
+    };
+    m.ui.restoreClip = async (r, item, o) => { brought.push([r, item, o]); return { ok: true, how: o?.remove ? "removed" : "changed", clipName: item, made: { cut: "cut-main", changes: ["x"] } }; };
+    await m.cmd("carton-history");
+    await m.open(ref);
+    const row = (re) => [...m.list().querySelectorAll(".carton-change")].find((r) => re.test(r.textContent));
+    await m.click(row(/Trimmed “Intro”/));
+    await m.settle(60);
+    let d = m.list().querySelector(".carton-compare-detail");
+    assert.ok(d, "the picked row opens its detail");
+    assert.deepEqual([...d.querySelectorAll(".carton-compare-thennow span")].map((x) => x.textContent), ["Then", "0:00–0:06", "Now", "0:00–0:05"]);
+    assert.equal(asked[0], ref, "Choose a clip… for the left side");
+    await m.click([...d.querySelectorAll("button")].find((b) => b.textContent === "Bring back “Intro”"));
+    await m.settle(60);
+    assert.deepEqual(brought.at(-1), [ref, "intro", { expect: "t-intro" }], "restoreClip with N0b's token");
+    // a deleted clip whose place is taken: its place and ripple, in N2's words
+    await m.click(row(/Removed “B-roll pier”/));
+    await m.settle(40);
+    d = m.list().querySelector(".carton-compare-detail");
+    assert.match(d.textContent, /taken by “Drone shot”/);
+    assert.match(d.textContent, /3 s later/);
+    // a clip that wasn't there then: Take out
+    await m.click(row(/Added “Drone shot”/));
+    await m.settle(40);
+    d = m.list().querySelector(".carton-compare-detail");
+    assert.deepEqual([...d.querySelectorAll(".carton-compare-thennow span")].map((x) => x.textContent), ["Then", "—", "Now", "0:05–0:09"]);
+    await m.click([...d.querySelectorAll("button")].find((b) => b.textContent === "Take out “Drone shot”"));
+    await m.settle(60);
+    assert.deepEqual(brought.at(-1), [ref, "drone", { remove: true, expect: "t-drone" }]);
+  } finally { await m.done(); }
+});

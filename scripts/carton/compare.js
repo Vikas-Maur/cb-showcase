@@ -14,7 +14,7 @@ import { createElement as h, Component, useCallback, useEffect, useLayoutEffect,
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
   actorLabel, clock, compareMarks, compareModeShown, compareModesFor, cutColor, cutRef, followTime, isMainCut, leadTime, rowRange, stepAt, stripOf, timecode,
-  playLength, playSchedule, sidesAt, storyAt,
+  playLength, playSchedule, sidesAt, storyAt, CompareRowDetail, fromBringBack, bringBackLine,
   useCartonUi, versionLabel, words,
 } from "@carton/react";
 import { injectStyles } from "@carton/react/skin/cardboard";
@@ -677,10 +677,35 @@ function CompareTimeline({ ui, c, data, bridge, portal, selected, leftAt }) {
 // ---------------------------------------------------------------- the side panel (§1.2)
 
 /** The History panel while comparing: the range, the count, every change; ← History ends Compare. */
+/**
+ * The picked row's detail (§1.5): Then / Now and Bring back, from the engine's "Choose a clip…" (N0's bringBackChoices
+ * for the left side, N0b's token, place and ripple). Read once per comparison, on the first pick, and again after a
+ * Bring back or a refusal. Only where Bring back means something: the left side a version of your cut, your edit on
+ * the right.
+ */
+function useClipChoices(ui, c, selected) {
+  const [st, setSt] = useState({ key: null, map: null, raw: null });
+  const can = !!c && c.right.you && !c.acrossCuts && typeof ui.bringBackChoices === "function";
+  const key = can ? `${c.left.ref}|${c.right.ref}` : null;
+  const load = useCallback(() => {
+    if (!key) return;
+    const k = key;
+    ui.bringBackChoices(c.left.ref).then((r) => {
+      const raw = new Map([...r.changed, ...r.deleted, ...r.added].map((x) => [x.itemId, x]));
+      setSt({ key: k, map: new Map(fromBringBack(r).map((x) => [x.itemId, x])), raw });
+    }, () => setSt({ key: k, map: new Map(), raw: new Map() }));
+  }, [ui, key]);
+  useEffect(() => { if (key && selected && st.key !== key) load(); }, [key, selected, st.key, load]);
+  return { choices: st.key === key ? st.map : null, raw: st.key === key ? st.raw : null, reload: load, can };
+}
+
 export function CompareSide({ bridge, onFoldIn }) {
   const ui = useCartonUi();
   const c = useComparing(ui);
   const data = ui.compareData?.() ?? null;
+  const selectedKey = ui.compareSelected?.() ?? null;
+  const clips = useClipChoices(ui, c, selectedKey);
+  const [act, setAct] = useState({ busy: null, note: null });
   // Restore asks first, with its consequence (as the Changes view did), and Compare stays open with your edit updated
   // (§1.8): the right side follows your edit
   const [confirm, setConfirm] = useState(null);
@@ -700,6 +725,37 @@ export function CompareSide({ bridge, onFoldIn }) {
   // cut on the right: Fold in changes from the left cut…; between two others: nothing, only Done comparing
   const canRestore = c.right.you && !c.acrossCuts && !!c.left.versionId;
   const canFold = c.acrossCuts && c.right.you && !!c.left.cutId && typeof onFoldIn === "function";
+  // the picked row's Then / Now and its one-clip action (Bring back, Take out), as Choose a clip… words them
+  const span = (x) => (x ? (x[1] > x[0] ? `${timecode(x[0])}–${timecode(x[1])}` : timecode(x[0])) : "—");
+  const rowDetail = (ch) => {
+    if (!clips.can || !ch.itemId) return null;
+    if (!clips.choices) return h(CompareRowDetail, { then: "…", now: "…" });
+    const x = clips.choices.get(ch.itemId), raw = clips.raw?.get(ch.itemId);
+    if (!x) return null;
+    const then = x.how === "added" ? "—" : x.thenText !== undefined ? `“${x.thenText}”` : span(x.then);
+    const now = x.how === "deleted" ? "—" : raw?.now?.text !== undefined && x.thenText !== undefined ? `“${raw.now.text}”` : span(x.now);
+    const when = c.left.detail || words.anEarlierVersion;
+    const run = () => {
+      setAct({ busy: ch.itemId, note: null });
+      ui.restoreClip(c.left.ref, x.itemId, { ...(x.how === "added" ? { remove: true } : {}), ...(x.token !== undefined ? { expect: x.token } : {}) }).then(
+        () => { setAct({ busy: null, note: null }); clips.reload(); },
+        (e) => {
+          // changed again since (N0b refuses it, nothing written): its words, and the clip read again
+          const changed = e?.code === "CHANGED_SINCE";
+          setAct({ busy: null, item: x.itemId, note: changed ? (e?.message || words.clipChangedNothing(x.name)) : words.bringBackFailed });
+          clips.reload();
+        },
+      );
+    };
+    return h(CompareRowDetail, {
+      then, now,
+      action: x.how === "added" ? words.takeOutNamed(x.name) : words.bringBackNamed(x.name),
+      line: bringBackLine(x, when, words),
+      busy: act.busy === x.itemId,
+      note: act.busy === null && act.item === x.itemId && act.note ? act.note : null,
+      onAction: run,
+    });
+  };
   const restore = async () => {
     setConfirm({ busy: true, failed: false });
     try {
@@ -732,6 +788,7 @@ export function CompareSide({ bridge, onFoldIn }) {
     onSelect: (ch) => ui.compareSelect?.(ch),
     onPlay: (ch) => ui.comparePlay?.(ch),
     onBack: () => void ui.closeCompare?.(),
+    detail: (ch) => rowDetail(ch),
     footer,
     empty: c.right.you ? words.sameAs(c.left.label) : words.sameVersions,
   });

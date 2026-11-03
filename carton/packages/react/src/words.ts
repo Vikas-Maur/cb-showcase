@@ -689,6 +689,9 @@ export const words = {
   newTrack: "new track",
   anEarlierVersion: "an earlier version",
   yourEditSaid: "your edit",
+  // Compare's row detail (DESIGN-V2 §1.5): Then / Now
+  compareThen: "Then",
+  compareNow: "Now",
   thisShot: "This shot",
   // the title bar's chip while a version is slow to come (design QA G1): "Loading Director's “Add captions…”"
   loadingView: (label: string) => `Loading ${label}`,
