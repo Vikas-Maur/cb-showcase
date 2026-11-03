@@ -461,6 +461,51 @@ const actorOf = (id) => {
 // "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
 // session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
 // recorded as. GUI saves stay recorded as "person" either way.
+// Carton UX v2 (N0). The worker's way to an agent's Compare (`cb compare … --show`: the holder's openView), set by
+// workerServices; a page has this long to say whether it opened (DESIGN-V2 §1.13: it may wait 8 s for the person).
+let openViewIn = null;
+const COMPARE_ANSWER_MS = 10_000;
+/**
+ * A project's landmark pictures (DESIGN-V2 §2.2): `<bundle>/.carton/pictures/<key>.jpg`, one per version (core's
+ * `pictureKey`), at most 64 KB each, written whole (a temporary file renamed over it).
+ */
+function landmarkPictures(bundlePath) {
+  const dir = path.join(bundlePath, ".carton", "pictures");
+  const file = (key) => {
+    if (typeof key !== "string" || !/^[A-Za-z0-9._-]+@\d+$/.test(key)) throw new Error("not a picture key");
+    return path.join(dir, key + ".jpg");
+  };
+  return {
+    get: async (key) => {
+      try { return "data:image/jpeg;base64," + (await fs.promises.readFile(file(key))).toString("base64"); }
+      catch { return null; }
+    },
+    put: async (key, jpeg) => {
+      const bytes = Buffer.from(String(jpeg).replace(/^data:image\/jpeg;base64,/, ""), "base64");
+      if (!bytes.length || bytes.length > 65536 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("a landmark's picture is a JPEG of at most 64 KB");
+      await fs.promises.mkdir(dir, { recursive: true });
+      const tmp = file(key) + "." + process.pid + ".tmp";
+      await fs.promises.writeFile(tmp, bytes);
+      await fs.promises.rename(tmp, file(key));
+    },
+  };
+}
+/**
+ * A Start landmark before the person's first change after an hour away (DESIGN-V2 §2.1), from the change event, after
+ * the save: one small write at most an hour apart, never on the save's path. Once per project handle.
+ */
+const startWatched = new WeakSet();
+function watchStarts(lc, me) {
+  if (startWatched.has(lc)) return;
+  startWatched.add(lc);
+  let last = null;
+  lc.carton.on((e) => {
+    if (e.type !== "change" || !e.local || e.change?.author?.kind !== "human") return;
+    const at = e.change.at, prev = last;
+    last = at;
+    if (prev !== null && at - prev >= 3_600_000 && e.seq > 0) void lc.carton.mark?.("start", { ref: { branchId: e.branchId, seq: e.seq - 1, pending: [] }, once: "version", by: me, at: prev + 1 }).catch(() => {});
+  });
+}
 const meOf = (lc) => {
   const who = lc.carton.identity?.();
   return who ? { kind: "human", id: who.id, name: who.name, group: localGroup(), app: true } : actorOf("person");
@@ -1542,9 +1587,28 @@ export const cardboard14 = {
     const servers = new Map(); // client → serveUi
     const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
     const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
-    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards }, own) };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards, openView: (projectId, view, by) => (openViewIn ? openViewIn(projectId, view, by) : Promise.resolve({ opened: 0 })) }, own) };
   },
   workerServices({ library, emit, bundleOf, lcOf, servers }) {
+    // Carton UX v2 (N0): which project each page's panel shows (an agent's Compare goes to those pages), and the
+    // Compare asks waiting for a page's answer (DESIGN-V2 §1.13)
+    const clientProject = new Map();
+    const compareAsks = new Map();
+    openViewIn = async (projectId, view, by) => {
+      const pages = [...clientProject.values()].filter((p) => p === projectId).length;
+      if (!pages || view?.view !== "compare") return { opened: 0 };
+      const request = `compare-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const cutOf = (r) => String(r).replace(/@\d+$/, "");
+      const name = by?.name ?? { claude: "Claude Code", codex: "Codex" }[by?.provider] ?? (by?.kind === "agent" ? "An agent" : "Someone");
+      const answer = new Promise((resolve) => {
+        const t = setTimeout(() => { compareAsks.delete(request); resolve(null); }, COMPARE_ANSWER_MS);
+        t.unref?.();
+        compareAsks.set(request, (a) => { clearTimeout(t); compareAsks.delete(request); resolve(a); });
+      });
+      emit({ kind: "carton", id: projectId, topic: "compare", compare: { from: String(view.from), to: String(view.to), between: cutOf(view.from) === cutOf(view.to) ? "versions" : "cuts", by: { kind: String(by?.kind ?? "agent"), id: String(by?.id ?? ""), ...(by?.name ? { name: by.name } : {}) }, byName: name, at: Date.now(), request } });
+      const shown = await answer;
+      return { opened: pages, ...(shown ? { shown } : {}) };
+    };
     // A page's History panel: a fromCarton handle on the project's Carton, served to that page (serveUi).
     const servePanel = async (projectId, client) => {
       const lc = await lcOf(projectId);
@@ -1553,9 +1617,14 @@ export const cardboard14 = {
       // Cards and change rows in the editor's words: what each side did differently, a clip by its media's file name,
       // volume in percent, speed as ×; never ids. A card's sides are change sentences too ("Moved it to start at 0:20",
       // docs/carton-ux PLAN 7.1), in the same units.
-      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue });
-      const ui = handle.ui ?? handle;
       const bundlePath = bundleOf(projectId);
+      // Carton UX v2 (N0): a landmark's picture (DESIGN-V2 §2.2), kept beside the project's history as a small JPEG
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue, ...(bundlePath ? { pictures: landmarkPictures(bundlePath) } : {}) });
+      const ui = handle.ui ?? handle;
+      // the editor opened the project: how it was then is a Start landmark (once per version, this person's own)
+      void lc.carton.mark?.("start", { once: "version", by: me }).catch(() => {});
+      watchStarts(lc, me);
+      clientProject.set(client, projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
       panels.get(bundlePath).add(handle);
       // an agent already working on it (0.7)
@@ -1590,7 +1659,8 @@ export const cardboard14 = {
       // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
       // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
       // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "undoTurnOf", "publish"]) {
+      // (Carton UX v2 N0: and a bring-back of one clip)
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "restoreClip", "nameVersion", "undo", "undoTurnOf", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).
@@ -1652,6 +1722,7 @@ export const cardboard14 = {
       const close = () => {
         for (const off of offs) off();
         servers.delete(client);
+        clientProject.delete(client);
         panels.get(bundlePath)?.delete(handle);
         s.close();
         handle.dispose?.();
@@ -1769,6 +1840,20 @@ export const cardboard14 = {
     };
     return {
       ping: async () => "pong",
+      // Carton UX v2 (N0): a page's answer to an agent's Compare (`compare` event): opened, offered or refused
+      compareAnswer: async ({ request, status, why }) => {
+        const f = compareAsks.get(String(request));
+        if (f && ["opened", "offered", "refused"].includes(status)) f({ status, ...(typeof why === "string" ? { why } : {}) });
+        return { status: f ? "ok" : "unknown" };
+      },
+      // A landmark the page saw happen (DESIGN-V2 §2.1): an export finished (`exported`, its preset), a link made or a
+      // video published (`sent`). The person's; kept on this computer.
+      mark: async ({ projectId, kind, label }) => {
+        const lc = await lcOf(projectId);
+        if (!lc || (kind !== "exported" && kind !== "sent")) return { status: "unavailable" };
+        const l = await lc.carton.mark(kind, { by: meOf(lc), ...(typeof label === "string" && label ? { label: label.slice(0, 120) } : {}) });
+        return { status: "ok", landmark: l };
+      },
       head: async ({ projectId }) => library.projects.read(projectId),
       checkout: async ({ projectId, ref }) => {
         const lc = await lcOf(projectId);
