@@ -42,6 +42,8 @@ import type {
   Working,
 } from "./model.ts";
 import { diffSummary } from "./shots.ts";
+import { actorLabel } from "./actors.ts";
+import { conflictWords } from "./conflict-words.ts";
 
 function rng(seed: number) {
   let a = seed >>> 0;
@@ -390,8 +392,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     {
       id: "items/intro/#time",
       title: "'Intro' timing",
-      mine: { author: people.alice, summary: "Trimmed the end to 0:05.0", at: now0 - 40_000, what: "trim" },
-      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "move" },
+      mine: { author: people.alice, summary: "Trimmed the end to 0:05.0", at: now0 - 40_000, what: "trim", text: "Trimmed it to end at 0:05", did: "trimmed it" },
+      theirs: { author: people.director, summary: "Moved it to start at 0:02.0 and end at 0:08.0", at: now0 - 70_000, what: "timing", text: "Set it to play 0:02–0:08", did: "changed when it plays" },
       canKeepBoth: false,
       reason: "Both changed when this clip plays. Doing both would end it before it starts.",
       provisional: "theirs",
@@ -401,8 +403,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     {
       id: "items/title-1/textContent",
       title: "Title text",
-      mine: { author: people.alice, summary: "\"Summer sale\"", at: now0 - 300_000, what: "change" },
-      theirs: { author: people.bob, summary: "\"Summer launch\"", at: now0 - 240_000, what: "change" },
+      mine: { author: people.alice, summary: "\"Summer sale\"", at: now0 - 300_000, what: "edit", text: "Changed it to “Summer sale”", did: "changed its text" },
+      theirs: { author: people.bob, summary: "\"Summer launch\"", at: now0 - 240_000, what: "edit", text: "Changed it to “Summer launch”", did: "changed its text" },
       canKeepBoth: true,
       provisional: "theirs",
       item: "item-summer",
@@ -643,9 +645,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       if (target.kind === "conflict") {
         const c = conflicts.find((x) => x.id === target.conflictId);
         if (!c) throw new Error("Couldn't load this version. Try again.");
-        const side = target.side === "mine" ? c.mine : c.theirs;
-        const clip = c.clip ?? c.title;
-        const label = target.side === "mine" ? `Your ${side.what ?? "change"} of “${clip}”` : `${side.author.name}'s ${side.what ?? "change"} of “${clip}”`;
+        // the card's own words for its side (conflict-words.ts), so the card, the chip and the frame say the same
+        const label = conflictWords(c, (a) => actorLabel(a, (k) => actors.get(k), "You")).label[target.side];
         return setViewing({ ref: `see:${c.id}:${target.side}`, kind: "conflict", conflictId: c.id, side: target.side, label, short: label });
       }
       const v = versionOf(target);

@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
+import { cardboardValue, describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
@@ -1538,8 +1538,9 @@ export const cardboard14 = {
       const lc = await lcOf(projectId);
       if (!lc) return null;
       const me = meOf(lc);
-      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids.
-      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard });
+      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids. Each
+      // side's change sentence ("Moved it to start at 0:20", docs/carton-ux PLAN 7.1) in Cardboard's units (50%, 2×).
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, cardValue: cardboardValue });
       const ui = handle.ui ?? handle;
       const bundlePath = bundleOf(projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());

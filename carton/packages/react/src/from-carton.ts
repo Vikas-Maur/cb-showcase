@@ -28,6 +28,7 @@ import type {
 } from "@carton/core";
 import { TopicHub } from "./hub.ts";
 import { itemFilter } from "./item-filter.ts";
+import { cardSentences, type CardValueWords, type SideSentence } from "./conflict-words.ts";
 import type {
   Actor,
   CartonUi,
@@ -84,6 +85,12 @@ export interface FromCartonOptions {
    * `@carton/cardboard`'s describeCardboardCard.
    */
   describeCard?: (card: ConflictCard, schema: Schema, doc?: Doc) => { title: string; mine: string; theirs: string; reason?: string };
+  /**
+   * A field's value in the host's words, for the cards' change sentences (`ConflictSide.text`, conflict-words.ts):
+   * Cardboard's `cardboardValue` (opacity "50%", speed "2×", a media id as its file name). Default: numbers and quoted
+   * text; an id field is left out unless this words it.
+   */
+  cardValue?: CardValueWords;
   /** "Keep both" for a card, as the host expresses it (Cardboard: a new track or `alternatives`); null: not offered. */
   keepBoth?: (card: ConflictCard) => Choice | null;
   /** The side a late conflict shows until picked. H5: head's value stays, so "theirs". */
@@ -804,6 +811,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const segs = splitPathKey(card.path);
     return tl && segs[0] === tl.collection && segs[1] ? { item: segs[1] } : {};
   };
+  // What each side did, as change sentences about the card's clip (DESIGN §8, conflict-words.ts): ConflictSide.text,
+  // .did and .what, and Conflict.clip. `mineIs`: core's side holding the person's edit. `doc`: the cut's head, which
+  // names the clip and its track (without it, a field card's clip is unknown until completeCards reads the head).
+  const sentencesOf = (card: ConflictCard, mineIs: "ours" | "theirs", doc?: Doc): { clip?: string; mine: SideSentence; theirs: SideSentence } => {
+    const s = cardSentences(card, schema, doc, opts.cardValue);
+    return { ...(s.clip ? { clip: s.clip } : {}), mine: s[mineIs], theirs: s[mineIs === "ours" ? "theirs" : "ours"] };
+  };
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
     const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
     const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
@@ -812,6 +826,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (seen.has(key(cut, card))) continue;
       seen.add(key(cut, card));
       const w = describeCard(card, schema);
+      const sw = sentencesOf(card, "theirs");
       const id = `${cut}|${card.path}|${++cardSeq}`;
       cardEntries.set(id, {
         card,
@@ -822,13 +837,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           path: card.path,
           title: w.title,
           // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
-          mine: { author: me, summary: w.theirs },
-          theirs: { author: by ? ui(by) : someone, summary: w.mine },
+          mine: { author: me, summary: w.theirs, ...sw.mine },
+          theirs: { author: by ? ui(by) : someone, summary: w.mine, ...sw.theirs },
           canKeepBoth: !!opts.keepBoth?.(card),
           ...(w.reason ? { reason: w.reason } : {}),
           provisional: "theirs",
           sig: cardSig(card),
           ...itemOf(card),
+          ...(sw.clip ? { clip: sw.clip } : {}),
         },
       });
       added.push(id);
@@ -854,9 +870,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       let c = e.conflict;
       if (doc) {
         const w = describeCard(e.card, schema, doc);
+        const sw = sentencesOf(e.card, e.mineSide, doc);
         // describeCard words core's sides; the person's edit is core's theirs here
-        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary)
-          c = { ...c, title: w.title, mine: { ...c.mine, summary: w.theirs }, theirs: { ...c.theirs, summary: w.mine } };
+        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary || sw.clip !== c.clip || sw.mine.text !== c.mine.text || sw.theirs.text !== c.theirs.text) {
+          const { clip: _clip, ...rest } = c;
+          c = { ...rest, title: w.title, mine: { ...c.mine, summary: w.theirs, ...sw.mine }, theirs: { ...c.theirs, summary: w.mine, ...sw.theirs }, ...(sw.clip ? { clip: sw.clip } : {}) };
+        }
       }
       if (who) c = { ...c, theirs: { ...c.theirs, author: ui(who.actor), ...(who.at != null ? { at: who.at } : {}) } };
       if (c !== e.conflict) {
@@ -1196,20 +1215,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // A fold card: yours is the cut you fold into, theirs the cut you fold in; each side says which.
   const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string, doc?: Doc): Conflict => {
     const w = describeCard(card, schema, doc);
+    const sw = sentencesOf(card, "ours", doc);
     const where = (id?: string) => (id ? cuts.find((c) => c.id === id)?.label : undefined);
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
       id: card.path,
       path: card.path,
       title: w.title,
-      mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
-      theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
+      mine: { author: me, summary: w.mine, ...sw.mine, ...(mineWhere ? { where: mineWhere } : {}) },
+      theirs: { author: theirs, summary: w.theirs, ...sw.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
       // Core's compare2 applies a {value} choice too (99db79c), so a §13 compare card can Keep both like any other.
       canKeepBoth: !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
       sig: cardSig(card),
       ...itemOf(card),
+      ...(sw.clip ? { clip: sw.clip } : {}),
     };
   };
 
