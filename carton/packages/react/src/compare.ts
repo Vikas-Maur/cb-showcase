@@ -113,7 +113,7 @@ export function compareMarks(changes: readonly Change[], from: CompareDoc | null
     const id = c.itemId;
     if (!id || seen.has(id)) continue;
     const a = A.get(id), b = B.get(id);
-    if (c.kind === "remove" || (!b && a)) {
+    if (c.kind === "remove" || (to != null && !b && a)) {
       const s = a ? a.startTime : c.at, e = a ? a.endTime : c.end;
       if (!num(s) || !num(e)) continue;
       seen.add(id);
@@ -131,7 +131,8 @@ export function compareMarks(changes: readonly Change[], from: CompareDoc | null
     const s = b ? b.startTime : c.at, e = b ? b.endTime : c.end;
     if (!num(s) || !num(e)) continue;
     seen.add(id);
-    let kind: MarkKind = c.kind === "add" || !a ? "added" : "changed";
+    // only on the right: the row says so, or the left timeline (when known) hasn't the clip
+    let kind: MarkKind = c.kind === "add" || (from != null && !a) ? "added" : "changed";
     let delta: number | undefined;
     if (kind === "changed" && a && b) {
       const lenA = a.endTime - a.startTime, lenB = b.endTime - b.startTime;
