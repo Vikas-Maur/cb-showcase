@@ -174,10 +174,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cut-view){flex:none;align-self:center;display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-cut-row[data-open]){border-radius:6px;background:var(--cb-accent)}
 :where(${S}) :where(.carton-cut-row[data-open] .carton-cut-item){background:none}
-:where(${S}) :where(.carton-cut-turn){display:flex;flex-direction:column;gap:8px;padding:0 8px 9px 32px}
+:where(${S}) :where(.carton-cut-turn){display:flex;flex-direction:column;gap:8px;padding:0 4px 9px 30px}
+:where(${S}) :where(.carton-cut-row[data-open] .carton-cut-item){min-height:0;padding-bottom:4px}
 :where(${S}) :where(.carton-cut-turn-text){margin:0;font-size:12px;line-height:17px;color:var(--cb-fg-2);text-wrap:pretty}
-:where(${S}) :where(.carton-cut-turn-actions){display:flex;flex-wrap:wrap;gap:6px}
-:where(${S}) :where(.carton-cut-turn-actions .carton-btn){height:28px;padding:0 10px;font-size:12.5px}
+:where(${S}) :where(.carton-cut-turn-actions){display:flex;flex-wrap:wrap;gap:4px}
+:where(${S}) :where(.carton-cut-turn-actions .carton-btn){height:28px;padding:0 7px;font-size:12px}
 :where(${S}) :where(.carton-cuts-scroll){max-height:calc(8 * 46px + 30px);overflow:auto;overscroll-behavior:contain}
 :where(${S}) :where(.carton-cuts-find){width:100%;height:30px;margin:2px 0 4px}
 :where(${S}) :where(.carton-cuts-none){margin:0;padding:6px 8px;font-size:12px;color:var(--cb-fg-3)}
