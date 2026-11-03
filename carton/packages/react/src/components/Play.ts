@@ -318,6 +318,13 @@ export function usePlayChanges(o: PlayOptions): Playback {
           if (began.current === id && newer && !prior && matches(ui.viewing(), newer)) void ui.view(null).catch(() => {});
           return;
         }
+        // the view left while it loaded (Esc, a row's ✕: back to your edit): it doesn't start on what is there now
+        // (review of fix/ux2-a #3)
+        if (!matches(ui.viewing(), newer)) {
+          setLoading(false);
+          wanted.current = null;
+          return;
+        }
         setLoading(false);
       }
       player.start(steps);

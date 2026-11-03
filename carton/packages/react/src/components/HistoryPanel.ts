@@ -14,7 +14,7 @@ import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useM
 import { clock, clockOfDay, exactTime, shortDate, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { Actor, CartonUi, Credits, HistoryFilter, Version, Working } from "../model.ts";
+import type { Actor, CartonUi, Credits, HistoryFilter, Version, Viewing, Working } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
@@ -401,7 +401,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // so a head moving doesn't re-render the list.
   const theirCut = useTopicSelector("cuts", (u) => !!u.cuts().find((c) => c.current)?.readOnly);
   const viewing = useViewing();
-  const stageShows = useStageShows(ui);
+  const stageRef = useStageRef(ui);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [cardMode, setCardMode] = useState<CardMode>(null);
@@ -789,7 +789,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
     },
     [rows],
   );
-  const viewedId = viewing && stageShows && (viewing.kind === "version" || viewing.kind === "before") ? (viewing.versionId ?? null) : null;
+  // the row of what the editor shows: never a version still loading, nor one that failed to (design QA G1, review #1)
+  const shown = stageRef === undefined ? viewing : stageRef === null ? null : viewing?.ref === stageRef ? viewing : ((ui as StageUi).stageView?.() ?? null);
+  const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
 
   const renderRow = (i: number): ReactNode => {
     const r = rows?.[i];
@@ -1089,15 +1091,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
 }
 
 /**
- * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, onStage): whether the editor shows a
- * version. A row reads "Viewing" only then, never while your edit is still on screen as a version loads, or after one
- * failed to (design QA G1). Without a stage of the host's, the view model's viewing alone.
+ * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, stageView, onStage): the ref the editor
+ * shows (null: your edit), or undefined without a stage of the host's. A row reads "Viewing" only for what is on screen,
+ * never while your edit is still there as a version loads, nor for a newer version still loading over an older one, nor
+ * after one failed to load (design QA G1, review of fix/ux2-a #1). Without a host stage: the view model's viewing alone.
  */
-type StageUi = CartonUi & { stageRef?: () => string | null; onStage?: (f: () => void) => () => void };
+type StageUi = CartonUi & { stageRef?: () => string | null; stageView?: () => Viewing | null; onStage?: (f: () => void) => () => void };
 const noStage = () => () => {};
-function useStageShows(ui: StageUi): boolean {
+function useStageRef(ui: StageUi): string | null | undefined {
   const subscribe = useCallback((f: () => void) => ui.onStage?.(f) ?? noStage(), [ui]);
-  const get = () => typeof ui.stageRef !== "function" || ui.stageRef() != null;
+  const get = () => (typeof ui.stageRef === "function" ? ui.stageRef() : undefined);
   return useSyncExternalStore(subscribe, get, get);
 }
 

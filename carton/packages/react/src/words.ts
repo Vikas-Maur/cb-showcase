@@ -534,6 +534,8 @@ export const words = {
   clipOfflineUntil: (name: string) => `${name} shows as Offline until it arrives. Nothing was removed.`,
   // the title bar's chip while a version is slow to come (design QA G1): "Loading Director's “Add captions…”"
   loadingView: (label: string) => `Loading ${label}`,
+  // the chip while what is on screen hasn't been named yet (a swap from the cache, a moment before its label)
+  anotherVersion: "Another version",
 };
 
 export type Words = typeof words;

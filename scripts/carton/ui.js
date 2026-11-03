@@ -185,6 +185,10 @@ function connect(projectId, bridge) {
   //   has shown it: a slow load, or one that fails, never leaves your edit passing for it. Latest wins, as in the
   //   bridge: once a newer swap is asked, an older one's answer changes nothing here.
   // - stageRef(): the ref the editor shows (null: your edit).
+  // - stageView(): what that is, for the marks to name it (null for your edit): the view model's viewing once it has
+  //   said, else the last it said for that ref, else what was asked for it (its kind and row, no label yet). Never the
+  //   view model's newer viewing of another ref (review of fix/ux2-a #1, #2: a version still loading took the row's
+  //   mark and the chip's label while the one before it was still on screen).
   // - stageLoading(): the ref a swap has been loading for more than 300 ms, else null: the chip's "Loading …".
   // - onStage(f): told when either changes.
   let stageRef = null, loading = null, swapSeq = 0, slow = 0;
@@ -207,7 +211,26 @@ function connect(projectId, bridge) {
       (e) => { setStage(seq, stageRef, null); throw e; },
     );
   };
+  const known = new Map();
+  const remember = (v) => {
+    known.delete(v.ref);
+    known.set(v.ref, v);
+    if (known.size > 32) known.delete(known.keys().next().value);
+  };
+  const offViewing = r.ui.subscribe("viewing", () => { const v = r.ui.viewing(); if (v && typeof v.ref === "string") remember(v); });
+  const asked = (t) => {
+    if (typeof t?.ref !== "string") return;
+    const was = known.get(t.ref);
+    // (a label said for this very ref and kind of view stays; asked as something else, it is that now)
+    if (was?.label && was.kind === t.kind && was.versionId === t.versionId) return;
+    remember({ ref: t.ref, kind: t.kind, ...(t.versionId !== undefined ? { versionId: t.versionId } : {}), label: t.label ?? "", short: t.label ?? "" });
+  };
   r.ui.stageRef = () => stageRef;
+  r.ui.stageView = () => {
+    if (stageRef == null) return null;
+    const v = r.ui.viewing();
+    return v && v.ref === stageRef ? v : (known.get(stageRef) ?? null);
+  };
   r.ui.stageLoading = () => loading;
   r.ui.onStage = (f) => { stageSubs.add(f); return () => { stageSubs.delete(f); }; };
   // Opening a version: the editor shows it read-only; null returns to current.
@@ -223,6 +246,7 @@ function connect(projectId, bridge) {
     const seq = ++viewSeq;
     pending = target ? { seq, target } : null;
     const mine = () => seq === viewSeq;
+    asked(target);
     try {
       await viewAndSwap(view, () => r.ui.viewing(), (ref) => (mine() ? swap(ref) : Promise.resolve()), mine)(target);
     } finally {
@@ -234,7 +258,7 @@ function connect(projectId, bridge) {
     }
   };
   confirmations(r.ui, bridge);
-  return { ...r, close: off };
+  return { ...r, close: () => { off(); offViewing(); } };
 }
 
 /**
@@ -437,7 +461,9 @@ export function chipOf(ui) {
   let viewing = null;
   if (wait != null) viewing = { label: v?.ref === wait && v.label ? words.loadingView(v.label.replace(/^Your\b/, "your")) : words.loading, loading: true };
   else {
-    const s = stageViewingOf(ui), label = s?.label || (s && v ? v.label : "");
+    // only what is on screen names it: until the view model has said what that is, a neutral label (review of
+    // fix/ux2-a #2: the version before it, by name, was the label meanwhile)
+    const s = stageViewingOf(ui), label = s ? s.label || words.anotherVersion : "";
     // a label from today's callers can start in lower case ("the version from 2:14 PM (Codex)"): the chip starts a phrase
     viewing = label ? { label: upFirst(label) } : null;
   }
@@ -476,17 +502,17 @@ const leavesWithPanel = (ui) => {
  * catches up. A teammate's cut switched to is your current cut in the editor (no preview): viewingOf's. A view model
  * without stageRef (a host of its own): viewingOf.
  */
-const lastShown = new WeakMap();
 export function stageViewingOf(ui) {
   const v = viewingOf(ui);
   if (typeof ui.stageRef !== "function") return v;
   if (v?.kind === "cut" && !(typeof ui.viewing === "function" && ui.viewing())) return v;
   const shown = ui.stageRef();
   if (shown == null) return null;
-  if (v && v.ref === shown) { lastShown.set(ui, v); return v; }
-  // the view model has moved on to a version still loading: the stage, and so its label, is still the one before
-  const was = lastShown.get(ui);
-  return was?.ref === shown ? was : { ref: shown, kind: v?.kind ?? "version", label: "", short: "" };
+  if (v && v.ref === shown) return v;
+  // the view model has moved on (a version still loading) or not caught up (a swap from the cache): what is on screen
+  // is connect()'s to say (stageView), with no label when nothing has said it yet
+  const s = typeof ui.stageView === "function" ? ui.stageView() : null;
+  return s ?? { ref: shown, kind: "version", label: "", short: "" };
 }
 export function listMarks(panel, v) {
   if (panel !== "history" || !v) return false;
