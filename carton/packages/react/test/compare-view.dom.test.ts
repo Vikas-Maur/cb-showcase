@@ -114,15 +114,17 @@ test(name("the change list: the range, the count, every row; a click or ↓ pick
   assert.match($(m.container, ".carton-compare-range")!.textContent!, /From “Sent to client”\s*to your edit now/);
   assert.equal($(m.container, ".carton-compare-n")?.textContent, "3 changes · 0:36");
   assert.equal($$(m.container, ".carton-change").length, 3);
+  // in timeline order, as the marks read (the engine gives them by clip: design QA v2)
+  assert.deepEqual($$(m.container, ".carton-change").map((r) => r.getAttribute("data-change-key")), ["timelineItems/a", "timelineItems/c", "timelineItems/b"]);
   assert.deepEqual(picked, [], "opening focuses the first row and picks nothing");
   await click($$(m.container, ".carton-change")[1]);
-  assert.deepEqual(picked, ["timelineItems/b"]);
-  await m.rerender(list("timelineItems/b"));
-  assert.ok($(m.container, '.carton-change-selected[data-change-key="timelineItems/b"]'));
-  const rowB = $(m.container, '.carton-change[data-change-key="timelineItems/b"]') as HTMLElement;
-  await act(() => rowB.focus());
-  await key(rowB, "ArrowDown");
-  assert.deepEqual(picked, ["timelineItems/b", "timelineItems/c"], "↓: the next row, both players follow");
+  assert.deepEqual(picked, ["timelineItems/c"]);
+  await m.rerender(list("timelineItems/c"));
+  assert.ok($(m.container, '.carton-change-selected[data-change-key="timelineItems/c"]'));
+  const rowC = $(m.container, '.carton-change[data-change-key="timelineItems/c"]') as HTMLElement;
+  await act(() => rowC.focus());
+  await key(rowC, "ArrowDown");
+  assert.deepEqual(picked, ["timelineItems/c", "timelineItems/b"], "↓: the next row, both players follow");
   await click($(m.container, ".carton-changes-nav button"));
   assert.equal(back, 1, "← History");
   assert.ok($(m.container, "footer .foot"));
