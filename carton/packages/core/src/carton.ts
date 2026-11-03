@@ -342,15 +342,16 @@ export interface Carton {
    * ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. The app's Ctrl+Z
    * passes `app` and `since` (UndoScope): only what was made from the app, in the editor's session.
    * Like commit, undo (and fold, fold-some, restore, revert, fork) takes a stable `id`: a call retried with an id
-   * already confirmed returns that confirmation and never makes a second change.
+   * already confirmed returns that confirmation and never makes a second change. `expect` names the change the caller
+   * means to take back (a toast's Undo): if the stack's top is another, it refuses (STACK_MOVED) and changes nothing.
    */
-  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
+  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId; expect?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
   /**
    * Redo for an actor group: re-applies exactly what its newest undo took back, as a new change (a revert of that
    * undo), which the next ⌘Z takes back again. Nothing once the group has made a newer edit (in `since`/`app`'s scope),
    * as an editor's redo clears. Takes a stable `id` as undo does.
    */
-  redo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
+  redo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId; expect?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
   /**
    * Optional compaction (§5.4): on this replica's local cuts, squash the micro-changes of every auto-version older than
    * `olderThanDays` (default 90) into the auto-version's last change. Returns how many changes were squashed.
