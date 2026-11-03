@@ -67,7 +67,9 @@ const pre = new Map(preact.shots.map((s) => [s.file ?? s.name, s]));
 const diffs = await pixelDiff(react.shots.filter((s) => s.file && existsSync(join(out, "preact", s.file))).map((s) => [s.file, join(out, s.file), join(out, "preact", s.file)]));
 const notSame = diffs.filter(([, d]) => d.size || d.changed > 0);
 const pixelText = `Pixel comparison of every pair (a pixel counts when a channel differs by more than 16): ${diffs.length - notSame.length} of ${diffs.length} identical.` +
-  (notSame.length ? " Differing (where a relative time sits on a minute boundary, Preact's first render can say \"just now\" where React says \"1 min ago\": @carton/react's minute clock is read at module load, and preact/compat's useSyncExternalStore apparently doesn't re-read it when it subscribes, as React's does; see notes/preact-first-render-clock.png): " + notSame.map(([f, d]) => `\`${f}\` (${d.size ? "size " + d.size : `${d.changed} px, ${(100 * d.changed / d.total).toFixed(2)} %`})`).join(", ") + "." : "");
+  // (the minute clock that once made Preact's first render a minute out, UI audit R7, reads afresh on a first render
+  // since PLAN 9.4: a pair that differs now is something else, an animation shot mid-way for one)
+  (notSame.length ? " Differing: " + notSame.map(([f, d]) => `\`${f}\` (${d.size ? "size " + d.size : `${d.changed} px, ${(100 * d.changed / d.total).toFixed(2)} %`})`).join(", ") + "." : "");
 const lines = react.shots.map((s) => {
   const p = pre.get(s.file ?? s.name);
   const errs = [...s.errors.map((e) => `React: ${e}`), ...(p?.errors ?? []).map((e) => `Preact: ${e}`)];
