@@ -1886,7 +1886,7 @@ class CartonImpl implements Carton {
       if (!want.has(kind) || seq >= before || seq < 0 || seq > log.length) return;
       const r = ref(seq);
       const personal = kind === "start" || kind === "before";
-      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
+      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, change: seq > 0 ? log[seq - 1]?.id ?? null : null, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
     };
     // recorded by the app (mark): this machine's own, from the local ephemeral table
     if (RECORDED_KINDS.some((k) => want.has(k))) {
