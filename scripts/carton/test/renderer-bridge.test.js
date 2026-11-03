@@ -331,6 +331,28 @@ test("the editor's clip selection, as its store holds it, for the preview's Esc;
   assert.equal(off.c.selection(), null);
 });
 
+// History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected, by the name the change sentences
+// give it: its own name or text, else its media's file name; nothing for none, several, or Carton off.
+test("the one clip selected, by its name, for History's Only “clip”; nothing for none or several, or with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.store.projects.getState = () => ({ projects: [{ id: "p1", media: [{ id: "m1", data: { fileName: "interview-b.mp4" } }] }] });
+  t.store.raw({ timelineItems: [{ id: "a", name: "  Interview   B " }, { id: "b", mediaItemId: "m1" }, { id: "c", textContent: "Summer launch" }, { id: "d", type: "video" }] });
+  assert.equal(t.c.selectedClip(), null, "nothing selected");
+  for (const [id, name] of [["a", "Interview B"], ["b", "interview-b.mp4"], ["c", "Summer launch"], ["d", "video"]]) {
+    t.store.raw({ selectedTimelineItemIds: [id] });
+    assert.deepEqual(t.c.selectedClip(), { id, name });
+  }
+  t.store.raw({ selectedTimelineItemIds: ["a", "b"] });
+  assert.equal(t.c.selectedClip(), null, "several selected");
+  t.store.raw({ selectedTimelineItemIds: ["gone"] });
+  assert.equal(t.c.selectedClip(), null, "a clip this version doesn't have");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.store.raw({ selectedTimelineItemIds: ["a"], timelineItems: [{ id: "a", name: "A" }] });
+  assert.equal(off.c.selectedClip(), null);
+});
+
 test("the title bar's icons: the page hears carton:command and reports the panel open to main; nothing with Carton off", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
