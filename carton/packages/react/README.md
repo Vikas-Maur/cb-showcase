@@ -1,8 +1,8 @@
 # @carton/react
 
-Headless hooks and components for Carton: History, Cuts, Fold in, conflict cards, Compare, Credits, Undo turn, the
-published cut, live presence, the sync status words, and Watch the changes. The words are Carton's (PLAN §0.1):
-version, cut, fold in, conflict card, published cut, compare, credits, never git's.
+Headless hooks and components for Carton: History, Cuts, Fold in, conflict cards, the Changes view with Play and
+Before, Credits, Undo turn, the published cut, live presence and the sync status words. The words are Carton's (PLAN
+§0.1): version, cut, fold in, conflict card, published cut, changes, credits, never git's.
 
 `react` (18 or 19) is a peer dependency, and everything also runs under `preact/compat`. The tests run every component
 on both.
@@ -52,17 +52,17 @@ Cardboard's own team, which has the source, would use React directly with no cha
 
 | Component | What it shows |
 |---|---|
-| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's) as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
+| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's) as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with your edit (the Changes view, in place of the list; Shift+click or Shift+↑↓ on a second version for two), name, new cut from here, Restore. `play`: the host's player for Play and Before |
 | `CutsMenu` | Switch cuts, new cut from here, rename, fold into Main. Someone else's cuts are read-only and named by owner ("Bob's Main cut") |
 | `FoldInDialog` | What folding in brings, in plain words. Leave changes out (fold in some of it), pick on conflict cards first, "You can fold in the rest later". §13's missing-base text when the copy builds on a version you don't have |
 | `ConflictCard`, `ConflictList` | Both edits, who made each and which one shows now. Keep mine / Keep theirs / Keep both |
-| `CompareCard` | Time, author, clip count, length, and "N shots / X s of Y s differ" |
+| `ChangesView` | Everything between two points, in words (docs/carton-ux DESIGN §5.4): "Changes since 12:20 pm" / "From Director's “Add captions to the interview” to your edit now", the change map, every change in timeline order (virtual past 50), Play all, Before while playing, and Restore this version… with what it undoes said first. ← History (Esc) |
+| `usePlayChanges`, `PlayAllButton`, `BeforeButton` | Play and Before over any list of changes (the Changes view, a version's card): ▶ on a change plays its spot ±1 s, Play all every spot in order, one row lit at a time; on your edit when the newer side is the cut's newest version, else viewing it. Before: hold (or B) to view the older side at the same moment, a click latches it. `PlayHost` is the host's player: `onFrame`, `seek`, `prefetch` (load Before's side ahead), `length` |
 | `CreditsPopover` | Who last changed each part of a clip ("Director › Explore") |
 | `UndoTurnButton` | "Undo Director: tighter intro": the whole turn |
 | `PublishedStatus` | What the share link shows, and "Newer edits exist" |
 | `PresenceAvatars`, `GhostLayer` | People, each with their agents and subagents; ghosts of remote drags over your timeline |
 | `SyncStatusWords` | Syncing · Up to date · Offline: N edits waiting |
-| `WatchTheChanges` | The shot diff laid out like a side-by-side text diff, with Play changes and an aligned Before/After toggle |
 | `PreviewBanner` | "Previewing …", read-only, with "Return to current to edit" (§9 R2-16) |
 
 The components carry roles, keyboard handling and class names, and no colours. `skin/cardboard` styles them to look
@@ -76,8 +76,9 @@ values as fallbacks.
   wakes the avatars; a burst of confirmations costs one render (notifications coalesce per microtask).
 - **History for 10k+ versions.** A fixed-row virtual list renders only the rows on screen. Rows are memoized by their
   version object, so a new version renders one row. Summaries are described only for rows someone reads.
-- **60 fps playback.** Play changes runs outside React: each animation frame moves the playhead and calls your
-  `onFrame(side, time)`. React hears only when the change on screen changes. Ghosts move their elements directly too.
+- **60 fps playback.** Play runs outside React (`SpanPlayer`): each animation frame moves the lit row's progress line
+  and the change map's playhead by transform and calls your `onFrame(time)`. React hears only when the lit row or
+  play/pause changes. Ghosts move their elements directly too.
 
 Measure it with `npm run bench` (needs Playwright and Chromium: `CARTON_PLAYWRIGHT`, `CARTON_CHROMIUM`). Sizes:
 `node bench/size.mjs`.
@@ -97,3 +98,9 @@ opened from disk. `npm run screens` screenshots every section in headless Chromi
 - The renderer patch that mounts these components is the windows agent's (`scripts/patch-carton*.js`). Look,
   keyboard and frame rate need a check inside the real Windows app.
 - Frame-rate numbers come from headless Chromium on a shared ARM box. Re-measure on the laptop before quoting them.
+
+## Retired
+
+The Compare card (`CompareCard`) and Watch the changes (`WatchTheChanges`, `ChangesPlayer`, `stripLayout`, `xAt`) are
+gone (docs/carton-ux PLAN 4.4): the Changes view, Play and Before replace them. The view model's `compare()` and
+`shotDiff()` stay for hosts that use them; the components no longer call either.

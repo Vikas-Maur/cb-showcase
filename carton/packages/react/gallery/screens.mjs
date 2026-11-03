@@ -30,7 +30,7 @@ try {
       await page.waitForTimeout(120);
       await el.screenshot({ path: join(out, `${rt}-${file}.png`), animations: "disabled" });
     };
-    for (const name of ["topbar", "history", "conflicts", "compare", "credits", "status", "presence", "fold", "preview"]) await shot(name);
+    for (const name of ["topbar", "history", "conflicts", "changes", "credits", "status", "presence", "fold", "preview"]) await shot(name);
 
     // Cuts menu, open.
     await page.click('[data-shot="cuts"] .carton-menu-trigger');
@@ -45,14 +45,10 @@ try {
     await page.screenshot({ path: join(out, `${rt}-history-menu.png`), clip: await page.$eval('[data-shot="history"]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 420) }; }) });
     await page.keyboard.press("Escape");
 
-    // Watch the changes: go to change 2, play for a moment, then shoot mid-playback.
-    await page.click('[data-shot="watch"] [aria-label="Next change"]');
-    await page.click('[data-shot="watch"] .carton-watch-play');
+    // The Changes view: Play all for a moment, then shoot mid-playback, with Before held.
+    await page.click('[data-shot="changes"] .carton-play-all .carton-btn');
     await page.waitForTimeout(900);
-    await shot("watch");
-    await page.click('[data-shot="watch"] [role=radio]:first-child');
-    await page.waitForTimeout(200);
-    await shot("watch", '[data-shot="watch"]', "watch-before");
+    await shot("changes", '[data-shot="changes"]', "changes-playing");
     await page.close();
   }
 } finally {

@@ -12,8 +12,8 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const RENDERER = `export * from "./src/components/HistoryPanel.ts"; export * from "./src/components/CutsMenu.ts"; export * from "./src/components/FoldInDialog.ts";
-export * from "./src/components/ConflictCard.ts"; export * from "./src/components/CompareCard.ts"; export * from "./src/components/status.ts";
-export * from "./src/components/Presence.ts"; export * from "./src/components/WatchTheChanges.ts"; export { CartonProvider } from "./src/hooks.ts";
+export * from "./src/components/ConflictCard.ts"; export * from "./src/components/ChangesView.ts"; export * from "./src/components/status.ts";
+export * from "./src/components/Presence.ts"; export * from "./src/components/Play.ts"; export { CartonProvider } from "./src/hooks.ts";
 export { remoteUi } from "./src/remote.ts"; export { injectCardboardSkin } from "./src/skin/cardboard.ts";`;
 const PREACT = { react: "preact/compat", "react-dom": "preact/compat", "react-dom/client": "preact/compat/client", "react/jsx-runtime": "preact/jsx-runtime" };
 const entries = [

@@ -1,9 +1,9 @@
 // One counting rule for changes, over the real engine (laptop re-check, 2026-11-02):
 // - P3 fold counts: after folding a cut into Main with only its split left out, the Fold dialog said "2 changes" (the
 //   split one row), the History row "1 of 4 changes" and `cb history` "merge (3 left out)". A split is one change.
-// - P3-11: Compare said "3 changes" where Watch the changes said "2 changes · Change 1 of 2" for the same pair. Both
-//   count changes the same way; Watch's counter steps through the sections of the edit that differ.
-// - P3-10: Compare's "Clips: 7 clips" counted titles as clips.
+// - P3-11: the old Compare card said "3 changes" where its shot strips said "2" for the same pair. Their successor, the
+//   Changes view (docs/carton-ux PLAN 4.1), lists one row per change as History counts them. (P3-10, Compare's clip
+//   count, went with the card's spec sheet.)
 // `npm test` runs it on React 19, then on preact/compat.
 import { $, $$, React, byText, cleanup, click, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { Carton, POS, defineSchema, timeAlgebra, type Actor, type Doc, type Rec } from "@carton/core";
 import type { HostAdapter } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
-import { CartonProvider, CompareCard, FoldInDialog, HistoryPanel, WatchTheChanges, fromCarton } from "../src/index.ts";
+import { CartonProvider, ChangesView, FoldInDialog, HistoryPanel, fromCarton } from "../src/index.ts";
 
 const h = React.createElement;
 afterEach(cleanup);
@@ -76,23 +76,18 @@ test(name("P3: the Fold dialog, the History row and the fold agree: a split left
   ui.dispose();
 });
 
-test(name("P3-11, P3-10: Compare and Watch the changes count the same changes; Compare's clips leave titles apart"), async () => {
+// Needs fromCarton's changes() (Workstream 0, PLAN 0.1: a stub on this branch): a todo until it lands, then a normal test.
+test(name("P3-11: the Changes view lists the changes History counts, one row each (a split one)"), { todo: "fromCarton.changes() lands with PLAN 0.1 (feat/ux-0-data)" }, async () => {
   const { carton, ui } = await open();
-  const main = carton.cut;
   await carton.commit({ ops: splitAndRename() });
   await ui.refresh();
-  const a = `${main}@0`, b = `${main}@1`;
-  const c = await render(h(CartonProvider, { ui }, h(CompareCard, { a, b })));
-  await waitFor(() => /changes ·/.test(c.container.textContent ?? ""), "Compare's summary");
-  // two changes (the split and the rename), whatever the lines; titles are no clips
-  assert.match(c.container.textContent ?? "", /2 changes · /);
-  assert.match(c.container.textContent ?? "", /2 clips, 2 titles/, "before: a and b, and two titles");
-  assert.match(c.container.textContent ?? "", /3 clips, 2 titles/, "after: the split's two parts and b");
+  const v = ui.history().at("all", 1)!;
+  const c = await render(h(CartonProvider, { ui }, h(ChangesView, { from: v, onBack: () => {} })));
+  // (until changes() lands it answers "not implemented": the view says it couldn't, and this todo fails at once)
+  await waitFor(() => $$(c.container, ".carton-change, .carton-changes-failed").length > 0, "the rows");
+  // two changes (the split and the rename), whatever the lines
+  assert.equal($$(c.container, ".carton-change").length, 2);
+  assert.match($(c.container, ".carton-changes-ends")!.textContent ?? "", /2 changes/);
   await c.unmount();
-  const w = await render(h(CartonProvider, { ui }, h(WatchTheChanges, { a, b, inPlayer: true })));
-  await waitFor(() => /changes ·/.test(w.container.textContent ?? ""), "Watch's summary");
-  assert.match($(w.container, ".carton-watch-summary")!.textContent ?? "", /^2 changes · /, "the same count as Compare");
-  assert.match($(w.container, ".carton-watch-count")?.textContent ?? "", /^Section 1 of \d+$/, "the counter steps through sections");
-  await w.unmount();
   ui.dispose();
 });
