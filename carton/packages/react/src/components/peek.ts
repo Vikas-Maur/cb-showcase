@@ -70,8 +70,15 @@ export function usePeek(o: PeekOptions) {
     void opts.current.ui.view(null).catch(() => {});
     return true;
   }, []);
-  // a peek never outlives the panel
-  useEffect(() => () => void end(), [end]);
+  // a peek, and a prefetch waiting on a resting pointer, never outlive the panel
+  useEffect(
+    () => () => {
+      if (hover.current?.timer) t().clearTimeout(hover.current.timer);
+      hover.current = null;
+      end();
+    },
+    [end],
+  );
 
   const onPointerDown = useCallback((e: PointerEvent<HTMLElement>) => {
     if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -92,6 +99,8 @@ export function usePeek(o: PeekOptions) {
     // the click that follows a peek's release opens nothing
     if (end()) swallow.current = true;
   }, [end]);
+  // a cancelled press (the system took the pointer) ends a peek too, but no click follows it to swallow
+  const onPointerCancel = useCallback(() => void end(), [end]);
   const onClickCapture = useCallback((e: MouseEvent<HTMLElement>) => {
     if (!swallow.current) return;
     swallow.current = false;
@@ -135,6 +144,6 @@ export function usePeek(o: PeekOptions) {
     end,
     keyDown,
     keyUp,
-    list: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerOver, onPointerLeave, onClickCapture },
+    list: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onPointerOver, onPointerLeave, onClickCapture },
   };
 }

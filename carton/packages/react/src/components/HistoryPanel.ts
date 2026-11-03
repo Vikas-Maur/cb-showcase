@@ -142,7 +142,8 @@ function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string
     Fragment,
     null,
     mark.kind === "before" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
-    mark.personal ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
+    // (Start and Before are yours; Exported and Sent stay on this computer until the server carries them: N0's `local`)
+    mark.personal || mark.local ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
     also ? h("span", { className: "carton-version-count" }, words.alsoLandmark(also)) : null,
   );
 }
@@ -501,7 +502,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const marks = useLandmarks(cutId);
   const [query, setQuery] = useState("");
   const searching = searchable(query) && typeof ui.find === "function";
-  const found = useFind(searching ? query : "", cutId);
+  // (all of them once asked: "The newest 200 of 312 versions · Show them all"; a new query starts at the newest 200)
+  const [findAll, setFindAll] = useState<string | null>(null);
+  const found = useFind(searching ? query : "", cutId, { revision, ...(findAll === query ? { limit: 5000 } : {}) });
   const [marksOnly, setMarksOnly] = useState(false);
   // a search's own folded days (its older days fold after 20 results; a click opens one), new for each query
   const [findFolds, setFindFolds] = useState<{ q: string; days: ReadonlyMap<number, boolean> }>({ q: "", days: new Map() });
@@ -509,7 +512,11 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // a polite line for screen readers (hold to peek's "Showing … Release to go back.")
   const [said, setSaid] = useState("");
   const search = useRef<SearchBoxHandle>(null);
-  const only: { has(id: string): boolean } | null = searching ? found.byId : marksOnly ? marks.ids : null;
+  // a search within the Landmarks filter finds landmarks only: the chip says so (review of feat/ux2-n2 #4)
+  const only = useMemo<{ has(id: string): boolean } | null>(
+    () => (searching ? (marksOnly ? { has: (id: string) => found.byId.has(id) && marks.ids.has(id) } : found.byId) : marksOnly ? marks.ids : null),
+    [searching, marksOnly, found.byId, marks.ids],
+  );
   // what the list depends on of the search: nothing until it searches (one letter regroups nothing)
   const findKey = searching ? query : "";
 
@@ -1266,7 +1273,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
           clipHit.deleted ? null : h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId }, clipHit.name)) }, words.onlyThisClip),
         )
       : null,
-    searching && found.status === "ready" && listed ? h("p", { className: "carton-find-count", role: "status" }, words.findCount(found.total)) : null,
+    searching && found.status === "ready" && listed
+      ? h(
+          "p",
+          { className: "carton-find-count", role: "status" },
+          found.total > found.hits.length ? words.findShowing(found.hits.length, found.total) : words.findCount(found.total),
+          found.total > found.hits.length ? h("button", { type: "button", className: "carton-link carton-find-all", onClick: () => setFindAll(query) }, words.findShowAll) : null,
+        )
+      : null,
     failed ? h("p", { className: "carton-error carton-history-error", role: "alert" }, failed) : null,
     loading
       ? h(
@@ -1281,6 +1295,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
             h("p", { className: "carton-find-empty-title" }, found.status === "error" ? words.findFailed : words.findNone(query.trim())),
             h("p", { className: "carton-find-empty-body" }, words.findNoneHint),
             h("p", { className: "carton-find-empty-body" }, words.findSearched(ui.cuts().find((c) => c.current)?.label ?? words.mainCut)),
+            // (a filter on top of the newest results only: the rest may hold what it looks for)
+            found.status === "ready" && found.total > found.hits.length ? h(Button, { onClick: () => setFindAll(query) }, words.findShowAll) : null,
             h(Button, { onClick: () => (search.current?.clear(), search.current?.focus()) }, words.clearFind),
           )
       : empty && marksOnly

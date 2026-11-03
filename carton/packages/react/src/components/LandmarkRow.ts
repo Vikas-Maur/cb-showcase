@@ -105,8 +105,11 @@ function pump() {
   const next = queue.shift();
   if (!next) return;
   busy = true;
-  const done = (url: string | null) => {
-    if (pictures.size >= 400) pictures.delete(pictures.keys().next().value!);
+  const done = (read: string | null) => {
+    // (a picture made while this read was on its way wins: the read is older; review of feat/ux2-n2 #7)
+    const made = pictures.get(next.key);
+    const url = typeof made === "string" ? made : read;
+    if (pictures.size >= 400 && !pictures.has(next.key)) pictures.delete(pictures.keys().next().value!);
     pictures.set(next.key, url);
     for (const f of waiting.get(next.key) ?? []) f(url);
     waiting.delete(next.key);

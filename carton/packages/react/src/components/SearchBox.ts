@@ -31,19 +31,28 @@ const IDLE: Found = { q: "", status: "idle", clips: [], hits: [], byId: new Map(
 /** A query worth searching: from the second letter (DESIGN-V2 §2.3). */
 export const searchable = (q: string) => q.trim().length >= 2;
 
-/** Search the current cut's History for `q` (already debounced by the field), the newest answer winning. */
-export function useFind(q: string, cutId: string | undefined): Found {
+/** While a search shows, History's new versions search again, at most this often (ms). */
+export const FIND_REFRESH_MS = 1000;
+
+/**
+ * Search the current cut's History for `q` (already debounced by the field), the newest answer winning. `limit`: how
+ * many (FIND_LIMIT unless the person asked for them all). `revision`: History's; a new version searches again, at most
+ * once a second, keeping the results on screen until the new ones come (review of feat/ux2-n2 #8).
+ */
+export function useFind(q: string, cutId: string | undefined, o: { limit?: number; revision?: number } = {}): Found {
   const ui = useCartonUi();
   const [found, setFound] = useState<Found>(IDLE);
   const seq = useRef(0);
-  useEffect(() => {
-    const mine = ++seq.current;
-    if (!searchable(q) || typeof ui.find !== "function") {
-      setFound(IDLE);
-      return;
-    }
-    setFound((f) => ({ ...f, q, status: "loading" }));
-    ui.find(q.trim(), { limit: FIND_LIMIT }).then(
+  const limit = o.limit ?? FIND_LIMIT;
+  const run = useCallback(
+    (quiet: boolean) => {
+      const mine = ++seq.current;
+      if (!searchable(q) || typeof ui.find !== "function") {
+        setFound(IDLE);
+        return;
+      }
+      if (!quiet) setFound((f) => ({ ...f, q, status: "loading" }));
+      ui.find(q.trim(), { limit }).then(
       (r: FindHits) => {
         if (mine !== seq.current) return;
         const byId = new Map<string, FindHit>();
@@ -52,7 +61,19 @@ export function useFind(q: string, cutId: string | undefined): Found {
       },
       () => mine === seq.current && setFound({ ...IDLE, q, status: "error" }),
     );
-  }, [ui, q, cutId]);
+    },
+    [ui, q, limit],
+  );
+  useEffect(() => run(false), [run, cutId]);
+  // a new version while a search shows: search again (quietly, trailing, at most once a second)
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) return void (first.current = false);
+    if (!searchable(q)) return;
+    const t = setTimeout(() => run(true), FIND_REFRESH_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [o.revision]);
   return found;
 }
 

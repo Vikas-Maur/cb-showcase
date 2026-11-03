@@ -226,7 +226,8 @@ test(name("landmarks: tagged rows with a picture tile; the Landmarks filter list
   const exported = $(m.container, ".carton-version[data-landmark=exported]")!;
   assert.equal($(exported, ".carton-landmark-tag")!.textContent, "Exported");
   assert.match(exported.textContent ?? "", /1080p for the client/);
-  assert.doesNotMatch(exported.textContent ?? "", /only you see this/, "an export is everyone's (DESIGN-V2 §2.1)");
+  // (an export stays on this computer until the server carries it, N0's `local`: only you see it, and the row says so)
+  assert.match(exported.textContent ?? "", /only you see this/);
   assert.match($(m.container, ".carton-version[data-landmark=before]")!.textContent ?? "", /Kept for you.*only you see this/, "a Before is yours only");
   assert.ok($(exported, ".carton-landmark-tile"), "a picture tile in place of the avatar");
   await waitFor(() => !!$(exported, ".carton-landmark-tile img"), "its picture, read once its row shows");
@@ -401,5 +402,99 @@ test(name("12,000 versions with landmarks, searched and filtered to landmarks: o
   assert.ok($$(m.container, ".carton-version").length > 0);
   assert.ok(count() <= max, `landmarks: ${count()} rows in the DOM`);
   assert.deepEqual([ui.counts.changes, ui.counts.changesIn], [0, 0], "nothing described: no card open");
+  await m.unmount();
+});
+
+// ------------------------------------------------------------------ review of feat/ux2-n2 (GPT-6.1 Sol): the fixes
+
+const openGoBack = async (root: HTMLElement) => {
+  await click(row(root, "Add captions to the interview"));
+  await waitFor(() => !!byText(root, ".carton-card-version .carton-btn", "Go back…"), "Go back…");
+  await click(byText(root, ".carton-card-version .carton-btn", "Go back…"));
+  await waitFor(() => !!$(root, ".carton-goback"), "the chooser");
+};
+
+test(name("review #1: a clip that changed again while its confirmation was open says so and asks again"), async () => {
+  const ui = story();
+  const calls: string[] = [];
+  const restoreClip = ui.restoreClip!.bind(ui);
+  ui.restoreClip = (ref, id, o) => (calls.push(id), restoreClip(ref, id, o));
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900, selectedClip: () => ({ id: "item-intro", name: "Intro" }) })));
+  await flush();
+  await openGoBack(m.container);
+  await waitFor(() => $(m.container, ".carton-goback .carton-btn[data-variant=primary]")?.textContent === "Bring back “Intro” as it was", "Intro picked");
+  await click($(m.container, ".carton-goback .carton-btn[data-variant=primary]"));
+  assert.equal($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent, "Bring back “Intro”?");
+  // an agent trims “Intro” again meanwhile
+  await act(() => void ui.addVersion({ kind: "edit" }, [{ key: "timelineItems/item-intro", itemId: "item-intro", clip: "video", kind: "change", text: "Trimmed “Intro”, now ends at 0:04", at: 0, end: 4 }]));
+  // (the card takes in the new head with the cuts topic, then reads the list again: the button waits for it)
+  await wait(80);
+  await waitFor(() => !($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]") as HTMLButtonElement | null)?.disabled, "the list read again");
+  await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
+  assert.match($(m.container, ".carton-bringback-confirm .carton-card-confirm-title")!.textContent ?? "", /^“Intro” just changed again\. Bring back the \d+:\d\d (am|pm) one anyway\?$/);
+  assert.deepEqual(calls, [], "nothing brought back yet");
+  await click($(m.container, ".carton-bringback-confirm .carton-btn[data-variant=primary]"));
+  await waitFor(() => calls.length === 1, "brought back on the second click");
+  await m.unmount();
+});
+
+test(name("review #2, #9, #10: the chooser takes the keyboard when it opens; a ⋯ preset opens it afresh; Esc in the new cut's step goes back to the choices"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900 })));
+  await flush();
+  await openGoBack(m.container);
+  await waitFor(() => !!document.activeElement && $(m.container, ".carton-goback")!.contains(document.activeElement), "focus in the chooser, not <body>");
+  await click($(m.container, ".carton-goback-choice[data-choice=clip]"));
+  // ⋯ Restore… on the same row, the chooser open with another choice picked: Restore the whole edit, picked
+  await menuOf(m.container, "Add captions to the interview");
+  await click(item(m.container, "Restore…"));
+  await waitFor(() => $(m.container, ".carton-goback-choice[aria-checked=true]")?.getAttribute("data-choice") === "restore", "Restore picked");
+  // Start a new cut from here → Name the new cut… → Esc on its Cancel button: back to the choices, not out of the chooser
+  await click($(m.container, ".carton-goback-choice[data-choice=newCut]"));
+  await click($(m.container, ".carton-goback .carton-btn[data-variant=primary]"));
+  await waitFor(() => !!$(m.container, ".carton-card-newcut"), "the name field");
+  const cancel = byText(m.container, ".carton-card-newcut button", "Cancel")!;
+  await act(() => {
+    cancel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  });
+  await flush();
+  assert.ok($(m.container, ".carton-goback-choices"), "the choices again");
+  await m.unmount();
+});
+
+test(name("review #4, #8: a search within the Landmarks filter lists landmarks only; a new version that matches joins the results"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 1400 })));
+  await waitFor(() => !!$(m.container, ".carton-version[data-landmark]"), "landmarks");
+  await click($(m.container, ".carton-filter-btn"));
+  await click(item(m.container, "Landmarks"));
+  await type($(m.container, ".carton-search-input"), "you");
+  await waitFor(() => !!$(m.container, ".carton-find-count"), "the results");
+  const ids = new Set((await ui.landmarks!()).map((l) => l.versionId));
+  const rows = $$(m.container, ".carton-version");
+  assert.ok(rows.length > 0);
+  assert.ok(!row(m.container, "Moved “Interview B” 2 s later"), "your plain changes aren't landmarks");
+  await click($(m.container, ".carton-filter-chip-x"));
+  // a search for words nothing has yet, then a version named with them
+  await type($(m.container, ".carton-search-input"), "picture lock");
+  await waitFor(() => !!$(m.container, ".carton-find-empty"), "nothing yet");
+  await act(() => void ui.addVersion({ kind: "edit", name: "Picture lock" }));
+  await waitFor(() => !!row(m.container, "Picture lock"), "it joins the results", 4000);
+  assert.ok(ids.size > 0);
+  await m.unmount();
+});
+
+test(name("review #12: a cancelled press ends a peek but swallows no later click"), async () => {
+  const ui = story();
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 1400 })));
+  await flush();
+  const r = $(row(m.container, "Sent to client")!, ".carton-version-title")!;
+  await pointer(r, "pointerdown");
+  await wait(PEEK_HOLD_MS + 60);
+  await pointer(r, "pointercancel");
+  await flush();
+  assert.equal(ui.viewing(), null, "back to your edit");
+  await click(r);
+  assert.ok($(m.container, ".carton-card-version"), "the next click opens the card");
   await m.unmount();
 });

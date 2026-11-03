@@ -292,6 +292,8 @@ export function VersionCard(p: VersionCardProps) {
   const footer: ReactNode =
     inGoBack
       ? h(GoBack, {
+          // (a new preset from ⋯, Restore… after Bring back one clip was picked: the chooser opens afresh with it)
+          key: `goback:${asked}`,
           version: v,
           head: p.head,
           after: n,

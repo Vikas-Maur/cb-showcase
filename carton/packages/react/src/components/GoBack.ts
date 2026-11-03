@@ -143,7 +143,15 @@ export interface GoBackProps {
   onDone: () => void;
 }
 
-type Step = { kind: "choose" } | { kind: "clips" } | { kind: "confirm"; choice: ClipChoice } | { kind: "newCut" };
+/**
+ * The chooser's steps. A confirmation keeps the head it was shown at (`head`): if your edit moved on before the click and
+ * the clip changed again, it says so and asks again (`again`, DESIGN-V2 §3.2's conflicts).
+ */
+type Step = { kind: "choose" } | { kind: "clips" } | { kind: "confirm"; choice: ClipChoice; head?: string | undefined; again?: boolean } | { kind: "newCut" };
+
+/** Whether a clip's row reads differently now (its place, its text, what Bring back would do): it changed again. */
+const sameChoice = (a: ClipChoice, b: ClipChoice) =>
+  a.how === b.how && a.thenText === b.thenText && a.text === b.text && String(a.now ?? "") === String(b.now ?? "") && String(a.then ?? "") === String(b.then ?? "");
 
 const isAgent = (v: Version) => v.author.kind === "agent" || v.author.kind === "subagent";
 const reason = (e: unknown) => (e instanceof Error && e.message ? e.message : typeof e === "string" ? e : undefined);
@@ -164,8 +172,9 @@ export function GoBack(p: GoBackProps) {
   const time = clockOfDay(v.at, locale);
   // A step that closes takes its focused control with it: focus that fell out comes to the chooser (as the card does)
   const root = useRef<HTMLDivElement>(null);
-  const lastStep = useRef(step.kind);
+  const lastStep = useRef<Step["kind"] | null>(null);
   useEffect(() => {
+    // (on opening too: the Go back… button or the ⋯ entry that opened it is gone; review of feat/ux2-n2 #2)
     if (lastStep.current === step.kind) return;
     lastStep.current = step.kind;
     const at = document.activeElement, el = root.current;
@@ -224,9 +233,24 @@ export function GoBack(p: GoBackProps) {
       (r) => ((r as BringBack | undefined)?.how === "same" ? words.alreadyAsItWas((r as BringBack).clipName || c.name) : null),
     );
 
+  // Confirm: if your edit moved on since the confirmation showed and this clip changed again, say so and ask again;
+  // the list is read again for the new head (it is while `differ` loads: the button waits)
+  const confirm = (c: ClipChoice, at: string | undefined) => {
+    if (at !== head && clips) {
+      const now = clips.find((x) => x.itemId === c.itemId);
+      if (!now) {
+        setStep({ kind: "clips" });
+        setNote(words.alreadyAsItWas(c.name));
+        return;
+      }
+      if (!sameChoice(now, c)) return setStep({ kind: "confirm", choice: now, head, again: true });
+    }
+    bringBack(c);
+  };
+
   const go = () => {
     if (!choice) return;
-    if (choice === "clip") return selected ? setStep({ kind: "confirm", choice: selected }) : setStep({ kind: "clips" });
+    if (choice === "clip") return selected ? setStep({ kind: "confirm", choice: selected, head }) : setStep({ kind: "clips" });
     if (choice === "turn") return act(() => ui.undoTurnOf(v.id), words.undoTurnFailed);
     if (choice === "restore") return act(() => ui.restore(v.ref), words.restoreFailed);
     setStep({ kind: "newCut" });
@@ -247,7 +271,7 @@ export function GoBack(p: GoBackProps) {
     else p.onCancel();
   };
 
-  if (step.kind === "newCut") return h("div", { ref: root, tabIndex: -1, className: "carton-goback-step" }, p.newCut(back));
+  if (step.kind === "newCut") return h("div", { ref: root, tabIndex: -1, className: "carton-goback-step", onKeyDown }, p.newCut(back));
 
   // (the failure in History's words, the app's reason in its tooltip, as the card's own failures)
   const failure = error ? h("p", { className: "carton-error carton-card-error", role: "alert", title: error.why }, error.text) : note ? h("p", { className: "carton-goback-note", role: "status" }, note) : null;
@@ -255,16 +279,18 @@ export function GoBack(p: GoBackProps) {
   if (step.kind === "confirm") {
     const c = step.choice;
     const out = c.how === "added";
+    const where = c.then ? `${timecode(c.then[0])}` : null;
     return h(
       "div",
       { ref: root, tabIndex: -1, className: "carton-bringback-confirm", role: "group", "aria-label": out ? words.takeOutQ(c.name) : words.bringBackQ(c.name), onKeyDown },
-      h("p", { className: "carton-card-confirm-title" }, out ? words.takeOutQ(c.name) : words.bringBackQ(c.name)),
-      h("p", { className: "carton-card-confirm-body" }, out ? words.takeOutBody : c.how === "deleted" ? words.bringBackDeletedBody : words.bringBackChangedBody(time)),
+      h("p", { className: "carton-card-confirm-title" }, step.again ? words.clipChangedAgain(c.name, time) : out ? words.takeOutQ(c.name) : words.bringBackQ(c.name)),
+      // (what restoreClip does: the clip as it was, at its own time and on its own track; nothing else moves)
+      h("p", { className: "carton-card-confirm-body" }, out ? words.takeOutBody : c.how === "deleted" ? words.bringBackDeletedBody(where) : words.bringBackChangedBody(time)),
       failure,
       h(
         "div",
         { className: "carton-card-actions" },
-        h(Button, { variant: "primary", icon: out ? "x" : "restoreArc", busy, onClick: () => bringBack(c) }, out ? words.takeOutNamed(c.name) : words.bringBackNamed(c.name)),
+        h(Button, { variant: "primary", icon: out ? "x" : "restoreArc", busy, disabled: differ.status === "loading", onClick: () => (step.again ? bringBack(c) : confirm(c, step.head)) }, out ? words.takeOutNamed(c.name) : words.bringBackNamed(c.name)),
         h(Button, { variant: "ghost", onClick: back }, words.cancel),
         h("span", { className: "carton-card-gap" }),
         p.onSeeFirst ? h("button", { type: "button", className: "carton-link", onClick: () => p.onSeeFirst!(c) }, words.seeItFirst) : null,
@@ -272,7 +298,7 @@ export function GoBack(p: GoBackProps) {
     );
   }
 
-  if (step.kind === "clips") return h(ClipList, { root, clips, same, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c }), onBack: back, onKeyDown, failure });
+  if (step.kind === "clips") return h(ClipList, { root, clips, same, loading: differ.status === "loading", failed: differ.status === "error", time, onPick: (c: ClipChoice) => setStep({ kind: "confirm", choice: c, head }), onBack: back, onKeyDown, failure });
 
   // the choices, smallest first
   const after = p.after ?? 0;
