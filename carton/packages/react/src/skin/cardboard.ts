@@ -501,11 +501,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-conflict-next:focus-visible){outline:2px solid var(--cb-ring);outline-offset:1px}
 :where(${S}) :where(.carton-conflict .carton-error){padding:0}
 /* a side seen on the stage (design QA G5): the card keeps only its title and the two sides, 40 % see-through, so the
-   picture under it shows; the pointer on it (or the keyboard in it) brings it back whole but the lead, with Keep */
+   picture under it shows; the pointer on it (or the keyboard in it) brings back every choice and Keep (not the lead) */
 :where(${S}) :where(.carton-conflict[data-seeing]){transition:opacity var(--cb-fast) var(--cb-ease)}
-:where(${S}) :where(.carton-conflict[data-seeing]:not(:hover):not(:has(:focus-visible))){opacity:.6}
-:where(${S}) :where(.carton-conflict[data-seeing]) :where(.carton-card-sub, .carton-conflict-turn, .carton-conflict-side[data-side=both]){display:none}
-:where(${S}) :where(.carton-conflict[data-seeing]:not(:hover):not(:has(:focus-visible))) :where(.carton-conflict-actions, .carton-conflict-later){display:none}
+:where(${S}) :where(.carton-conflict[data-seeing]:not(:hover):not([data-keyed]):not(:has(:focus-visible))){opacity:.6}
+:where(${S}) :where(.carton-conflict[data-seeing]) :where(.carton-card-sub, .carton-conflict-turn){display:none}
+:where(${S}) :where(.carton-conflict[data-seeing]:not(:hover):not([data-keyed]):not(:has(:focus-visible))) :where(.carton-conflict-actions, .carton-conflict-later, .carton-conflict-side[data-side=both]){display:none}
 /* a row with no author named (a system version): its count without the dot that would follow a name (design QA G30) */
 :where(${S}) :where(.carton-version-meta > .carton-version-count:first-child)::before{content:none}
 /* the clip's kind chip before its name, above its credits (design QA G7, after/history-clip-384.png) */

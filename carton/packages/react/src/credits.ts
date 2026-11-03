@@ -30,8 +30,10 @@ const TIMING = new Set(["Trim", "Move", "TrimMove"]);
  * "Move", "TrimMove", "Added", "Name", or null for anything else.
  */
 export function creditVerbOf(text: string): string | null {
-  const trim = /^Trimmed\b|\btrimmed it\b/.test(text);
-  const move = /^Moved\b|\bmoved it\b/.test(text);
+  // the sentence's own words only: a clip's name or text in quotes ("“I trimmed it”") says nothing about the change
+  const own = text.replace(/“[^”]*”/g, "“”");
+  const trim = /^Trimmed\b|\btrimmed it\b/.test(own);
+  const move = /^Moved\b|\bmoved it\b/.test(own);
   if (trim && move) return "TrimMove";
   if (trim) return "Trim";
   if (move) return "Move";
@@ -57,7 +59,11 @@ export async function clipCredits(ui: CartonUi, item: string, words: Words): Pro
         const change = (await ui.changesIn(l.versionId).catch(() => [])).find((c) => c.itemId === item);
         if (change) {
           kind ??= change.clip;
-          said = creditVerbOf(change.text);
+          // a turn's row says what the whole turn did to the clip (its edits together), not the one change credited:
+          // its verb isn't this line's (review: a trim then a move in one turn read "trimmed")
+          const h = ui.history();
+          const i = h.indexOf("all", l.versionId);
+          if ((i >= 0 ? h.at("all", i) : undefined)?.kind !== "turn") said = creditVerbOf(change.text);
         }
       }
       const key = l.what === "Timing" ? (said && TIMING.has(said) ? said : "Timing") : known ? l.what : (said ?? "Change");

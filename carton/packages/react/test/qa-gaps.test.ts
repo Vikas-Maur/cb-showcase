@@ -98,6 +98,26 @@ test("G28: the retired words are gone from the table", () => {
   for (const w of ["Hide conflicts", "Set aside", "Show again", "Preview:", "retimed"]) assert.ok(!all.includes(w), w);
 });
 
+test("review: two teammates with one first name are two authors on a card; Both stays reachable; quoted names aren't verbs", async () => {
+  const park: Actor = { key: "human/leo-park", kind: "human", name: "Leo Park" };
+  const chen: Actor = { key: "human/leo-chen", kind: "human", name: "Leo Chen" };
+  const side = (author: Actor) => ({ author, summary: "starts at 0:18", text: "Moved it to start at 0:18", did: "moved it", what: "move" });
+  const cw = conflictWords({ id: "c", path: "items/i", title: "'Intro' timing", clip: "Intro", mine: side(park), theirs: side(chen), canKeepBoth: false, provisional: "mine" }, (a) => actorLabel(a, undefined, "You"));
+  assert.equal(cw.ordered, false, "not one person's two changes");
+  assert.equal(cw.title, "“Intro”: Leo Park and Leo Chen both moved it");
+  assert.notEqual(cw.keep.mine, cw.keep.theirs, "two buttons never read the same");
+  // a clip's own name says nothing about what was done to it
+  assert.equal(creditVerbOf("Moved “I trimmed it yesterday” 2 s later"), "Move");
+  // core's title with an apostrophe in the name
+  assert.equal(conflictWords({ id: "c", path: "items/i", title: "'Bob's intro' timing", mine: { author: people.alice, summary: "x" }, theirs: { author: people.director, summary: "y" }, canKeepBoth: false, provisional: "mine" }, (a) => actorLabel(a, undefined, "You")).title, "“Bob's intro”: you and Director both changed it");
+  assert.equal(tidySummary("Renamed 'Bob's intro' to 'Outro'"), "Renamed “Bob's intro” to “Outro”");
+  // a turn's row says what the turn did together: its credit keeps "timing changed"
+  const ui = createMockUi({ versions: 0 });
+  const turn = ui.addVersion({ author: people.director, kind: "turn", turn: { label: "Tighten", edits: 2 } }, [{ key: "timelineItems/ib", itemId: "ib", clip: "video", kind: "change", text: "Trimmed “Interview B”, now 0:01 to 0:05" }]).id;
+  ui.credits = async () => ({ clip: "ib", lines: [{ what: "Timing", author: people.director, at: 1, versionId: turn }] });
+  assert.deepEqual((await clipCredits(ui, "ib", words)).parts.map((p) => p.verb), ["timing changed"]);
+});
+
 test("G30: a card without its sentences reads as the others do", () => {
   const side = (author: Actor, summary: string) => ({ author, summary });
   const c: Conflict = { id: "c", path: "items/i", title: "'Intro' timing", mine: side(people.alice, "Trimmed the end to 0:05.0"), theirs: side(people.director, "starts at 0:18.0"), canKeepBoth: false, provisional: "mine" };

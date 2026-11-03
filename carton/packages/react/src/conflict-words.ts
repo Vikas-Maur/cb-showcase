@@ -255,13 +255,18 @@ function wordSide(parts: readonly Part[], p: number, w: Words): SideSentence {
 
 const lowerFirst = (s: string) => (s ? s[0]!.toLowerCase() + s.slice(1) : s);
 
+/** One author on both sides: the same actor, or you (your GUI edits and your `cb` ones). */
+export const sameAuthor = (a: Actor, b: Actor): boolean => a.key === b.key || (a.kind === "human" && b.kind === "human" && !!a.isYou && !!b.isYou);
+/** A teammate's whole name where their first name is ambiguous; anyone else as named. */
+const wholeName = (a: Actor, named: string): string => (a.kind === "human" && !a.isYou && typeof a.name === "string" && a.name.trim() ? a.name.trim() : named);
+
 /**
  * An engine summary in the card's words, for a card that came without its sentences (design QA G30): a name in curly
  * quotes, times as the editor shows them ("0:05", not "0:05.0"; "6 s", not "6.0 s").
  */
 export function tidySummary(s: string): string {
   return s
-    .replace(/(^|[\s(])'([^']+)'(?=$|[\s,.:;)])/g, "$1“$2”")
+    .replace(/(^|[\s(])'(.+?)'(?=$|[\s,.:;)])/g, "$1“$2”")
     .replace(/(\d:\d{2})\.0+\b/g, "$1")
     .replace(/\b(\d+)\.0+(?= ?s\b)/g, "$1");
 }
@@ -271,7 +276,8 @@ export const sideText = (s: ConflictSide): string => s.text ?? tidySummary(s.sum
 
 /** A card's subject from an engine title with no clip told: its quoted name ("'Intro' timing" → “Intro”), else the title. */
 const subjectOfTitle = (title: string): string => {
-  const m = /^['“]([^'”]+)['”]/.exec(title);
+  // core's form is "'Name' field": the name runs to the quote before the field, apostrophes and all ("'Bob's intro'")
+  const m = /^'(.+)'(?=\s|$)/.exec(title) ?? /^“([^”]+)”/.exec(title);
   return m ? `“${m[1]}”` : tidySummary(title);
 };
 /** "Your move" reads "your move" mid-sentence ("Kept your move of …"), as do "Yours" and "Both"; a name keeps its capital. */
@@ -305,7 +311,10 @@ export interface ConflictCardWords {
  */
 export function conflictWords(c: Conflict, nameOf: (a: Actor) => string, w: Words = defaultWords, locale?: string): ConflictCardWords {
   const isYou = (s: ConflictSide) => s.author.kind === "human" && !!s.author.isYou;
-  const mineName = nameOf(c.mine.author), theirsName = nameOf(c.theirs.author);
+  let mineName = nameOf(c.mine.author), theirsName = nameOf(c.theirs.author);
+  // two people with one first name ("Leo Park", "Leo Chen") are two authors: their whole names tell them apart, never
+  // "two of Leo's changes" (review of fix/ux2-c)
+  if (mineName === theirsName && !sameAuthor(c.mine.author, c.theirs.author)) [mineName, theirsName] = [wholeName(c.mine.author, mineName), wholeName(c.theirs.author, theirsName)];
   const ordered = mineName === theirsName && (c.mine.where ?? "") === (c.theirs.where ?? "");
   const subject = c.clip ? `“${c.clip}”` : subjectOfTitle(c.title);
   const both = w.bothChangesTo(c.clip);
