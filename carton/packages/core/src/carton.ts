@@ -18,8 +18,8 @@ import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/mes
 import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, EmptyVersion, StackMoved, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
-import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
+import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
+import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type TopCheck, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
@@ -447,6 +447,29 @@ interface PendingRow {
   /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
   baseDelta?: Op[];
 }
+/**
+ * An undo or redo asked for one entry (`expect`: a change id) when its stack's newest is another (UX redesign PLAN 5.3:
+ * a toast's Undo takes back what its action made, or nothing: something landed on top since). Raised while the step is
+ * planned, inside the write, so no other write can land between the check and the step; nothing has changed then.
+ */
+export class StackMoved extends Error {
+  readonly code = "STACK_MOVED";
+  constructor(which: "undo" | "redo", expected: string, newest: string | undefined) {
+    super(`Not ${which === "undo" ? "undone" : "redone"}: the newest ${which} is ${newest ?? "nothing"}, not ${expected}`);
+  }
+}
+/**
+ * `expect` as History's TopCheck (undefined without it, so Ctrl+Z checks nothing): the change a toast's Undo or Redo
+ * means to step must be the newest entry of that stack, else StackMoved. History shows it the entry where the step is
+ * planned, inside the write, after a retried id is answered, on the stack it already read; kept here, not in History,
+ * for History's bundle size budget (scripts/size.mjs, CONTRACTS.md "Size").
+ */
+const expectTop = (which: "undo" | "redo", expect: ChangeId | undefined): TopCheck | undefined =>
+  expect === undefined
+    ? undefined
+    : (top) => {
+        if (top?.changeId !== expect) throw new StackMoved(which, expect, top?.changeId);
+      };
 /** The undo scope in a call's options (only the fields given, so a plain call sees the whole group). */
 const scopeOf = (o: UndoScope): UndoScope => ({ ...(o.since !== undefined ? { since: o.since } : {}), ...(o.app ? { app: true } : {}) });
 /** The digest of a version's ops alone (`hashOps(ops, null)`), once per version. */
@@ -2187,11 +2210,11 @@ class CartonImpl implements Carton {
     await this.#whole();
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
-    const expect = opts.expect !== undefined ? { expect: opts.expect } : {};
+    const check = expectTop("undo", opts.expect);
     this.#writable(cut);
     // P2-1: its entry (`cb undo` prints it) is labelled from the log it was planned on, a shared cut's pending tail too
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope, ...expect }), [...this.#h.changes(cut), ...tail.rows]));
-    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...expect, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope, check }), [...this.#h.changes(cut), ...tail.rows]));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, check, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   /** Redo for an actor group; `expect` as undo's, for the redo stack's newest entry. */
   async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId; expect?: ChangeId } & UndoScope = {}) {
@@ -2199,10 +2222,10 @@ class CartonImpl implements Carton {
     await this.#whole();
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
-    const expect = opts.expect !== undefined ? { expect: opts.expect } : {};
+    const check = expectTop("redo", opts.expect);
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope, ...expect }), [...this.#h.changes(cut), ...tail.rows], true));
-    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...expect, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope, check }), [...this.#h.changes(cut), ...tail.rows], true));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, check, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ retention (§5.4)

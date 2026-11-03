@@ -70,18 +70,6 @@ export class EmptyVersion extends Error {
   }
 }
 
-/**
- * An undo or redo asked for one entry (`expect`: a change id) when its stack's newest is another (UX redesign PLAN 5.3:
- * a toast's Undo takes back what its action made, or nothing: something landed on top since). Raised while the step is
- * planned, inside the write, so no other write can land between the check and the step; nothing has changed then.
- */
-export class StackMoved extends Error {
-  readonly code = "STACK_MOVED";
-  constructor(which: "undo" | "redo", expected: string, newest: string | undefined) {
-    super(`Not ${which === "undo" ? "undone" : "redone"}: the newest ${which} is ${newest ?? "nothing"}, not ${expected}`);
-  }
-}
-
 export interface HistoryOptions {
   name?: string;
   /** Replica id: 96 random bits as hex. Change ids are `${rid}.${n}`. */
