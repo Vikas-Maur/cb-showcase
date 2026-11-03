@@ -257,8 +257,8 @@ module.exports = String.raw`var __cartonMain = (() => {
         share: t.share === true,
         cut: cutName ? { name: cutName, dot: typeof t.cut.dot === "string" && /^#[0-9a-f]{3,8}$/i.test(t.cut.dot) ? t.cut.dot : null } : null,
         viewing: view ? { label: view } : null,
-        // Compare in the editor (UX v2, N1): the chip's "⇆ Comparing … ✕"
-        comparing: comparing ? { label: comparing } : null,
+        // Compare in the editor (UX v2, N1): the chip's "⇆ Comparing … ✕" (only while comparing)
+        ...(comparing ? { comparing: { label: comparing } } : {}),
       };
     },
     // Strip commands that open something taking keys in the editor's page (the cuts menu, the Share dialog): main

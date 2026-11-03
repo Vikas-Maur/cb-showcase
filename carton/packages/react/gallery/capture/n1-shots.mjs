@@ -16,13 +16,15 @@ export function n1Shots({ P }) {
     W("n1-agent", "n1-agent", "Director's cb compare --show while the person is idle: Compare opens, History opens to its list, one toast says who.", async (p) => { await open(p); await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(200); }),
     W("n1-agent-offer", "n1-agent-offer", "Director's cb compare --show while the person views a version: never replaced; a toast with Open.", async (p) => { await p.locator(".carton-toast").waitFor(); await p.waitForTimeout(200); }),
     W("n1-drawer-hidden", "n1-drawer", "Compare with History closed: the frame's own label (⇆ … · 7 changes ✕).", open),
-    W("n1-narrow", "n1-side", "A 1100 px window: the stage under 682 px, Flip by default, Side by side greyed.", open, { viewport: { width: 1100, height: 810 } }),
+    W("n1-narrow", "n1-side", "A 1250 px window: the stage under 600 px: Flip, the modes as icons with Side by side greyed, Done.", open, { viewport: { width: 1250, height: 810 } }),
+    W("n1-narrowest", "n1-side", "A 1100 px window: the stage under 360 px: Flip only.", open, { viewport: { width: 1100, height: 810 } }),
     W("n1-entry", "n1-entry", "History before Compare: the Sent to client card's See them opens it (this shot: after the click).", async (p) => {
       await p.locator(".carton-version", { hasText: "Sent to client" }).first().click();
       await p.waitForTimeout(250);
       await p.locator(".carton-card-version .carton-link").first().click();
       await open(p);
     }),
+    P("n1-cuts-menu", "n1-entry", "The cuts menu (History's cut bar): another cut's row offers ⇆ Compare on hover.", async (p) => { await p.locator(".carton-cuts-trigger").click(); await p.waitForTimeout(150); await p.locator(".carton-cut-row", { hasText: "30s Instagram cut" }).first().hover(); await p.waitForTimeout(150); }, { keepHover: true }),
     P("n1-panel", "n1-side", "The History panel during Compare: ← History, the range in words, the count, every change; the title change picked.", async (p) => { await open(p); await pick(p, "Summer sale"); }),
   ];
 }

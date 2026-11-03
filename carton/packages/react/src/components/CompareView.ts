@@ -492,6 +492,9 @@ ${SK} .carton-compare-progress i{position:absolute;left:0;top:0;bottom:0;border-
 ${SK} .carton-compare-step{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 ${SK} .carton-compare-frame-label{position:absolute;left:0;top:0;display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 3px 0 8px;border-radius:0 0 7px 0;background:#8ab4ff;color:#0b1730;font-size:12px;font-weight:500;max-width:calc(100% - 24px)}
 ${SK} .carton-compare-frame-label>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${SK} .carton-cut-row{position:relative}
+${SK} .carton-cut-compare{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border:0;border-radius:6px;background:var(--cb-secondary);color:var(--cb-fg-1);font:500 12px var(--cb-font);opacity:0;cursor:pointer}
+${SK} .carton-cut-row:hover .carton-cut-compare,${SK} .carton-cut-compare:focus,${SK} .carton-cut-row:focus-within .carton-cut-compare{opacity:1}
 ${SK} .carton-compare-list{display:flex;flex-direction:column;min-height:0;flex:1}
 ${SK} .carton-compare-head{padding:2px 12px 10px;border-bottom:1px solid var(--cb-line)}
 ${SK} .carton-compare-range{margin:6px 0 0;font-size:13px;line-height:18px;color:var(--cb-fg-2)}

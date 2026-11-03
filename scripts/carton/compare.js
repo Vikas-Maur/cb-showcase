@@ -592,7 +592,17 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
       const by = ask.byName || ask.by?.name || "An agent";
       const wasClosed = panelRef.current !== "history";
       ui.openCompare?.(ask.from, ask.to, { by, request: ask.request }).then(() => {
-        if (wasClosed) openPanel?.("history", { byAgent: true });
+        // History opens to the change list if it was closed, and closes again on exit if the agent opened it (§1.13)
+        if (wasClosed) {
+          openPanel?.("history");
+          const mine = ui.comparing?.();
+          const off = ui.onCompare?.(() => {
+            const now = ui.comparing?.();
+            if (now === mine) return;
+            off?.();
+            if (!now) openPanel?.(null);
+          });
+        }
         toast?.(`${words.openedComparison(by)} ${words.escToGoBack}.`, null, null, "compare");
       }, () => toast?.(words.compareFailed, null, "warning"));
     };

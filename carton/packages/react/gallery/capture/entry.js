@@ -558,6 +558,9 @@ setTimeout(() => {
   if (scenario.notice) setTimeout(() => bridge.notice(scenario.notice), 50);
   // Compare (N1): opened as History's See them opens it, or asked for by an agent (cb compare --show)
   const n1 = scenario.n1;
+  // the page's own view model (connect()'s), for the shots and the bench
+  window.__cap.page = () => uiTests.conns.get(bridge.projectId)?.conn.ui;
+  window.__cap.n1 = n1 ?? null;
   if (n1) setTimeout(() => {
     const page = uiTests.conns.get(bridge.projectId)?.conn.ui;
     if (n1.open) void page?.openCompare(n1.from, null, { mode: n1.mode });

@@ -49,7 +49,7 @@ const LEFT = { tracks: [{ id: "v" }, { id: "t" }, { id: "gone" }], timelineItems
 const RIGHT = { tracks: [{ id: "v" }, { id: "t" }], timelineItems: [item("intro", "v", 0, 5), item("ia", "v", 5, 11), item("drone", "v", 11, 15), item("ib", "v", 15, 24), item("title", "t", 2, 5), item("logo", "t", 8, 10)] };
 
 test("compareMarks: one mark per clip a change row names, its kind from the row and the two timelines", () => {
-  const changes = [
+  const changes: Change[] = [
     chg("intro", "change", 0, 5, "Trimmed “Intro”"),
     chg("ia", "change", 5, 11, "Moved “Interview A”"),
     chg("ia", "change", 5, 11, "Changed “Interview A”'s volume"),
@@ -58,7 +58,7 @@ test("compareMarks: one mark per clip a change row names, its kind from the row 
     chg("title", "change", 2, 5, "Moved the title 1 s later"),
     chg("logo", "change", 8, 10, "Changed “Logo”'s colour"),
     chg("cap", "remove", 7, 9, "Removed caption"),
-    { key: "aspectRatio", kind: "change", clip: "project", text: "Changed the aspect ratio to 9:16" },
+    { key: "aspectRatio", kind: "change" as const, clip: "project" as const, text: "Changed the aspect ratio to 9:16" },
   ];
   const marks = compareMarks(changes, LEFT, RIGHT, D);
   const by = new Map(marks.map((m) => [m.itemId, m]));
