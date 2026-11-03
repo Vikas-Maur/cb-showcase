@@ -279,6 +279,7 @@ export const words = {
   historyEmptyTitle: "Your edit's history starts here",
   historyEmptyBody: "Every change, yours or an agent's, is saved as a version. Look back at any of them, play what changed, or restore one. Nothing is lost.",
   cutStarted: (cut: string, when: string) => `${cut} · started ${when}`,
+  todayAt: (time: string) => `today at ${time}`,
 
   // Version card
   changesSince: (n: number) => `Your edit has ${plural(n, "change", "changes")} since this`,
@@ -292,6 +293,34 @@ export const words = {
   undoThisTurnHint: (n: number) => `Takes out only ${n === 1 ? "this change" : `these ${n} changes`}. Later changes stay.`,
   changesIn: (label: string) => `Changes in ${label}`,
   noPosition: "—",
+  // A change row's kind chip, for screen readers ("Title, added"): the chip itself is colour and a corner mark
+  clipKinds: { video: "Video", title: "Title", caption: "Caption", audio: "Audio", image: "Image", code: "Code graphic", project: "Project" } as Record<"video" | "title" | "caption" | "audio" | "image" | "code" | "project", string>,
+  changeKinds: { add: "added", remove: "removed", change: "changed" } as Record<"add" | "remove" | "change", string>,
+  changeChip: (clip: string, kind: string) => `${clip}, ${kind}`,
+  // A change's who and when, under its sentence when a list mixes authors: "Claude Code · 12:48 pm"
+  changeWho: (who: string, when: string) => (who ? `${who} · ${when}` : when),
+  // An older version whose state your edit still has: no "N changes since"
+  sameSinceThis: "Your edit is the same as this version",
+  // A card's list of changes that is long: the rest in the Changes view
+  seeAll: (n: number) => `See all ${n}`,
+  showLess: "Show fewer",
+  loadingChanges: "Reading what changed",
+  noChangesInVersion: "Nothing in the edit changed.",
+  // An action that failed, in its card, with the reason in its tooltip (DESIGN §6.1 Errors)
+  undoTurnFailed: "Couldn't undo this turn. Try again.",
+  newCutFailed: "Couldn't make the cut. Try again.",
+  // The live row of an agent working: its mark ringed in green, for screen readers
+  agentWorking: (agent: string) => `${agent} is working`,
+  // The credits of the clip History is filtered to (PLAN 0.8, 9.2): "Added by You on Oct 30 · trimmed by Director"
+  creditVerb: { Added: "added", Timing: "retimed", Text: "text changed", Color: "color changed", Volume: "volume changed", Name: "renamed" } as Record<string, string>,
+  creditPart: (verb: string, who: string, when: string) => `${verb} by ${who}${when ? ` ${when}` : ""}`,
+  creditOn: (day: string) => `on ${day}`,
+  creditAt: (time: string) => `at ${time}`,
+  // Group rows (DESIGN §6.1): the chevron that lists a person's run of changes, one by one
+  groupClose: (n: number) => `Hide these ${plural(n, "change", "changes")}`,
+  // History list's live region and keys
+  historyKeys: "Enter opens a version, Space plays it, F2 names it",
+  cardRegion: (label: string) => `Changes in ${label}`,
 
   // Row menu
   playItsChanges: "Play its changes",
