@@ -23,7 +23,7 @@ import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, 
 import * as E from "./engine/index.ts";
 import { FIND_FIELDS, FindIndex, dayWords, findWords, hayOf, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
 import { LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
-import { bringBack, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
+import { bringBack, partsDiffer, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -1847,10 +1847,10 @@ class CartonImpl implements Carton {
       const turn = name !== undefined && isTurn(c);
       const nameHay = name !== undefined && (turn ? wPrompt : wName) ? wordsOf(name).hay : "";
       const markHay = lm && wName ? markOf(lm).hay : "";
-      const staticHay = wClip || wText ? e.hay : "";
       let ok = true;
       for (const nd of needles) {
-        if (staticHay.includes(nd) || (nameHay && nameHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
+        // one string per field: a clip's name never passes for text, nor text for a name (review N0 #3)
+        if ((wClip && e.clipHay.includes(nd)) || (wText && e.textHay.includes(nd)) || (nameHay && nameHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
         ok = false;
         break;
       }
@@ -2041,7 +2041,7 @@ class CartonImpl implements Carton {
       // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); the server keeps no
       // restoreOf, so History reads it as a restore there, as it does a shared cut's restore
       const r = await this.#planShared(cut, opts.id, (tail) => ({ doc: plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!).doc, author, kind: "restore" }));
-      return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+      return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
     }
     const r = await this.#mutate(
       undefined,
@@ -2053,7 +2053,7 @@ class CartonImpl implements Carton {
       },
       { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
     );
-    return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+    return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
   }
   async bringBackChoices(ref: StateRef | string, opts: { cut?: string } = {}): Promise<BringBackChoices> {
     const cut = opts.cut ?? this.#h.current;
@@ -2095,7 +2095,8 @@ class CartonImpl implements Carton {
       if (!y) {
         const w = since.get(E.pathKey([coll, id]))?.last;
         out.deleted.push({ ...row(id, x, then), then: side(x), ...(w ? { by: w.author, at: w.at } : {}) });
-      } else if (E.deepEqual(x, y)) out.same++;
+      } else if (E.deepEqual(x, y) && !partsDiffer(this.schema, coll, x, then, y, now)) out.same++;
+      // (its own parts too: a title's text entry, as restoreClip covers them: review N0 #4)
       else out.changed.push({ ...row(id, y, now), then: side(x), now: side(y) });
     }
     for (const [id, y] of b) {
@@ -2107,14 +2108,33 @@ class CartonImpl implements Carton {
     for (const l of [out.changed, out.deleted, out.added]) l.sort((x, y) => at(x) - at(y));
     return out;
   }
-  /** A retried bring-back answers from its first try: what it did, read again from the change it made. */
-  async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string): Promise<BroughtBack> {
+  /**
+   * A retried bring-back (the same `id`) answers as its first try did (review N0 #5): what it did, read again from the
+   * states just before and after the change it made (a shared cut's pending one from its queue), or nothing made.
+   */
+  async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string, r: CommitResult): Promise<BroughtBack> {
     const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
-    const of = typeof t === "string" ? t : nodeId(t.branchId, t.seq);
-    const doc = this.#doc(t), now = this.#h.viewOf(this.#h.head(cut))!;
-    const rec = (E.getIn(doc, [coll, id], this.schema) ?? E.getIn(now, [coll, id], this.schema)) as Rec | undefined;
-    return { record: E.pathKey([coll, id]), name: recordName(this.schema, coll, rec, doc), how: "changed", parts: [], of };
+    const of = typeof t === "string" ? (NODE_RE.test(t) ? this.#h.canon(t) : t) : this.#h.canon(nodeId(t.branchId, t.seq));
+    const record = E.pathKey([coll, id]);
+    const change = (r as { change?: ConfirmedChange | null }).change ?? null;
+    let before: Doc | null = null, after: Doc | null = null;
+    if (r.status === "confirmed" && change && !(r as { empty?: boolean }).empty) {
+      const c = change.branchId ?? cut;
+      before = this.#h.viewOf(nodeId(c, change.seq - 1));
+      after = this.#h.viewOf(nodeId(c, change.seq));
+    } else if (r.status === "pending") {
+      const p = (await this.pendingChanges(cut)).changes.find((x) => x.id === (r as { id?: string }).id);
+      if (p) [before, after] = [p.before, p.after];
+    }
+    const get = (d: Doc | null) => (d ? (E.getIn(d, [coll, id], this.schema) as Rec | undefined) : undefined);
+    const was = get(before), is = get(after);
+    const name = change?.restoreName ?? recordName(this.schema, coll, is ?? was ?? (E.getIn(this.#doc(t), [coll, id], this.schema) as Rec | undefined), after ?? undefined);
+    if (!before || !after) return { record, name, how: "same", parts: [], of };
+    const how: BroughtBack["how"] = !is ? "removed" : !was ? "added" : "changed";
+    const parts = [...new Set(E.diff(before, after, this.schema).flatMap((op) => (op.op === "remap" ? [] : [E.pathKey(op.path.slice(0, 2).map(String))])))].filter((k) => k !== record && !!this.schema.collections[k.split("/")[0]!]);
+    return { record, name, how, parts, of };
   }
+
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
   #leftOutN = new Map<string, number>();
   #leftOutChanges(cut: string, v: Version): number {
@@ -2644,6 +2664,16 @@ class CartonImpl implements Carton {
    */
   async compact(opts: { cut?: string; olderThanDays?: number } = {}): Promise<{ squashed: number }> {
     await this.#whole();
+    // the versions the app recorded as landmarks (an export, a send, a start) keep their state, as pinned ones do (review
+    // N0 #2). Read before the plan: a landmark recorded meanwhile is on a head, which no compaction squashes (the last K
+    // changes and everything newer than the cutoff stay)
+    const marked = new Map<string, Set<number>>();
+    for (const { key } of await this.store.range(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX] })) {
+      const [cut, seq] = [key[1], Number(key[2])];
+      if (typeof cut !== "string" || !Number.isInteger(seq)) continue;
+      if (!marked.has(cut)) marked.set(cut, new Set());
+      marked.get(cut)!.add(seq);
+    }
     let squashed = 0;
     const plan: StoreWrite[] = [];
     await this.#mutate(
@@ -2654,7 +2684,7 @@ class CartonImpl implements Carton {
         const cutoff = (this.#opts.clock?.() ?? Date.now()) - (opts.olderThanDays ?? 90) * 864e5;
         for (const rec of this.#h.cuts()) {
           if ((opts.cut && rec.id !== opts.cut) || rec.sequencer.kind !== "local" || rec.tracking || rec.shallow || rec.kind === "published") continue;
-          squashed += this.#compactCut(rec.id, cutoff, plan);
+          squashed += this.#compactCut(rec.id, cutoff, plan, marked.get(rec.id));
         }
       },
       // the pins as read for this plan: a pin another process writes before the plan lands moves the token, the write
@@ -2670,10 +2700,10 @@ class CartonImpl implements Carton {
     }
     return { squashed };
   }
-  #compactCut(cut: string, cutoff: number, writes: StoreWrite[]): number {
+  #compactCut(cut: string, cutoff: number, writes: StoreWrite[], marked?: ReadonlySet<number>): number {
     const h = this.#h;
     const log = h.changes(cut);
-    const keep = new Set<number>();
+    const keep = new Set<number>(marked ?? []);
     const seqOf = new Map(log.map((c) => [c.id, c.seq]));
     for (const c of log) {
       if (c.kind && c.kind !== "edit") keep.add(c.seq); // undo, revert, restore, fold, partial revert

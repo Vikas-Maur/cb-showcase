@@ -79,8 +79,8 @@ async function main() {
     return { c, close: async () => { await c.close(); await store.close(); } };
   };
   // load (core's own) and build (the index), each on a fresh open
-  const loads: number[] = [], builds: number[] = [];
-  let heap = 0, versions = 0;
+  const loads: number[] = [], builds: number[] = [], heaps: number[] = [];
+  let versions = 0;
   for (let r = 0; r < RUNS; r++) {
     const o = await open();
     let t = performance.now();
@@ -92,14 +92,14 @@ async function main() {
     const f = await o.c.find("");
     builds.push(performance.now() - t);
     gc();
-    heap = process.memoryUsage().heapUsed - h0;
+    heaps.push((process.memoryUsage().heapUsed - h0) / 1048576);
     versions = f.versions;
     await o.close();
   }
   console.log(`versions indexed: ${versions}`);
   console.log(`load (whole history read in, core's own, not this feature): ${fmt(loads)}`);
   console.log(`build (first find: the index's walk over ${N} rows):         ${fmt(builds)}`);
-  console.log(`index heap after gc: ${(heap / 1048576).toFixed(1)} MiB (last run)`);
+  console.log(`index heap after gc (MiB; the index and find's caches): ${fmt(heaps).replace(/ ms/g, "")}`);
   const o = await open();
   await o.c.find("");
   for (const q of ["intro", "intr cap", "summer", "leo", "half", "review 7", "exported", "zzz nothing"]) {
@@ -131,8 +131,15 @@ async function main() {
   for (let r = 0; r < RUNS; r++) { const t = performance.now(); await o.c.bringBackChoices(`${o.c.cut}@${Math.floor(N / 3)}`); ch.push(performance.now() - t); }
   console.log(`bringBackChoices(@${Math.floor(N / 3)}):                              ${fmt(ch)}`);
   const bb: number[] = [];
-  for (let r = 0; r < RUNS; r++) { const t = performance.now(); await o.c.restoreClip(`${o.c.cut}@${Math.floor(N / 3) + r}`, "timelineItems/v3"); bb.push(performance.now() - t); }
-  console.log(`restoreClip(an old version):                             ${fmt(bb)}`);
+  // each a clip that differs from the version it comes from (a different clip each run), so each saves a version
+  let saved = 0;
+  for (let r = 0; r < RUNS; r++) {
+    const t = performance.now();
+    const x = await o.c.restoreClip(`${o.c.cut}@${Math.floor(N / 3)}`, `timelineItems/v${(r * 7) % 40}`);
+    bb.push(performance.now() - t);
+    if (x.brought.how !== "same") saved++;
+  }
+  console.log(`restoreClip(an old version), ${saved} of ${RUNS} saved:        ${fmt(bb)}`);
   await o.close();
   console.log(`load after: ${load()}`);
 }

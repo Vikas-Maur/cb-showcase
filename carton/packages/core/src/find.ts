@@ -129,8 +129,9 @@ export function hitsIn(w: Words, q: readonly string[], all = false): [number, nu
 interface Entry {
   seq: number;
   row: ConfirmedChange;
-  /** Every word of its clips' names and its texts, folded, each after a space: a word's start is `" " + word`. */
-  hay: string;
+  /** Every word of its clips' names, and of its texts, folded, each after a space: a word's start is `" " + word`. */
+  clipHay: string;
+  textHay: string;
   /** Who made it (an index into `FindIndex.whos`: actor and change replica, what `log()` tells them by) and its local day (yyyymmdd), for the query's caches. */
   who: number;
   day: number;
@@ -205,7 +206,7 @@ export class FindIndex {
       const wk = `${c.author ? `${c.author.kind}/${c.author.id}/${c.author.agentId ?? ""}` : ""}\u0000${c.id.slice(0, c.id.lastIndexOf("."))}`;
       let who = this.#whoIx.get(wk);
       if (who === undefined) this.#whoIx.set(wk, (who = this.#whoIx.size));
-      const entry: Entry = { seq: s, row: c, clips: [], texts: [], hay: "", who, day: d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate() };
+      const entry: Entry = { seq: s, row: c, clips: [], texts: [], clipHay: "", textHay: "", who, day: d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate() };
       recs.forEach((r, i) => {
         const was = before[i]!, now = this.#read(doc, r.coll, r.id, r.spec, schema);
         const part = r.spec.nounOf?.((now.rec ?? was.rec)!) === null;
@@ -227,7 +228,8 @@ export class FindIndex {
         const name = now.name ?? was.name ?? "";
         for (const w of now.words) if (!had.has(w)) entry.texts.push({ key: r.key, name, text: this.#words(w) });
       });
-      entry.hay = hayOf([...entry.clips.flatMap((x) => x.names), ...entry.texts.map((x) => x.text)]);
+      entry.clipHay = hayOf(entry.clips.flatMap((x) => x.names));
+      entry.textHay = hayOf(entry.texts.map((x) => x.text));
       this.entries.push(entry);
     }
     this.#doc = doc;

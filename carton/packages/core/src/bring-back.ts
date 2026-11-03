@@ -98,11 +98,28 @@ export function recordName(schema: Schema, coll: string, rec: Rec | undefined, d
   return typeof rec.name === "string" && rec.name.trim() ? rec.name.trim() : spec?.nounOf?.(rec) ?? spec?.noun ?? "clip";
 }
 
-/** How many records of `coll` name `id` by `field`. */
-function holders(doc: Doc, coll: string, field: string, id: unknown): number {
+/** How many records of `coll` name `id` by `field` (`but`: leaving that record out). */
+function holders(doc: Doc, coll: string, field: string, id: unknown, but?: { key: string; id: string }): number {
   let n = 0;
-  for (const r of (doc[coll] as Rec[] | undefined) ?? []) if (r[field] === id) n++;
+  for (const r of (doc[coll] as Rec[] | undefined) ?? []) if (r[field] === id && !(but && String(r[but.key]) === but.id)) n++;
   return n;
+}
+/** A new record id, as the host makes them (a UUID). */
+const newId = (): string => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+/**
+ * A record's own parts (`partOf` naming its collection, held by it alone) differ between two states: what a bring-back
+ * of it covers beside the record itself.
+ */
+export function partsDiffer(schema: Schema, coll: string, a: Rec, da: Doc, b: Rec, db: Doc): boolean {
+  for (const [pc, ps] of Object.entries(schema.collections)) {
+    if (ps.partOf?.collection !== coll) continue;
+    const f = ps.partOf.field;
+    const pa = a[f] != null ? (E.getIn(da, [pc, a[f] as string], schema) as Rec | undefined) : undefined;
+    const pb = b[f] != null ? (E.getIn(db, [pc, b[f] as string], schema) as Rec | undefined) : undefined;
+    const own = (p: Rec | undefined) => !!p && ps.nounOf?.(p) === null;
+    if ((own(pa) || own(pb)) && !E.deepEqual(pa, pb)) return true;
+  }
+  return false;
 }
 
 /**
@@ -122,9 +139,9 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
   const ops: Op[] = [];
   const parts: PathKey[] = [];
   const put = (c: string, rec: Rec) => ops.push({ op: "insert", path: [c, String(rec[schema.collections[c]!.key])], value: rec });
-  if (was) {
-    if (!now || !E.deepEqual(was, now)) put(coll, was);
-  } else ops.push({ op: "remove", path: [coll, id] });
+  // the clip as it was then (a part it shares now with another clip becomes a copy of its own, below)
+  let clip: Rec | undefined = was;
+  if (!was) ops.push({ op: "remove", path: [coll, id] });
   // its parts: a record of another collection that this one names by `partOf.field`
   for (const [pc, ps] of Object.entries(schema.collections)) {
     if (ps.partOf?.collection !== coll) continue;
@@ -133,10 +150,22 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
     const pidThen = was?.[f], pidNow = now?.[f];
     if (pidThen != null) {
       const pThen = get(then, pc, pidThen), pNow = get(head, pc, pidThen);
-      // gone since (it needs it), or its own and changed: as it was then
-      if (pThen && (!pNow || (own(then, pThen, pidThen) && !E.deepEqual(pThen, pNow)))) {
+      if (pThen && !pNow) {
+        // gone since: it needs it, as it was then
         put(pc, pThen);
         parts.push(E.pathKey([pc, String(pidThen)]));
+      } else if (pThen && pNow && own(then, pThen, pidThen) && !E.deepEqual(pThen, pNow)) {
+        // its own then, and changed: as it was then. If another clip names it now (a title duplicated since), that
+        // clip keeps it as it is, and this one gets a copy of its own (review N0 #1)
+        if (holders(head, coll, f, pidThen, { key: spec.key, id }) > 0) {
+          const copy = newId(), pk = schema.collections[pc]!.key;
+          put(pc, { ...pThen, [pk]: copy });
+          clip = { ...clip!, [f]: copy };
+          parts.push(E.pathKey([pc, copy]));
+        } else {
+          put(pc, pThen);
+          parts.push(E.pathKey([pc, String(pidThen)]));
+        }
       }
     }
     // the part it holds now that it didn't then, its own alone: it goes with the clip as it is now
@@ -148,6 +177,7 @@ export function bringBack(head: Doc, then: Doc, coll: string, id: string, schema
       }
     }
   }
+  if (clip && (!now || !E.deepEqual(clip, now))) put(coll, clip);
   // what it sits on (its track), gone since: as it was then
   if (was && spec.parent) {
     const pid = was[spec.parent.field];
