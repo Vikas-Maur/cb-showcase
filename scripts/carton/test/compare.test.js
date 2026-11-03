@@ -73,7 +73,7 @@ function Broken() { throw new Error("no WebGL"); }
  */
 async function mount(o = {}) {
   const ui = o.ui ?? createMockUi({ versions: 8 });
-  if (o.rows !== false) { ui.changes = async () => ROWS; ui.shotDiff = async () => ({ a: [{ start: 0, end: 6, sig: 1 }, { start: 6, end: 9, sig: 2 }, { start: 9, end: 13, sig: 9 }, { start: 13, end: 20, sig: 3 }], b: [{ start: 0, end: 5, sig: 7 }, { start: 5, end: 9, sig: 8 }, { start: 9, end: 16, sig: 3 }], matches: [[3, 2]], aLabel: "a", bLabel: "b" }); }
+  if (o.rows !== false) { ui.changes = async () => ROWS; ui.shotDiff = async () => (o.diff ?? { a: [{ start: 0, end: 6, sig: 1 }, { start: 6, end: 9, sig: 2 }, { start: 9, end: 13, sig: 9 }, { start: 13, end: 20, sig: 3 }], b: [{ start: 0, end: 5, sig: 7 }, { start: 5, end: 9, sig: 8 }, { start: 9, end: 16, sig: 3 }], matches: [[3, 2]], aLabel: "a", bLabel: "b" }); }
   const PROJECT = "p-cmp-" + ++seq;
   const cmds = new Set(), evs = new Set(), servers = new Map(), blocked = new Set(), backs = new Set(), notices = new Set(), timeline = new Set();
   const did = { previews: [], holds: 0, seeks: [], plays: 0, reports: [], aside: [], docs: [], answers: [] };
@@ -385,8 +385,9 @@ test("N1 review: Restore asks first and Compare stays open; across cuts the foot
     // a row's ▶: its spot (a second before), both sides playing
     const plays = m.did.plays;
     await m.click([...m.list().querySelectorAll(".carton-change")].find((r) => /Interview B/.test(r.textContent)).querySelector(".carton-change-play, button"));
-    assert.equal(m.did.seeks.at(-1), 8, "a second before 0:09");
+    assert.ok(Math.abs(m.did.seeks.at(-1) - 8) < 0.1, "a second before 0:09: " + m.did.seeks.at(-1));
     assert.equal(m.did.plays, plays + 1, "playing");
+    assert.ok(m.page().compareBoth(), "both sides, in step (Play both, until a second after the change)");
     // across cuts with your cut on the right: Fold in changes from the other cut…
     await m.open("cut-ig");
     const fold = [...foot().querySelectorAll("button")].find((b) => /^Fold in changes from /.test(b.textContent));
@@ -466,5 +467,53 @@ test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare w
     assert.ok(m.page().comparing()?.acrossCuts, "Compare opened from the cuts menu");
     // N2's landmark pictures never come from a comparing stage
     assert.equal(await U.__forTests.stagePicture(), null);
+  } finally { await m.done(); }
+});
+
+test("N1b §1.4: Play both lets a side wait: the right side's editor pauses on its shot's last frame while the left plays on; a shot only one side has shows the slate on the other", opt, async () => {
+  // left: Intro 0–4, B-roll pier 4–7, Outro 7–12; right: Intro 0–4, Outro 4–9 (the pier only on the left)
+  const diff = { a: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 7, sig: 2, label: "B-roll pier" }, { start: 7, end: 12, sig: 3, label: "Outro" }], b: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 9, sig: 3, label: "Outro" }], matches: [[0, 0], [2, 1]], aLabel: "a", bLabel: "b" };
+  const m = await mount({ diff });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await act(async () => { m.bridge.seek(3.6); await sleep(10); });
+    // Space plays both (Compare's clock drives the editor's player and the second player)
+    await m.key(" ");
+    assert.ok(m.page().compareBoth(), "Play both runs");
+    await act(async () => { await sleep(900); });
+    await m.settle();
+    // story 4.5: the pier plays on the left; the right has no shot there: paused at the join, under its slate
+    let at = m.page().compareBoth().at;
+    assert.equal(at.b.slate, true, JSON.stringify(at));
+    assert.equal(m.bridge.playing, false, "the editor waits, paused");
+    assert.ok(at.a.t > 4 && at.a.t < 7, "the pier plays on the left: " + at.a.t);
+    const right = m.compare().querySelector('[data-side="right"] .carton-compare-slate');
+    assert.ok(right, "the right side's slate");
+    assert.match(right.textContent, /^“B-roll pier” isn't in your edit/);
+    assert.equal(m.page().compareLeftClock.playing(), true, "the left player plays on the story's clock");
+    // Space again: paused, the editor where the right side is
+    await m.key(" ");
+    assert.equal(m.page().compareBoth(), null);
+    assert.equal(m.did.seeks.at(-1), 4, "at the join");
+  } finally { await m.done(); }
+});
+
+test("N1b §1.4: the shorter side holds its last frame (waiting) until the longer one ends", opt, async () => {
+  // the default alignment: one changed stretch, left 0–13 against right 0–9, then Interview B together
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await act(async () => { m.bridge.seek(8.6); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(900); });
+    await m.settle();
+    const at = m.page().compareBoth().at;
+    assert.equal(at.b.hold, true, "the right side's shot is over: it waits");
+    assert.ok(Math.abs(at.b.t - (9 - 1 / 30)) < 1e-6, "on its last frame");
+    assert.equal(m.bridge.playing, false);
+    assert.equal(at.a.hold, false, "the left plays on");
+    assert.match(m.compare().querySelector('[data-side="right"] .carton-compare-tc').textContent, /waiting/);
+    await act(async () => { m.page().comparePlayBoth(); await sleep(10); });
   } finally { await m.done(); }
 });

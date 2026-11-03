@@ -75,7 +75,7 @@ export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_M
 export { ChangesView, longLabel, CHANGES_VIRTUAL_OVER, type ChangesViewProps } from "./components/ChangesView.ts";
 export { usePlayChanges, PlayAllButton, BeforeButton, playKeys, HOLD_MS, type PlayHost, type PlayTarget, type PlayOptions, type Playback, type PlayStatus, type BeforeControl } from "./components/Play.ts";
 // Compare in the editor (docs/carton-ux v2 DESIGN-V2 §1, N1): the stage view, the change list, the timeline marks.
-export { followTime, leadTime, compareMarks, stripOf, stepAt, COMPARE_MODES, type CompareDoc, type CompareItem, type TimelineMark, type MarkKind, type StripBar } from "./compare.ts";
+export { playSchedule, playLength, storyAt, sidesAt, HOLD_BACK, type PlayStretch, type SideAt, followTime, leadTime, compareMarks, stripOf, stepAt, COMPARE_MODES, type CompareDoc, type CompareItem, type TimelineMark, type MarkKind, type StripBar } from "./compare.ts";
 export { CompareStageView, CompareBar, CompareList, CompareMarks, CompareStrip, CompareStripLabel, CompareLegend, Glyph, COMPARE_CSS, compareModesFor, compareModeShown, SIDE_MIN, COMPACT_UNDER, FLIP_ONLY_UNDER, type CompareSideInfo, type CompareStageViewProps, type CompareBarProps, type CompareListProps, type TrackRow } from "./components/CompareView.ts";
 export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, defaultClipKind, sideNoun, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";

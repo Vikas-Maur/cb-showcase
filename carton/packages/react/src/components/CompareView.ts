@@ -213,6 +213,8 @@ export function CompareStageView(p: CompareStageViewProps) {
     area = h("div", { className: "carton-compare-area", "data-mode": "flip" },
       h("div", { className: "carton-compare-col" },
         unit(h("div", { className: "carton-compare-box", "data-hole": "", ref: p.holeRef ?? undefined, style: boxStyle },
+            // the side shown has no shot here (Play both): its slate over the picture
+            showing.slate ? h(Slate, { slate: showing.slate }) : null,
             h("div", { className: "carton-compare-tag", "data-left": p.flipped ? "" : undefined, role: "status" },
               h("span", null, words.showing), h("b", null, showing.title), showing.detail ? h("span", { className: "carton-compare-when" }, showing.detail) : null)),
           h(FlipPill, { left: p.left, right: p.right, flipped: !!p.flipped, onFlip: p.onFlip, at: (p.flipped ? p.left : p.right).at }))));
@@ -262,6 +264,8 @@ function WipePic(p: { holeRef?: ((el: HTMLElement | null) => void) | undefined; 
   const pct = Math.max(0, Math.min(100, p.pct));
   const ref = (el: HTMLDivElement | null) => { box.current = el; p.holeRef?.(el); };
   return h("div", { ref, className: "carton-compare-box", "data-hole": "", style: { aspectRatio: String(p.ratio) } },
+    // the right side has no shot here (Play both): its slate under the line's left part
+    p.right.slate ? h(Slate, { slate: p.right.slate }) : null,
     h("div", { className: "carton-compare-wipe-left", style: { clipPath: `inset(0 ${(100 - pct).toFixed(2)}% 0 0)` } }, p.player),
     h("div", { className: "carton-compare-corner", "data-side": "left" }, h(SideLabel, { side: p.left })),
     h("div", { className: "carton-compare-corner", "data-side": "right" }, h(SideLabel, { side: p.right })),

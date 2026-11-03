@@ -170,6 +170,82 @@ export function stripOf(d: ShotDiff, rows: readonly Row[] = alignRows(d)): Strip
   return out;
 }
 
+/**
+ * Play both (DESIGN-V2 §1.4), in step by shot: the story is the aligned rows one after another, each as long as its
+ * longer side, so each shot starts on both sides together. A side whose shot is shorter holds its last frame
+ * ("waiting") until the longer one ends; a side with no shot there shows a slate. `a0`/`b0`: where the row starts on
+ * each side; `aLen`/`bLen`: how long it is there; `aShot`/`bShot`: its first shot's name, for the other side's slate.
+ */
+export interface PlayStretch {
+  readonly start: number;
+  readonly dur: number;
+  readonly kind: "same" | "change";
+  readonly a0: number;
+  readonly aLen: number;
+  readonly b0: number;
+  readonly bLen: number;
+  readonly aShot?: string;
+  readonly bShot?: string;
+}
+
+/** The stretches Play both plays, in order (rows with nothing on either side left out). */
+export function playSchedule(d: ShotDiff, rows: readonly Row[] = alignRows(d)): PlayStretch[] {
+  const out: PlayStretch[] = [];
+  let at = 0;
+  for (const r of rows) {
+    const [as, ae] = rowRange(d, r, "a"), [bs, be] = rowRange(d, r, "b");
+    const aLen = Math.max(0, ae - as), bLen = Math.max(0, be - bs), dur = Math.max(aLen, bLen);
+    if (dur <= EPS) continue;
+    const aShot = r.a1 > r.a0 ? d.a[r.a0]!.label : undefined, bShot = r.b1 > r.b0 ? d.b[r.b0]!.label : undefined;
+    out.push({ start: at, dur, kind: r.kind, a0: as, aLen, b0: bs, bLen, ...(aShot ? { aShot } : {}), ...(bShot ? { bShot } : {}) });
+    at += dur;
+  }
+  return out;
+}
+
+/** How long Play both plays: the stretches end to end. */
+export const playLength = (s: readonly PlayStretch[]): number => (s.length ? s[s.length - 1]!.start + s[s.length - 1]!.dur : 0);
+
+const stretchAt = (s: readonly PlayStretch[], T: number): PlayStretch | null => {
+  if (!s.length) return null;
+  for (const x of s) if (T < x.start + x.dur) return x;
+  return s[s.length - 1]!;
+};
+
+/** The story's time for a time on one side (where Play both starts from the playhead): its stretch, the same offset. */
+export function storyAt(s: readonly PlayStretch[], side: "a" | "b", t: number): number {
+  for (const x of s) {
+    const s0 = side === "a" ? x.a0 : x.b0, len = side === "a" ? x.aLen : x.bLen;
+    if (len > EPS && t < s0 + len) return x.start + Math.max(0, t - s0);
+  }
+  return playLength(s);
+}
+
+/** One side at a moment of Play both: its time, holding its last frame (waiting), or a slate (no shot there). */
+export interface SideAt {
+  readonly t: number;
+  readonly hold: boolean;
+  readonly slate: boolean;
+  /** The shot the other side plays meanwhile (the slate's "“Drone shot” isn't in …"). */
+  readonly missing?: string;
+}
+
+/** A frame before a shot's end: holding shows that shot's last frame, never the next one's first. */
+export const HOLD_BACK = 1 / 30;
+
+/** Both sides at story time `T`. */
+export function sidesAt(s: readonly PlayStretch[], T: number): { a: SideAt; b: SideAt; stretch: PlayStretch | null } {
+  const x = stretchAt(s, T);
+  if (!x) return { a: { t: T, hold: false, slate: false }, b: { t: T, hold: false, slate: false }, stretch: null };
+  const u = Math.max(0, Math.min(x.dur, T - x.start));
+  const side = (s0: number, len: number, other?: string): SideAt => {
+    if (len <= EPS) return { t: s0, hold: false, slate: true, ...(other ? { missing: other } : {}) };
+    if (u < len) return { t: s0 + u, hold: false, slate: false };
+    return { t: Math.max(s0, s0 + len - HOLD_BACK), hold: true, slate: false };
+  };
+  return { a: side(x.a0, x.aLen, x.bShot), b: side(x.b0, x.bLen, x.aShot), stretch: x };
+}
+
 /** Where a time is in the comparison: "same shot" inside a matched run, else "changed here". */
 export function stepAt(d: ShotDiff, rows: readonly Row[], t: number): "same" | "change" {
   for (const r of rows) {
