@@ -676,7 +676,8 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsA
     // an Esc a handler nearer the page took (a Radix layer's, in the capture phase) is theirs: nothing here
     if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent?.defaultPrevented) return;
     e.stopPropagation();
-    if (viewingOf(ui)) { void Promise.resolve(backToEdit(ui)).catch(() => {}); return; }
+    // (comparing too: Esc is Done comparing, and History shows its list again: DESIGN-V2 §1.7)
+    if (viewingOf(ui) || ui.comparing?.()) { void Promise.resolve(backToEdit(ui)).catch(() => {}); return; }
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
@@ -1013,6 +1014,8 @@ function StageViewing({ projectId, bridge, panel }) {
 }
 
 const showToast = (text, actions, tone, icon) => toasts.show(text, actions, tone, icon);
+// Compare's edit-attempt line goes when Compare does
+showToast.clearViewing = () => { if (toasts.value?.tone === "viewing") toasts.set(null); };
 const openPanel = (p) => { for (const f of panelRequests) f(p); };
 /** The layer over the stage: viewing's frame, the conflict cards' floating stack, the toasts and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge, player = null, portal = null }) {

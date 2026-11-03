@@ -337,6 +337,9 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
   const mode = compareModeShown(c.mode, avail);
   const needsPlayer = mode === "side" || mode === "wipe";
   const [ready, setReady] = useState(false);
+  const onReady = useCallback((r) => { if (r) setReady(true); }, []);
+  // the edit-attempt line goes with Compare
+  useEffect(() => () => toast?.clearViewing?.(), [toast]);
   useEffect(() => {
     if (!needsPlayer || ready || failed || !Player) return undefined;
     const t = setTimeout(() => setFailed(true), READY_MS);
@@ -446,7 +449,7 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
   const rightSide = { title: c.right.title, detail: c.right.detail, cut: c.acrossCuts ? c.right.cutMark : undefined, at: t, step: rightStep };
   const ratio = aspectOf(data?.rightDoc?.aspectRatio ?? data?.leftDoc?.aspectRatio);
   const playerEl = needsPlayer && Player && !failed && data?.leftDoc
-    ? h(PlayerBoundary, { onFail: () => setFailed(true) }, h(Player, { doc: data.leftDoc, follow, onReady: (r) => { if (r) setReady(true); } }))
+    ? h(PlayerBoundary, { onFail: () => setFailed(true) }, h(Player, { doc: data.leftDoc, follow, onReady }))
     : null;
   return h("div", { ref: rootRef, className: "carton-compare-root" },
     h("span", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
@@ -457,7 +460,8 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
       wipe, onWipe: setWipe, playing, onPlayBoth: () => bridge.togglePlay?.(), progress: length > 0 ? t / length : 0,
       frameLabel, pulse,
     }),
-    portal ? h(CompareTimeline, { ui, c, data, bridge, portal, selected, leftAt, playing }) : null);
+    // (while Flip shows the left side the timeline shows it too: the marks, which are the right side's, wait)
+    portal && !flipped ? h(CompareTimeline, { ui, c, data, bridge, portal, selected, leftAt, playing }) : null);
 }
 
 const aspectOf = (ar) => {
