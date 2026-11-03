@@ -34,7 +34,7 @@
     "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\" && node --import ./test/preact-alias.ts --test --test-concurrency=2 \"test/**/*.dom.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
     "gallery": "node gallery/build.mjs",
-    "screens": "node gallery/build.mjs && node gallery/screens.mjs",
+    "screens": "node gallery/capture/run.mjs gallery/dist/capture/shots",
     "bench": "node gallery/build.mjs && node bench/run.mjs"
   },
   "dependencies": {

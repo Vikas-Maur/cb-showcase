@@ -115,7 +115,11 @@ Measure it with `npm run bench` (needs Playwright and Chromium: `CARTON_PLAYWRIG
 ## Gallery
 
 `npm run gallery` builds `gallery/dist/index.html` (React) and `preact.html` (Preact) on mock data, plain esbuild,
-opened from disk. `npm run screens` screenshots every section in headless Chromium.
+opened from disk. `npm run screens` is the capture rig (`gallery/capture/`, UX redesign PLAN 9.4: it replaced the old
+`gallery/screens.mjs`, which had fallen behind the components): the app's own composition (`scripts/carton/ui.js`) on
+Cardboard's real stylesheet, every state shot in headless Chromium at 384 and 300 px, on React and on `preact/compat`,
+into `gallery/dist/capture/shots/` with an `INDEX.md`. It needs `CARTON_CARDBOARD_ASSETS` (Cardboard 1.4.0's
+`dist/renderer/assets`), `CARTON_PLAYWRIGHT` and `CARTON_CHROMIUM`.
 
 ## Tests
 

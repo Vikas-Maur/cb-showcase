@@ -1,5 +1,6 @@
 // The gallery: every component on mock data, framed like Cardboard's window, one section per screenshot.
-// Built by gallery/build.mjs into dist/ (React and preact/compat bundles); gallery/screens.mjs screenshots it.
+// Built by gallery/build.mjs into dist/ (React and preact/compat bundles). Screenshots come from the capture rig
+// (gallery/capture/, `npm run screens`), which shoots the app's own composition.
 import { createElement as h, useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {

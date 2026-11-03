@@ -532,9 +532,16 @@ What changes with it on:
   opens it there, and a selected title or caption shows no text toolbar there: nothing in it looks editable), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
   playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. Playing the
   changes moves the preview's playhead with it, so the frames are the real ones.
-  Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in and a conflict card's pick each
-  end with a short confirmation over the preview (Fold in offers to
-  switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
+  Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in ("Folded 3 changes from “30s
+  cut” into Main cut.", the count the Fold dialog's button gave), Fold in the rest, a conflict card's pick, Undo this
+  turn ("Took out Claude Code's “Tighten the intro…” (4 changes).") and a new cut ("You're on “30s Instagram cut”,
+  made from Director's “Add captions…”. Main cut is unchanged.") each end with a short confirmation over the preview,
+  and so does switching cuts ("You're on “30s Instagram cut” now."). Each offers the next step: **Undo** (with Fold
+  in, also the cut it went into when you're not on it; with a cut, Switch back). Undo takes back exactly what that
+  action made, the same way Ctrl+Z does (the whole fold, both parts of a fold that brought in an earlier fold's rest),
+  then offers Redo ("Restore undone." [Redo]); if anything landed on top meanwhile it changes nothing and says so. A
+  pick of the side already in the timeline changes nothing, so it has no Undo. Ctrl+Z of a restore or a fold says so
+  too ("Fold undone." [Redo]). A confirmation stays while the pointer is on it or the keyboard is in it, else 6 s. A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to
   300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer, as
@@ -543,7 +550,11 @@ What changes with it on:
   under the chat column), the drawer ends above it too, so it never covers Fullscreen or Hide timeline.
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
-  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
+  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The box says where a note
+  goes before you write it ("Add a note at 0:13…", "At the playhead · 0:13"), following the playhead until you start;
+  times read as the editor's (0:06), a note on the whole video "Whole video". A note whose moment changed since says
+  so ("That moment changed since.") with **See it as it was**, which shows the version it was written on, as History's
+  Play does (Esc or ✕ comes back). Open, Resolved and All show once a note is resolved. The comment box grows
   with its text up to about eight lines, then scrolls, and has no resize grip.
 - **Conflict cards** sit in the preview's bottom-right corner, one at a time: your own edits that clashed, and an
   agent's view edit that clashed with yours (see "An agent's edit and yours at once" below). A card says in words what

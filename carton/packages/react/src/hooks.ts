@@ -168,7 +168,17 @@ function subscribeNow(fn: () => void) {
     }
   };
 }
-const getNow = () => tick.now;
+// While nothing subscribes, the clock is read afresh (UI audit R7, PLAN 9.4): the first subscriber's first render reads
+// the snapshot before it subscribes, and preact/compat checks it again only before subscribing too, so a clock last
+// read when the module loaded (or when the last subscriber left) showed "just now" a minute late until the next tick.
+// Read at most once a second then, so two reads in one render agree (React compares them).
+const getNow = () => {
+  if (!tick.timer) {
+    const t = Date.now();
+    if (t - tick.now >= 1000) tick.now = t;
+  }
+  return tick.now;
+};
 
 /** The current time, updated once a minute. */
 export function useNow(): number {
