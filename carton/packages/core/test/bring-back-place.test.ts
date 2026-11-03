@@ -56,7 +56,7 @@ test("deleted, its place taken now (no ripple): it goes on a new track just abov
     assert.deepEqual(r.brought.place?.takenBy, [{ record: "items/c", name: "C" }]);
     const d = (await c.head()).doc;
     const nt = r.brought.place!.track!;
-    const tracks = [...(d.tracks as Rec[])].sort((x, y) => String(x["#pos"]).localeCompare(String(y["#pos"])));
+    const tracks = [...(d.tracks as Rec[])].sort((x, y) => (String(x["#pos"]) < String(y["#pos"]) ? -1 : 1));
     assert.deepEqual(tracks.map((t) => t.id), [nt, "t1", "t2"], "just above its own track (before it in the order: the first track is the top layer)");
     assert.equal(tracks[0]!.name, "Video 1 2");
     assert.deepEqual(at(d).b, [nt, 5, 10]);
