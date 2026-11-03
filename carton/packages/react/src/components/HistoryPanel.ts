@@ -501,6 +501,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
     },
     [ui, onSeek, words],
   );
+  // (the interim Play holds nothing on the stage: back to your edit, or the card closed, it's over)
+  const viewingNow = !!viewing;
+  useEffect(() => {
+    if (!viewingNow) setOwnPlaying((p) => (p && p.versionId !== newestId ? null : p));
+  }, [viewingNow, newestId]);
+  useEffect(() => {
+    if (!openKey) setOwnPlaying(null);
+  }, [openKey]);
   const play = props.onPlay ?? ownPlay;
   const pause = props.onPlay ? props.onPause : () => setOwnPlaying(null);
   const playing = props.onPlay ? (props.playing ?? null) : ownPlaying;
