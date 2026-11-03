@@ -3,7 +3,7 @@
 // A version still waiting for the server says so: its place is provisional until confirmed (L5).
 
 import { createElement as h, memo, useCallback, useId, useMemo, useRef, useState, type MouseEvent } from "react";
-import { exactTime, when } from "../format.ts";
+import { exactTime, versionLabel, when } from "../format.ts";
 import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { HistoryFilter, Version } from "../model.ts";
@@ -238,16 +238,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
     return i >= 0 ? hs.at("all", i) : undefined;
   }, [ui]);
 
-  // What the preview banner says it shows (P2-7): "the version from 12:41 (Claude Code)", or a named version's name,
-  // never a change's summary ("Previewing Changed 'W5' font size…").
+  // What the stage says it shows (P2-7, PLAN 0.9): the version's one label ("Your edit from 12:41 pm", "Director's
+  // “Add captions…”", "“Sent to client”"), never a change's summary ("Previewing Changed 'W5' font size…").
   const locale = useLocale();
-  const previewLabel = useCallback((v: Version) => {
-    if (v.name) return `“${v.name}”`;
-    const d = new Date(v.at), today = new Date().toDateString() === d.toDateString();
-    const time = new Intl.DateTimeFormat(locale, today ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
-    const who = v.author.kind === "system" ? "" : actorLabel(v.author, ui.actor.bind(ui), words.you);
-    return words.versionFrom(time, who);
-  }, [ui, words, locale]);
+  const previewLabel = useCallback((v: Version) => versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true }), [ui, locale]);
   const open = useCallback(
     (id: string) => {
       const v = find(id);
@@ -345,7 +339,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     count === 0
       ? h("p", { className: "carton-empty" }, empty)
       : h(VirtualList, {
-          key: filter,
+          key: typeof filter === "object" ? `item:${filter.item}` : filter,
           className: "carton-history-list",
           label: words.history,
           count: rows ? rows.length : count,

@@ -8,7 +8,7 @@
 export type * from "./model.ts";
 export { TopicHub } from "./hub.ts";
 export { words, type Words } from "./words.ts";
-export { duration, seconds, when, exactTime, shortDate } from "./format.ts";
+export { duration, seconds, when, exactTime, shortDate, clock, clockOfDay, clockTime, versionLabel, versionShort, shortPrompt, timecode, type LabelContext, type ClockWords } from "./format.ts";
 export { actorColor, actorLabel, actorDetail, actorChain, initials } from "./actors.ts";
 export { alignRows, diffSummary, mapTime, playlist, segmentAt, rowRange, columns, type Row, type Segment, type Column } from "./shots.ts";
 export { VirtualList, windowRange, type VirtualListProps } from "./virtual.ts";
@@ -29,6 +29,8 @@ export {
   useUndoTurn,
   usePublished,
   usePreview,
+  useViewing,
+  useWorking,
   useHistoryCount,
   useVersionAt,
   useNow,
@@ -50,5 +52,6 @@ export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box 
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
 export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
+export { itemFilter, type ItemFilter } from "./item-filter.ts";
 // Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.
 export * from "./comments/index.ts";

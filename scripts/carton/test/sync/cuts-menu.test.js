@@ -86,6 +86,31 @@ test("#1: a cut cb makes while the app runs shows in the History panel's cut men
   }
 });
 
+// Carton UX redesign PLAN 2.1: the title bar's cut chip names the cut the editor is on, and follows a switch made
+// anywhere: the cuts menu, or `cb cut switch` from a terminal while the app runs. The page hears it as the worker's
+// `cuts` topic (from there to the title bar: scripts/carton/test/cut-chip.test.js, which sends it within the message's
+// own microtasks).
+test("#4 (PLAN 2.1): cb cut switch while the app runs reaches the page as its cuts, the switched-to cut current", t, async () => {
+  const pc = await S.computer("cuts-switch", b);
+  try {
+    S.seed(pc, b);
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0]?.id;
+    const panel = await openPanel(pc, id, "page-1");
+    const made = must(pc.cb(["cut", "new", "Demo", "30s Instagram cut"]), "cb cut new").json();
+    const altId = made.cut?.id;
+    await S.until(() => panel.cuts().some((c) => c.id === altId), 10_000, "the new cut in the page's cuts");
+    must(pc.cb(["cut", "switch", "Demo", "30s Instagram cut"]), "cb cut switch");
+    const cur = await S.until(() => { const c = panel.cuts().find((x) => x.current); return c?.id === altId && c; }, 10_000, "the page on the switched-to cut (" + JSON.stringify(panel.cuts().map((c) => [c.name, c.current])) + ")");
+    assert.equal(cur.name, "30s Instagram cut");
+    assert.equal(panel.cuts().filter((c) => c.current).length, 1, "one current cut");
+    must(pc.cb(["cut", "switch", "Demo", "Main cut"]), "cb cut switch back");
+    await S.until(() => panel.cuts().find((x) => x.current)?.kind === "main", 10_000, "back on Main cut");
+  } finally {
+    await pc.stopWorker();
+  }
+});
+
 test("#2: a split saved by the editor reads as a split in History", t, async () => {
   const pc = await S.computer("cuts-split", b);
   try {

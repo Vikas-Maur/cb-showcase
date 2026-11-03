@@ -41,7 +41,7 @@ test(name("a new comment is pinned where the playhead was when writing began; Ct
   await act(() => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
   await flush();
   assert.deepEqual(ui.calls, [["add", "Too loud here", [12.5, 12.5]]]);
-  assert.equal(byText(m.container, ".carton-badge", "Waiting to sync")?.dataset.tone, "muted");
+  assert.equal(byText(m.container, ".carton-badge", "Not sent yet")?.dataset.tone, "muted");
   assert.equal((box as HTMLTextAreaElement).value, "");
 });
 
@@ -105,7 +105,7 @@ test(name("a viewer reads only; refusals, waiting comments and an old server are
   assert.equal($(m.container, "[role=alert]"), null);
   await act(() => ui.setStatus({ state: "offline", waiting: 3 }));
   await flush();
-  assert.equal($(m.container, "[role=status]")?.textContent, "Comments waiting to sync: 3");
+  assert.equal($(m.container, "[role=status]")?.textContent, "Comments not sent yet: 3");
   await act(() => ui.setStatus({ state: "unsupported", waiting: 3 }));
   await flush();
   assert.match($(m.container, "[role=status]")!.textContent!, /doesn't carry comments yet/);

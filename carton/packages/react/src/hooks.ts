@@ -28,6 +28,8 @@ import type {
   Topic,
   UndoTurn,
   Version,
+  Viewing,
+  Working,
 } from "./model.ts";
 import { words as defaultWords, type Words } from "./words.ts";
 
@@ -103,6 +105,10 @@ export const useConflicts = (): readonly Conflict[] => useTopic("conflicts", (ui
 export const useUndoTurn = (): UndoTurn | null => useTopic("undo", (ui) => ui.undoTurn());
 export const usePublished = (): Published | null => useTopic("published", (ui) => ui.published());
 export const usePreview = (): Preview | null => useTopic("preview", (ui) => ui.preview());
+/** What the editor shows when it isn't your edit (PLAN 0.5): one label for the chip, the frame and the row. */
+export const useViewing = (): Viewing | null => useTopic("viewing", (ui) => ui.viewing());
+/** An agent working on the timeline (PLAN 0.7), or null. */
+export const useWorking = (): Working | null => useTopic("working", (ui) => ui.working());
 
 /** The current cut, whole: re-renders whenever it changes, its head included (every commit moves the head). */
 export function useCurrentCut(): Cut | undefined {

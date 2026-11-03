@@ -288,11 +288,14 @@ if (mode === "--cli") {
     // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
     // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
     // For a shared project the report also carries a small live summary (sync state, who is here: UI audit P2-11),
-    // and the strip gets {panel, live} instead of the panel's name alone.
-    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){_e.emit(r,\"carton:command\",{action:t.action});return}");
+    // and the strip gets {panel, live} instead of the panel's name alone. The cut chip (Carton UX redesign PLAN 2.1)
+    // adds the cut and what is being viewed to the report, and its own commands (carton-cuts, carton-back); the cut
+    // chip and Share hand the keyboard to the page they open something in (main-bridge.js takesKeys), so the cuts
+    // menu and the Share dialog take arrows and Esc at once, not after a click.
+    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
     replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
-    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.live?{panel:t?.panel??null,live:t.live}:t?.panel??null)}),');
+    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop
@@ -389,10 +392,16 @@ if (mode === "--cli") {
     replace("const g=je.getState().getProjectById(a)??f;return vt(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return vt(async()=>{const{updateProjectScoped:b}");
     prepend(require("./carton/editor-panel"));
   });
-  // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose
-  // editor reports Carton's panel state (strip-buttons.js). A build without the strip's file leaves it as it is.
+  // The title bar's Carton parts (tabs-*.js, the tab strip; strip-buttons.js), only on a tab whose editor reports
+  // Carton's panel state: the cut chip (Carton UX redesign PLAN 2.1) before Cardboard's own "16:9 ⌄" (Bt), so the cut
+  // sits beside the project settings where people look for them; the History and Share icons before "Report an
+  // issue" (Ut). One anchor for both: the editor controls' row (Wt), aspect ratio, credits, report. A build without the
+  // strip's file leaves it as it is.
   if (tabsFile) patch(tabsFile, (replace, prepend) => {
-    replace("t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),", "t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),");
+    replace(
+      "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),",
+      "t.cartonPanel!==void 0&&n.jsx(__cbCartonCutChip,{panel:t.cartonPanel}),n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),",
+    );
     prepend(require("./carton/strip-buttons"));
   });
 } else {
