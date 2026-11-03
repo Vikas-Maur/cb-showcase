@@ -63,6 +63,14 @@ async function foldOlder(p) {
     await open.first().click();
     await p.waitForTimeout(120);
   }
+  // back to the top: a header below the view was scrolled to for its click, and folding it keeps it where it was (the
+  // list keeps the reader's place), so the shot started part way down (design QA v2: "Today's rows went missing at
+  // 300 px", once wrapped landmark titles pushed an older day's header below the view)
+  const list = p.locator(".carton-history-list");
+  if ((await list.count()) && (await list.first().evaluate((e) => e.scrollTop > 0))) {
+    await list.first().evaluate((e) => { e.scrollTop = 0; e.dispatchEvent(new Event("scroll")); });
+    await p.waitForTimeout(150);
+  }
 }
 async function openCard(p, text) { await vrow(p, text).click(); await p.locator(".carton-card-version .carton-change, .carton-card-version .carton-card-confirm").first().waitFor(); await p.waitForTimeout(250); }
 async function uxMenu(p, text) { const r = vrow(p, text); await r.hover(); await r.locator(".carton-version-more").click(); await p.waitForTimeout(150); }

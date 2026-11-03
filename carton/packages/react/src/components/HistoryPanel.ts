@@ -10,7 +10,7 @@
 // A click or Enter on a row opens its card and never changes what the editor shows: only Play does (DESIGN §4.2).
 // A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
-import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { clock, clockOfDay, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
@@ -107,6 +107,37 @@ type DayHistoryRow = Extract<HistoryRow, { kind: "day" }>;
 type RunHistoryRow = Extract<HistoryRow, { kind: "run" }>;
 /** A past day's run of changes between two landmarks: one quiet line, a day header's height (DESIGN-V2 §2.5). */
 export const RUN_ROW_HEIGHT = 32;
+/**
+ * A landmark row whose tag and title don't fit on one line in a narrow panel: its title takes two (DESIGN-V2 §2.1:
+ * "Below 340 px a landmark's title wraps to two lines rather than losing its words to the tag"; design QA v2 G9).
+ * Only those rows are taller: each measures its own line.
+ */
+export const LANDMARK_WRAP_ROW_HEIGHT = VERSION_ROW_HEIGHT + 18;
+export const LANDMARK_WRAP_UNDER = 340;
+const NO_WRAPS: ReadonlySet<string> = new Set();
+// a line's width, by the title's own font, once per (column, tag, title): a canvas's measureText, no layout
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+const lineFits = new Map<string, boolean>();
+/** Whether a landmark's tag and title overflow its title column on one line (whatever the row shows now). */
+function titleOverflows(title: HTMLElement): boolean {
+  const col = title.clientWidth;
+  if (col <= 0) return false;
+  const tag = title.querySelector<HTMLElement>(".carton-landmark-tag");
+  const text = title.querySelector<HTMLElement>(".carton-landmark-title") ?? title;
+  const id = `${col}|${tag?.textContent ?? ""}|${text.textContent ?? ""}`;
+  let over = lineFits.get(id);
+  if (over !== undefined) return over;
+  if (!measureCtx) measureCtx = typeof document === "undefined" ? null : (document.createElement("canvas").getContext?.("2d") ?? null);
+  if (!measureCtx) return false;
+  const cs = getComputedStyle(text);
+  measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  // (the tag is an inline box with its own margin: its width as laid out)
+  const tagW = tag ? tag.getBoundingClientRect().width + (parseFloat(getComputedStyle(tag).marginRight) || 0) : 0;
+  over = tagW + measureCtx.measureText(text.textContent ?? "").width > col + 0.5;
+  if (lineFits.size > 4000) lineFits.clear();
+  lineFits.set(id, over);
+  return over;
+}
 
 const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
 /** An agent's prompt, when the version is its turn (as versionLabel reads it). */
@@ -215,6 +246,11 @@ interface RowProps {
   pickFrom?: boolean;
   /** Held to peek: its time column says "Holding". */
   holding?: boolean;
+  /** The panel is narrow (DESIGN-V2 §2.1, under 340 px): a landmark measures whether its title needs two lines. */
+  narrow?: number;
+  /** Its title takes two lines (design QA v2 G9), and how it says when that changes. */
+  wrap?: boolean;
+  onWrap?: (key: string, wrap: boolean) => void;
 }
 
 /**
@@ -241,6 +277,15 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   // a landmark reads as one phrase, its tag then its title ("EXPORTED 1080p for the client"); a turn keeps its prompt
   const mark = p.mark && p.mark.kind !== "turn" ? p.mark : undefined;
   const title = mark ? landmarkTitle(mark, words, plain, p.markAfter) : plain;
+  // a narrow panel: does this landmark's line overflow? (measured by its own font, the same whether it wraps or not)
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const measures = !!mark && !!p.narrow && !p.naming && !p.child;
+  const { onWrap, rowKey } = p;
+  useLayoutEffect(() => {
+    if (!measures || !titleRef.current) return;
+    const over = titleOverflows(titleRef.current);
+    if (over !== !!p.wrap) onWrap?.(rowKey, over);
+  }, [measures, title, mark?.kind, p.narrow, p.wrap, onWrap, rowKey]);
   const when = p.holding
     ? h("span", { className: "carton-version-when", "data-viewing": "" }, h(Icon, { name: "eye", size: 12 }), words.holding)
     : p.viewing
@@ -294,6 +339,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-pick-from": p.pickFrom ? "" : undefined,
       "data-hold": p.holding ? "" : undefined,
       "data-folded": p.folded ? "" : undefined,
+      "data-wrap": p.wrap && measures ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
@@ -320,7 +366,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           // cut off at the panel's width: the whole text on hover (P2-16)
           // (a landmark: its tag, then its title; a search's row: the words marked; else A's title, its place kept whole)
           mark || p.query
-            ? h("span", { className: "carton-version-title", onMouseEnter: tipIfCut }, mark ? h(LandmarkTag, { kind: mark.kind }) : null, mark ? h("span", { className: "carton-landmark-title", "data-named": mark.kind === "named" ? "" : undefined }, p.query ? highlight(title, p.query) : title) : highlight(title, p.query!))
+            ? h("span", { ref: titleRef, className: "carton-version-title", onMouseEnter: tipIfCut }, mark ? h(LandmarkTag, { kind: mark.kind }) : null, mark ? h("span", { className: "carton-landmark-title", "data-named": mark.kind === "named" ? "" : undefined }, p.query ? highlight(title, p.query) : title) : highlight(title, p.query!))
             : titleOf(title, !prompt && !named),
           p.picking && !p.pickFrom ? h("span", { className: "carton-version-pick", "aria-hidden": true }, h(Icon, { name: "compare", size: 12 }), words.compare) : null,
           when,
@@ -563,6 +609,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [folds, setFolds] = useState<ReadonlyMap<number, boolean>>(() => new Map());
   const [scrolled, setScrolled] = useState(false);
+  // design QA v2 G9: the panel's width while under 340 px (0 when wider), and the landmark rows whose titles take two lines
+  const [narrow, setNarrow] = useState(0);
+  const [wraps, setWraps] = useState<ReadonlySet<string>>(NO_WRAPS);
+  const onWrap = useCallback((key: string, on: boolean) => setWraps((s) => {
+    if (s.has(key) === on) return s;
+    const n = new Set(s);
+    if (on) n.add(key);
+    else n.delete(key);
+    return n;
+  }), []);
   // the row at the top of the view: its day's header stays pinned there (DESIGN §6.1, sticky day headers)
   const [topRow, setTopRow] = useState(0);
   // Why the last action from a menu didn't happen, in the words the app gave.
@@ -798,9 +854,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
     if (up) cardPlay.before.release({ hold: true });
     else if (!e.repeat) cardPlay.before.pressKey();
   };
+  // the panel's width, watched only to know when it is under 340 px (a landmark's title may wrap then: G9)
+  const widthWatch = useRef<ResizeObserver | null>(null);
   const sectionRef = useCallback((el: HTMLElement | null) => {
     (panel as { current: HTMLElement | null }).current = el;
     cardPlayRef.current.rootRef(el);
+    widthWatch.current?.disconnect();
+    widthWatch.current = null;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const w = Math.round(el.clientWidth);
+      setNarrow(w > 0 && w < LANDMARK_WRAP_UNDER ? w : 0);
+    });
+    ro.observe(el);
+    widthWatch.current = ro;
   }, []);
 
   // ---------------------------------------------------------------- the Changes view
@@ -1071,13 +1138,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
     if (openKey && openAt < 0 && !rows) closeCard();
   }, [openKey, openAt, rows, closeCard]);
   const expanded = openAt >= 0 ? { index: openAt, extra: cardHeight + CARD_GAP } : null;
+  const wrapping = narrow ? wraps : NO_WRAPS;
   const heightOf = useCallback(
     (i: number) => {
       const r = rows?.[i];
-      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "run" ? RUN_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT;
+      return !r ? VERSION_ROW_HEIGHT : r.kind === "day" ? DAY_ROW_HEIGHT : r.kind === "run" ? RUN_ROW_HEIGHT : r.kind === "working" ? WORKING_ROW_HEIGHT : r.kind === "version" && r.child ? CHILD_ROW_HEIGHT : wrapping.has(r.key) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT;
     },
-    [rows],
+    [rows, wrapping],
   );
+  // the tops are rebuilt when a row's height changes: the rows, or which landmarks wrap
+  const layoutKey = useMemo(() => [rows, wrapping], [rows, wrapping]);
   // the row of what the editor shows: never a version still loading, nor one that failed to (design QA G1, review #1)
   const shown = stageRef === undefined ? viewing : stageRef === null ? null : viewing?.ref === stageRef ? viewing : ((ui as StageUi).stageView?.() ?? null);
   const viewedId = shown && (shown.kind === "version" || shown.kind === "before") ? (shown.versionId ?? null) : null;
@@ -1103,7 +1173,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
       v,
       rowKey: key,
       domId,
-      height: child ? CHILD_ROW_HEIGHT : VERSION_ROW_HEIGHT,
+      height: child ? CHILD_ROW_HEIGHT : wrapping.has(key) ? LANDMARK_WRAP_ROW_HEIGHT : VERSION_ROW_HEIGHT,
+      narrow,
+      wrap: wrapping.has(key),
+      onWrap,
       active: key === activeKey,
       menuOpen: key === menu?.key,
       open: isOpen,
@@ -1465,7 +1538,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
               count: rows ? rows.length : listed,
               rowHeight: VERSION_ROW_HEIGHT,
               heightOf,
-              layoutKey: rows,
+              layoutKey,
               onScrolledChange: setScrolled,
               initialHeight: props.initialHeight,
               newestFirst: true,

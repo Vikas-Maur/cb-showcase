@@ -139,8 +139,9 @@ test(name("Bring back one clip: the clips that differ, in three groups; a delete
   await waitFor(() => calls.length === 1 && ui.history().count("all") === before + 1, "restoreClip and its version");
   assert.deepEqual(calls[0], [director.ref, "item-broll", { expect: "absent" }], "with the clip as shown (N0b: gone now)");
   await waitFor(() => !$(m.container, ".carton-card-version"), "the card closes");
-  // one that wasn't there then: Take out, with remove
-  await click(row(m.container, "Add captions to the interview"));
+  // one that wasn't there then: Take out, with remove (the Director's row, not the new one "Brought back “B-roll 3”
+  // from “Add captions to the interview”", the version's name as the real view model words it: design QA v2 G11)
+  await click(row(m.container, /^(?:(?!Brought back).)*Add captions to the interview/));
   await waitFor(() => !!byText(m.container, ".carton-card-version .carton-btn", "Go back…"), "Go back… again");
   await click(byText(m.container, ".carton-card-version .carton-btn", "Go back…"));
   await click($(m.container, ".carton-goback-choice[data-choice=clip]"));
@@ -480,6 +481,81 @@ test(name("12,000 versions with landmarks, searched and filtered to landmarks: o
   assert.ok(count() <= max, `landmarks: ${count()} rows in the DOM`);
   assert.deepEqual([ui.counts.changes, ui.counts.changesIn], [0, 0], "nothing described: no card open");
   await m.unmount();
+});
+
+// ------------------------------------------------------------------ design QA v2 G9: landmark titles wrap under 340 px (§2.1)
+
+test(name("design QA v2 G9: under 340 px only the landmarks whose tag and title overflow take two lines; no row goes missing, no gap"), async () => {
+  // happy-dom lays nothing out: the panel's width, the title column's and a font's letters are stubbed (7 px a letter,
+  // the title column 150 px narrower than the panel), and the panel's ResizeObserver fires when asked
+  let width = 300;
+  const fire: (() => void)[] = [];
+  const g = globalThis as unknown as { ResizeObserver: unknown };
+  const RO = g.ResizeObserver;
+  g.ResizeObserver = class {
+    cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+    }
+    observe() {
+      fire.push(() => this.cb());
+    }
+    disconnect() {}
+  };
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains("carton-history") ? width : this.classList.contains("carton-version-title") ? width - 150 : 0;
+    },
+  });
+  const canvas = Object.getPrototypeOf(document.createElement("canvas")) as { getContext: unknown };
+  const getContext = canvas.getContext;
+  canvas.getContext = () => ({ font: "", measureText: (t: string) => ({ width: t.length * 7 }) });
+  try {
+    const ui = story();
+    const m = await render(wrap(ui, h("div", { style: { height: "900px" } }, h(HistoryPanel, { initialHeight: 900 }))));
+    await waitFor(() => !!$(m.container, ".carton-version[data-landmark=before]"), "the landmarks");
+    const titles = () => $$(m.container, ".carton-version .carton-version-title").map((e) => e.textContent);
+    const vrows = () => $$(m.container, ".carton-vrow").map((e) => ({ e, top: Number(/translateY\(([\d.]+)px\)/.exec(e.style.transform)?.[1]), height: parseFloat(e.style.height) })).sort((a, b) => a.top - b.top);
+    const resize = async (w: number) => {
+      width = w;
+      await act(() => {
+        for (const f of fire) f();
+      });
+      await flush();
+    };
+    // wide: nothing wraps
+    await resize(384);
+    const wide = titles();
+    assert.equal($$(m.container, ".carton-version[data-wrap]").length, 0, "384 px: one line each");
+    // 300 px: "BEFORE Restoring the 11:02 am version" and each START "How it was when you opened it" overflow 150 px; "SENT to client", "EXPORTED 1080p for the client" fit
+    await resize(300);
+    const wrapped = $$(m.container, ".carton-version[data-wrap]");
+    assert.ok(wrapped.length >= 1, "the long ones wrap");
+    for (const r of wrapped) {
+      assert.ok(r.hasAttribute("data-landmark"), "only landmarks wrap");
+      assert.ok(((r.querySelector(".carton-landmark-title")?.textContent ?? "").length * 7) > 150, `overflowed: ${r.textContent}`);
+      assert.equal(parseFloat((r.closest(".carton-vrow") as HTMLElement).style.height), 74, "18 px taller");
+    }
+    for (const r of $$(m.container, ".carton-version[data-landmark]:not([data-wrap])")) {
+      assert.ok(((r.querySelector(".carton-landmark-title")?.textContent ?? "").length * 7) <= 150 || r.hasAttribute("data-child"), `fits: ${r.textContent}`);
+      assert.notEqual(parseFloat((r.closest(".carton-vrow") as HTMLElement).style.height), 74, "a short title keeps its height (no gap)");
+    }
+    assert.ok($(m.container, ".carton-version[data-landmark=named]:not([data-wrap])"), "SENT to client stays one line");
+    // every row still there, in order, each right under the one before it
+    assert.deepEqual(titles(), wide, "no row went missing (design QA v2: Today's rows vanished after the re-layout)");
+    const vs = vrows();
+    for (let i = 1; i < vs.length; i++) assert.equal(vs[i]!.top, vs[i - 1]!.top + vs[i - 1]!.height, `row ${i} right under row ${i - 1}`);
+    // wide again: back to one line
+    await resize(384);
+    assert.equal($$(m.container, ".carton-version[data-wrap]").length, 0);
+    assert.deepEqual(titles(), wide);
+    await m.unmount();
+  } finally {
+    g.ResizeObserver = RO;
+    delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth;
+    canvas.getContext = getContext;
+  }
 });
 
 // ------------------------------------------------------------------ design QA v2 G10: past days read as a story (§2.5)

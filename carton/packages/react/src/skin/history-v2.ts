@@ -42,6 +42,10 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-find-every-title){font-size:13px;line-height:18px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-find-every-meta){display:flex;align-items:center;gap:5px;font-size:12px;line-height:16px;color:var(--cb-fg-3);max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 
+/* a narrow panel's landmark whose tag and title don't fit one line: two lines, its row 18 px taller (§2.1; QA v2 G9) */
+:where(${S}) :where(.carton-version[data-wrap]){grid-template-rows:36px 16px}
+:where(${S}) :where(.carton-version[data-wrap] .carton-version-title){white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+
 /* a past day's run of changes between two landmarks (§2.5): one quiet line under the landmark above it */
 :where(${S}) :where(.carton-run){padding-left:18px;font-weight:400;color:var(--cb-fg-4)}
 :where(${S}) :where(.carton-run[data-open]){color:var(--cb-fg-3)}

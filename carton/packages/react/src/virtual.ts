@@ -195,11 +195,13 @@ export function VirtualList(p: VirtualListProps) {
     lastCount.current = p.count;
     if (tops) {
       // Rows of their own heights: find the row that was at the top, wherever the change put it.
+      // (how far into it, within its height now: a row that got shorter, a landmark's title back on one line, keeps
+      // the view on it rather than on the row under it; design QA v2 G9)
       const a = anchor.current;
       if (!el || !a || el.scrollTop <= 0) return;
       for (let i = 0; i < p.count; i++) {
         if (rowKeyRef.current(i) !== a.key) continue;
-        const y = tops[i]! + a.into;
+        const y = tops[i]! + Math.max(0, Math.min(a.into, tops[i + 1]! - tops[i]! - 1));
         if (Math.abs(y - el.scrollTop) >= 1) el.scrollTop = y;
         break;
       }
