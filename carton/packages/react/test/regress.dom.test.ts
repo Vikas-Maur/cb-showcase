@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { VirtualList } from "../src/virtual.ts";
 import { dayNumber } from "../src/history-groups.ts";
-import { createMockUi } from "../src/mock.ts";
+import { createMockUi, people } from "../src/mock.ts";
 import { commentsSkin } from "../src/comments/skin.ts";
 import { cardboardSkin } from "../src/skin/cardboard.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -35,7 +35,9 @@ for (const [label, hour, grouped] of [["grouped by day, scrolled into an older d
     const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
     await flush();
     const list = $(m.container, ".carton-history-list")!;
-    assert.equal($$(m.container, ".carton-day").length > 0, grouped, grouped ? "the History spans two days" : "one day: no day headers");
+    // (every History has its day headers now, "Today" too: docs/carton-ux DESIGN §6.1)
+    assert.ok($$(m.container, ".carton-day").length > 0);
+    assert.equal(new Set(ui.history().all!().map((v) => dayNumber(v.at))).size > 1, grouped, grouped ? "the History spans two days" : "one day");
     const scrollTo = async (y: number) => {
       list.scrollTop = y;
       await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
@@ -52,9 +54,10 @@ for (const [label, hour, grouped] of [["grouped by day, scrolled into an older d
     const before = list.scrollTop;
     const topRow = () => $$(m.container, ".carton-vrow").map((r) => [r, ty(r)] as const).filter(([, y]) => y <= list.scrollTop).sort((a, b) => b[1] - a[1])[0]![0].querySelector("[role=option]")!.id;
     const was = topRow();
-    await act(async () => { ui.addVersion(); });
+    // a teammate's version: a row of its own (a person's run of edits would join their row: DESIGN §6.1)
+    await act(async () => { ui.addVersion({ author: people.bob }); });
     await flush();
-    assert.equal(list.scrollTop, before + 52, "shifted by the row that arrived above, never back to the picked row");
+    assert.equal(list.scrollTop, before + 56, "shifted by the row that arrived above, never back to the picked row");
     assert.equal(topRow(), was, "the same row is still at the top");
     // the picked row is still the picked one, wherever it is now
     assert.equal($$(m.container, ".carton-version[data-active]").length, 0, "the picked row is off screen (it stays picked)");
@@ -167,15 +170,21 @@ test(name("regress P3-5: Esc on a row's menu leaves that row picked, and ↓ goe
   await m.unmount();
 });
 
-// Regress P3-12: a version's one change was offered as "Show all 1 changes".
-test(name("regress P3-12: a version of one change offers \"Show the change\""), async () => {
+// Regress P3-12: a version's one change was offered as "Show all 1 changes". A version's count reads "1 change", and
+// its card lists that one change, with no "and N more".
+test(name("regress P3-12: a version of one change reads \"1 change\", and its card lists the one"), async () => {
   const ui = createMockUi({ versions: 10 });
-  await act(async () => { ui.addVersion({ summary: "Folded 'Client review' into 'Main cut'", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s"] } as never); });
+  await act(async () => {
+    ui.addVersion({ author: people.bob, kind: "fold", summary: "Folded in “Client review”" }, [{ key: "x", text: "Moved “clip.mp4” 2 s later (now starts at 0:02)", kind: "change", clip: "video", at: 2, end: 6 }]);
+  });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
-  const toggle = $(m.container, ".carton-version-expand")!;
-  assert.equal(toggle.getAttribute("aria-label"), "Show the change");
-  assert.equal(toggle.textContent, "1 change");
+  const row = $$(m.container, ".carton-version")[0]!;
+  assert.match($(row, ".carton-version-count")!.textContent ?? "", /^1 change$/);
+  await click(row);
+  await flush();
+  assert.equal($$(m.container, ".carton-card-version .carton-change").length, 1);
+  assert.equal($(m.container, ".carton-card-more"), null, "no \"and N more\"");
   await m.unmount();
 });
 
@@ -203,10 +212,11 @@ test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolle
   list.scrollTop = top + 52 * 12;
   await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
   const before = list.scrollTop;
-  for (let i = 0; i < 3; i++) {
-    await act(async () => { ui.addVersion(); });
+  // three versions, each a row of its own (by turns, so no two join one person's row: DESIGN §6.1)
+  for (const author of [people.bob, people.priya, people.bob]) {
+    await act(async () => { ui.addVersion({ author }); });
     await flush();
   }
-  assert.equal(list.scrollTop, before + 3 * 52, "moved only by the three rows that arrived above, never back to Yesterday's header");
+  assert.equal(list.scrollTop, before + 3 * 56, "moved only by the three rows that arrived above, never back to Yesterday's header");
   await m.unmount();
 });

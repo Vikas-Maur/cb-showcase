@@ -228,8 +228,11 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   // "Only “clip”" (PLAN 0.8): the served view model's per-version index, asked for once per clip and History change
   const items = itemFilter({ ask: (item) => call<ClipVersions>("clipVersions", item), pos: (id) => pos.get(id), revision: () => revision, changed: () => hub.notify("history") });
   const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
+  // History isn't known until the served side's first `init`: till then every filter says it is loading, so a panel
+  // mounted at once shows its loading rows, never "no versions yet" (docs/carton-ux PLAN 3.4)
+  let known = false;
   const history: HistorySource = {
-    status: (f) => (typeof f === "object" ? items.status(f.item) : { loading: false }),
+    status: (f) => (!known ? { loading: true } : typeof f === "object" ? items.status(f.item) : { loading: false }),
     all: () => rows,
     revision: () => revision,
     count: (f) => (f === "all" ? rows.length : view(f)!.length),
@@ -323,6 +326,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   const receive = (m: ServerMessage) => {
     switch (m.t) {
       case "init":
+        known = true;
         me = m.me;
         learn(m.actors);
         for (const t of SMALL) topics[t] = m.topics[t];

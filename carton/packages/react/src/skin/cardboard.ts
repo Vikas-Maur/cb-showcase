@@ -162,69 +162,162 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cuts-error){font-size:12px;color:var(--cb-danger)}
 :where(${S}) :where(.carton-menu-form .carton-error){padding:4px 0 0}
 
-/* ---------------------------------------------------------------- panel and History */
+/* ---------------------------------------------------------------- panel and History (docs/carton-ux DESIGN §6.1) */
 :where(${S}) :where(.carton-history){height:100%;background:var(--cb-panel);color:var(--cb-fg)}
 :where(${S}) :where(.carton-panel-head){display:flex;flex-direction:column;gap:12px;padding:16px 12px 10px}
 :where(${S}) :where(.carton-panel-title){font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.01em;color:var(--cb-fg-1);padding:0 4px}
+/* Watch the changes' Before/After switch */
 :where(${S}) :where(.carton-segmented){display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border-radius:8px;background:var(--cb-card)}
 :where(${S}) :where(.carton-segment){height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--cb-fg-3);font-size:12px;font-weight:500;cursor:pointer;
   outline:none;transition:background-color var(--cb-fast),color var(--cb-fast)}
 :where(${S}) :where(.carton-segment:hover){color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-segment[aria-checked=true]){background:var(--cb-secondary);color:var(--cb-fg-1);box-shadow:0 1px 0 #00000040}
 :where(${S}) :where(.carton-segment:focus-visible){box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+/* the cut bar: the cut (its menu) on the left, the filter on the right */
+:where(${S}) :where(.carton-panel-head.carton-cutbar){flex-direction:row;align-items:center;gap:6px;min-height:40px;padding:4px 10px 8px 12px}
+:where(${S}) :where(.carton-cutbar-gap){flex:1}
+:where(${S}) :where(.carton-cutbar .carton-cuts){min-width:0}
+:where(${S}) :where(.carton-cutbar .carton-cuts-trigger){margin-left:-8px;font-size:13.5px;font-weight:600;border-radius:7px}
+:where(${S}) :where(.carton-cutbar .carton-cuts-trigger .carton-icon){color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-filter-btn){display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;border:0;border-radius:7px;background:transparent;
+  color:var(--cb-fg-3);cursor:pointer;outline:none;transition:background-color var(--cb-fast),color var(--cb-fast)}
+:where(${S}) :where(.carton-filter-btn:hover, .carton-filter-btn[data-active]){background:#ffffff12;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-filter-btn:focus-visible){box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+:where(${S}) :where(.carton-filter-anchor .carton-menu-pop){top:calc(100% + 4px)}
+:where(${S}) :where(.carton-filter-menu){width:232px}
+:where(${S}) :where(.carton-filter-menu .carton-menu-item[data-described] .carton-menu-text){white-space:normal}
+/* an active filter: a removable chip, so a filtered list never passes for the whole history */
+:where(${S}) :where(.carton-filter-chips){display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:0 12px 8px}
+:where(${S}) :where(.carton-filter-chip){display:inline-flex;align-items:center;gap:6px;max-width:100%;height:24px;padding:0 3px 0 9px;border-radius:6px;background:#ffffff0f;
+  color:var(--cb-fg-1);font-size:12px;font-weight:500}
+:where(${S}) :where(.carton-filter-chip-text){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-filter-chip-x){display:flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;border:0;border-radius:4px;background:none;
+  color:var(--cb-fg-3);cursor:pointer}
+:where(${S}) :where(.carton-filter-chip-x:hover){background:#ffffff14;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-filter-note){font-size:11.5px;color:var(--cb-fg-3)}
+/* the clip's credits, on top of its history */
+:where(${S}) :where(.carton-clip-credits){margin:0 12px 8px;padding:8px 10px;border-radius:8px;background:#ffffff08;font-size:12px;line-height:17px;color:var(--cb-fg-2);text-wrap:pretty}
+:where(${S}) :where(.carton-clip-credits-name){margin-bottom:2px;font-weight:500;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-history-list){outline:none;padding-bottom:8px;scrollbar-width:thin;scrollbar-color:#ffffff1f transparent}
-:where(${S}) :where(.carton-vrow){padding:0 6px}
-:where(${S}) :where(.carton-version){position:relative;display:flex;align-items:center;gap:8px;height:100%;padding:0 4px 0 6px;border-radius:8px;cursor:default;
-  transition:background-color var(--cb-fast)}
+:where(${S}) :where(.carton-vrow){padding:0 4px}
+/* a row (56 px): who, what, when; then who · how many changes */
+:where(${S}) :where(.carton-version){position:relative;display:grid;grid-template-columns:22px minmax(0,1fr) auto;grid-template-rows:18px 16px;align-content:center;column-gap:8px;row-gap:3px;
+  padding:0 12px;border-radius:8px;cursor:default;transition:background-color var(--cb-fast)}
 :where(${S}) :where(.carton-version:hover){background:#ffffff08}
-:where(${S}) :where(.carton-version[data-active], .carton-version[data-menu]){background:#ffffff0f}
+:where(${S}) :where(.carton-version[data-active], .carton-version[data-menu], .carton-version[data-open]){background:#ffffff0d}
 /* while one row's menu is open, it is the only row that looks picked (review finding 7) */
 :where(${S}) :where(.carton-history[data-menu-open] .carton-version[data-active]:not([data-menu]):not(:hover)){background:transparent}
-:where(${S}) :where(.carton-version[data-compared]){background:#ffffff0f;box-shadow:inset 2px 0 0 var(--cb-fg-2)}
 :where(${S}) :where(.carton-history-list:focus-visible .carton-version[data-active]){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
-/* The rail: one line through every version's mark, like a timeline of versions. */
-:where(${S}) :where(.carton-version-mark){position:relative;align-self:stretch;width:20px;flex:none;display:flex;align-items:center;justify-content:center;color:#6b6b6b}
-:where(${S}) :where(.carton-version-mark)::before{content:"";position:absolute;left:50%;top:-1px;bottom:-1px;width:1px;background:#ffffff14;transform:translateX(-.5px)}
-:where(${S}) :where(.carton-version-mark .carton-icon){position:relative;background:var(--cb-panel);border-radius:50%;box-shadow:0 0 0 2px var(--cb-panel)}
-:where(${S}) :where(.carton-version[data-kind=turn] .carton-version-mark){color:#e8c37b}
-:where(${S}) :where(.carton-version[data-named] .carton-version-mark){color:#9cc7fc}
-:where(${S}) :where(.carton-version[data-kind=fold] .carton-version-mark, .carton-version[data-kind=restore] .carton-version-mark, .carton-version[data-kind=undo] .carton-version-mark){color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-version-main){flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-:where(${S}) :where(.carton-version-title){display:flex;align-items:center;gap:6px;min-width:0;font-size:13px;line-height:17px;color:#e5e5e5}
-:where(${S}) :where(.carton-version[data-named] .carton-version-title, .carton-version[data-kind=turn] .carton-version-title){font-weight:500;color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-version-text){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-version-kind){flex:none;height:16px;padding:0 5px;border:1px solid #e8c37b40;border-radius:4px;color:#e8c37b;font-size:9.5px;font-weight:600;
-  line-height:14px;letter-spacing:.06em;text-transform:uppercase}
-:where(${S}) :where(.carton-version-meta){display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;line-height:16px;color:var(--cb-fg-3);white-space:nowrap}
-:where(${S}) :where(.carton-version-meta .carton-actor-name){overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-version-meta > time, .carton-version-edits){flex:none}
-:where(${S}) :where(.carton-version[data-expanded]){align-items:flex-start;padding-top:8px}
-:where(${S}) :where(.carton-version-expand){flex:none;display:inline-flex;align-items:center;gap:3px;height:16px;padding:0 4px;border:0;border-radius:4px;background:none;font:inherit;color:var(--cb-fg-3);cursor:pointer}
-:where(${S}) :where(.carton-version-expand:hover){background:#ffffff0a;color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-version-details){margin:2px 0 0;padding:0;list-style:none;font-size:12px;line-height:18px;color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-version-details li){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-version-meta > time)::before, :where(${S}) :where(.carton-version-edits)::before{content:"·";margin-right:6px;color:#5c5c5c}
-:where(${S}) :where(.carton-version-meta > time:first-child)::before{content:none}
+/* the version the editor shows (DESIGN §4.2): a blue edge, "Viewing ✕" in place of its time */
+:where(${S}) :where(.carton-version[data-viewing]){background:#8ab4ff12;box-shadow:inset 2px 0 0 #8ab4ff}
+:where(${S}) :where(.carton-version-mark){grid-row:1 / span 2;align-self:start;display:flex;align-items:center;justify-content:center;width:22px;height:22px;margin-top:-1px}
+:where(${S}) :where(.carton-version-mark .carton-avatar){width:20px!important;height:20px!important}
+:where(${S}) :where(.carton-mark-sign){width:20px;height:20px;margin:0 1px;border-radius:50%;box-shadow:inset 0 0 0 1px #ffffff26;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-mark-sign[data-sign=named]){color:#f3cf58;box-shadow:inset 0 0 0 1px #fbbd2340}
+:where(${S}) :where(.carton-version-title){grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-version[data-named] .carton-version-title){font-weight:600}
+:where(${S}) :where(.carton-version-when){grid-column:3;grid-row:1;display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:18px;color:var(--cb-fg-4);
+  white-space:nowrap;font-variant-numeric:tabular-nums}
+:where(${S}) :where(.carton-version-when[data-now]){color:var(--cb-fg-1);font-weight:500}
+:where(${S}) :where(.carton-version-when[data-viewing]){color:#8ab4ff;font-weight:500}
+:where(${S}) :where(.carton-version-back){display:flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;border:0;border-radius:4px;background:none;
+  color:#8ab4ff;cursor:pointer}
+:where(${S}) :where(.carton-version-back:hover){background:#8ab4ff24}
+:where(${S}) :where(.carton-version-meta){grid-column:2 / span 2;grid-row:2;display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;line-height:16px;color:var(--cb-fg-3);white-space:nowrap}
+:where(${S}) :where(.carton-version-meta .carton-actor-name){overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-version-count){flex:none}
+:where(${S}) :where(.carton-version-count)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}
+:where(${S}) :where(.carton-version-meta > .carton-pill + .carton-actor-name, .carton-version-meta > .carton-pill + .carton-more){margin-left:2px}
+:where(${S}) :where(.carton-version-group){display:flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px;margin-left:-2px;border:0;border-radius:4px;background:none;
+  color:var(--cb-fg-3);cursor:pointer}
+:where(${S}) :where(.carton-version-group:hover){background:#ffffff12;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-pill){display:inline-flex;align-items:center;gap:4px;flex:none;height:18px;padding:0 6px;border-radius:5px;font-size:11px;font-weight:500;background:#ffffff0f;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-pill[data-tone=wait]){background:#ffffff0a;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-pill[data-tone=live]){background:#4ade8018;color:#86efac}
+:where(${S}) :where(.carton-pill[data-tone=info]){background:color-mix(in srgb, var(--cb-info) 14%, transparent);color:#9cc7fc}
 :where(${S}) :where(.carton-version[data-provisional] .carton-version-title){color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-version[data-provisional] .carton-version-mark .carton-icon){animation:carton-pulse 1.6s ease-in-out infinite}
-@keyframes carton-pulse{50%{opacity:.35}}
-:where(${S}) :where(.carton-version-more){display:flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;border:0;border-radius:6px;
-  background:transparent;color:var(--cb-fg-3);cursor:pointer;opacity:0;transition:opacity var(--cb-fast),background-color var(--cb-fast)}
-:where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-menu] .carton-version-more, .carton-history-list:focus-within .carton-version[data-active] .carton-version-more){opacity:1}
+:where(${S}) :where(.carton-version-more){position:absolute;right:8px;top:9px;display:flex;align-items:center;justify-content:center;width:26px;height:26px;border:0;border-radius:6px;
+  background:var(--cb-raised);color:var(--cb-fg-2);cursor:pointer;opacity:0;pointer-events:none;transition:opacity var(--cb-fast),background-color var(--cb-fast)}
+:where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-menu] .carton-version-more, .carton-history-list:focus-within .carton-version[data-active] .carton-version-more){opacity:1;pointer-events:auto}
+:where(${S}) :where(.carton-version:hover .carton-version-when, .carton-version[data-menu] .carton-version-when, .carton-history-list:focus-within .carton-version[data-active] .carton-version-when){visibility:hidden}
+/* an open card has its own ⋯: its row keeps its time ("Now"), and the viewed row its "Viewing ✕" */
+:where(${S}) :where(.carton-version[data-open]:not([data-menu]) .carton-version-more, .carton-version[data-viewing]:not([data-menu]) .carton-version-more){opacity:0;pointer-events:none}
+:where(${S}) :where(.carton-version[data-open]:not([data-menu]) .carton-version-when, .carton-version[data-viewing]:not([data-menu]) .carton-version-when){visibility:visible}
 :where(${S}) :where(.carton-version-more:hover){background:var(--cb-accent);color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-history-compare){margin:8px 12px 12px}
-/* a day's header in a long History (UI audit P2-17): a quiet divider row with its count; click to fold or open */
-:where(${S}) :where(.carton-day){display:flex;align-items:center;gap:8px;height:100%;padding:0 10px 0 6px;border-radius:8px;cursor:pointer;
-  color:var(--cb-fg-2);font-size:12px;font-weight:500;line-height:16px;-webkit-user-select:none;user-select:none;transition:background-color var(--cb-fast)}
+/* one of an open group's versions (32 px, indented): its sentence and its time */
+:where(${S}) :where(.carton-version[data-child]){grid-template-rows:18px;padding-left:24px}
+:where(${S}) :where(.carton-version[data-child] .carton-version-mark){grid-row:1;width:22px;height:18px;margin:0}
+:where(${S}) :where(.carton-version[data-child] .carton-version-mark)::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--cb-fg-4)}
+:where(${S}) :where(.carton-version[data-child] .carton-version-title){font-size:12.5px;color:var(--cb-fg-2)}
+/* the history's start, and an agent working */
+:where(${S}) :where(.carton-start){grid-template-rows:18px}
+:where(${S}) :where(.carton-start .carton-version-mark){grid-row:1}
+:where(${S}) :where(.carton-start .carton-version-title){color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-working){grid-template-rows:18px 18px auto;align-content:start;padding-top:10px}
+:where(${S}) :where(.carton-working-line){grid-column:2 / span 2;grid-row:3;margin-top:4px;font-size:12px;line-height:16px;color:var(--cb-fg-3);text-wrap:pretty;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* a day's header (UI audit P2-17): a quiet divider; folded, it says what it holds */
+:where(${S}) :where(.carton-day){display:flex;align-items:center;gap:6px;height:100%;padding:0 10px 0 10px;border-radius:8px;cursor:pointer;
+  color:var(--cb-fg-3);font-size:12px;font-weight:500;line-height:16px;-webkit-user-select:none;user-select:none;transition:background-color var(--cb-fast)}
 :where(${S}) :where(.carton-day:hover){background:#ffffff08;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-history-list:focus-visible .carton-day[data-active]){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
-:where(${S}) :where(.carton-day-mark){display:flex;align-items:center;justify-content:center;width:20px;flex:none;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-day-mark){display:flex;align-items:center;justify-content:center;width:16px;flex:none}
 :where(${S}) :where(.carton-day-label){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-:where(${S}) :where(.carton-day-count){flex:none;font-size:11.5px;font-weight:400;color:var(--cb-fg-3);font-variant-numeric:tabular-nums}
-/* the list scrolled under the filters: a hairline under them (UI audit P3-9) */
+:where(${S}) :where(.carton-day-count){flex:none;font-size:12px;font-weight:400;color:var(--cb-fg-4);font-variant-numeric:tabular-nums}
+/* the list scrolled under the cut bar: a hairline under it (UI audit P3-9) */
 :where(${S}) :where(.carton-panel-head){position:relative;z-index:1;transition:box-shadow var(--cb-fast)}
 :where(${S}) :where(.carton-history[data-scrolled] > .carton-panel-head){box-shadow:0 1px 0 #ffffff12}
 :where(${S}) :where(.carton-history-error){padding:0 12px 8px;text-wrap:pretty}
+:where(${S}) :where(.carton-history-compare){margin:8px 12px 12px}
+/* "↑ Newest", docked at the list's bottom while it is scrolled away from the top */
+:where(${S}) :where(.carton-history-body){position:relative;flex:1 1 0;min-height:0;display:flex;flex-direction:column}
+:where(${S}) :where(.carton-day-sticky){position:absolute;left:0;right:0;top:0;height:32px;padding:0 4px;background:var(--cb-panel);box-shadow:0 1px 0 #ffffff0d;z-index:2}
+:where(${S}) :where(.carton-newest){flex:none;height:44px;display:flex;align-items:center;justify-content:center;background:var(--cb-panel)}
+:where(${S}) :where(.carton-newest-btn){display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border:0;border-radius:7px;background:#2a2a2a;color:var(--cb-fg-1);
+  font:inherit;font-size:12px;font-weight:500;box-shadow:var(--cb-shadow-near);cursor:pointer;animation:carton-pop var(--cb-fast) var(--cb-decel)}
+:where(${S}) :where(.carton-newest-btn:hover){background:#333}
+/* empty, and loading: three grey rows, never "Loading…" */
+:where(${S}) :where(.carton-history-empty){display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:28px 22px}
+:where(${S}) :where(.carton-history-empty-mark){display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;box-shadow:inset 0 0 0 1px #ffffff26;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-history-empty-title){font-size:14px;line-height:20px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-history-empty-body){font-size:12.5px;line-height:18px;color:var(--cb-fg-3);text-wrap:pretty}
+:where(${S}) :where(.carton-history-empty-cut){margin-top:6px!important;font-size:12px;color:var(--cb-fg-4)}
+:where(${S}) :where(.carton-history-skeleton){display:flex;flex-direction:column;padding:6px 4px}
+:where(${S}) :where(.carton-skeleton-row){display:grid;grid-template-columns:20px 1fr;grid-template-rows:10px 8px;gap:8px 10px;padding:12px 12px}
+:where(${S}) :where(.carton-skeleton-row > span){border-radius:4px;background:#ffffff0f}
+:where(${S}) :where(.carton-skeleton-row > span:first-child){grid-row:1 / span 2;width:20px;height:20px;border-radius:50%;background:#ffffff0a}
+:where(${S}) :where(.carton-skeleton-row > span:nth-child(2)){width:70%}
+:where(${S}) :where(.carton-skeleton-row > span:nth-child(3)){width:40%;background:#ffffff0a}
+
+/* ---------------------------------------------------------------- a version's card (DESIGN §5.2) */
+:where(${S}) :where(.carton-card-version){margin:2px 4px 0 24px;padding:10px;border-radius:10px;background:var(--cb-card);box-shadow:var(--cb-shadow-near);outline:none}
+:where(${S}) :where(.carton-card-since){display:flex;align-items:center;gap:6px;margin:-2px 0 8px;padding:6px 8px;border-radius:7px;background:#ffffff08;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-card-since > .carton-icon){color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-card-since b){font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-card-since .carton-link){margin-left:auto}
+:where(${S}) :where(.carton-link){flex:none;padding:0;border:0;background:none;font:inherit;font-size:12px;color:var(--cb-fg-1);white-space:nowrap;cursor:pointer;
+  text-decoration:underline;text-decoration-color:#ffffff40;text-underline-offset:2px}
+:where(${S}) :where(.carton-link:hover){text-decoration-color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-card-more){display:block;margin:0 0 0 58px;padding:4px 0;border:0;background:none;font:inherit;font-size:12.5px;line-height:17px;color:var(--cb-fg-3);cursor:pointer;text-align:left}
+:where(${S}) :where(.carton-card-more:hover){color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-card-actions){display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px}
+:where(${S}) :where(.carton-card-actions .carton-btn){height:28px;padding:0 10px;font-size:12.5px;border-radius:7px}
+:where(${S}) :where(.carton-card-actions .carton-btn[data-icon-only]){width:28px;padding:0}
+:where(${S}) :where(.carton-card-gap){flex:1}
+:where(${S}) :where(.carton-card-none){font-size:12.5px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-card-error){padding:8px 0 0}
+:where(${S}) :where(.carton-card-skeleton){display:flex;flex-direction:column;gap:8px;padding:4px 0}
+:where(${S}) :where(.carton-card-skeleton > span){height:10px;border-radius:4px;background:#ffffff0f}
+:where(${S}) :where(.carton-card-skeleton > span:last-child){width:60%}
+/* Restore… and New cut, in the card (DESIGN §6.2) */
+:where(${S}) :where(.carton-card-confirm){margin-top:10px;padding:10px;border-radius:8px;background:var(--cb-raised);box-shadow:inset 0 0 0 1px #ffffff10}
+:where(${S}) :where(.carton-card-confirm-title){margin:0 0 4px!important;font-size:13px;line-height:18px;font-weight:600;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-card-confirm-body){font-size:12.5px;line-height:17px;color:var(--cb-fg-2);text-wrap:pretty}
+:where(${S}) :where(.carton-card-newcut){display:flex;flex-direction:column;gap:6px}
+:where(${S}) :where(.carton-field){display:flex;flex-direction:column;gap:4px}
+:where(${S}) :where(.carton-field-label){font-size:12px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-card-hint){font-size:12px;line-height:16px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-card-newcut .carton-card-actions){margin-top:4px}
 
 /* ---------------------------------------------------------------- the change row and the change map (DESIGN §5.1) */
 :where(${S}) :where(.carton-changes){display:flex;flex-direction:column;outline:none}
@@ -532,6 +625,13 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-playhead){z-index:2}
 :where(${S}) :where(.carton-playhead)::before{content:"";position:absolute;top:-2px;bottom:-2px;left:-1px;width:2px;border-radius:1px;background:var(--cb-fg-1);box-shadow:0 0 0 1px #00000080}
 :where(${S}) :where(.carton-playhead)::after{content:"";position:absolute;top:-6px;left:-5px;border:5px solid transparent;border-top-color:var(--cb-fg-1)}
+
+/* the agent marks in History's rows: a round dark mark, Claude Code's burst in Claude's orange (after the avatar rules) */
+:where(${S}) :where(.carton-version-mark .carton-avatar[data-kind=agent], .carton-version-mark .carton-avatar[data-kind=subagent]){border-radius:50%;background:var(--cb-raised);color:var(--cb-fg-2);
+  box-shadow:inset 0 0 0 1px #ffffff1a}
+:where(${S}) :where(.carton-version-mark .carton-avatar[data-agent=claude]){color:#d97757}
+:where(${S}) :where(.carton-version-mark .carton-avatar .carton-icon){width:13px;height:13px}
+:where(${S}) :where(.carton-version-mark[data-live] .carton-avatar){box-shadow:0 0 0 2px var(--cb-panel),0 0 0 3.5px var(--cb-ok)}
 
 @media (prefers-reduced-motion: reduce){
   :where(${S}) *, :where(${S}) *::before, :where(${S}) *::after{animation:none!important;transition:none!important}

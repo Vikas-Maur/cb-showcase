@@ -209,9 +209,13 @@ function HistorySide({ bridge }) {
       h(Button, { variant: "ghost", icon: "arrowLeft", onClick: back, title: "Back to History (Esc)" }, words.history),
       h(WatchTheChanges, { a: watch.a, b: watch.b, inPlayer: true, onFrame }));
   }
+  // History's cut bar holds the cut and its menu (docs/carton-ux DESIGN §6.1): one element, so History re-rendering for a
+  // new version never re-renders the menu
+  const cutsMenu = useMemo(() => h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) }), []);
+  const selectedClip = useCallback(() => bridge.selectedClip?.() ?? null, [bridge]);
+  const seek = useCallback((t) => bridge.seek?.(t), [bridge]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
-    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) })),
-    h(HistoryPanel, { currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
+    h(HistoryPanel, { cuts: cutsMenu, selectedClip, onSeek: seek, currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
 }
 
