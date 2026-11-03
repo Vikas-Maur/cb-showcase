@@ -45,12 +45,13 @@ export { CutsMenu, type CutsMenuProps } from "./components/CutsMenu.ts";
 export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
+export { cardSentences, conflictWords, keptText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";
 export { CompareCard, type CompareCardProps } from "./components/CompareCard.ts";
 export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box } from "./components/WatchTheChanges.ts";
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
-export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
+export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, defaultClipKind, sideNoun, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
 export { itemFilter, type ItemFilter } from "./item-filter.ts";
 // Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.

@@ -42,7 +42,7 @@ test("History: 'Added media' and a clip's move read with the file name, as the u
 test("the user's card: a clip added then moved before the first save's answer, both saves inserting it", () => {
   const card: ConflictCard = { kind: "record", path: `${ITEMS}/iXim_Dlywcf2Lp5OO-WkD`, base: undefined, ours: clip("iXim_Dlywcf2Lp5OO-WkD", 10, 12), theirs: clip("iXim_Dlywcf2Lp5OO-WkD", 11, 13) };
   const w = describeCardboardCard(card, cardboardSchema, doc());
-  assert.deepEqual(w, { title: "'Dragon-take2.mp4'", mine: "Added at 10.0 s–12.0 s", theirs: "Added at 11.0 s–13.0 s" });
+  assert.deepEqual(w, { title: "“Dragon-take2.mp4”", mine: "Added it at 0:10 to 0:12", theirs: "Added it at 0:11 to 0:13", name: "Dragon-take2.mp4" });
   for (const s of Object.values(w)) assert.doesNotMatch(s, /iXim|27ca|7ba5|5ec7|mediaItemId|trackId|\bid\b/);
 });
 
@@ -50,10 +50,10 @@ test("cards in Cardboard's units: opacity and volume in percent, speed as ×, th
   const d = doc();
   const id = "IyUFHiQ2m7Kd0aXbT9pLw";
   const op = describeCardboardCard({ kind: "field", path: `${ITEMS}/${id}/opacity`, base: 1, ours: 0.5, theirs: 0.9 }, cardboardSchema, d);
-  assert.deepEqual(op, { title: "'Dragon-take2.mp4' opacity", mine: "50%", theirs: "90%" });
+  assert.deepEqual(op, { title: "“Dragon-take2.mp4” opacity", mine: "50%", theirs: "90%", name: "Dragon-take2.mp4" });
   const b = clip(id, 1.5, 4.5);
   const rec = describeCardboardCard({ kind: "record", path: `${ITEMS}/${id}`, base: b, ours: { ...b, volume: 0.6, playbackSpeed: 2 }, theirs: undefined }, cardboardSchema, d);
   assert.deepEqual([rec.mine, rec.theirs], ["Volume 60%, speed 2×", "Removed"]);
   const time = describeCardboardCard({ kind: "group", path: `${ITEMS}/${id}/#time`, reason: "same kind or incompatible", base: { startTime: 1.5, endTime: 4.5 }, ours: { startTime: 3, endTime: 6 }, theirs: { startTime: 4, endTime: 7 } }, cardboardSchema, d);
-  assert.deepEqual(time, { title: "'Dragon-take2.mp4' timing", mine: "Moved 1.5 s → 3.0 s", theirs: "Moved 1.5 s → 4.0 s" });
+  assert.deepEqual(time, { title: "“Dragon-take2.mp4” timing", mine: "Moved it to start at 0:03", theirs: "Moved it to start at 0:04", name: "Dragon-take2.mp4" });
 });

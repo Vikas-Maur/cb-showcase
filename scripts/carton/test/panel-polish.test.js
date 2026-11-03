@@ -52,9 +52,10 @@ test("P2-4: Restore says which version it restored, and that nothing is lost", o
   T.confirmations(ui);
   await ui.restore("main@3");
   assert.deepEqual(ui.calls, [["restore", "main@3"]]);
-  assert.match(T.toasts.value.text, /^Restored the version from 12:41(\s?PM)?\. It's saved as a new version\.$/);
+  // the one label for a version (UX redesign 0.9), always with am/pm; DESIGN §6.7's restore toast
+  assert.match(T.toasts.value.text, /^Restored Claude Code's edit from (12:41 pm|Nov 2 at 12:41 pm|yesterday at 12:41 pm)\. Later changes are in History\.$/);
   await ui.restore("main@4");
-  assert.equal(T.toasts.value.text, "Restored “Sent to client”. It's saved as a new version.");
+  assert.equal(T.toasts.value.text, "Restored “Sent to client”. Later changes are in History.");
 });
 
 test("P2-4: Fold in says what went where, and offers to switch to the cut it went into", opt, async () => {
@@ -74,15 +75,22 @@ test("P2-4: Fold in says what went where, and offers to switch to the cut it wen
   assert.equal(T.toasts.value, null);
 });
 
-test("P2-4: a conflict card's pick says whose edit was kept", opt, async () => {
+test("P2-4: a conflict card's pick says whose change was kept, as the card named it (docs/carton-ux DESIGN §6.7)", opt, async () => {
   const ui = fakeUi();
   T.confirmations(ui);
+  const [plain] = ui.conflicts();
+  ui.conflicts = () => [{ ...plain, clip: "W6", mine: { ...plain.mine, what: "move" }, theirs: { ...plain.theirs, what: "move" } }];
   await ui.resolve("c1", "theirs");
-  assert.equal(T.toasts.value.text, "Kept Claude Code's · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's move of “W6”.");
   await ui.resolve("c1", "mine");
-  assert.equal(T.toasts.value.text, "Kept yours · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept your move of “W6”.");
   await ui.resolve("c1", "both");
-  assert.equal(T.toasts.value.text, "Kept both · 'W6' timing");
+  assert.equal(T.toasts.value.text, "Kept both changes to “W6”.");
+  // a host that gives the card no sentences: who, still
+  ui.conflicts = () => [plain];
+  await ui.resolve("c1", "theirs");
+  assert.equal(T.toasts.value.text, "Kept Claude Code's edit.");
+  assert.ok(!T.toasts.value.action, "no Undo yet (PLAN 5.3): a pick of the side shown commits nothing to undo");
 });
 
 // A teammate as Live.view() sends one (sync/live.js peerActor).

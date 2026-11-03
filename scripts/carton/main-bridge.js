@@ -194,11 +194,16 @@ module.exports = String.raw`var __cartonMain = (() => {
     on,
     turnStarted(chat, projectId, bundlePath, turn, provider) {
       if (!on || !provider) return;
-      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
+      const since = Date.now();
+      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since });
       hooked.delete(chat.chatId);
       nextGen(chat.chatId);
       endHolds(chat.chatId);
       live.set(chat.chatId, { chat, turn: turn.id, gen: genOf(chat.chatId) });
+      // UX redesign 0.7: the project's History panels show the agent working while its turn holds the timeline, by the
+      // ids its edits are recorded by (actorsOf); the prompt only goes to the worker, never logged
+      const actors = actorsOf(chat, { provider, turn: turn.id });
+      if (library) library.call("carton.working", { projectId, chat: chat.chatId, provider, actor: actors[0], actors, prompt: turn.text, since }).catch(() => {});
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
@@ -210,6 +215,8 @@ module.exports = String.raw`var __cartonMain = (() => {
       running.delete(chat);
       const actors = actorsOf(chat, t), director = t.provider === "director";
       hooked.delete(chat.chatId);
+      // the working row ends with the turn (0.7)
+      if (library) library.call("carton.working", { projectId: t.projectId, chat: chat.chatId, done: true }).catch(() => {});
       // H8: the turn and its subagents stop holding the shared file, however the turn ended (a stop, an interrupt).
       for (const actor of actors) void agentHook({ project: { bundlePath: t.bundlePath } }, actor, "endTurn");
       // Another provider's turn is told by its actors and its time, from its start to now (review P2: until): the request

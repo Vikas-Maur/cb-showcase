@@ -22,6 +22,8 @@ export type HistoryRow =
       readonly now?: true;
       /** One of an open group's versions, listed under it (32 px, indented). */
       readonly child?: true;
+      /** An agent turn's row: the turn's earlier versions (newest first), shown as this one row (`Version.run`). */
+      readonly turn?: readonly string[];
     }
   | {
       /** Consecutive plain edits by one person, at most GROUP_GAP_MS apart, nothing named or an agent's between them. */
@@ -118,6 +120,16 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
       const v = versions[k]!;
       if (shut && !isAnchor(v)) {
         hidden++;
+        continue;
+      }
+      // an agent turn's versions (they share `run`): one row, its newest (PLAN 0.4)
+      if (opts.group && !shut && v.run) {
+        let m = k;
+        while (m - 1 > j && versions[m - 1]!.run === v.run) m--;
+        const turn: string[] = [];
+        for (let q = k - 1; q >= m; q--) turn.push(versions[q]!.id);
+        rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k, ...(turn.length ? { turn } : {}) }));
+        k = m;
         continue;
       }
       // a person's run: newest first, back while the next older one is theirs, close enough, on this day

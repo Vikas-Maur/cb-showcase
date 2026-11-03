@@ -6,7 +6,7 @@
 //   (scripts/carton/strip-buttons.js) send their commands here (patch-carton.js routes them as carton:command to this
 //   page), and this page reports back what is open, the cut it is on and what it is viewing (bridge.reportPanel).
 // - CartonStage: a layer over the stage (the preview's column, above the timeline, left of the chat): the conflict
-//   cards' floating stack in its bottom-right corner, with "See it", and the preview banner ("Return to current").
+//   cards' floating stack in its bottom-right corner, with "See it", and the viewing banner ("Back to my edit").
 // Neither takes keys but its own (Esc closes the panel while focus is in it), so the stage, the timeline's keyboard,
 // Ctrl+Z and the chat work as before.
 // Carton runs in the library worker. There @carton/react's view model is served to each page (serveUi over the
@@ -14,7 +14,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -25,14 +25,14 @@ import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 const toasts = { value: null, seq: 0, subs: new Set(), show(text, action, tone) { this.set({ id: ++this.seq, text, action, ...(tone ? { tone } : {}) }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
 // what the bridge tells (scripts/carton/renderer-bridge.js notice: a save that failed, an undo refused)
 const tellFailure = (text) => toasts.show(text, null, "warning");
-const clockTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 function confirmations(ui) {
   const versionByRef = (ref) => (ui.history().all?.() ?? []).find((v) => v.ref === ref);
   const restore = ui.restore.bind(ui);
   ui.restore = async (ref) => {
     const v = versionByRef(ref);
     await restore(ref);
-    toasts.show(v?.name ? `Restored “${v.name}”. It's saved as a new version.` : v ? `Restored the version from ${clockTime(v.at)}. It's saved as a new version.` : "Restored. It's saved as a new version.");
+    // a version named one way everywhere (UX redesign 0.9: its name, an agent's prompt, or "your edit from 12:41 pm")
+    toasts.show(words.restoredToast(v ? versionLabel(v, { actor: ui.actor.bind(ui) }) : "an earlier version"));
   };
   const fold = ui.fold.bind(ui);
   ui.fold = async (from, into, opts) => {
@@ -44,13 +44,14 @@ function confirmations(ui) {
     }
     return r;
   };
+  // A conflict card's pick names what was kept, as the card named it (docs/carton-ux DESIGN §6.7): "Kept Claude Code's
+  // move of “Interview B”." No Undo on it yet (PLAN 5.3): a pick of the side already shown commits nothing, so the
+  // editor's undo would take back an earlier change instead.
   const resolve = ui.resolve.bind(ui);
   ui.resolve = async (id, choice) => {
     const c = ui.conflicts().find((x) => x.id === id);
     await resolve(id, choice);
-    if (!c) return;
-    const who = choice === "both" ? null : actorLabel((choice === "mine" ? c.mine : c.theirs).author, ui.actor.bind(ui), words.you);
-    toasts.show(choice === "both" ? `Kept both · ${c.title}` : `Kept ${who === words.you ? "yours" : `${who}'s`} · ${c.title}`);
+    if (c) toasts.show(keptText(c, choice, ui.actor.bind(ui)));
   };
 }
 
@@ -61,6 +62,13 @@ function connect(projectId, bridge) {
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
   r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
+  // Viewing (UX redesign 0.5): the worker labels it and checks it loads; the bridge's preview is still the one way the
+  // editor swaps. Its viewing topic arrives before its answer, so the ref shown is the one the worker settled on.
+  const view = r.ui.view.bind(r.ui);
+  r.ui.view = async (target) => {
+    await view(target);
+    return bridge.preview(projectId, target ? (r.ui.viewing()?.ref ?? null) : null);
+  };
   confirmations(r.ui);
   return { ...r, close: off };
 }
@@ -242,7 +250,7 @@ function useFit(ref, preferred) {
 
 /**
  * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
- * Fold in: all, some or none of it), then the versions, Compare with current, and "Watch the changes" in their place.
+ * Fold in: all, some or none of it), then the versions, Compare with current, and WatchTheChanges in their place.
  */
 function HistorySide({ bridge, cutsAsk = 0, onCutsAsked }) {
   const cuts = useCuts();
@@ -265,7 +273,7 @@ function HistorySide({ bridge, cutsAsk = 0, onCutsAsked }) {
     });
     return () => cancelAnimationFrame(id);
   }, [cutsAsk, watch, onCutsAsked]);
-  // Back from Watch the changes: focus goes to the version list, not to <body>.
+  // Back from WatchTheChanges: focus goes to the version list, not to <body>.
   const back = useCallback(() => {
     setWatch(null);
     requestAnimationFrame(() => box.current?.querySelector(".carton-history-list")?.focus({ preventScroll: true }));
@@ -621,12 +629,18 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
   // what the bridge tells the person (a save that failed, an undo refused), as a toast over the stage
   useEffect(() => bridge.onNotice?.(tellFailure), [bridge]);
-  const onPreview = useCallback(async (conflict, side, label) => {
+  // A conflict card's "See it" (docs/carton-ux PLAN 7.1): the side's timeline, read-only, with the card's clip in view,
+  // so the difference is on screen, under the card's label for that side ("Claude Code's move of “Interview B”"). It
+  // still goes through the deprecated openPreview (conflictRef's state, the bridge's preview) until ui.view({kind:
+  // "conflict"}) reaches the editor: the worker's view() (Workstream 0, PLAN 0.5) and the stage frame that shows its
+  // label (Workstream 1). Then this goes, and the card calls ui.view itself. `live()`: still wanted once loaded (the
+  // card wasn't left, decided or set aside meanwhile), else nothing is shown.
+  const onPreview = useCallback(async (conflict, side, label, live = () => true) => {
     const ref = await conn.ui.conflictRef?.(conflict.id, side).catch(() => null);
-    if (!ref) return;
-    // the side's timeline, read-only, with the card's clip in view, so the difference is on screen
+    if (!live()) return;
+    if (!ref) throw new Error(words.loadFailed);
     await conn.ui.openPreview(ref, label);
-    if (conflict.item) bridge.reveal(conflict.item);
+    if (live() && conflict.item) bridge.reveal(conflict.item);
   }, [conn, bridge]);
   const onReveal = useCallback((conflict) => { if (conflict.item) bridge.reveal(conflict.item); }, [bridge]);
   const [panelOpen, setPanelOpen] = useState(sidePanel.value != null);

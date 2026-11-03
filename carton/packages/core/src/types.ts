@@ -234,6 +234,11 @@ export interface Change extends Declaration {
   mergeBase?: NodeId[];
   /** revert/undo/restore: the change(s) it inverts. */
   reverts?: ChangeId | ChangeId[];
+  /**
+   * A restore: the version it brought back (`<cutId>@<seq>`), so History can say which ("Restored the 11:02 am
+   * version"). Not hashed; absent on restores made before it was kept, and on a shared cut's.
+   */
+  restoreOf?: NodeId;
   /** Partial accept: the record paths it rejected ("fold in some of it"). */
   rejected?: PathKey[];
   /** A fold-in: last author per record it touched, so credits survive the merge. */
@@ -363,6 +368,33 @@ export interface CutRecord {
 }
 
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
+/**
+ * One change as the app shows it (UX redesign PLAN 0.1, 0.2; `changeList`): a sentence in editor words, verb first, the
+ * clip by its name in curly quotes, positions as 0:09 ("Trimmed “Intro”, now ends at 0:05"), never an id or a hash; one
+ * per change as `countChanges` counts them (a record each, a root field each, a split one, a title's own media entry
+ * with its title, a ripple's shift none).
+ */
+export interface ChangeRow {
+  /** The record's path key (`timelineItems/c1`), or a root field's name. */
+  key: PathKey;
+  text: string;
+  kind: "add" | "remove" | "change";
+  /** The record's collection; null for a root field. */
+  coll: string | null;
+  /** The record's id in its collection. */
+  id?: string;
+  /** The record after the change (before it, for a removal): what the host calls it (`nounOf`, its type). */
+  rec?: Rec;
+  /** Where it is in the edit (timeline records): its start after the change (before it, for a removal), and its end. */
+  at?: number;
+  end?: number;
+  /** For a summary of several: the verb as a template ("Moved %s") and the record named alone ("“Intro”"). */
+  verb?: string;
+  one?: string;
+  /** Said by another row of the same change (a track added for the clips moved onto it): a summary leaves it out. */
+  minor?: true;
+}
+
 export interface Version {
   ref: StateRef;
   /** Full state hash, when already known (the head, named versions); `hashOf(ref)` computes any other. */
@@ -380,6 +412,11 @@ export interface Version {
    * its change, or its changes summed up ("Moved 'a', changed 'b' and 'c'", `describeVersion`).
    */
   summary?: string;
+  /**
+   * Every change the version made, as the app's change rows (`log({summary: true, rows: true})`; `changeList`): one per
+   * change as `countChanges` counts them, in editor words, with where each is in the edit.
+   */
+  rows?: ChangeRow[];
   /**
    * A cut's start (seq 0) with nothing in it: the empty root an imported project's history starts from (§16), or a cut
    * made from it. `restore` and `fork` refuse it (`EmptyVersion`), so a UI doesn't offer them.
@@ -407,6 +444,16 @@ export interface Version {
    * undo (laptop: `cb history` listed it as `revert`). Set by `Carton.log()`.
    */
   redoOf?: ChangeId;
+  /**
+   * What the version was, for the app to word it (`log({summary: true, rows: true})`, UX redesign 0.2): a fold (the cut
+   * folded in, by name; how many changes it took, of how many), the rest of a partial fold, a restore (the version it
+   * restored: `of`, a node id, when known), or an undo or a redo of a restore or a fold.
+   */
+  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore"; cut?: string; of?: NodeId; taken?: number; total?: number };
+  /** A restore: the version it restored (a node id), when the restore recorded it. */
+  restoreOf?: NodeId;
+  /** An undo (`log({summary: true, rows: true})`): the changes it undid (an agent turn's, for "Took out Director's …"). */
+  undoes?: ChangeId[];
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";

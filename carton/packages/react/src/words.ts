@@ -25,7 +25,6 @@ export const words = {
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
   historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No agent turns yet.",
-  checkpoint: "Checkpoint",
   // Day headers in a long History (UI audit P2-17)
   today: "Today",
   yesterday: "Yesterday",
@@ -36,8 +35,8 @@ export const words = {
   showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
   hideChanges: (n: number) => (n === 1 ? "Hide the change" : "Hide the changes"),
   turnEdits: (n: number) => plural(n, "edit", "edits"),
-  provisional: "Waiting to sync",
-  provisionalHint: "This version gets its final place in History once it reaches the server.",
+  provisional: "Not sent yet",
+  provisionalHint: "This version gets its final place in History once it's sent.",
   restore: "Restore",
   preview: "Preview",
   create: "Create",
@@ -103,7 +102,7 @@ export const words = {
   laterEdit: (who: string | null, at?: string) => `${who ? `${who}'s` : "Your"} later edit${at ? ` (${at})` : ""}`,
   keepEarlier: "Keep earlier",
   keepLater: "Keep later",
-  showingNow: "Showing now",
+  showingNow: "In the timeline",
   // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
   seePreview: "Preview",
   yourEdit: "Your edit",
@@ -117,17 +116,17 @@ export const words = {
   setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
   setAsideList: (n: number) => `Set aside (${n})`,
   showAgain: "Show again",
-  conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
+  conflictsWaiting: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
 
   // Compare card
   compare: "Compare",
-  watchTheChanges: "Watch the changes",
+  watchTheChanges: "Play all",
   clips: (n: number) => plural(n, "clip", "clips"),
   // Compare's clip count with the other kinds of item apart (laptop re-check P3-10): "1 clip, 6 titles"
   clipsAnd: (clips: number, kinds: readonly { noun: string; n: number }[]) =>
     [...(clips || !kinds.length ? [plural(clips, "clip", "clips")] : []), ...kinds.map((k) => plural(k.n, k.noun, `${k.noun}s`))].join(", "),
   length: (s: number) => duration(s),
-  // The Compare card's summary (UI audit P2-5): changes and seconds, as Watch the changes counts them; never shots.
+  // The Compare card's summary (UI audit P2-5): changes and seconds, as WatchTheChanges counts them; never shots.
   compareSummary: (changes: number | null, s: number, total: number) =>
     changes === 0 || (changes == null && s <= 0) ? "No differences" : `${changes == null ? "" : `${plural(changes, "change", "changes")} · `}${seconds(s)} of ${seconds(total)} differ`,
   compareChanges: "What changed",
@@ -177,37 +176,36 @@ export const words = {
   upToDateHint: "Everyone on this cut sees the same edit.",
   offlineHint: "Keep editing. Your edits are saved here and sent when you're back online.",
 
-  // Watch the changes (§9)
+  // WatchTheChanges (§9; retired by the Changes view, PLAN 4.4)
   before: "Before",
   after: "After",
   playChanges: "Play changes",
   pause: "Pause",
-  unchangedShots: (n: number) => `${plural(n, "unchanged shot", "unchanged shots")}`,
+  unchangedShots: (n: number) => `${n} unchanged`,
   removed: "Removed",
   added: "Added",
   changed: "Changed",
   // The counter steps through the sections of the edit that differ, not the changes (laptop re-check P3-11: "2 changes ·
   // Change 1 of 2" beside Compare's "3 changes"): one section can hold several changes, and a change can show nowhere.
-  changeOf: (i: number, n: number) => `Section ${i} of ${n}`,
-  nextChange: "Next section",
-  previousChange: "Previous section",
+  changeOf: (i: number, n: number) => `${i} of ${n}`,
+  nextChange: "Next",
+  previousChange: "Previous",
   noChanges: "No changes to watch. The two versions look the same.",
   // What differs: changes, counted as Compare and History count them, and seconds; never shots.
   watchSummary: (changes: number, s: number, total: number) =>
     changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
   // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
-  shownInPlayer: "Shown in the player, read-only",
+  shownInPlayer: "On the stage",
   noPicture: "Preview not available here",
 
-  // Read-only preview (§9, R2-16)
-  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
-  previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // Viewing (§9, R2-16; DESIGN §4.2): what the stage shows when it isn't your edit
+  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "You're looking at your edit from 12:41 pm".
+  previewing: (label: string) => `You're looking at ${label.replace(/^Your\b/, "your")}`,
   // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
   versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
-  readOnly: "Read-only",
-  returnToCurrent: "Return to current to edit",
-  returnToCurrentKey: "Return to current (Esc)",
-  previewBlocked: "This is a preview, so edits don't apply here.",
+  returnToCurrent: "Back to my edit",
+  returnToCurrentKey: "Back to my edit (Esc)",
+  previewBlocked: "Go back to your edit to change it.",
 
   // Times
   justNow: "just now",
@@ -352,6 +350,71 @@ export const words = {
   conflictsToPick: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
   stillWorking: (agent: string) => `${agent} is still working. Pick now, or when it's done.`,
   changedAgain: (agent: string) => `${agent} changed it again. Pick again.`,
+  // The card's title and lead (Workstream 7, conflict-words.ts): the clip, then what each side did; the lead says which
+  // side is in the timeline until you pick. Core keeps the head's side there, and that isn't always yours.
+  conflictBoth: (subject: string, a: string, b: string, did: string) => `${subject}: ${a} and ${b} both ${did}`,
+  conflictEach: (subject: string, a: string, didA: string, b: string, didB: string) => `${subject}: ${a} ${didA} and ${b} ${didB}`,
+  conflictTwice: (subject: string, who: string | null) => `${subject}: two of ${who ? `${who}'s` : "your"} changes disagree`,
+  conflictTwiceLead: (who: string | null, did: string, close: boolean) => `${who ?? "You"} ${did} twice, from two places${close ? ", at nearly the same time" : ""}.`,
+  conflictTwiceEach: (who: string | null, first: string, then: string) => `${who ?? "You"} ${first} in one place and ${then} in another.`,
+  /** `shown`: the side in the timeline now, mid-sentence ("yours", "Claude Code's", "your later change"); null: both. */
+  pickLeadFor: (shown: string | null, canKeepBoth: boolean) =>
+    `${canKeepBoth ? "Pick one to keep, or keep both." : "Pick the one to keep."} Until you pick, ${shown === null ? "both are" : `${shown} is`} in the timeline.`,
+  theirEarlier: (who: string) => `${who}'s earlier change`,
+  theirLater: (who: string) => `${who}'s later change`,
+  seeSide: (side: string) => `See ${side.replace(/^Yours\b/, "yours").replace(/^Your\b/, "your")}`,
+  notNowHint: "Keep it for later. Nothing is decided until you pick.",
+  pickOne: "Pick the one to keep",
+  conflictOf: (i: number, n: number) => `${i} of ${n}`,
+  nextConflict: "Next conflict",
+  // Viewing a side (the chip, the frame's label): "Claude Code's move of “Interview B”" is sideOf/yourSideOf above
+  sideAlone: (who: string, what: string) => `${who}'s ${what}`,
+  yourSideAlone: (what: string) => `Your ${what}`,
+  orderedSideOf: (name: string, clip?: string) => (clip ? `${name} to “${clip}”` : name),
+  bothChangesTo: (clip?: string) => (clip ? `Both changes to “${clip}”` : "Both changes"),
+  // What a side did, as a sentence about the card's clip (DESIGN §8 "(a conflict side) Moved it to start at 0:07")
+  sideMoved: (at: string) => `Moved it to start at ${at}`,
+  sideTrimmedEnd: (at: string) => `Trimmed it to end at ${at}`,
+  sideTrimmedStart: (at: string) => `Trimmed it to start at ${at}`,
+  sideRetimed: (from: string, to: string) => `Set it to play ${from}–${to}`,
+  sideSlipped: (at: string) => `Slipped it to play its media from ${at}`,
+  sideLeft: (from: string, to: string) => `Left it at ${from}–${to}`,
+  sideAdded: (at: string) => `Added it at ${at}`,
+  sideAddedNoTime: "Added it",
+  sideRemoved: "Removed it",
+  sideToTrack: (track: string) => `Moved it to ${track}`,
+  sideAnotherTrack: "another track",
+  sideOrder: "Put it in another place in the order",
+  sideText: (v: string) => `Changed it to ${v}`,
+  sideRenamed: (v: string) => `Renamed it ${v}`,
+  sideBigger: (label: string, v: string) => `Made it bigger (${label} ${v})`,
+  sideSmaller: (label: string, v: string) => `Made it smaller (${label} ${v})`,
+  sideSet: (label: string, v: string) => `Set its ${label} to ${v}`,
+  sideCleared: (label: string) => `Cleared its ${label}`,
+  sideItsValue: "value",
+  sideChangedField: (label: string) => `Changed its ${label}`,
+  sideChanged: "Changed it",
+  sideMore: (n: number) => `and ${plural(n, "more change", "more changes")}`,
+  // ... as a verb phrase for the title ("you and Claude Code both moved it")
+  didMove: "moved it",
+  didTrim: "trimmed it",
+  didRetime: "changed when it plays",
+  didSlip: "slipped it",
+  didAdd: "added it",
+  didRemove: "removed it",
+  didReorder: "reordered it",
+  didRename: "renamed it",
+  didChange: "changed it",
+  didChangeField: (label: string) => `changed its ${label}`,
+  // ... and as a noun for the viewing label ("Claude Code's move of “Interview B”")
+  whatMove: "move",
+  whatTrim: "trim",
+  whatRetime: "timing",
+  whatSlip: "slip",
+  whatAdd: "placement",
+  whatRemove: "removal",
+  whatRename: "renaming",
+  whatEdit: "edit",
 
   // Fold dialog
   foldInChanges: "Fold in changes",

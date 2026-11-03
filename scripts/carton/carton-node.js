@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
+import { cardboardValue, describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
@@ -498,6 +498,18 @@ async function keepStepCards(lc, bundlePath, author, which, cards) {
 // `sameCard` tells them apart) once, so resolving a card removes every kept card identical to it, and no other. An
 // agent's view-save cards are the other way round; sync/view-cards.js shows them to the person (`agentCards`).
 const panels = new Map();
+// An agent working on a project (UX redesign 0.7): the in-app turn main says is running, per bundle and chat, newest
+// last. Every History panel on that project shows it (fromCarton's setWorking), one opened later too.
+const workingTurns = new Map();
+// The newest running turn of a bundle, in fromCarton's setWorking shape, or null.
+const workingOf = (bundlePath) => {
+  const turns = [...(workingTurns.get(bundlePath)?.values() ?? [])];
+  return turns.at(-1) ?? null;
+};
+const showWorking = (bundlePath) => {
+  const w = workingOf(bundlePath);
+  for (const h of panels.get(bundlePath) ?? []) try { h.setWorking?.(w); } catch {}
+};
 
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
@@ -1538,12 +1550,16 @@ export const cardboard14 = {
       const lc = await lcOf(projectId);
       if (!lc) return null;
       const me = meOf(lc);
-      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids.
-      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard });
+      // Cards and change rows in the editor's words: what each side did differently, a clip by its media's file name,
+      // volume in percent, speed as ×; never ids. A card's sides are change sentences too ("Moved it to start at 0:20",
+      // docs/carton-ux PLAN 7.1), in the same units.
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue });
       const ui = handle.ui ?? handle;
       const bundlePath = bundleOf(projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
       panels.get(bundlePath).add(handle);
+      // an agent already working on it (0.7)
+      if (workingOf(bundlePath)) handle.setWorking?.(workingOf(bundlePath));
       // Cards kept from earlier GUI saves are shown too, until resolved: each on the cut its change was made on (core's
       // notice says which). fromCarton files a reported card under the cut it is on, so a notice is reported only while
       // the panel is on its cut: at the start, and again after the panel switches cut (review H8 r2 #3: one from cut A
@@ -1574,7 +1590,7 @@ export const cardboard14 = {
       // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
       // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
       // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "undoTurnOf", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).
@@ -1729,6 +1745,25 @@ export const cardboard14 = {
       // `until`, its end. Review P2 (lap2): those actors are the same in every turn of a session, and the request can
       // reach this worker after the next turn's edits; bounded by the turn's end, it never takes the next turn's version
       // (a request without `until` has no end, as before).
+      // An in-app agent turn started or ended (main's turnStarted / turnEnded; UX redesign 0.7): the project's History
+      // panels show it working ("Director · Working · 2 changes so far") until it ends. `actors`: the ids its edits are
+      // recorded by. The prompt is its row's title, never logged.
+      working: async ({ projectId, chat, done, provider, actor, prompt, since, actors }) => {
+        const bundlePath = bundleOf(projectId);
+        if (!bundlePath || typeof chat !== "string") return { status: "unavailable" };
+        let turns = workingTurns.get(bundlePath);
+        if (done) turns?.delete(chat);
+        else {
+          const label = turnLabel(prompt) || "Working";
+          if (!turns) workingTurns.set(bundlePath, (turns = new Map()));
+          turns.delete(chat); // newest last
+          const name = { director: "Director", claude: "Claude Code", codex: "Codex", gemini: "Gemini", cursor: "Cursor" }[provider] ?? String(provider ?? "Agent");
+          turns.set(chat, { actor: { kind: "agent", id: String(actor ?? `${provider}/${chat}`), name }, label, ...(typeof since === "number" ? { since } : {}), ...(Array.isArray(actors) ? { actors: actors.map(String) } : {}) });
+        }
+        if (turns && !turns.size) workingTurns.delete(bundlePath);
+        showWorking(bundlePath);
+        return { status: "ok" };
+      },
       nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };

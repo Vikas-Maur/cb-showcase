@@ -52,10 +52,11 @@ Cardboard's own team, which has the source, would use React directly with no cha
 
 | Component | What it shows |
 |---|---|
-| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's) as checkpoints, who and when down to the subagent, "Waiting to sync" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
+| `HistoryPanel` | Versions, newest first, virtualized. Named versions, agent turns (the Director's, Claude Code's, Codex's), who and when down to the subagent, "Not sent yet" on provisional ones (L5). A version of several changes reads as one line, with every change on expand. Preview, Compare with current, name, new cut from here, Restore |
 | `CutsMenu` | Switch cuts, new cut from here, rename, fold into Main. Someone else's cuts are read-only and named by owner ("Bob's Main cut") |
 | `FoldInDialog` | What folding in brings, in plain words. Leave changes out (fold in some of it), pick on conflict cards first, "You can fold in the rest later". §13's missing-base text when the copy builds on a version you don't have |
-| `ConflictCard`, `ConflictList` | Both edits, who made each and which one shows now. Keep mine / Keep theirs / Keep both |
+| `ConflictCard`, `ConflictList` | What each side did to which clip, in words ("“Interview B”: you and Claude Code both moved it"; "Moved it to start at 0:20"), and which side the timeline shows. Sides as a radio group that only picks; See it views a side (`view({ kind: "conflict" })`, or the host's deprecated `onPreview`); one Keep that names the pick; the line during the other side's agent turn, and "Pick again" when its values changed. With `onPick` (the Fold dialog): the pre-redesign card, until the dialog's own pick rows |
+| `ConflictStack` | One card at a time with "1/2 ›"; "Not now" folds it into the "N conflicts to pick" pill and sends it to the back. Waits as the pill while the host folds it or the stage shows anything else; the pill brings your edit back |
 | `CompareCard` | Time, author, clip count, length, and "N shots / X s of Y s differ" |
 | `CreditsPopover` | Who last changed each part of a clip ("Director › Explore") |
 | `UndoTurnButton` | "Undo Director: tighter intro": the whole turn |
@@ -63,11 +64,37 @@ Cardboard's own team, which has the source, would use React directly with no cha
 | `PresenceAvatars`, `GhostLayer` | People, each with their agents and subagents; ghosts of remote drags over your timeline |
 | `SyncStatusWords` | Syncing · Up to date · Offline: N edits waiting |
 | `WatchTheChanges` | The shot diff laid out like a side-by-side text diff, with Play changes and an aligned Before/After toggle |
-| `PreviewBanner` | "Previewing …", read-only, with "Return to current to edit" (§9 R2-16) |
+| `PreviewBanner` | "You're looking at …", with "Back to my edit" (§9 R2-16). Retired by the viewing frame (UX redesign PLAN 1.1) |
 
 The components carry roles, keyboard handling and class names, and no colours. `skin/cardboard` styles them to look
 native in Cardboard: it reads Cardboard's CSS variables (`--popover`, `--surface-raised`, `--font-sans`…), with 1.4.0's
 values as fallbacks.
+
+## The UX redesign's view model (docs/carton-ux, PLAN workstream 0)
+
+What the redesigned History, Changes view, cuts and Fold, and conflict cards read. The mock implements all of it with the
+mockups' story (Main cut today, a 0:38 edit), so components can be built before the engine is wired.
+
+| Read or call | What it gives |
+|---|---|
+| `changes(a, b)` | Every change from `a` to `b` as change rows (`Change`: `text`, `kind` add/remove/change, `clip` kind, `itemId`, `at`/`end` in seconds, `author`, `when`), in timeline order. One per change as core's `countChanges` counts them, so `.length` is the count every other place shows. Kept per pair of versions. Never reads a shot diff |
+| `changesIn(versionId)` | What one History row did (a turn: all of it, from before its first version): the version card's rows |
+| `viewing()`, `view(target)` | What the stage shows when it isn't your edit, with one label for the chip, the frame and the row ("Director's “Add captions…”", "Before …", "Claude Code's move of “Interview B”", "Leo's Main cut"). `view` loads first and rejects with "Couldn't load this version. Try again."; `view(null)` is back. `openPreview` stays as a deprecated alias |
+| `undoTurnOf(versionId)` | Takes out one agent turn, any turn; later edits stay; a clash is a conflict card |
+| `working()` | An agent's in-app turn holding the timeline: `{ actor, label, edits, since }` |
+| `clipVersions(itemId)`, filter `{ item }` | The versions that touched one clip, from the per-version index core keeps at save (no diff at 10k versions). Filters also take `"mine"` |
+| `versionLabel(v)`, `clock(at)` | The one label for a version (its name, an agent's prompt cut to 24 characters, or "your edit from 12:41 pm") and the one clock (always am/pm, "yesterday at 4:10 pm") |
+| `groupHistory(…, { group: true })` | Day rows plus a person's run of edits as one group row, an agent turn as one row, the start of History as one "Project created" row, the newest flagged `now` |
+
+Version rows carry `changes` (how many), `leftOut` (a partial fold's), `base` (where their changes start), `run` (the
+turn they're part of) and `start`. Every sentence comes from core's `changeList` (one table, DESIGN §8).
+
+A conflict card's sides carry their change sentence about the card's clip (`ConflictSide.text`: "Moved it to start at
+0:20"), a verb phrase for its title (`did`: "moved it") and a noun for the viewing label (`what`: "move"); the card
+carries the clip's name (`clip`) and, when the host can say, what Keep both makes (`both`). `cardSentences(card, schema,
+doc, valueWords)` reads them from one of core's cards; `conflictWords(conflict, nameOf)` is everything a card says (title,
+lead, side names, Keep names, viewing labels), so the card, `view()`'s label and the pick's toast (`keptText`) agree.
+`summary` stays core's describeCard.
 
 ## Performance, by design
 

@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import {
   CartonProvider,
   CompareCard,
-  ConflictList,
   CreditsPopover,
   CutsMenu,
   FoldInDialog,
@@ -49,8 +48,8 @@ test(name("History renders a window of a 10k list, marks checkpoints, named and 
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: "main@10000" })));
   const rows = $$(m.container, "[role=option]");
   assert.ok(rows.length > 5 && rows.length < 40, `${rows.length} rows in the DOM for 10,004 versions`);
-  assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Waiting to sync/.test(r.textContent ?? "")));
-  assert.ok(rows.some((r) => r.dataset.kind === "turn" && /Checkpoint/.test(r.textContent ?? "") && /Tighten the intro/.test(r.textContent ?? "")));
+  assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Not sent yet/.test(r.textContent ?? "")));
+  assert.ok(rows.some((r) => r.dataset.kind === "turn" && !/Checkpoint/.test(r.textContent ?? "") && /Tighten the intro/.test(r.textContent ?? "")));
   assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client/.test(r.textContent ?? "")));
   // The list's full height is there for the scrollbar: 10k versions over several days are grouped by day (UI audit
   // P2-17), every day but the newest folded to its named versions and turns, so the height is the rows shown.
@@ -80,8 +79,9 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
   assert.equal(list.getAttribute("aria-activedescendant"), active[0]!.id);
   await key(list, "Enter");
   assert.ok(ui.preview(), "a preview is open");
-  assert.match(m.container.textContent ?? "", /Previewing/);
-  await click(byText(m.container, "button", "Return to current to edit"));
+  assert.match(m.container.textContent ?? "", /You're looking at/);
+  assert.doesNotMatch(m.container.textContent ?? "", /Read-only|Previewing/);
+  await click(byText(m.container, "button", "Back to my edit"));
   assert.equal(ui.preview(), null);
   await m.unmount();
 });
@@ -131,23 +131,6 @@ test(name("narrow subscriptions: ghosts and presence never touch History; a sync
   await act(() => void ui.addVersion({ author: people.bob }));
   await flush();
   for (const r of firstRows) assert.ok(r.isConnected, "existing row element kept");
-  await m.unmount();
-});
-
-test(name("conflict cards: both edits shown, Keep theirs resolves and the card goes away"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const m = await render(wrap(ui, h(ConflictList)));
-  assert.match(m.container.textContent ?? "", /2 conflict cards waiting/);
-  const card = $$(m.container, ".carton-conflict")[1]!;
-  assert.match(card.textContent ?? "", /Summer sale/);
-  assert.match(card.textContent ?? "", /Summer launch/);
-  assert.ok(byText(card, "button", "Keep both"), "Keep both offered when both can be kept");
-  // Each choice says whose edit it keeps; on one cut there is no "where".
-  assert.ok(byText(card, "button", "Keep yours"));
-  await click(byText(card, "button", "Keep Bob Okafor's"));
-  assert.equal($$(m.container, ".carton-conflict").length, 1);
-  assert.match(m.container.textContent ?? "", /1 conflict card waiting/);
-  assert.equal(byText(m.container, "button", "Keep both"), null, "the timing card can't keep both");
   await m.unmount();
 });
 
@@ -211,7 +194,7 @@ test(name("compare card: time, author, clips, length, and what changed (N change
   assert.doesNotMatch(text, /shots? \//, "never shots (UI audit P2-5)");
   assert.match(text, /clips/);
   assert.match(text, /\d:\d\d\.\d/);
-  await click(byText(m.container, "button", "Watch the changes"));
+  await click(byText(m.container, "button", "Play all"));
   assert.deepEqual(watched, ["main@3", "main@9"]);
   await m.unmount();
 });
@@ -264,12 +247,12 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", onFrame: (s: string, t: number) => frames.push([s, t]) })));
   await flush();
   const root = $(m.container, ".carton-watch")!;
-  assert.match(root.textContent ?? "", /Section 1 of 4/);
+  assert.match(root.textContent ?? "", /1 of 4/);
   assert.equal($$(root, ".carton-strip").length, 2);
   assert.ok($$(root, "[data-kind=fold]").length >= 2, "unchanged runs folded");
   assert.ok($$(root, "[data-tone=removed]").length === 1 && $$(root, "[data-tone=added]").length === 1);
-  await click($(root, "[aria-label='Next section']"));
-  assert.match(root.textContent ?? "", /Section 2 of 4/);
+  await click($(root, "[aria-label='Next']"));
+  assert.match(root.textContent ?? "", /2 of 4/);
   const before = byText(root, "[role=radio]", "Before")!;
   await click(before);
   assert.equal(before.getAttribute("aria-checked"), "true");
