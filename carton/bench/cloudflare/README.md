@@ -104,7 +104,10 @@ removes it all and restores `ip_forward`.
   - if time is left, a replica through the proxy shaped to 1 Mbit/s and 100 ms each way.
 
   It writes one results JSON next to itself (also on Ctrl+C) and stops within 20 minutes. Afterwards, `purge.ts
-  --project <id> --end-test <name>` deletes the project's blobs and ends its guard entry.
+  --project <id> --end-test <name>` retires the project, deletes its blobs and ends its guard entry. A purge is the
+  end of a project's life: its keyframes and segments are gone, so a replica joining it could never catch up. A
+  retired project's pack refuses to start, and its room refuses WebSockets; another run needs a fresh config
+  (stuck-sync, 2026-11-03: a pack ran a second time on its purged project and every replica stayed "syncing").
 
 ```sh
 cd carton

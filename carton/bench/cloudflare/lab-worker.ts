@@ -1,7 +1,14 @@
 // The lab's Worker: Carton's real Worker (packages/server-cloudflare/src/worker.ts), unchanged, plus two routes the
 // lab needs and the product doesn't have, both behind the deployment's ADMIN_TOKEN (Bearer):
 //   POST /api/lab/projects/:p/purge   delete up to 400 of the project's blobs (media and sequencer scopes) per call:
-//                                     {deleted, more}; the lab calls it until `more` is false (every test cleans up)
+//                                     {deleted, more}; the lab calls it until `more` is false (every test cleans up).
+//                                     `?retire=1` first retires the project: a purge is the end of a project's life, and
+//                                     one whose sessions outlive it (a laptop pack's config: 48 hours) must not be run
+//                                     again (stuck-sync, 2026-11-03: the pack ran a second time on its purged project;
+//                                     its keyframes were gone, so no replica ever got up to date, and its 100 MB upload
+//                                     went to a project nothing purges again). A retired room refuses WebSockets (410)
+//   GET  /api/lab/projects/:p/retired whether the project is retired ({retired, at}), for a session of the project (the
+//                                     laptop asks before anything else) or the admin token
 //   GET  /api/lab/projects/:p/stats   the room's own counters (rows read and written by its SQL, database size)
 //   POST /api/lab/projects/:p/vault-drop-uploads   drop the project's unfinished vault uploads (their parts stay in
 //                                     the DO's SQLite otherwise: the vault has no lifecycle rule), and its size after
@@ -11,12 +18,49 @@
 //                                     room), so the lab reads each run's own objects from the analytics even when
 //                                     several runs share the clock (idFromName only: wakes no object)
 // Deletes are free on R2 and count as rows written on the vault.
-import worker, { ProjectRoom, BlobVault as RealBlobVault } from "../../packages/server-cloudflare/src/worker.ts";
+import worker, { ProjectRoom as RealProjectRoom, BlobVault as RealBlobVault } from "../../packages/server-cloudflare/src/worker.ts";
+import { createHmacAuth } from "@carton/server";
 import type { DurableObjectState, ExecutionContext } from "../../packages/server-cloudflare/src/cf.ts";
 import { mediaBlobs, sequencerBlobs, AUTH_HEADER, PROJECT_HEADER } from "../../packages/server-cloudflare/src/room.ts";
 import type { Env } from "../../packages/server-cloudflare/src/env.ts";
 
-export { ProjectRoom };
+// The room, plus the lab's retirement (`purge?retire=1`): one row, read once per instance and only for a WebSocket
+// upgrade or the lab's own routes (a room never retired has no table, so the read costs no row).
+const RETIRED_WORDS = "this lab project was cleaned up after its run and can't be used again: ask for a fresh config.json";
+export class ProjectRoom extends RealProjectRoom {
+  readonly #lab: DurableObjectState;
+  /** When the project was retired, null if never; undefined until read. */
+  #retired: number | null | undefined;
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
+    this.#lab = state;
+  }
+  #retiredAt(): number | null {
+    if (this.#retired === undefined) {
+      try {
+        const row = this.#lab.storage.sql.exec<{ at: number }>("SELECT at FROM lab_retired LIMIT 1").toArray()[0];
+        this.#retired = row ? Number(row.at) : null;
+      } catch {
+        this.#retired = null; // no table: never retired
+      }
+    }
+    return this.#retired;
+  }
+  override async fetch(req: Request): Promise<Response> {
+    const path = new URL(req.url).pathname;
+    if (path === "/lab/retire" && req.method === "POST") {
+      if (this.#retiredAt() === null) {
+        const sql = this.#lab.storage.sql;
+        sql.exec("CREATE TABLE IF NOT EXISTS lab_retired (at INTEGER NOT NULL)");
+        sql.exec("INSERT INTO lab_retired (at) VALUES (?)", (this.#retired = Date.now()));
+      }
+      return Response.json({ retired: true, at: this.#retired });
+    }
+    if (path === "/lab/retired") return Response.json({ retired: this.#retiredAt() !== null, at: this.#retiredAt() });
+    if (path.endsWith("/ws") && this.#retiredAt() !== null) return new Response(RETIRED_WORDS, { status: 410 });
+    return super.fetch(req);
+  }
+}
 
 // The vault, plus the lab's cleanup of unfinished uploads and a size probe (the class name the binding uses).
 export class BlobVault extends RealBlobVault {
@@ -41,7 +85,7 @@ export class BlobVault extends RealBlobVault {
   }
 }
 
-const LAB = /^\/api\/lab\/projects\/([A-Za-z0-9._~-]{1,128})\/(purge|stats|vault-drop-uploads|ids)$/;
+const LAB = /^\/api\/lab\/projects\/([A-Za-z0-9._~-]{1,128})\/(purge|stats|vault-drop-uploads|ids|retired)$/;
 
 async function admin(req: Request, env: Env): Promise<boolean> {
   const given = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
@@ -87,8 +131,16 @@ export default {
     }
     const m = LAB.exec(path);
     if (!m) return worker.fetch(req, env, ctx);
-    if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
     const [, projectId, what] = m;
+    const roomOf = () => env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(projectId!));
+    // a session of this project may ask too (the laptop's config holds sessions, never the admin token)
+    if (what === "retired") {
+      const given = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+      const session = given && env.AUTH_SECRET ? await createHmacAuth({ secret: env.AUTH_SECRET }).verify(given).catch(() => null) : null;
+      if (session?.projectId !== projectId && !(await admin(req, env))) return Response.json({ error: "a session of this project required" }, { status: 401 });
+      return roomOf().fetch("https://room/lab/retired");
+    }
+    if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
     if (what === "ids") {
       const day = new Date().toISOString().slice(0, 10);
       return Response.json({
@@ -106,6 +158,9 @@ export default {
       const sys = { account: "lab", credential: "lab/stats", role: "owner", projectId, expires: Date.now() + 60_000 };
       return room.fetch(new Request(`https://room/${projectId}/stats`, { headers: { [PROJECT_HEADER]: projectId!, [AUTH_HEADER]: JSON.stringify(sys) } }));
     }
+    // retired before anything is deleted: a run that starts meanwhile is refused, never left half-served
+    let retired = false;
+    if (new URL(req.url).searchParams.get("retire") === "1") retired = ((await (await roomOf().fetch("https://room/lab/retire", { method: "POST" })).json()) as { retired: boolean }).retired;
     let budget = 400, deleted = 0, more = false;
     for (const store of [mediaBlobs(env, projectId!), sequencerBlobs(env, projectId!)]) {
       if (!store) continue;
@@ -117,6 +172,6 @@ export default {
       }
       if (budget <= 0) break;
     }
-    return Response.json({ deleted, more });
+    return Response.json({ deleted, more, ...(retired ? { retired } : {}) });
   },
 };

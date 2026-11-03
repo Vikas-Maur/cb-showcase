@@ -398,6 +398,11 @@ class Replica {
   stop(): void {
     this.client.stop();
   }
+  /** Why it isn't up to date, in the words its client last got (" (syncing; the server said: …)"). */
+  why(): string {
+    const last = this.events.findLast((e) => e.ev === "error" || e.ev === "offline");
+    return `(${this.client.status}${last?.detail ? `; ${last.ev === "error" ? "the server said" : "offline"}: ${last.detail}` : ""})`;
+  }
   get upToDate(): boolean {
     return this.client.status === "up-to-date";
   }
@@ -549,11 +554,11 @@ let A: Replica | null = null;
 async function replicaA(signal: AbortSignal): Promise<Replica> {
   if (A && !A.client.stopped) return A;
   A = new Replica("A", wsUrl(HOST), cfg.tokens.a).start();
-  if (!(await until(() => A!.upToDate, 45_000, signal))) throw new Error(`replica A never got up to date (${A.client.status})`);
+  if (!(await until(() => A!.upToDate, 45_000, signal))) throw new Error(`replica A never got up to date ${A.why()}`);
   return A;
 }
 async function joined(r: Replica, ms: number, signal: AbortSignal, how = ""): Promise<number | null> {
-  if (!(await until(() => r.upToDate, ms, signal))) throw new Error(`replica ${r.name}${how} never got up to date (${r.client.status})`);
+  if (!(await until(() => r.upToDate, ms, signal))) throw new Error(`replica ${r.name}${how} never got up to date ${r.why()}`);
   return r0((r.upToDateAt(r.startedAt) ?? NaN) - r.startedAt);
 }
 const rand = rng(Number.parseInt(runRid, 16) || 1);
@@ -619,6 +624,17 @@ async function cutWindow(r: Replica, peer: Replica, proxy: LinkProxy, cutMs: num
 
 // ---------------------------------------------------------------- the steps
 const MB = 1_000_000, MiB = 1 << 20;
+// A config whose project the lab cleaned up since (purge.ts retires it) can't run again: the purge deleted the
+// project's history, so no replica could catch up, and an upload would leave bytes nothing cleans up (stuck-sync,
+// 2026-11-03: a second run of one pack). Asked before anything is sent; a lab host from before this answers no.
+try {
+  const r = await fetch(`${HOST}/api/lab/projects/${encodeURIComponent(cfg.projectId)}/retired`, { headers: { authorization: `Bearer ${cfg.tokens.a}` }, signal: AbortSignal.timeout(20_000) });
+  const j = r.ok ? ((await r.json()) as { retired?: boolean }) : null;
+  if (j?.retired === true) {
+    console.error("This config.json was used for a run already, and its test project has been cleaned up since, so it can't run again. Please ask us for a fresh config.json.");
+    process.exit(2);
+  }
+} catch {} // no answer (an older lab host, no network yet): the probe tells
 log(`Carton lab, laptop client. Host ${HOST}, project ${cfg.projectId}. Results: ${outPath}`);
 log(`This takes ${MAX_MS > 10 * 60_000 ? "about 5-10 minutes on a typical home connection, never more than" : "at most"} ${MAX_MS / 60_000} minutes, and sends about ${UPLOAD_MB + 5} MB. Ctrl+C stops it and keeps what was measured.`);
 save();
@@ -844,7 +860,7 @@ await step("upload", Math.min(15 * 60_000, deadline - now() - 3 * 60_000), async
     if (!b) return;
     // (a fast upload may be over before B is up to date)
     await until(() => b.upToDate || !editing, 30_000, signal).catch(() => false);
-    if (!b.upToDate) return void (out.liveSyncError = `replica B wasn't up to date in time (${b.client.status})`);
+    if (!b.upToDate) return void (out.liveSyncError = `replica B wasn't up to date in time ${b.why()}`);
     const t0 = now();
     // at most 150 edits (7.5 minutes at the default 3 s): the guard's worst case counts them
     for (let i = 0; editing && ids.length < 150; i++) {
