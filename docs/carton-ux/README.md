@@ -27,4 +27,9 @@ product code changes here.
 - **`before/gallery/`:** today's components and composition, rendered with Cardboard's CSS on mock data. The rig is
   `capture-rig.patch` (for `carton/packages/react/gallery/`); `before/README-capture.md` says how to run it.
 
+- **`qa/`:** a design QA of the **built** UI (`feat/carton-ux` @ `937f750b`), done after all ten workstreams merged:
+  - `QA.md`: scores per region, now against PLAN's targets, and every gap with its fix;
+  - `qa/shots/`: the build beside each mockup;
+  - `qa/rig-qa/`: the states it added to the capture rig.
+
 PNGs are reduced to a 256-colour palette to keep this folder small.
