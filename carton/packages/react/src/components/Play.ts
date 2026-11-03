@@ -8,8 +8,9 @@
 // - Before: hold the button (or B while the list has focus) to view the older side at the same moment; release to
 //   come back. A click latches it (keyboards, screen readers). The older side is loaded ahead when playing starts
 //   (`host.prefetch`), so the flip doesn't wait for it.
-// - Per frame, nothing goes through React: the player writes the lit row's progress line and the change map's playhead
-//   by transform, and calls the host's `onFrame` (Cardboard: the editor's playhead, ≤ 10 seeks a second). React hears
+// - Per frame, nothing goes through React: the player moves the lit row's progress line (ChangeRow's
+//   setChangeProgress) and the change map's playhead (ChangeMap's moveMapPlayhead) by transform, and calls the host's
+//   `onFrame` (Cardboard: the editor's playhead, ≤ 10 seeks a second). React hears
 //   only which spot is lit and play/pause.
 // - Play never selects a clip (Cardboard's own Esc would clear the selection first and swallow the person's Esc).
 
@@ -18,6 +19,8 @@ import { useCartonUi, useTopic, useWords } from "../hooks.ts";
 import type { Change, Viewing, ViewTarget } from "../model.ts";
 import { SpanPlayer, playSteps, stepFor, type Clock, type SpanState, type StepOptions } from "../player.ts";
 import { Button, cx } from "./ui.ts";
+import { setChangeProgress } from "./ChangeRow.ts";
+import { moveMapPlayhead } from "./ChangeMap.ts";
 
 /** What a host gives Play: its player's playhead, a way to load a version ahead, and the edit's length. */
 export interface PlayHost {
@@ -43,7 +46,7 @@ export interface PlayOptions {
   newer: PlayTarget | null;
   /** What Before shows (the older side), or null when there is none. */
   older: PlayTarget | null;
-  /** The length of the side played, for the steps (none past its end) and the map. */
+  /** The length of the side played, when known: no spot plays past its end. */
   length?: number;
   host?: PlayHost;
   steps?: StepOptions;
@@ -68,7 +71,7 @@ export interface Playback {
   toggle(): void;
   stop(): void;
   readonly before: BeforeControl;
-  /** Put on the element holding the rows and the map: the per-frame writes look for their marks inside it. */
+  /** Put on the element holding the rows and the map: the per-frame writes look for them inside it. */
   readonly rootRef: (el: HTMLElement | null) => void;
 }
 
@@ -109,9 +112,8 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const [latched, setLatched] = useState(false);
   const opts = useRef(o);
   opts.current = o;
-  const length = o.length ?? 0;
-  const lengthRef = useRef(length);
-  lengthRef.current = length;
+  const lengthRef = useRef(o.length ?? 0);
+  lengthRef.current = o.length ?? 0;
   // A session's own id: an answer from a session given up meanwhile (stopped, or another Play) does nothing.
   const run = useRef(0);
 
@@ -152,34 +154,30 @@ export function usePlayChanges(o: PlayOptions): Playback {
     };
   }, [player]);
 
-  const lastTime = useRef(0);
+  const lastTime = useRef<number | null>(null);
   const lastProgress = useRef(0);
-  const headPct = (t: number) => {
-    const len = lengthRef.current;
-    return len > 0 ? Math.min(100, Math.max(0, (t / len) * 100)) : 0;
-  };
   const root = useRef<HTMLElement | null>(null);
-  const marks = useRef<{ bars: HTMLElement[]; head: HTMLElement | null }>({ bars: [], head: null });
+  // The rows being played (ChangeRow's data-playing) and the change map, found after each render, never per frame.
+  const marks = useRef<{ rows: HTMLElement[]; map: HTMLElement | null }>({ rows: [], map: null });
   const rootRef = useCallback((el: HTMLElement | null) => {
     root.current = el;
   }, []);
-  // After each render (a step lit, a row mounted): find the marks the frames move. Never per frame.
   useLayoutEffect(() => {
     const el = root.current;
-    marks.current = el ? { bars: [...el.querySelectorAll<HTMLElement>("[data-carton-progress]")], head: el.querySelector<HTMLElement>("[data-carton-maphead]") } : { bars: [], head: null };
-    const p = player.state.step >= 0 ? lastProgress.current : 0;
-    for (const b of marks.current.bars) b.style.transform = `scaleX(${p})`;
-    if (marks.current.head) marks.current.head.style.transform = `translateX(${headPct(lastTime.current)}%)`;
+    marks.current = el ? { rows: [...el.querySelectorAll<HTMLElement>(".carton-change[data-playing]")], map: el.querySelector<HTMLElement>(".carton-map") } : { rows: [], map: null };
+    const on = player.state.step >= 0;
+    for (const r of marks.current.rows) setChangeProgress(r, on ? lastProgress.current : 0);
+    moveMapPlayhead(marks.current.map, on ? lastTime.current : null);
   });
   useEffect(
     () =>
       player.onFrame((t, p) => {
         lastProgress.current = p;
         const m = marks.current;
-        for (const b of m.bars) b.style.transform = `scaleX(${p})`;
+        for (const r of m.rows) setChangeProgress(r, p);
         if (t === null) return;
         lastTime.current = t;
-        if (m.head) m.head.style.transform = `translateX(${headPct(t)}%)`;
+        moveMapPlayhead(m.map, t);
         host.current?.onFrame?.(t);
       }),
     [player],

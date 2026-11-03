@@ -63,11 +63,11 @@ test(name("P2-1, P2-5 (the Changes view, PLAN 4.1): it takes focus, Esc closes o
   await click(row.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Compare with your edit"));
   await flush();
-  const view = $(m.container, ".carton-changes")!;
+  const view = $(m.container, ".carton-changes-view")!;
   assert.ok(view.contains(document.activeElement), "focus is in the Changes view");
   await key(document.activeElement, "Escape");
   await raf();
-  assert.equal($(m.container, ".carton-changes"), null);
+  assert.equal($(m.container, ".carton-changes-view"), null);
   assert.equal(outer, 0, "the panel around it never saw that Esc");
   assert.ok((document.activeElement as HTMLElement).classList.contains("carton-history-list"));
   assert.equal($(m.container, ".carton-version[data-active] .carton-version-text")?.textContent, title, "on the row it came from");

@@ -71,7 +71,7 @@ test(name("the Changes view says the range in words, lists every change in timel
   const hs = host();
   const m = await render(wrap(ui, h(ChangesView, { from: director, onBack: () => {}, host: hs.play })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   assert.match($(root, ".carton-changes-title")!.textContent!, /^Changes since \d{1,2}:\d{2} (am|pm)$/);
   assert.equal($(root, ".carton-changes-sub")!.textContent, "From Director's “Add captions to the interview” to your edit now");
   const list = await ui.changes(director.ref, ui.cuts().find((c) => c.current)!.head);
@@ -79,10 +79,12 @@ test(name("the Changes view says the range in words, lists every change in timel
   assert.equal(rows.length, list.length, "one row per change, as changes() counts them");
   const ats = list.map((c) => c.at ?? Infinity);
   assert.deepEqual(ats, [...ats].sort((x, y) => x - y), "timeline order, the changes with no place last");
-  assert.equal(rows.at(-1)!.querySelector(".carton-change-at")!.textContent, "—", "the frame rate has no place");
+  assert.equal(rows.at(-1)!.querySelector(".carton-change-time")!.textContent, "—", "the frame rate has no place");
   assert.match(rows[0]!.textContent!, /^0:0\d/);
   assert.equal($(root, ".carton-changes-ends")!.lastElementChild!.textContent, `${list.length} changes · 0:38`);
-  assert.equal($$(root, ".carton-change-tick").length, list.filter((c) => c.at != null).length);
+  // a tick per change with a place (two of one kind within 1/240 of the edit share one: ChangeMap)
+  const ticks = $$(root, ".carton-map-tick").length;
+  assert.ok(ticks > 0 && ticks <= list.filter((c) => c.at != null).length, `${ticks} ticks`);
   // mixed authors: each row says who and when
   assert.ok(rows.every((r) => /(Claude Code|You|Director) · \d/.test(r.querySelector(".carton-change-who")?.textContent ?? "")));
   assert.equal(ui.viewing(), null, "opening it shows nothing on the stage");
@@ -101,22 +103,24 @@ test(name("Play all on your edit: nothing viewed, the rows light in order, the p
   const hs = host();
   const m = await render(wrap(ui, h(ChangesView, { from: director, onBack: () => {}, host: hs.play })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   await click(byText(root, "button", "Play all"));
   assert.equal(ui.viewing(), null, "the newer side is your edit: no viewing");
   assert.ok(hs.prefetched.includes(director.ref), "Before's side is loaded ahead when playing starts");
   assert.ok(byText(root, "button", "Pause"));
-  const lit = () => $$(root, ".carton-change[data-lit]").map((r) => r.querySelector(".carton-change-at")!.textContent);
+  const lit = () => $$(root, ".carton-change[data-playing], .carton-change[data-active]").map((r) => r.querySelector(".carton-change-time")!.textContent);
   const first = lit();
   assert.ok(first.length >= 1, "the first spot is lit");
   assert.ok($(root, ".carton-before"), "Before while playing");
-  assert.ok($(root, "[data-carton-maphead]"), "the map shows the playhead");
+
   // frames: the progress line and the map's playhead move by transform, the host's playhead follows, React stays still
   renders.clear();
   await hs.fc.frames(5);
-  const bar = $(root, ".carton-change[data-lit] [data-carton-progress]")!;
+  const bar = $(root, ".carton-change[data-playing] .carton-change-progress-fill")!;
   assert.match(bar.style.transform, /^scaleX\(0\.\d+\)$/);
-  assert.match($(root, "[data-carton-maphead]")!.style.transform, /^translateX\(\d+(\.\d+)?%\)$/);
+  const head = $(root, ".carton-map-playhead")!;
+  assert.equal(head.hidden, false, "the map shows the playhead");
+  assert.match(head.style.transform, /^translateX\(\d+(\.\d+)?%\)$/);
   assert.equal(hs.frames.length >= 5, true);
   assert.ok(hs.frames.every((t, i) => i === 0 || t >= hs.frames[i - 1]!), "the playhead only moves on");
   const perFrame = [...renders.entries()].filter(([n]) => /ChangesView|ChangeRow|ChangeMap/.test(n));
@@ -127,15 +131,15 @@ test(name("Play all on your edit: nothing viewed, the rows light in order, the p
   const coarse = [...renders.entries()].filter(([n]) => /ChangeRow/.test(n)).reduce((a, [, k]) => a + k, 0);
   assert.ok(coarse > 0 && coarse < 150, `${coarse} row renders over 150 frames: only when the lit row moved`);
   // the lit row's own button reads Pause, and pauses: the place is kept
-  const own = $(root, ".carton-change[data-lit] .carton-change-play")!;
+  const own = $(root, ".carton-change[data-playing] .carton-change-play")!;
   assert.equal(own.getAttribute("aria-label"), "Pause");
   await click(own);
   assert.ok(byText(root, "button", "Play all"), "paused");
-  assert.equal($$(root, ".carton-change[data-lit]").length, 1, "still lit where it paused");
+  assert.equal($$(root, ".carton-change[data-active]").length, 1, "still lit where it paused");
   // Space (the list has focus, and it stops there) goes on
   let reached = 0;
   m.container.parentElement!.addEventListener("keydown", () => reached++);
-  await key($(root, "[role=listbox]"), " ");
+  await key($(root, ".carton-change"), " ");
   assert.ok(byText(root, "button", "Pause"), "playing again");
   assert.equal(reached, 0, "Cardboard's own Space never sees it");
   assert.equal(ui.viewing(), null);
@@ -148,7 +152,7 @@ test(name("Play on an older version views it first; Before held shows the older 
   const hs = host();
   const m = await render(wrap(ui, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: hs.play })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   assert.match($(root, ".carton-changes-title")!.textContent!, /^Changes from \d{1,2}:\d{2} (am|pm) to \d{1,2}:\d{2} (am|pm)$/);
   assert.match($(root, ".carton-changes-sub")!.textContent!, /^From Director's “Add captions to the interview” to your edit from /);
   await click(byText(root, "button", "Play all"));
@@ -175,7 +179,7 @@ test(name("Play on an older version views it first; Before held shows the older 
   // B held while the list has focus does the same; it stops there (the editor's own B never sees it)
   let reached = 0;
   document.addEventListener("keydown", () => reached++);
-  const listEl = $(root, "[role=listbox]")!;
+  const listEl = $(root, ".carton-change")!;
   await act(() => void listEl.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true })));
   await flush();
   assert.equal(ui.viewing()?.ref, director.ref);
@@ -194,7 +198,7 @@ test(name("Before on your edit: let go is back to your edit; an Esc elsewhere le
   const hs = host();
   const m = await render(wrap(ui, h(ChangesView, { from: director, onBack: () => {}, host: hs.play })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   await click(byText(root, "button", "Play all"));
   await hold($(root, ".carton-before")!, 50); // latched
   assert.equal(ui.viewing()?.ref, director.ref);
@@ -217,19 +221,19 @@ test(name("Play on an older version stops when something else takes the stage; a
   const hs = host();
   const m = await render(wrap(ui, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: hs.play })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   await click(byText(root, "button", "Play all"));
   await waitFor(() => ui.viewing()?.ref === yours.ref, "viewing the newer side");
   await act(() => ui.view(null)); // Esc: back to your edit
   await flush();
   assert.ok(byText(root, "button", "Play all"), "Play stopped: it never moves a playhead it didn't open");
-  assert.equal($$(root, ".carton-change[data-lit]").length, 0);
+  assert.equal($$(root, ".carton-change[data-playing], .carton-change[data-active]").length, 0);
   await m.unmount();
   // a view that fails
   const failing = Object.assign(Object.create(ui), { view: (t: ViewTarget | null) => (t ? Promise.reject(new Error("gone")) : ui.view(null)) }) as CartonUi;
   const m2 = await render(wrap(failing, h(ChangesView, { from: director, to: yours, onBack: () => {}, host: host().play })));
   await flush();
-  const r2 = $(m2.container, ".carton-changes")!;
+  const r2 = $(m2.container, ".carton-changes-view")!;
   await click(byText(r2, "button", "Play all"));
   await flush();
   assert.equal($(r2, ".carton-changes-error")?.textContent, "Couldn't load this version. Try again.");
@@ -244,7 +248,7 @@ test(name("no differences: said in words, with nothing to play; Esc and Backspac
   let back = 0;
   const m = await render(wrap(ui, h(ChangesView, { from: head, onBack: () => back++ })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   assert.match($(root, ".carton-changes-title")!.textContent!, /^No changes since /);
   assert.equal($(root, ".carton-changes-sub")!.textContent, "Your edit is the same as Claude Code's “Tighten the intro and add a lower third”.");
   assert.equal($(root, ".carton-changes-transport"), null);
@@ -260,7 +264,7 @@ test(name("Restore this version… says what it undoes first; Restore restores i
   let back = 0;
   const m = await render(wrap(ui, h(ChangesView, { from: director, onBack: () => back++ })));
   await flush();
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   const n = $$(root, ".carton-change").length;
   await click(byText(root, "button", "Restore this version…"));
   assert.match($(root, ".carton-changes-confirm-title")!.textContent!, /^Restore Director's “Add captions…”\?$/);
@@ -284,14 +288,14 @@ test(name("a long range is a virtual list: only the rows on screen exist, and En
   await flush();
   const total = (await ui.changes(from.ref, ui.cuts().find((c) => c.current)!.head)).length;
   assert.ok(total > 50, `${total} changes`);
-  const root = $(m.container, ".carton-changes")!;
+  const root = $(m.container, ".carton-changes-view")!;
   assert.equal(root.dataset.compact, "");
   const shown = $$(root, ".carton-change").length;
   assert.ok(shown > 0 && shown < total, `${shown} of ${total} rows in the DOM`);
   const list = $(root, ".carton-vlist")!;
   await key(list, "ArrowDown");
   await key(list, "Enter");
-  assert.ok($(root, ".carton-change[data-lit]"), "Enter played it");
+  assert.ok($(root, ".carton-change[data-playing]"), "Enter played it");
   await m.unmount();
 });
 
@@ -305,7 +309,7 @@ test(name("History: Compare with your edit opens the Changes view in place of th
   const dir = rows().find((r) => /Add captions to the interview/.test(r.textContent ?? ""))!;
   await click(dir.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Compare with your edit"));
-  assert.ok($(m.container, ".carton-changes"), "the Changes view");
+  assert.ok($(m.container, ".carton-changes-view"), "the Changes view");
   assert.equal($(m.container, ".carton-history-list"), null, "in place of the list");
   assert.equal(ui.counts.changes, calls0 + 1);
   assert.equal(ui.viewing(), null);
@@ -318,13 +322,13 @@ test(name("History: Compare with your edit opens the Changes view in place of th
   await act(() => void r[3]!.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
   await flush();
   assert.match($(m.container, ".carton-changes-title")?.textContent ?? "", /^(Changes from|No changes from) /);
-  await key($(m.container, ".carton-changes"), "Escape");
+  await key($(m.container, ".carton-changes-view"), "Escape");
   assert.ok($(m.container, ".carton-history-list"));
   // Shift+↓ from the active row: the Changes view with the row below
   await key($(m.container, ".carton-history-list"), "ArrowDown");
   await act(() => void $(m.container, ".carton-history-list")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true, cancelable: true })));
   await flush();
-  assert.ok($(m.container, ".carton-changes"), "Shift+↓ opened it");
+  assert.ok($(m.container, ".carton-changes-view"), "Shift+↓ opened it");
   assert.equal(ui.viewing(), null, "none of it changed the stage");
   await m.unmount();
 });

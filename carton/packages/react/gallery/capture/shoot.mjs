@@ -38,9 +38,9 @@ async function cutsMenu(p) { await p.locator(".carton-cuts-trigger").click(); aw
 async function foldFromIg(p) { await cutsMenu(p); await menuItem(p, "30s Instagram cut” in here").click(); await p.locator(".carton-fold .carton-fold-list, .carton-fold .carton-empty").first().waitFor(); await p.waitForTimeout(150); }
 async function scrollList(p, y) { await p.locator(".carton-history-list").evaluate((e, y) => { e.scrollTop = Math.min(y, e.scrollHeight); e.dispatchEvent(new Event("scroll")); }, y); await p.waitForTimeout(300); }
 // Workstream 4: the Changes view from a row's menu, Play all, Before held (a press with no release yet)
-async function changes(p, text = "Add captions to the interview") { await rowMenu(p, text); await menuItem(p, "Compare with your edit").click(); await p.locator(".carton-changes").first().waitFor(); await p.waitForTimeout(250); }
-async function playAll(p, ms = 1300) { await p.locator(".carton-changes .carton-play-all .carton-btn").click(); await p.waitForTimeout(ms); }
-async function holdBefore(p) { const b = p.locator(".carton-changes .carton-before"); const box = await b.boundingBox(); await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.down(); await p.waitForTimeout(300); }
+async function changes(p, text = "Add captions to the interview") { await rowMenu(p, text); await menuItem(p, "Compare with your edit").click(); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }
+async function playAll(p, ms = 1300) { await p.locator(".carton-changes-view .carton-play-all .carton-btn").click(); await p.waitForTimeout(ms); }
+async function holdBefore(p) { const b = p.locator(".carton-changes-view .carton-before"); const box = await b.boundingBox(); await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.down(); await p.waitForTimeout(300); }
 
 // ------------------------------------------------------------------ the shots
 // target: panel (the side panel, full height), stage (the layer over the preview), window, titlebar, join (the dialog).
@@ -54,7 +54,7 @@ const SHOTS = [
   P("changes-playing", "changes-story", "changes, then Play all, shot 1.3 s into playback (on your edit: nothing viewed).", async (p) => { await changes(p); await playAll(p); }),
   P("changes-before", "changes-story", "changes-playing, then Before pressed and held.", async (p) => { await changes(p); await playAll(p); await holdBefore(p); }, { keepHover: true }),
   P("changes-none", "changes-story", "⋯ → Compare with your edit on the newest version (Claude Code's turn): no differences.", (p) => changes(p, "Tighten the intro and add a lower third")),
-  P("changes-two", "changes-story", "A click on “Sent to client”, then Shift+click on the Director's turn: the Changes view between two versions.", async (p) => { await row(p, "Sent to client").click(); await row(p, "Add captions to the interview").click({ modifiers: ["Shift"] }); await p.locator(".carton-changes").first().waitFor(); await p.waitForTimeout(250); }),
+  P("changes-two", "changes-story", "A click on “Sent to client”, then Shift+click on the Director's turn: the Changes view between two versions.", async (p) => { await row(p, "Sent to client").click(); await row(p, "Add captions to the interview").click({ modifiers: ["Shift"] }); await p.locator(".carton-changes-view").first().waitFor(); await p.waitForTimeout(250); }),
   // History
   P("history-none", "history-none", "A cut with no versions at all (mock with 0 versions).", null),
   P("history-start", "history-start", "Only the system row \"Started the cut\".", null),

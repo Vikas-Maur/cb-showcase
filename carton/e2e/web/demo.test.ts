@@ -289,12 +289,12 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       // Play all plays each change on her own edit (nothing is viewed, so no banner); Esc goes back to the list
       await alice.locator('[aria-label="Actions for Started the cut"]').click();
       await alice.getByRole("menuitem", { name: "Compare with your edit" }).click();
-      await alice.locator(".carton-changes").waitFor();
+      await alice.locator(".carton-changes-view").waitFor();
       await alice.getByRole("button", { name: "Play all" }).click();
       await pause(1500);
       await shot(alice, `${kind}-7-changes-alice`);
       await alice.keyboard.press("Escape");
-      await alice.locator(".carton-changes").waitFor({ state: "detached", timeout: 5000 });
+      await alice.locator(".carton-changes-view").waitFor({ state: "detached", timeout: 5000 });
       await alice.locator(".carton-preview-banner").waitFor({ state: "detached", timeout: 5000 });
 
       // 8. publish, open the watch page as a viewer, then newer edits

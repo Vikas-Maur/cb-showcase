@@ -75,14 +75,12 @@ test(name("P3: the Fold dialog, the History row and the fold agree: a split left
   ui.dispose();
 });
 
-// Needs fromCarton's changes() (Workstream 0, PLAN 0.1: a stub on this branch): a todo until it lands, then a normal test.
-test(name("P3-11: the Changes view lists the changes History counts, one row each (a split one)"), { todo: "fromCarton.changes() lands with PLAN 0.1 (feat/ux-0-data)" }, async () => {
+test(name("P3-11: the Changes view lists the changes History counts, one row each (a split one)"), async () => {
   const { carton, ui } = await open();
   await carton.commit({ ops: splitAndRename() });
   await ui.refresh();
   const v = ui.history().at("all", 1)!;
   const c = await render(h(CartonProvider, { ui }, h(ChangesView, { from: v, onBack: () => {} })));
-  // (until changes() lands it answers "not implemented": the view says it couldn't, and this todo fails at once)
   await waitFor(() => $$(c.container, ".carton-change, .carton-changes-failed").length > 0, "the rows");
   // two changes (the split and the rename), whatever the lines
   assert.equal($$(c.container, ".carton-change").length, 2);

@@ -7,13 +7,14 @@
 // - No differences: "No changes since 12:20 pm. Your edit is the same as Director's “Add captions to the interview”."
 // ← History (Esc or Backspace) goes back to the list. Opening it never changes the stage: only Play does (§4.2).
 
-import { createElement as h, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { createElement as h, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { actorLabel } from "../actors.ts";
 import { clock, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useNow, useTopicSelector, useWords } from "../hooks.ts";
-import type { Actor, Version } from "../model.ts";
+import type { Actor, Change, Version } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
-import { ChangeMap, ChangeRow } from "./change-row-stub.ts";
+import { ChangeList, ChangeRow } from "./ChangeRow.ts";
+import { ChangeMap, mapLength } from "./ChangeMap.ts";
 import { BeforeButton, PlayAllButton, playKeys, usePlayChanges, type PlayHost, type PlayTarget } from "./Play.ts";
 import { Button, cx } from "./ui.ts";
 
@@ -29,10 +30,10 @@ export interface ChangesViewProps {
   className?: string;
 }
 
-/** Past this many rows the list is virtual (one line per sentence, its whole text on hover). */
+/** Past this many rows the list is virtual: rows of one height, a sentence of up to two lines. */
 export const CHANGES_VIRTUAL_OVER = 50;
-/** A virtual row's height: with the who-and-when line, and without. */
-const ROW_TALL = 44, ROW_SHORT = 28;
+/** A virtual row's height (ChangeRow's padding, two lines of 17 px), with the who-and-when line (16 px) and without. */
+const ROW_TALL = 60, ROW_SHORT = 44;
 
 const isAgent = (v: Version) => v.author.kind === "agent" || v.author.kind === "subagent";
 
@@ -53,7 +54,6 @@ export function ChangesView(p: ChangesViewProps) {
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
-  const listId = useId();
   const head = useTopicSelector("cuts", (u) => u.cuts().find((c) => c.current)?.head);
   // the two ends, the older first
   const [a, b] = p.to && !older(p.from, p.to) ? [p.to, p.from] : [p.from, p.to ?? null];
@@ -68,38 +68,50 @@ export function ChangesView(p: ChangesViewProps) {
   const actor = useCallback((k: string) => ui.actor(k), [ui]);
   const lctx = { now, ...(locale ? { locale } : {}), actor, you: words.you };
   const fromLabel = longLabel(a, lctx);
+  // your edit's length, from the host: the map's scale, "· 0:38", and no spot played past its end. Between two older
+  // versions it isn't known: the map reads the furthest change (mapLength), and nothing is clipped.
   const hostLength = toYou ? p.host?.length?.() : undefined;
-  const length = useMemo(() => {
-    if (hostLength && hostLength > 0) return hostLength;
-    let m = 0;
-    for (const c of changes ?? []) m = Math.max(m, c.end ?? c.at ?? 0);
-    return m;
-  }, [changes, hostLength]);
+  const known = hostLength && hostLength > 0 ? hostLength : undefined;
+  const length = useMemo(() => known ?? mapLength(changes ?? []), [changes, known]);
 
   const newer: PlayTarget | null = toYou ? null : { kind: "version", versionId: b!.id, ref: b!.ref };
   const olderTarget: PlayTarget = { kind: "version", versionId: a.id, ref: a.ref };
-  const play = usePlayChanges({ changes, newer, older: a.empty ? null : olderTarget, length, ...(p.host ? { host: p.host } : {}) });
+  const play = usePlayChanges({ changes, newer, older: a.empty ? null : olderTarget, ...(known ? { length: known } : {}), ...(p.host ? { host: p.host } : {}) });
   useEffect(() => {
     if (!play.active && head !== shownHead) setShownHead(head);
   }, [head, shownHead, play.active]);
 
-  // Focus comes in when it opens (as Cardboard's own panels do), so Space, B, the arrows and Esc work at once.
+  // Focus comes in when it opens (as Cardboard's own panels do): on the first change (↓ ↑ walk the rows, Enter plays
+  // one), or the virtual list, so Space, B and Esc work at once.
   const body = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    body.current?.querySelector<HTMLElement>("[role=listbox]")?.focus({ preventScroll: true }) ?? body.current?.focus({ preventScroll: true });
+    const el = body.current;
+    (el?.querySelector<HTMLElement>(".carton-vlist, .carton-change[data-change-key]") ?? el)?.focus({ preventScroll: true });
   }, [changes != null]);
 
-  const [hover, setHover] = useState<number | null>(null);
+  const [hover, setHover] = useState<string | null>(null);
+  // the virtual list's keyboard row (a short list moves focus between rows instead)
   const [active, setActive] = useState(-1);
   const authors = useMemo(() => new Set((changes ?? []).map((c) => c.author?.key ?? "")).size > 1, [changes]);
+  const rowOf = useCallback((c: Change) => (changes ? changes.indexOf(c) : -1), [changes]);
   const onSelect = useCallback(
-    (row: number) => {
-      setActive(row);
-      const c = changes?.[row];
-      if (c?.at != null && Number.isFinite(c.at)) p.host?.seek?.(c.at);
+    (c: Change) => {
+      const i = rowOf(c);
+      if (i >= 0) setActive(i);
+      if (c.at != null && Number.isFinite(c.at)) p.host?.seek?.(c.at);
     },
-    [changes, p.host],
+    [rowOf, p.host],
   );
+  const playRow = play.playRow;
+  const onPlay = useCallback((c: Change) => playRow(rowOf(c)), [playRow, rowOf]);
+  const pause = play.toggle;
+  // the map's lit ticks: the lit row's, and the row hovered
+  const litKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const i of play.lit) if (changes?.[i]) keys.add(changes[i]!.key);
+    if (hover) keys.add(hover);
+    return keys;
+  }, [play.lit, hover, changes]);
 
   const [confirm, setConfirm] = useState<null | { busy: boolean; failed: boolean }>(null);
   const canRestore = !a.empty && !a.provisional && a.start == null;
@@ -138,36 +150,22 @@ export function ChangesView(p: ChangesViewProps) {
       : words.changesBetween(atWord(a.at), atWord(b!.at));
   const sub = empty ? (toYou ? words.sameAs(fromLabel) : words.sameVersions) : words.changesFromTo(fromLabel, toYou ? words.yourEditNow : longLabel(b!, lctx));
 
-  const row = (i: number) =>
-    h(ChangeRow, {
+  // The lit row: `playing` while it plays (lit, ⏸, its progress line), `active` while paused there (lit, ▶ goes on).
+  const virtual = n > CHANGES_VIRTUAL_OVER;
+  const row = (i: number) => {
+    const lit = play.lit.has(i);
+    return h(ChangeRow, {
+      key: `${changes![i]!.key}#${i}`,
       change: changes![i]!,
-      id: `${listId}-c${i}`,
       showAuthor: authors,
-      lit: play.lit.has(i),
-      playing: play.lit.has(i) && play.status === "playing",
-      active: i === active,
-      now,
-      onPlay: () => play.playRow(i),
-      onSelect: () => onSelect(i),
-      onHover: (on: boolean) => setHover((x) => (on ? i : x === i ? null : x)),
+      playing: lit && play.status === "playing",
+      active: (lit && play.status !== "playing") || (virtual && i === active),
+      tabIndex: !virtual && i === 0 ? 0 : -1,
+      onPlay,
+      onPause: pause,
+      onSelect,
+      onHover: setHover,
     });
-  const listKeys = (e: KeyboardEvent<HTMLElement>) => {
-    if (!n || e.target !== e.currentTarget) return;
-    let next = active;
-    if (e.key === "ArrowDown") next = Math.min(n - 1, active + 1);
-    else if (e.key === "ArrowUp") next = Math.max(0, active - 1);
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = n - 1;
-    else if (e.key === "Enter" && active >= 0) {
-      e.preventDefault();
-      e.stopPropagation();
-      play.playRow(active);
-      return;
-    } else return;
-    e.preventDefault();
-    e.stopPropagation();
-    setActive(next);
-    body.current?.querySelector(`[id="${listId}-c${next}"]`)?.scrollIntoView?.({ block: "nearest" });
   };
 
   let list = null;
@@ -175,30 +173,24 @@ export function ChangesView(p: ChangesViewProps) {
     list = h("div", { className: "carton-changes-skeleton", "aria-hidden": true }, h("span", null), h("span", null), h("span", null));
   else if (loaded.status === "error")
     list = h("div", { className: "carton-changes-failed", role: "alert" }, h("p", { className: "carton-error" }, words.failed), h(Button, { onClick: loaded.reload }, words.tryAgain));
-  else if (n > CHANGES_VIRTUAL_OVER)
+  else if (virtual)
     list = h(VirtualList, {
       className: "carton-changes-list",
       label: title,
       count: n,
       rowHeight: authors ? ROW_TALL : ROW_SHORT,
       active,
-      activeId: (i: number) => `${listId}-c${i}`,
       onActiveChange: setActive,
       onActivate: (i: number) => play.playRow(i),
       rowKey: (i: number) => `${changes![i]!.key}#${i}`,
       renderRow: row,
     });
-  else if (n)
-    list = h(
-      "div",
-      { className: "carton-changes-list", role: "listbox", "aria-label": title, tabIndex: 0, "aria-activedescendant": active >= 0 ? `${listId}-c${active}` : undefined, onKeyDown: listKeys },
-      ...changes!.map((c, i) => h("div", { key: `${c.key}#${i}`, className: "carton-changes-item" }, row(i))),
-    );
+  else if (n) list = h(ChangeList, { label: title, className: "carton-changes-list" }, ...changes!.map((_, i) => row(i)));
 
   return h(
     "section",
     {
-      className: cx("carton-changes", p.className),
+      className: cx("carton-changes-view", p.className),
       "aria-label": title,
       "data-compact": n > CHANGES_VIRTUAL_OVER ? "" : undefined,
       onKeyDown,
@@ -213,8 +205,8 @@ export function ChangesView(p: ChangesViewProps) {
         ? h(
             "div",
             { className: "carton-changes-mapbox" },
-            h(ChangeMap, { changes: changes!, length, lit: play.lit, hover, head: play.active }),
-            h("div", { className: "carton-changes-ends" }, h("span", null, timecode(0)), h("span", null, hostLength ? words.changesLength(n, timecode(length)) : words.changes(n))),
+            h(ChangeMap, { changes: changes!, length, lit: litKeys }),
+            h("div", { className: "carton-changes-ends" }, h("span", null, timecode(0)), h("span", null, known ? words.changesLength(n, timecode(known)) : words.changes(n))),
           )
         : null,
       list,
