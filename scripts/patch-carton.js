@@ -242,7 +242,10 @@ if (mode === "--cli") {
     // and adds its tools before list_media.
     replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
     replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
-    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
+    // (`lib` as a getter, Carton UX v2 N0: the server's library `s` is set after its tools are registered, so a value
+    // taken here was undefined and every Carton tool failed with "reading 'projects'"; Cardboard's own tools read it
+    // when called, as this does now)
+    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:()=>s,result:Y}),p("list_media",');
     // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
     // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
     // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
