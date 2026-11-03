@@ -150,7 +150,7 @@ test(name("narrow subscriptions: ghosts and presence never touch History; a sync
 test(name("conflict cards: both edits shown, Keep theirs resolves and the card goes away"), async () => {
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h(ConflictList)));
-  assert.match(m.container.textContent ?? "", /2 conflict cards waiting/);
+  assert.match(m.container.textContent ?? "", /2 conflicts to pick/);
   const card = $$(m.container, ".carton-conflict")[1]!;
   assert.match(card.textContent ?? "", /Summer sale/);
   assert.match(card.textContent ?? "", /Summer launch/);
@@ -159,7 +159,7 @@ test(name("conflict cards: both edits shown, Keep theirs resolves and the card g
   assert.ok(byText(card, "button", "Keep yours"));
   await click(byText(card, "button", "Keep Bob Okafor's"));
   assert.equal($$(m.container, ".carton-conflict").length, 1);
-  assert.match(m.container.textContent ?? "", /1 conflict card waiting/);
+  assert.match(m.container.textContent ?? "", /1 conflict to pick/);
   assert.equal(byText(m.container, "button", "Keep both"), null, "the timing card can't keep both");
   await m.unmount();
 });
@@ -224,7 +224,7 @@ test(name("compare card: time, author, clips, length, and what changed (N change
   assert.doesNotMatch(text, /shots? \//, "never shots (UI audit P2-5)");
   assert.match(text, /clips/);
   assert.match(text, /\d:\d\d\.\d/);
-  await click(byText(m.container, "button", "Watch the changes"));
+  await click(byText(m.container, "button", "Play all"));
   assert.deepEqual(watched, ["main@3", "main@9"]);
   await m.unmount();
 });
@@ -277,12 +277,12 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", onFrame: (s: string, t: number) => frames.push([s, t]) })));
   await flush();
   const root = $(m.container, ".carton-watch")!;
-  assert.match(root.textContent ?? "", /Section 1 of 4/);
+  assert.match(root.textContent ?? "", /1 of 4/);
   assert.equal($$(root, ".carton-strip").length, 2);
   assert.ok($$(root, "[data-kind=fold]").length >= 2, "unchanged runs folded");
   assert.ok($$(root, "[data-tone=removed]").length === 1 && $$(root, "[data-tone=added]").length === 1);
-  await click($(root, "[aria-label='Next section']"));
-  assert.match(root.textContent ?? "", /Section 2 of 4/);
+  await click($(root, "[aria-label='Next']"));
+  assert.match(root.textContent ?? "", /2 of 4/);
   const before = byText(root, "[role=radio]", "Before")!;
   await click(before);
   assert.equal(before.getAttribute("aria-checked"), "true");

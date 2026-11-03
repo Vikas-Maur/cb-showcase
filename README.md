@@ -514,16 +514,20 @@ What changes with it on:
   icon only, so they stay clear of the close button); the same icon closes it, and the icon
   of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
-  History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
-  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" or Esc (Undo and Redo
+  History: versions, compare with current and play the changes, restore, cuts, fold in (from the cut's own menu
+  too: "Fold “X” in here"). Every change reads as one sentence in the editor's words, the same in History, Compare and
+  the Fold dialog: verb first, the clip by its name, positions as the timeline shows them ("Trimmed “Intro”, now ends at
+  0:05", "Moved “W6” 2 s later (now starts at 0:09)", "Restored the 12:41 pm version", "Folded in “30s cut”"), and
+  times of day always with am/pm. Opening an old version shows it read-only until "Back to my edit" or Esc (Undo and Redo
   look unavailable meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question,
   stays the editor's, whichever was selected first, and with focus in the History panel the first Esc returns from the
-  version and the next closes the panel). An edit tried meanwhile is refused with Cardboard's own "Previewing an earlier
-  version. Return to current to edit.", the stage's text editor included (Enter or a double-click on a title no longer
+  version and the next closes the panel). An edit tried meanwhile is refused with "You're looking at an earlier version.
+  Go back to your edit (Esc) to change it." in Cardboard's own refusal toast, the stage's text editor included (Enter or a double-click on a title no longer
   opens it there, and a selected title or caption shows no text toolbar there: nothing in it looks editable), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
-  playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. "Watch the
-  changes" moves the preview's playhead with it, so the frames are the real ones.
-  Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
+  playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. Playing the
+  changes moves the preview's playhead with it, so the frames are the real ones.
+  Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in and a conflict card's pick each
+  end with a short confirmation over the preview (Fold in offers to
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to

@@ -194,7 +194,6 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
     { ref: banner, className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
     h(Icon, { name: "eye", size: 14 }),
     h("span", { className: "carton-preview-label", title: words.previewing(preview.label) }, words.previewing(preview.label)),
-    h("span", { className: "carton-badge", "data-tone": "muted" }, words.readOnly),
     preview.blockedEdit ? h("span", { className: "carton-preview-blocked" }, words.previewBlocked) : null,
     h(Button, { variant: "primary", icon: "arrowLeft", keys: "Escape", title: words.returnToCurrentKey, onClick: () => ui.openPreview(null) }, words.returnToCurrent),
   );

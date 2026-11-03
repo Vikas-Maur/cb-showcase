@@ -40,7 +40,7 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   await carton.commit({ ops: [set("a", "startTime", 2), set("a", "endTime", 7), set("b", "name", "B1"), set("c", "name", "C1")] });
   await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 600 })));
-  await waitFor(() => /Moved 'A', changed 'B' and 'C'/.test(m.container.textContent ?? ""), "the summary");
+  await waitFor(() => /Moved “A”, renamed “B” and “C”/.test(m.container.textContent ?? ""), "the summary");
   // the newest version's row, under Today's header: a click opens its card (docs/carton-ux DESIGN §5.2)
   const row = $$(m.container, ".carton-version")[0]!;
   assert.equal(row.getAttribute("aria-expanded"), "false");
@@ -48,9 +48,10 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   await click(row);
   await waitFor(() => $$(m.container, ".carton-card-version .carton-change").length > 0, "the card's changes");
   assert.equal($$(m.container, ".carton-version")[0]!.getAttribute("aria-expanded"), "true");
-  // every change, one row each (the engine's own sentences until it gives them as change rows: PLAN 0.1)
+  // every change, one change row each, from the engine (PLAN 0.1: changesIn), in timeline order, with its place
   const items = $$(m.container, ".carton-card-version .carton-change-words").map((li) => li.textContent);
-  assert.deepEqual(items, ["Moved 'A' 0.0 s → 2.0 s", 'Changed \'B\' name "B" → "B1"', 'Changed \'C\' name "C" → "C1"']);
+  assert.deepEqual(items, ["Moved “A” 2 s later (now starts at 0:02)", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
+  assert.deepEqual($$(m.container, ".carton-card-version .carton-change-time").map((t) => t.textContent), ["0:02", "0:05", "0:10"]);
   // the rows below make room: the next row starts below the card
   const vrows = $$(m.container, ".carton-vrow");
   const y = (el: HTMLElement) => Number(/translateY\((\d+)px\)/.exec(el.style.transform)?.[1]);

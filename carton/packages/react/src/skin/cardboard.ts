@@ -166,7 +166,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-history){height:100%;background:var(--cb-panel);color:var(--cb-fg)}
 :where(${S}) :where(.carton-panel-head){display:flex;flex-direction:column;gap:12px;padding:16px 12px 10px}
 :where(${S}) :where(.carton-panel-title){font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.01em;color:var(--cb-fg-1);padding:0 4px}
-/* Watch the changes' Before/After switch */
+/* the Before/After switch of WatchTheChanges (the component Workstream 4 retires) */
 :where(${S}) :where(.carton-segmented){display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border-radius:8px;background:var(--cb-card)}
 :where(${S}) :where(.carton-segment){height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--cb-fg-3);font-size:12px;font-weight:500;cursor:pointer;
   outline:none;transition:background-color var(--cb-fast),color var(--cb-fast)}
@@ -579,7 +579,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-preview-banner .carton-badge, .carton-preview-banner > .carton-icon){flex:none}
 :where(${S}) :where(.carton-preview-blocked){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* ---------------------------------------------------------------- Watch the changes */
+/* ---------------------------------------------------------------- WatchTheChanges */
 :where(${S}) :where(.carton-watch){display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--cb-panel);outline:none}
 :where(${S}) :where(.carton-watch-head){display:flex;align-items:flex-start;gap:10px}
 :where(${S}) :where(.carton-watch-titles){flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}

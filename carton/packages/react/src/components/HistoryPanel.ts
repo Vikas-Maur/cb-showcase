@@ -61,7 +61,7 @@ export interface HistoryPanelProps {
   playing?: PlayState | null;
   /** A change row's click: the editor's playhead there (on your edit). */
   onSeek?: (at: number) => void;
-  /** Deprecated (Compare card): "Watch the changes". */
+  /** Deprecated (the Compare card, until the Changes view replaces it): its Play (WatchTheChanges). */
   onWatch?: (a: string, b: string) => void;
   /** Ref of the current state, for the Compare card when there is no `onCompare`. */
   currentRef?: string;

@@ -1,7 +1,7 @@
-// Watch the changes (§9 layer 3): the shot diff, aligned like a side-by-side text diff. Two strips, Before and After;
+// WatchTheChanges (§9 layer 3; retired by the Changes view, PLAN 4.4): the shot diff, aligned like a side-by-side text diff. Two strips, Before and After;
 // matched shots sit in the same column, changed runs are marked on each side, and long unchanged runs fold into a
 // chip. Play changes plays only the changes, with a second of context; the A/B toggle swaps Before and After at the
-// same moment. What is shown is a read-only preview (R2-16), with "Return to current to edit".
+// same moment. What is shown is viewing (R2-16), with "Back to my edit".
 
 import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { duration } from "../format.ts";
@@ -245,7 +245,7 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   const onExpand = useCallback((row: number) => setExpanded((e) => new Set(e).add(row)), []);
   const n = player.changeRows.length;
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
-    // Esc leaves Watch the changes (the innermost layer), never the whole panel around it.
+    // Esc leaves WatchTheChanges (the innermost layer), never the whole panel around it.
     if (e.key === "Escape" && props.onClose) {
       e.preventDefault();
       e.stopPropagation();
