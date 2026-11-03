@@ -245,18 +245,20 @@ module.exports = String.raw`var __cartonMain = (() => {
     // The title bar (scripts/carton/strip-buttons.js): the editor page's report (carton:panel, scripts/carton/ui.js
     // CartonSide), as the strip draws it. Which side panel is open, a shared project's live summary, whether the Share
     // dialog is open, the cut the person is on ({name, dot}: a colour for any cut but Main) and what they are viewing
-    // ({label}, with loading: true while it is slow to come), each only in the shape the strip draws: text cut to a length, a colour only as #hex. An older page's
+    // ({label}, with loading: true while it is slow to come) or comparing ({label}), each only in the shape the strip draws: text cut to a length, a colour only as #hex. An older page's
     // report (a bare panel name) is kept as it was.
     panel(t) {
       if (t == null || typeof t !== "object") return typeof t === "string" ? t : null;
       const text = (s, max) => (typeof s === "string" && s.trim() ? s.slice(0, max) : null);
-      const cutName = text(t.cut?.name, 200), view = text(t.viewing?.label, 300);
+      const cutName = text(t.cut?.name, 200), view = text(t.viewing?.label, 300), comparing = text(t.comparing?.label, 300);
       return {
         panel: t.panel === "history" || t.panel === "comments" || t.panel === "share" ? t.panel : null,
         live: t.live && typeof t.live === "object" ? t.live : null,
         share: t.share === true,
         cut: cutName ? { name: cutName, dot: typeof t.cut.dot === "string" && /^#[0-9a-f]{3,8}$/i.test(t.cut.dot) ? t.cut.dot : null } : null,
         viewing: view ? (t.viewing.loading === true ? { label: view, loading: true } : { label: view }) : null,
+        // Compare in the editor (UX v2, N1): the chip's "⇆ Comparing … ✕" (only while comparing)
+        ...(comparing ? { comparing: { label: comparing } } : {}),
       };
     },
     // Strip commands that open something taking keys in the editor's page (the cuts menu, the Share dialog): main

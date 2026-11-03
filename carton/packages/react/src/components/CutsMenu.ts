@@ -15,6 +15,7 @@ import { useCartonUi, useCuts, useLocale, useNow, useShownCuts, useViewing, useW
 import { Icon } from "../icons.ts";
 import type { CartonUi, Cut, Working } from "../model.ts";
 import { Button, InlineName, MenuButton, MenuItem, MenuLabel, MenuSeparator, cx, tipIfCut } from "./ui.ts";
+import { Glyph } from "./CompareView.ts";
 
 export interface CutsMenuProps {
   /** Fold a cut into another: opens the Fold in dialog, preset with the two cuts as they are now (their heads). */
@@ -274,7 +275,12 @@ function CutsMenuBody(p: BodyProps) {
       ),
       c.readOnly ? h("span", { className: "carton-cut-view" }, h(Icon, { name: "eye", size: 12 }), words.viewOnly) : null,
     );
-    if (!isOpen) return h("div", { key: c.id, className: "carton-cut-row" }, button);
+    // Compare in the editor (UX v2 N1, DESIGN-V2 §1.12): another cut's row offers ⇆ Compare (on hover and focus): that
+    // cut now with the cut you're on now. Only when the host has Compare (ui.openCompare).
+    const compare = !c.current && typeof ui.openCompare === "function"
+      ? h("button", { key: "cmp", type: "button", role: "menuitem", tabIndex: -1, className: "carton-cut-compare", "aria-label": words.compareThisCutHint(c.label), title: words.compareThisCutHint(c.label), onClick: () => { p.close(); void ui.openCompare!(c.id, null).catch(() => undefined); } }, h(Glyph, { name: "compare", size: 13 }), words.compareThisCut)
+      : null;
+    if (!isOpen) return h("div", { key: c.id, className: "carton-cut-row" }, button, compare);
     return h("div", { key: c.id, className: "carton-cut-row", "data-open": "" }, button, h(TurnPane, { cut: c, current, turn, queued, onSwitch: () => switchTo(c), onClose: p.close, attempt: p.attempt }));
   };
 

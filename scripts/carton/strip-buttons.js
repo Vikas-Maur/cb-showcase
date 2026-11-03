@@ -16,7 +16,8 @@
 // open and which cut it is on, which comes back here.
 // The report: `panel` ("history", "comments" or null), `live` (a shared project's summary, or null), `share` (the Share
 // dialog is open), `cut` ({name, dot}: dot is a CSS colour for any cut but Main, null for Main), `viewing` ({label,
-// loading}: loading while the version is slow to come, its label "Loading …" then, or null). An older report is a bare panel name: no chip then.
+// loading}: loading while the version is slow to come, its label "Loading …" then, or null), `comparing` ({label}, or
+// null: Compare in the editor). An older report is a bare panel name: no chip then.
 // A narrow window (QA G4): the chip is the one part of the editor's controls that gives way (patch-carton.js lets that
 // row shrink), so the window's own buttons are never pushed out; below 1000 px, while the chip has its second part, the
 // cut shows as its dot or scissors only, its name in the tooltip.
@@ -32,6 +33,8 @@ const __cbCartonStripIcons = {
   x: ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
   // the eye's while a version is still loading (design QA G1)
   spin: ["M20.5 12a8.5 8.5 0 1 1-8.5-8.5"],
+  // comparing (Compare in the editor, UX v2 N1): ⇆
+  compare: ["M4 8h13", "M14 5l3 3-3 3", "M20 16H7", "M10 13l-3 3 3 3"],
 };
 const __cbCartonSvg = (id, className, strokeWidth = 1.75) => n.jsx("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": !0, className, children: __cbCartonStripIcons[id].map((d, i) => n.jsx("path", { d }, i)) }, id);
 // A shared project's status beside the icons (UI audit P2-11): a dot on the icon (amber offline, white while edits are
@@ -91,6 +94,8 @@ function __cbCartonStrip({ panel }) {
 // hears before the label, its ✕'s words and command, and its tint. Another state (Compare's "⇆ Comparing … ✕") is one
 // more entry here, and its icon in __cbCartonStripIcons.
 const __cbCartonChipParts = [
+  // Compare in the editor (UX v2 N1): "⇆ Comparing “Sent to client” with your edit ✕" (its label says "Comparing")
+  { field: "comparing", icon: "compare", said: "", back: "Done comparing (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
   { field: "viewing", icon: "eye", said: "Looking at ", back: "Back to my edit (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
 ];
 const __cbCartonChipPart = (p) => {

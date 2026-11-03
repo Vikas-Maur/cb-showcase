@@ -581,6 +581,29 @@ What changes with it on:
   playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. Playing the
   changes moves the preview's playhead with it, so the frames are the real ones. Viewing and the return are each
   announced once to a screen reader.
+  **Compare** takes over the editor to show two versions, or two cuts, at once. Every way into it opens it: a card's
+  See them, a row's Compare with your edit, Shift+click on a second row, another cut's Compare in the cuts menu, or an
+  agent asked in the chat (`cb compare … --show`).
+  - **The stage** has three modes:
+    - Side by side: the other version in a second player on the left, Cardboard's own preview on the right;
+    - Wipe: one picture with a line you drag, or move with ← →;
+    - Flip: hold B, or press the pill, to see the other side.
+    Play both plays them in step by shot. Side by side needs a stage 682 px wide, and the Library steps aside for it.
+    Narrower than that, Compare shows Flip. Without a second player it shows only Flip, and says so once.
+  - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost or seam for removed,
+    amber with "←4 s" for moved, and amber for trimmed or changed. Above the tracks is a strip of the other version on
+    its own time.
+  - **History** becomes the list of changes ("differences" between two cuts). A click jumps both players and the
+    timeline there, and ▶ or Enter plays that spot on both sides. Its footer offers Restore your edit to it… (asked
+    first) or, between cuts, Fold in changes from it….
+  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit ✕". Esc, its ✕, Done comparing,
+    ← History and closing History all go back to your edit, where the playhead stays at the change.
+  - **Nothing can be edited while comparing.** An edit tried gives one line, "You're comparing … [Done comparing] Esc",
+    and Export goes back to your edit first.
+  - **An agent's request** opens Compare only when you're idle. Mid-edit it waits up to 8 s; while you're viewing,
+    playing or in a dialog it offers a note with Open instead. Either way it tells `cb` which it did.
+  - **The second player** is Cardboard's own preview engine on a canvas of its own, muted. It exists only while Side
+    by side or Wipe shows: Flip and closing Compare free it, and paused it draws nothing between seeks.
   Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in ("Folded 3 changes from “30s
   cut” into Main cut.", the count the Fold dialog's button gave), Fold in the rest, a conflict card's pick, Undo this
   turn ("Took out Claude Code's “Tighten the intro…” (4 changes).") and a new cut ("You're on “30s Instagram cut”,

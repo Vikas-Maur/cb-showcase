@@ -11,10 +11,12 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { serveUi, serveComments, createMockComments, cutColors } from "@carton/react";
 import { createMockUi, people } from "@carton/react/mock";
 import "../../../../../scripts/carton/sync/ui.js"; // sets window.__cartonSyncUi (the Share panel), as the app's bundle does
-import { CartonSide, CartonStage, JoinDialog, liveSummary } from "../../../../../scripts/carton/ui.js";
+import { CartonSide, CartonStage, JoinDialog, liveSummary, __forTests as uiTests } from "../../../../../scripts/carton/ui.js";
 import stripSource from "../../../../../scripts/carton/strip-buttons.js";
 import { addWs59 } from "./ws59.js";
 import STATES from "capture-states"; // every states/*.js (build.mjs): a feature's own scenarios
+import { n1Bridge, N1Stage, N1Player, N1Timeline, N1_CSS } from "./states/n1.js"; // Compare in the editor (UX v2 N1): its stand-in stage, player and timeline
+import { createPortal } from "react-dom";
 import editorPanelSource from "../../../../../scripts/carton/editor-panel.js";
 
 const params = new URLSearchParams(location.search);
@@ -436,6 +438,7 @@ if (scenario.media) {
   }
 }
 const bridge = makeBridge(scenario);
+if (scenario.n1) n1Bridge(bridge, scenario);
 window.__carton = bridge;
 window.__cap = { scenario: scenarioName, width: panelWidth, ui, bridge, ready: false, strip: { panel: null, live: null }, runtime: globalThis.__CARTON_RUNTIME__ ?? "react" };
 if (scenario.media) window.__cartonMediaHere = { projectId: bridge.projectId, ...scenario.media };
@@ -522,6 +525,21 @@ function Library() {
     h("div", { className: "cap-lib" }, h("p", { className: "cap-lib-title" }, "Library"), h("div", { className: "cap-lib-search" }, "Search project media…"), h("div", { className: "cap-lib-thumb" }), h("p", { className: "cap-lib-name" }, "clip.mp4")));
 }
 
+// Compare's stage host (N1), as editor-panel.js's __cbCartonStageHost renders it (data-carton-compare and the hole's
+// insets from window.__cartonStageMode), with the stand-in stage and second player; react-dom's portal for the marks.
+const subscribePreview = (f) => { previewSubs.add(f); return () => { previewSubs.delete(f); }; };
+function N1Host({ pid }) {
+  const [mode, setMode] = useState(null);
+  useEffect(() => {
+    const prev = window.__cartonStageMode;
+    window.__cartonStageMode = (v) => { prev?.(v); setMode(v ?? null); };
+    return () => { window.__cartonStageMode = prev; };
+  }, []);
+  const hole = mode?.hole;
+  const style = hole ? { "--carton-hole-t": hole.top + "px", "--carton-hole-r": hole.right + "px", "--carton-hole-b": hole.bottom + "px", "--carton-hole-l": hole.left + "px" } : undefined;
+  return h("div", { className: "bg-muted/60 relative flex min-w-0 flex-1 flex-col overflow-hidden", "data-carton-stage-host": "", "data-carton-compare": mode?.mode || undefined, style },
+    h(N1Stage, { subscribe: subscribePreview }), h(CartonStage, { projectId: pid, bridge, key: pid, player: scenario.n1.player ? N1Player : null, portal: createPortal }));
+}
 function Editor() {
   const strip = useStrip();
   const pid = bridge.projectId;
@@ -531,8 +549,10 @@ function Editor() {
       h("div", { className: "cap-editor" },
         h("div", { className: "cap-top" },
           h(Library),
-          h("div", { className: "cap-stage bg-muted/60 relative", "data-carton-stage-host": "" }, h(Video), h(CartonStage, { projectId: pid, bridge, key: pid }))),
-        h(Timeline)),
+          scenario.n1
+            ? h(N1Host, { pid })
+            : h("div", { className: "cap-stage bg-muted/60 relative", "data-carton-stage-host": "" }, h(Video), h(CartonStage, { projectId: pid, bridge, key: pid }))),
+        scenario.n1 ? h(N1Timeline, { Wrap: TimelineWrap }) : h(Timeline)),
       h(CartonSide, { projectId: pid, bridge, key: pid }),
       h(Chat)));
 }
@@ -550,9 +570,21 @@ function Join() {
 }
 
 const App = scenario.chrome === "titlebar" ? TitleOnly : scenario.chrome === "join" ? Join : Editor;
+if (scenario.n1) { const st = document.createElement("style"); st.textContent = N1_CSS; document.head.appendChild(st); }
 void timelineReady.then(() => createRoot(document.getElementById("root")).render(h(App)));
 setTimeout(() => {
   if (scenario.panel) bridge.command(scenario.panel === "share" ? "carton-share" : "carton-history");
   if (scenario.notice) setTimeout(() => bridge.notice(scenario.notice), 50);
+  // Compare (N1): opened as History's See them opens it, or asked for by an agent (cb compare --show)
+  const n1 = scenario.n1;
+  // the page's own view model (connect()'s), for the shots and the bench
+  window.__cap.page = () => uiTests.conns.get(bridge.projectId)?.conn.ui;
+  window.__cap.n1 = n1 ?? null;
+  if (n1) setTimeout(() => {
+    const page = uiTests.conns.get(bridge.projectId)?.conn.ui;
+    if (n1.open) void page?.openCompare(n1.from, null, { mode: n1.mode });
+    if (n1.agent === "busy") page?.view({ kind: "version", ref: ui.history().all().at(-4).ref });
+    if (n1.agent) setTimeout(() => bridge.fire({ id: bridge.projectId, topic: "compare", compare: { from: n1.from, to: "cut-main", by: { kind: "agent", id: "director" }, byName: "Director", at: Date.now(), request: "r1" } }), n1.agent === "busy" ? 200 : 20);
+  }, 120);
   setTimeout(() => (window.__cap.ready = true), 250);
 }, 60);
