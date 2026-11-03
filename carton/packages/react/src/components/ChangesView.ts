@@ -226,7 +226,7 @@ export function ChangesView(p: ChangesViewProps) {
             h(
               "div",
               { className: "carton-changes-confirm-acts" },
-              h(Button, { variant: "primary", icon: "restore", busy: confirm.busy, onClick: () => void restore() }, words.restore),
+              h(Button, { variant: "primary", icon: "restoreArc", busy: confirm.busy, onClick: () => void restore() }, words.restore),
               h(Button, { variant: "ghost", onClick: () => setConfirm(null) }, words.cancel),
             ),
           )
@@ -236,7 +236,7 @@ export function ChangesView(p: ChangesViewProps) {
             h(PlayAllButton, { play }),
             h(BeforeButton, { play }),
             h("span", { className: "carton-changes-spacer" }),
-            canRestore ? h(Button, { variant: "ghost", icon: "restore", description: words.restoreMenuHint, onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreThisVersion) : null,
+            canRestore ? h(Button, { variant: "ghost", icon: "restoreArc", description: words.restoreMenuHint, onClick: () => setConfirm({ busy: false, failed: false }) }, words.restoreThisVersion) : null,
           ),
   );
 }

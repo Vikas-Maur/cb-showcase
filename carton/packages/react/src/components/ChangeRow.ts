@@ -77,6 +77,7 @@ export const ChangeRow = memo(function ChangeRow(p: ChangeRowProps) {
     ? words.changeWho(c.author ? actorLabel(c.author, ui.actor.bind(ui), words.you) : "", c.when !== undefined ? clockOfDay(c.when, locale) : "")
     : null;
   const play = p.onPlay, pause = p.onPause, select = p.onSelect, hover = p.onHover;
+  const at = c.at !== undefined ? timecode(c.at) : null;
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       if (e.target !== e.currentTarget || e.key !== "Enter") return;
@@ -109,7 +110,7 @@ export const ChangeRow = memo(function ChangeRow(p: ChangeRowProps) {
       onMouseLeave: hover ? () => hover(null) : undefined,
     },
     p.lead != null ? h("span", { className: "carton-change-lead" }, p.lead) : null,
-    h("span", { className: "carton-change-time" }, c.at !== undefined ? timecode(c.at) : words.noPosition),
+    h("span", { className: "carton-change-time" }, at ?? words.noPosition),
     h(
       "span",
       { className: "carton-change-chip", "data-clip": c.clip, "data-kind": c.kind, role: "img", "aria-label": chip },
@@ -119,7 +120,7 @@ export const ChangeRow = memo(function ChangeRow(p: ChangeRowProps) {
     h(
       "span",
       { className: "carton-change-text" },
-      h("span", { className: "carton-change-words" }, c.text),
+      h("span", { className: "carton-change-words" }, at ? withoutSameTime(c.text, at) : c.text),
       p.tag != null ? h("span", { className: "carton-change-tag" }, p.tag) : null,
       who ? h("span", { className: "carton-change-who" }, who) : null,
     ),
@@ -146,6 +147,25 @@ export const ChangeRow = memo(function ChangeRow(p: ChangeRowProps) {
     p.playing ? h("span", { className: "carton-change-progress", "aria-hidden": true }, h("i", { className: "carton-change-progress-fill" })) : null,
   );
 });
+
+/**
+ * A sentence's place in the edit at its end: "(now starts at 0:05)" after a move, ", now ends at 0:05" after a trim.
+ * `head` is the sentence before it, `tail` the place (with its comma or bracket), or "" when it has none.
+ */
+const TAIL = /^(.+?)((?:, | \()now (?:starts|ends) at (\d+(?::\d{2}){1,2})\)?)$/;
+export function sentenceTail(text: string): { head: string; tail: string; at: string | null } {
+  const m = TAIL.exec(text);
+  return m ? { head: m[1]!, tail: m[2]!, at: m[3]! } : { head: text, tail: "", at: null };
+}
+/**
+ * A change row's sentence beside its time: a move's "(now starts at 0:05)" says the row's own time again, so it goes
+ * when it is the same (design QA G14: "0:05 · Moved “Summer launch” 1 s earlier"). A different place stays, as does
+ * every sentence where no time column is beside it (toasts, tooltips).
+ */
+export function withoutSameTime(text: string, at: string): string {
+  const t = sentenceTail(text);
+  return t.at === at && t.tail.startsWith(" (") ? t.head : text;
+}
 
 /**
  * Move the playing row's progress line (0–1), outside React (PLAN 4.2: no render per animation frame). `row` is the

@@ -94,7 +94,7 @@ test(name("final N4: one change reads \"1 change\"; a group's chevron says what 
   await flush();
   assert.equal(chevron().getAttribute("aria-label"), "Hide these 6 changes");
   assert.equal(chevron().getAttribute("aria-expanded"), "true");
-  assert.equal($$(m.container, ".carton-version[data-child]").length, 6, "its six versions, one by one");
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 5, "its five older versions, one by one (its newest is its own row: design QA G10)");
   assert.equal($(m.container, ".carton-card-version"), null, "the chevron lists them; it opens no card");
   await m.unmount();
 });

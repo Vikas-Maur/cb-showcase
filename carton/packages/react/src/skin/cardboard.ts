@@ -127,8 +127,11 @@ export const cardboardSkin = `
 :where(${S}) :where([data-carton-tip]:hover)::after{content:attr(data-carton-tip);position:absolute;left:50%;top:calc(100% + 6px);transform:translateX(-50%);
   z-index:60;width:max-content;max-width:260px;padding:4px 8px;border:1px solid #ffffff1a;border-radius:6px;background:var(--cb-tip);color:var(--cb-fg-1);
   font-size:12px;font-weight:400;line-height:16px;letter-spacing:0;text-transform:none;white-space:normal;text-align:left;pointer-events:none;box-shadow:var(--cb-shadow-near);
-  animation:carton-tip var(--cb-base) var(--cb-decel) .45s both}
+  height:auto;min-height:0;animation:carton-tip var(--cb-base) var(--cb-decel) .45s both}
 @keyframes carton-tip{from{opacity:0;transform:translate(-50%,-2px)}to{opacity:1;transform:translate(-50%,0)}}
+/* a control in the panel's right third (a row's ✕, the filter): its tip ends at its right edge, inside the panel (design QA G6) */
+:where(${S}) :where([data-carton-tip-end]:hover)::after{left:auto;right:0;transform:none;animation-name:carton-tip-end}
+@keyframes carton-tip-end{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
 
 /* ---------------------------------------------------------------- menus (Cardboard's dropdown menu) */
 :where(${S}) :where(.carton-menu){min-width:200px;max-width:320px;padding:4px;border:1px solid #ffffff12;border-radius:8px;background:var(--cb-popover);color:#e5e5e5;
@@ -136,7 +139,7 @@ export const cardboardSkin = `
 @keyframes carton-pop{from{opacity:0;transform:scale(.97) translateY(-2px)}to{opacity:1;transform:none}}
 :where(${S}) :where(.carton-menu-item){display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:6px 8px;border:0;border-radius:5px;background:none;
   color:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer;outline:none}
-:where(${S}) :where(.carton-menu-item:hover, .carton-menu-item:focus){background:var(--cb-accent);color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-menu-item:hover, .carton-menu-item:focus-visible){background:var(--cb-accent);color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-menu-item[aria-disabled=true]){opacity:.5;pointer-events:none}
 :where(${S}) :where(.carton-menu-item[data-danger]){color:var(--cb-danger)}
 :where(${S}) :where(.carton-menu-icon){display:flex;width:16px;height:16px;flex:none;color:#a3a3a3}
@@ -247,6 +250,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-clip-credits-name){margin-bottom:2px;font-weight:500;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-history-list){outline:none;padding-bottom:8px;scrollbar-width:thin;scrollbar-color:#ffffff1f transparent}
 :where(${S}) :where(.carton-vrow){padding:0 4px}
+/* each row is its own layer (translateY), and a later row draws over an earlier one: the hovered row on top, so a
+   tooltip that reaches below it (Undo this turn's two lines) is never under the next row (design QA G6) */
+:where(${S}) :where(.carton-vrow:hover){z-index:1}
 /* a row (56 px): who, what, when; then who · how many changes */
 :where(${S}) :where(.carton-version){position:relative;display:grid;grid-template-columns:22px minmax(0,1fr) auto;grid-template-rows:18px 16px;align-content:center;column-gap:8px;row-gap:3px;
   padding:0 12px;border-radius:8px;cursor:default;transition:background-color var(--cb-fast)}
@@ -263,6 +269,10 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-mark-sign[data-sign=named]){color:#f3cf58;box-shadow:inset 0 0 0 1px #fbbd2340}
 :where(${S}) :where(.carton-version-title){grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-version[data-named] .carton-version-title){font-weight:600}
+/* a sentence ending in its place: the place wraps onto a line that isn't shown when the whole doesn't fit (design QA G14) */
+:where(${S}) :where(.carton-version-title[data-tail]){display:flex;flex-wrap:wrap;height:18px}
+:where(${S}) :where(.carton-version-head){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+:where(${S}) :where(.carton-version-tail){flex:none;white-space:pre}
 :where(${S}) :where(.carton-version-when){grid-column:3;grid-row:1;display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:18px;color:var(--cb-fg-4);
   white-space:nowrap;font-variant-numeric:tabular-nums}
 :where(${S}) :where(.carton-version-when[data-now]){color:var(--cb-fg-1);font-weight:500}
@@ -296,6 +306,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version[data-child] .carton-version-mark){grid-row:1;width:22px;height:18px;margin:0}
 :where(${S}) :where(.carton-version[data-child] .carton-version-mark)::before{content:"";width:4px;height:4px;border-radius:50%;background:var(--cb-fg-4)}
 :where(${S}) :where(.carton-version[data-child] .carton-version-title){font-size:12.5px;color:var(--cb-fg-2)}
+/* a folded day's rows that stay (its named versions, its turns): set in under its header, on a rule, and quieter, so they
+   don't read as the day opened (design QA G31) */
+:where(${S}) :where(.carton-version[data-folded]){padding-left:24px}
+:where(${S}) :where(.carton-version[data-folded])::before{content:"";position:absolute;left:17px;top:10px;bottom:10px;width:1px;border-radius:1px;background:var(--cb-line-2)}
+:where(${S}) :where(.carton-version[data-folded] .carton-version-title){font-weight:500;color:var(--cb-fg-2)}
 /* the history's start, and an agent working */
 :where(${S}) :where(.carton-start){grid-template-rows:18px}
 :where(${S}) :where(.carton-start .carton-version-mark){grid-row:1}
@@ -337,7 +352,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-skeleton-row > span:nth-child(3)){width:40%;background:#ffffff0a}
 
 /* ---------------------------------------------------------------- a version's card (DESIGN §5.2) */
-:where(${S}) :where(.carton-card-version){margin:2px 4px 0 24px;padding:10px;border-radius:10px;background:var(--cb-card);box-shadow:var(--cb-shadow-near);outline:none}
+:where(${S}) :where(.carton-card-version){margin:2px 4px 0 24px;padding:10px;border-radius:10px;background:var(--cb-card);box-shadow:var(--cb-shadow-near);outline:none;
+  container:carton-card / inline-size}
+/* a panel under 340 px: no ⋯ in the card's footer, which would wrap onto a line of its own; the row's ⋯ has the same menu
+   (design QA G19). The card is 36 px narrower than the panel. */
+@container carton-card (width < 304px){ :where(${S}) :where(.carton-card-menu){display:none} }
 :where(${S}) :where(.carton-card-since){display:flex;align-items:center;gap:6px;margin:-2px 0 8px;padding:6px 8px;border-radius:7px;background:#ffffff08;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-card-since > .carton-icon){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-card-since b){font-weight:600;color:var(--cb-fg-1)}
