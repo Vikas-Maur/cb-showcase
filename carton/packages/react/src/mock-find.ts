@@ -99,7 +99,7 @@ export function mockFind(st: MockFindState) {
     return list.slice(0, o.limit ?? 200);
   };
 
-  const find = async (text: string, o: { limit?: number; fields?: readonly FindField[] } = {}): Promise<FindHits> => {
+  const find = async (text: string, o: { limit?: number; fields?: readonly FindField[]; allCuts?: boolean } = {}): Promise<FindHits> => {
     const tokens = fold(text).split(/\s+/).filter(Boolean);
     const all = st.all();
     if (!tokens.length) return { clips: [], hits: [], total: 0, versions: all.length };
@@ -145,6 +145,19 @@ export function mockFind(st: MockFindState) {
         ...(best.clipName ? { clipName: best.clipName } : {}),
       });
     }
+    // "Search every cut": the other cuts' versions too (the mock's made-up cut histories, their newest 200)
+    if (o.allCuts)
+      for (const c of st.cuts()) {
+        if (c.current) continue;
+        for (const v of (await cutHistory(c.id, { limit: 200 })).versions) {
+          const text = v.name ?? v.summary;
+          if (!tokens.every((t) => wordAt(text, t) >= 0)) continue;
+          total++;
+          if (hits.length >= (o.limit ?? 50)) continue;
+          const ranges = tokens.map((x) => [wordAt(text, x), x.length] as const).filter(([a]) => a >= 0).map(([a, n]) => [a, a + n] as const);
+          hits.push({ versionId: v.ref, ref: v.ref, cutId: c.id, at: v.at, author: v.author, field: v.name ? "name" : "clip", fields: [v.name ? "name" : "clip"], snippet: text, hits: ranges });
+        }
+      }
     return { clips: [...clips.values()].slice(0, 1), hits, total, versions: all.length };
   };
 

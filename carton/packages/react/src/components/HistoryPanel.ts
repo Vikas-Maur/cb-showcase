@@ -1234,7 +1234,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       cut == null ? h("span", { className: "carton-cutbar-gap" }) : null,
       // ⇆ Compare (DESIGN-V2 §4.2): the questions people ask, "Compare your edit with…"
       nothing ? null : h(CompareButton, { landmarks: marks.list, today, dayOf: dayNumber, onCompare: compareTo, onPick: startPick, findVersion: find }),
-      nothing && filter === "all"
+      (nothing && filter === "all") || pick?.cut
         ? null
         : h(
             "span",
@@ -1262,7 +1262,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
     // the search field, always shown under the cut bar (DESIGN-V2 §2.3), once there is something to find
     typeof ui.find === "function" && !nothing ? h(SearchBox, { handle: search, onQuery: setQuery, onDown: toList }) : null,
     pick ? h(PickLine, { pick, onCompare: compareTo, onLeave: () => setPick(null), onCut: (c) => setPick({ from: pick.from, cut: c }) }) : null,
-    filter !== "all" || marksOnly
+    (filter !== "all" || marksOnly) && !pick?.cut
       ? h(
           "div",
           { className: "carton-filter-chips" },
@@ -1275,8 +1275,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
           status.since !== undefined ? h("span", { className: "carton-filter-note" }, words.clipSince(clock(status.since, { now, locale }))) : null,
         )
       : null,
-    typeof filter === "object" ? h(ClipCredits, { key: filter.item, item: filter.item, name: clipName }) : null,
-    clipHit && typeof filter !== "object"
+    typeof filter === "object" && !pick?.cut ? h(ClipCredits, { key: filter.item, item: filter.item, name: clipName }) : null,
+    clipHit && typeof filter !== "object" && !pick?.cut
       ? h(
           "div",
           { className: "carton-find-clip" },
@@ -1284,7 +1284,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           clipHit.deleted ? null : h(Button, { className: "carton-find-only", onClick: () => (search.current?.clear(), pickFilter({ item: clipHit.itemId }, clipHit.name)) }, words.onlyThisClip),
         )
       : null,
-    searching && found.status === "ready" && listed
+    searching && found.status === "ready" && listed && !pick?.cut
       ? h(
           "p",
           { className: "carton-find-count", role: "status" },
@@ -1298,6 +1298,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       ? h(CutPicker, {
           key: pick.cut.id,
           cut: pick.cut,
+          // the search field searches the cut shown (review of feat/ux2-n2c #2)
+          query,
           initialHeight: props.initialHeight,
           onBack: () => setPick({ from: pick.from }),
           onPick: (ref: string) => {

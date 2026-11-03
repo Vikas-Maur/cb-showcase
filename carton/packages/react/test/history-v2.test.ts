@@ -111,9 +111,11 @@ test("N0b: a refusal crosses the worker bridge with its code and the new token (
   server.close();
 });
 
-test("N2c: another cut's next page is read when the first row on screen nears the end of what is loaded", () => {
+test("N2c: another cut's next page is read when the last row on screen nears the end of what is loaded", () => {
   assert.equal(needsMore(0, 100, 11901), false, "the top of the first page");
   assert.equal(needsMore(59, 100, 11901), false);
   assert.equal(needsMore(61, 100, 11901), true, "40 rows from the end");
   assert.equal(needsMore(95, 100, undefined), false, "the cut's start is loaded");
+  // (a tall view: the first row 0, 70 rows in view, review of feat/ux2-n2c #3)
+  assert.equal(needsMore(0 + 70, 100, 11901), true);
 });

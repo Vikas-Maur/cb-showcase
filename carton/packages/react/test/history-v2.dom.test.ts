@@ -606,3 +606,40 @@ test(name("N2c: a cut of 12,000 versions is read a page at a time (the first whe
   assert.ok($$(m.container, ".carton-vrow").length <= max, `${$$(m.container, ".carton-vrow").length} rows in the DOM`);
   await m.unmount();
 });
+
+test(name("review of feat/ux2-n2c: the other cut's list takes the keyboard (↓, Enter), and the search field searches that cut"), async () => {
+  const ui = story();
+  const opened: [string, string | null | undefined][] = [];
+  ui.openCompare = async (a, b) => void opened.push([a, b]);
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 900 })));
+  await flush();
+  await click($(m.container, ".carton-compare-btn"));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", /^Another cut/));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 2, "its History");
+  assert.equal($(m.container, ".carton-filter-btn"), null, "your cut's filter steps aside");
+  // ↓ then Enter: the version under "as it is now"
+  const list = $(m.container, ".carton-cut-picker-list")!;
+  list.focus();
+  for (const k of ["ArrowDown", "Enter"]) {
+    await act(() => {
+      list.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+    });
+    await flush();
+  }
+  await waitFor(() => opened.length === 1, "Enter opens Compare");
+  assert.deepEqual(opened[0], [(await ui.cutHistory!("cut-ig", { limit: 1 })).versions[0]!.ref, null], "that cut's newest version with your edit");
+  // the search field, on that cut's History: its versions that say so
+  await click($(m.container, ".carton-compare-btn"));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", /^Another cut/));
+  await click(byText(m.container, ".carton-compare-menu .carton-menu-item", "A version on 30s Instagram cut…"));
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row").length > 2, "its History again");
+  await type($(m.container, ".carton-search-input"), "outro");
+  await waitFor(() => $$(m.container, ".carton-cut-pick-row .carton-hit").length > 0, "the matches, marked");
+  const rows = $$(m.container, ".carton-cut-pick-row").slice(1);
+  assert.ok(rows.length > 0 && rows.every((r) => /Outro/.test(r.textContent ?? "")), rows.map((r) => r.textContent).join(" | "));
+  await click(rows[0]!);
+  await waitFor(() => opened.length === 2, "a match opens Compare");
+  assert.match(opened[1]![0], /^ig@\d+$/);
+  await m.unmount();
+});
