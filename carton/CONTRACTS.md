@@ -185,8 +185,15 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
   `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
   acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
-  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`, `write-limit`; a failed connect's transport code:
-  `unreachable`, `unauthorized`, `protocol`, `closed`), by the words only when there is none. `write-limit` is a host's
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`, `write-limit`, `history-missing`; a failed connect's
+  transport code: `unreachable`, `unauthorized`, `protocol`, `closed`), by the words only when there is none.
+  `history-missing` (stuck-sync, laptop run 2026-11-03): a catch-up needs history the server's blob store no longer
+  has. Keyframes only shorten a catch-up, so the sequencer passes over one whose blob is gone (an older keyframe, or
+  the rows alone when the replica holds a state they extend; `SequencerStats.missingBlobs`, a `missingBlob` event);
+  only a joiner with no state left to start from, or rows held only in a lost archived segment or body, is refused,
+  in words a status line shows ("this project's history can't be loaded: …"; `SyncError` code `server`), and a
+  `history` request over such rows gets that as its reply's error. Before, the host's "internal: keyframe … is
+  missing" left the replica in "syncing" for good. `write-limit` is a host's
   daily write cap: a blob write refused for a while throws an error with `retryAt` (BlobStore's contract), the
   sequencer drops the rest of that push's epoch for a client whose hello said `writeLimit` and tells it the wait
   (`retryAfterMs`); the client keeps its edits, pushes nothing (nor a hand-off upload) until then, and pushes again

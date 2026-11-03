@@ -369,7 +369,7 @@ export interface PresenceFanoutMsg {
    */
   arrived?: true;
 }
-export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit";
+export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit" | "history-missing";
 export interface ErrorMsg {
   type: "error";
   reason: string;
@@ -377,7 +377,9 @@ export interface ErrorMsg {
    * What kind of refusal, for a client to act on (`reason` is for people): `schema-too-new` (the client's documents are
    * newer than the server accepts: update the server), `unauthorized` (the token expired, or is for another project),
    * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message), `write-limit` (the host
-   * refused to store a write for a while: its daily write cap). Absent: anything else.
+   * refused to store a write for a while: its daily write cap), `history-missing` (the catch-up needs history the
+   * server's blob store no longer has: a keyframe it can't do without, an archived segment or a change body; nothing a
+   * retry fixes). Absent: anything else.
    */
   code?: ErrorCode;
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */

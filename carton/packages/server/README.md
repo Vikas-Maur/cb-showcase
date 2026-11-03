@@ -52,6 +52,12 @@ await seq.createBranch(rec, { doc0, stateHash });
   while the page has room. The confirmed-id list in a page is part of the budget and is paged too.
 - **Keyframes** need a real digest (`hashDoc`, SHA-256 hex): an upload or a fork's root without one is never stored,
   and replicas refuse one that doesn't match.
+- **A blob gone from the store** (deleted under the sequencer: an operator's cleanup, a bucket lifecycle rule, the
+  lab's purge). A keyframe whose blob is gone is passed over for an older one, or for the rows alone when the replica
+  holds a state they extend: keyframes only shorten a catch-up. A catch-up that can't be served without the blob (a
+  joiner with no state left to start from, rows only an archived segment or a body held) is refused with
+  `code: "history-missing"` in people's words, and a `history` request over such rows gets them as its error. Each
+  miss counts in `stats.missingBlobs` and is a `missingBlob` event (with the key, for operators).
 - `createInProcessHost` is a complete reference host (and the Transport tests use): read it for the glue. It refuses a
   message over `maxMessageBytes` (32 MiB, as a WebSocket host would; `Infinity`: none) by closing the connection.
 
