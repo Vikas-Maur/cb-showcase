@@ -297,7 +297,8 @@ function useBox(host) {
     const measure = () => {
       const a = el.getBoundingClientRect(), b = (host?.() ?? el.offsetParent ?? document.body).getBoundingClientRect();
       const next = { top: Math.round(a.top - b.top), left: Math.round(a.left - b.left), right: Math.round(b.right - a.right), bottom: Math.round(b.bottom - a.bottom), width: Math.round(a.width), height: Math.round(a.height) };
-      setBox((was) => (was && was.top === next.top && was.left === next.left && was.right === next.right && was.bottom === next.bottom ? was : next));
+      // (its size too: a box whose insets stay the same as the stage narrows has a new width)
+      setBox((was) => (was && was.top === next.top && was.left === next.left && was.right === next.right && was.bottom === next.bottom && was.width === next.width && was.height === next.height ? was : next));
     };
     measure();
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
