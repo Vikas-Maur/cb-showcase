@@ -13,6 +13,8 @@
 import { actorKey, apply, betweenCuts, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
+  BroughtPlace as CoreBroughtPlace,
+  BroughtRipple as CoreBroughtRipple,
   Carton,
   CartonEvent,
   ChangeRow,
@@ -37,6 +39,8 @@ import type {
   Actor,
   AlignEntry,
   BringBackChoice,
+  BringBackPlace,
+  BringBackRipple,
   CartonUi,
   Change,
   ClipKind,
@@ -1474,6 +1478,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return p;
   };
   const rowIdOf = (change: string | null, ref: { branchId: string; seq: number }) => change ?? `${ref.branchId}@${ref.seq}`;
+  /** Core's place and ripple (N0b) in the view model's terms: clips by their timeline ids, no paths. */
+  const placeOf = (x: { place?: CoreBroughtPlace; ripple?: CoreBroughtRipple | null }): { place?: BringBackPlace; ripple?: BringBackRipple | null } => ({
+    ...(x.place ? { place: { placed: x.place.placed, ...(x.place.track ? { trackId: x.place.track } : {}), ...(x.place.takenBy ? { takenBy: x.place.takenBy.map((t) => ({ itemId: itemOfRecord(t.record) ?? t.record, name: t.name })) } : {}) } } : {}),
+    ...(x.ripple !== undefined ? { ripple: x.ripple ? { direction: x.ripple.direction, by: x.ripple.by, at: x.ripple.at, moved: x.ripple.moved } : null } : {}),
+  });
   const itemOfRecord = (record: string | undefined): string | undefined => {
     if (!record || !tl) return undefined;
     const [c, id] = splitPathKey(record);
@@ -1912,10 +1921,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     async restoreClip(ref, itemId, o) {
       if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
       const onCut = carton.cut;
-      const res = await carton.restoreClip(ref, [tl?.collection ?? "items", itemId], { author: opts.me, ...(o?.remove ? { remove: true } : {}) });
+      const res = await carton.restoreClip(ref, [tl?.collection ?? "items", itemId], { author: opts.me, ...(o?.remove ? { remove: true } : {}), ...(typeof o?.expect === "string" ? { expect: o.expect } : {}) });
       await refreshUndo();
       const made = res.brought.how === "same" ? {} : madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
-      return { ...made, how: res.brought.how, clipName: res.brought.name };
+      return { ...made, how: res.brought.how, clipName: res.brought.name, ...placeOf(res.brought) };
     },
     async bringBackChoices(ref) {
       const r = await carton.bringBackChoices(ref, { cut: cutId });
@@ -1927,6 +1936,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         ...(c.now ? { now: { ...(c.now.start !== undefined ? { start: c.now.start } : {}), ...(c.now.end !== undefined ? { end: c.now.end } : {}), ...(c.now.text !== undefined ? { text: c.now.text } : {}) } } : {}),
         ...(c.by !== undefined ? { by: c.by ? ui(c.by) : null } : {}),
         ...(c.at !== undefined ? { at: c.at } : {}),
+        token: c.token,
+        ...placeOf(c),
       });
       return { changed: r.changed.map(row), deleted: r.deleted.map(row), added: r.added.map(row), same: r.same };
     },

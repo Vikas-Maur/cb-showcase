@@ -120,3 +120,24 @@ test("cb compare across cuts by name, and --show with no editor open: plain word
     await local.close();
   }
 });
+
+test("cb restore --clip (N0b): a ripple's rest moves back and says so; a taken place puts it on a new track and says so", async () => {
+  const { local } = await realProject("n0b-clip", human);
+  try {
+    // c1 [5,10) ripple-deleted: c2 and c3 moved up 5 s
+    await local.write({ kind: "commit", ops: [{ op: "remove", path: ["timelineItems", "c1"] }, set("c2", "startTime", 5), set("c2", "endTime", 10), set("c3", "startTime", 10), set("c3", "endTime", 15)], intent: { kind: "ripple-delete", maps: { V1: [{ d: [[5, 10]], i: [] }] } } });
+    const r = await cb(local, ["restore", "main@1", "--clip", "c1"]);
+    assert.equal(r.code, 0, r.err + r.out);
+    assert.match(r.out, /^Brought back “c1” \(deleted by the user today at .*\) where it was: 0:05 on its track\. Everything after it moved 5 s later\. Nothing else changed\./);
+    const items = Object.fromEntries(((await local.carton.head()).doc.timelineItems as any[]).map((x) => [x.id, [x.trackId, x.startTime]]));
+    assert.deepEqual([items.c1, items.c2, items.c3], [["V1", 5], ["V1", 10], ["V1", 15]]);
+    // c0 deleted, then c2 moved into its place: it goes on a new track above
+    await local.write({ kind: "commit", ops: [{ op: "remove", path: ["timelineItems", "c0"] }] });
+    await local.write({ kind: "commit", ops: [set("c1", "startTime", 0), set("c1", "endTime", 5)] });
+    const t = await cb(local, ["restore", "main@1", "--clip", "c0"]);
+    assert.equal(t.code, 0, t.err + t.out);
+    assert.match(t.out, /^Brought back “c0” \(deleted by the user today at .*\)\. Its place is taken by “c1”, so it went on a new track above, at 0:00\. Nothing else changed\./);
+  } finally {
+    await local.close();
+  }
+});
