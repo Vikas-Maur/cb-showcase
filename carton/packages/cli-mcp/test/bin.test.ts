@@ -65,7 +65,7 @@ test("carton mcp: initialize and tools/list over stdio", async () => {
   await new Promise((r) => p.on("exit", r));
   assert.equal(lines.length, 2, "no reply to the notification");
   assert.equal(lines[0].result.serverInfo.name, "carton");
-  assert.deepEqual(lines[1].result.tools.map((t: any) => t.name), ["timeline_history", "check_timeline", "undo_timeline", "timeline_cuts", "timeline_fold", "timeline_credits", "timeline_publish"]);
+  assert.deepEqual(lines[1].result.tools.map((t: any) => t.name), ["timeline_history", "check_timeline", "undo_timeline", "timeline_cuts", "timeline_fold", "timeline_credits", "timeline_publish", "timeline_find", "timeline_landmarks", "timeline_restore_clip", "timeline_compare"]);
   assert.equal(lines[1].result.tools.find((t: any) => t.name === "timeline_credits").annotations.readOnlyHint, true);
 });
 

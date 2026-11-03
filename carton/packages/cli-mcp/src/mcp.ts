@@ -139,6 +139,35 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
     readOnly: false,
     run: (ctx, a) => spec("publish").run(ctx, { version: a.version, name: a.name }),
   },
+  // Carton UX v2 (N0): find a version, the landmarks, bring back one clip, show a comparison (DESIGN-V2 §5)
+  {
+    name: "timeline_find",
+    description: "Find versions by a clip's name, words from a title or caption, an agent's request, a version's name, a person or a day (every word matches a word's start). Newest first, each with why it matched and its <cut>@<seq>.",
+    shape: { text: { type: "string", description: "the words, e.g. \"intro\" or \"sent client\"" }, cut: { type: "string", description: "cut (default: current)", optional: true }, all: { type: "boolean", description: "every match, not the newest 5", optional: true }, allCuts: { type: "boolean", description: "search every cut", optional: true } },
+    readOnly: true,
+    run: (ctx, a) => spec("history").run(ctx, { find: a.text, cut: a.cut, all: a.all, "all-cuts": a.allCuts }),
+  },
+  {
+    name: "timeline_landmarks",
+    description: "The versions people remember, newest first: exported, sent, named, agent turns, each start (when the project was opened) and before a restore. Use them to find \"the version I sent the client\".",
+    shape: { cut: { type: "string", description: "cut (default: current)", optional: true } },
+    readOnly: true,
+    run: (ctx, a) => spec("history").run(ctx, { landmarks: true, cut: a.cut }),
+  },
+  {
+    name: "timeline_restore_clip",
+    description: "Bring back one clip as it was in a version, as a new version on top: nothing else changes, and Ctrl+Z takes it back. A clip deleted since comes back; one that wasn't there then is taken out only with remove.",
+    shape: { version: { type: "string", description: "<cut>@<seq>, or sent, exported, today, a version's name" }, clip: { type: "string", description: "the clip's name or id" }, remove: { type: "boolean", description: "it wasn't in that version: take it out", optional: true } },
+    readOnly: false,
+    run: (ctx, a) => spec("restore").run(ctx, { version: a.version, clip: a.clip, remove: a.remove }),
+  },
+  {
+    name: "timeline_compare",
+    description: "What differs between two versions, of one cut or two (a cut's name is that cut now). show: open the comparison in the editor for the user, when they ask to show or compare something.",
+    shape: { left: { type: "string", description: "<cut>@<seq>, a cut's name, sent, exported, today, now, a version's name" }, right: { type: "string", description: "default: the user's edit now", optional: true }, show: { type: "boolean", description: "open it in the editor", optional: true } },
+    readOnly: false,
+    run: (ctx, a) => spec("compare").run(ctx, { a: a.left, b: a.right, show: a.show }),
+  },
 ];
 
 /** JSON Schema for a tool's input (the standalone MCP server; `project` added when the host needs it). */

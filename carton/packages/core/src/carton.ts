@@ -21,9 +21,9 @@ import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } fro
 import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type TopCheck, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
-import { FIND_FIELDS, FindIndex, findWords, foldText, hitIn, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult } from "./find.ts";
-import { LANDMARK_KINDS, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
-import { bringBack, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
+import { FIND_FIELDS, FindIndex, dayWords, findWords, hayOf, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
+import { LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
+import { bringBack, partsDiffer, recordName, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
 import type {
@@ -1761,80 +1761,166 @@ class CartonImpl implements Carton {
   /** Find's index per cut (find.ts): built on the first call, extended by the rows saved since on each later one. */
   #finds = new Map<string, FindIndex>();
   async find(text: string, opts: FindOptions = {}): Promise<FindResult> {
-    const cut = opts.cut ?? this.#h.current;
     await this.#whole();
+    if (opts.allCuts) {
+      // every cut held here with a history of its own, merged newest first
+      await this.#refresh();
+      const cuts = this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
+      const each = await Promise.all(cuts.map((cut) => this.#findIn(cut, text, { ...opts, limit: 1000 })));
+      const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
+      return {
+        clips: each.flatMap((r) => r.clips).slice(0, 8),
+        matches: each.flatMap((r) => r.matches).sort((x, y) => y.at - x.at).slice(0, limit),
+        total: each.reduce((n, r) => n + r.total, 0),
+        versions: each.reduce((n, r) => n + r.versions, 0),
+      };
+    }
+    const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
+    return this.#findIn(cut, text, opts);
+  }
+  async #findIn(cut: string, text: string, opts: FindOptions): Promise<FindResult> {
     if (!this.#h.cut(cut)) throw new Error(`Carton: no cut ${cut}`);
     let ix = this.#finds.get(cut);
     if (!ix) this.#finds.set(cut, (ix = new FindIndex()));
     ix.update({ schema: this.schema, log: this.#h.changes(cut), start: () => this.#h.viewOf(nodeId(cut, 0)), records: (c) => this.#recordsOf(c), completedAt });
-    const q = foldText(String(text ?? "").replace(/\s+/g, " ").trim());
+    const q = queryWords(String(text ?? ""));
     const all = ix.entries, before = opts.before;
     let versions = 0;
     for (const e of all) if (before === undefined || e.seq < before) versions++;
-    if (!q) return { clips: [], matches: [], total: 0, versions };
+    if (!q.length) return { clips: [], matches: [], total: 0, versions };
     const want = new Set<FindField>(opts.fields?.length ? opts.fields : FIND_FIELDS);
     const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
-    const names = new Map(this.#h.names());
-    // who made it, told as log() tells it (the person behind a generic save), once per actor and change replica
-    const told = new Map<string, Actor | null>();
-    const whoOf = (c: ConfirmedChange): Actor | null => {
-      const k = `${c.author ? actorKey(c.author) : ""}\u0000${c.id.slice(0, c.id.lastIndexOf("."))}`;
-      let a = told.get(k);
-      if (a === undefined) told.set(k, (a = this.#who(c.author, c.id)));
-      return a;
+    const now = opts.now ?? this.#opts.clock?.() ?? Date.now();
+    // per query, once: the cut's version names by seq, its landmarks' words, and who and which day, by key
+    const names = new Map<number, string>();
+    for (const [node, n] of this.#h.names()) {
+      const at = node.lastIndexOf("@");
+      if (node.slice(0, at) === cut) names.set(Number(node.slice(at + 1)), n.name);
+    }
+    const marks = await this.#landmarkKinds(cut);
+    const markWords = new Map<string, Words>();
+    const markOf = (lm: readonly LandmarkKind[]): Words => {
+      const k = lm.join(" ");
+      let w = markWords.get(k);
+      if (!w) markWords.set(k, (w = findWords(k)));
+      return w;
     };
+    // who made it, told as log() tells it (the person behind a generic save), once per actor and change replica; a
+    // person's change made on this computer is also "you"
+    const told: ({ a: Actor | null; w: Words[]; hay: string } | undefined)[] = [];
+    const whoOf = (e: (typeof all)[number]) => {
+      let x = told[e.who];
+      if (!x) {
+        const c = e.row, rid = c.id.slice(0, c.id.lastIndexOf("."));
+        const a = this.#who(c.author, c.id);
+        const me = this.#actor();
+        const mine = (this.#ownRids.has(rid) || rid === this.#rid) && !!c.author && (c.author.id === PERSON || (c.author.kind === me.kind && c.author.id === me.id));
+        const w = [a?.name, a?.owner?.name, mine ? "You" : undefined].filter((n): n is string => !!n).map(findWords);
+        told[e.who] = x = { a, w, hay: hayOf(w) };
+      }
+      return x;
+    };
+    const days = new Map<number, Words>();
+    const dayOf = (e: (typeof all)[number]) => {
+      let w = days.get(e.day);
+      if (!w) days.set(e.day, (w = dayWords(e.row.at, now)));
+      return w;
+    };
+    const nameWords = new Map<string, Words>();
+    const wordsOf = (n: string) => {
+      let w = nameWords.get(n);
+      if (!w) nameWords.set(n, (w = findWords(n)));
+      return w;
+    };
+    const needles = q.map((x) => " " + x);
+    const isTurn = (c: ConfirmedChange) => !!c.author && (c.author.kind === "agent" || c.author.kind === "subagent" || !!c.author.turn);
+    type Cand = { field: FindField; w: Words; record?: PathKey; recordName?: string; span?: { start: number; end: number } };
     const matches: FindMatch[] = [];
     let total = 0;
+    const [wClip, wText, wPrompt, wName, wPerson, wDay] = FIND_FIELDS.map((f) => want.has(f));
     for (let i = all.length - 1; i >= 0; i--) {
       const e = all[i]!, c = e.row;
       if (before !== undefined && e.seq >= before) continue;
-      const hits: { field: FindField; text: string; at: [number, number]; record?: PathKey; recordName?: string }[] = [];
-      const name = names.get(nodeId(cut, e.seq))?.name;
-      // a turn's version is named from its prompt (cardboard's nameTurn): that name is the prompt
-      const turn = !!c.author && (c.author.kind === "agent" || c.author.kind === "subagent" || !!c.author.turn);
-      if (name && want.has(turn ? "prompt" : "name")) {
-        const w = findWords(name), at = hitIn(w, q);
-        if (at) hits.push({ field: turn ? "prompt" : "name", text: w[0], at });
+      // the fast test: every word starts a word somewhere in what this version holds (one string search per place)
+      const name = names.get(e.seq), lm = marks.get(e.seq);
+      const turn = name !== undefined && isTurn(c);
+      const nameHay = name !== undefined && (turn ? wPrompt : wName) ? wordsOf(name).hay : "";
+      const markHay = lm && wName ? markOf(lm).hay : "";
+      let ok = true;
+      for (const nd of needles) {
+        // one string per field: a clip's name never passes for text, nor text for a name (review N0 #3)
+        if ((wClip && e.clipHay.includes(nd)) || (wText && e.textHay.includes(nd)) || (nameHay && nameHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
+        ok = false;
+        break;
       }
-      if (want.has("clip")) for (const cl of e.clips) {
-        const w = cl.names.find((n) => n[1].includes(q));
-        if (w) { hits.push({ field: "clip", text: w[0], at: hitIn(w, q)!, record: cl.key, recordName: w[0] }); break; }
-      }
-      if (want.has("text")) for (const t of e.texts) {
-        const at = hitIn(t.text, q);
-        if (at) { hits.push({ field: "text", text: t.text[0], at, record: t.key, ...(t.name ? { recordName: t.name } : {}) }); break; }
-      }
-      let who: Actor | null | undefined;
-      if (want.has("person")) {
-        who = whoOf(c);
-        for (const n of [who?.name, who?.owner?.name]) {
-          if (!n) continue;
-          const w = findWords(n), at = hitIn(w, q);
-          if (at) { hits.push({ field: "person", text: w[0], at }); break; }
-        }
-      }
-      if (!hits.length) continue;
+      if (!ok) continue;
+      // (exact: every word is after a space in those strings, so `" " + word` is found where a word starts with it)
       total++;
       if (matches.length >= limit) continue;
-      hits.sort((x, y) => FIND_FIELDS.indexOf(x.field) - FIND_FIELDS.indexOf(y.field));
-      const best = hits[0]!, sn = snippetOf(best.text, best.at[0], best.at[1]);
+      // what it holds, by weight (only for a version shown)
+      const cands: Cand[] = [];
+      if (want.has("clip")) for (const cl of e.clips) for (const w of cl.names) cands.push({ field: "clip", w, record: cl.key, recordName: w.text, ...(cl.span ? { span: cl.span } : {}) });
+      if (want.has("text")) for (const t of e.texts) cands.push({ field: "text", w: t.text, record: t.key, ...(t.name ? { recordName: t.name } : {}) });
+      if (nameHay) cands.push({ field: turn ? "prompt" : "name", w: wordsOf(name!) });
+      if (markHay) cands.push({ field: "name", w: markOf(lm!) });
+      if (want.has("person")) for (const w of whoOf(e).w) cands.push({ field: "person", w });
+      if (want.has("day")) cands.push({ field: "day", w: dayOf(e) });
+      const fields: FindField[] = [];
+      // the best: the first (by weight) that holds the most of the words
+      let best: Cand | undefined, bestHits: [number, number][] = [];
+      for (const cd of cands) {
+        const h = hitsIn(cd.w, q);
+        if (!h) continue;
+        if (!fields.includes(cd.field)) fields.push(cd.field);
+        if (!best || h.length > bestHits.length) [best, bestHits] = [cd, h];
+      }
+      fields.sort((x, y) => FIND_FIELDS.indexOf(x) - FIND_FIELDS.indexOf(y));
+      const sn = snippetOf(best!.w.text, bestHits);
       matches.push({
         ref: { branchId: cut, seq: e.seq, pending: [] },
         change: c.id,
         at: c.at,
-        author: who === undefined ? whoOf(c) : who,
+        author: whoOf(e).a,
         ...(name ? { name } : {}),
-        field: best.field,
-        fields: hits.map((h) => h.field),
+        field: best!.field,
+        fields,
         snippet: sn.snippet,
-        hit: sn.hit,
-        hits: [sn.hit],
-        ...(best.record ? { record: best.record } : {}),
-        ...(best.recordName ? { recordName: best.recordName } : {}),
+        hit: sn.hits[0] ?? [0, 0],
+        hits: sn.hits,
+        ...(best!.record ? { record: best!.record } : {}),
+        ...(best!.recordName ? { recordName: best!.recordName } : {}),
+        ...(best!.span ? { span: best!.span } : {}),
+        ...(lm ? { landmarks: LANDMARK_ORDER.filter((k) => lm.includes(k)) } : {}),
       });
     }
-    return { clips: [], matches, total, versions };
+    // "A clip first": the clips whose name holds every word, those still in the cut first, then the newest touched
+    const clips = [...ix.clips]
+      .filter(([, v]) => v.names.some((n) => needles.every((nd) => n.hay.includes(nd))))
+      .sort((x, y) => Number(!!x[1].deleted) - Number(!!y[1].deleted) || y[1].seq - x[1].seq)
+      .slice(0, 8)
+      .map(([record, v]) => ({ record, name: v.names[0]!.text, cut, ...(v.deleted ? { deleted: true as const } : {}) }));
+    return { clips: want.has("clip") ? clips : [], matches, total, versions };
+  }
+  /**
+   * The landmark kinds of a cut's versions, by seq, for Find: kept while the cut's rows, its names and this handle's
+   * marks are as they were (a mark by another process shows once a version is added, or a name given).
+   */
+  #kindsCache = new Map<string, { key: string; kinds: Map<number, LandmarkKind[]> }>();
+  #marks = 0;
+  async #landmarkKinds(cut: string): Promise<Map<number, LandmarkKind[]>> {
+    const log = this.#h.changes(cut);
+    const key = `${log.length}|${log[log.length - 1]?.id ?? ""}|${this.#h.names().length}|${this.#marks}|${this.#h.cuts().length}`;
+    const hit = this.#kindsCache.get(cut);
+    if (hit && hit.key === key) return hit.kinds;
+    const kinds = new Map<number, LandmarkKind[]>();
+    for (const l of await this.landmarks({ cut, limit: 5000 })) {
+      const k = kinds.get(l.ref.seq) ?? [];
+      if (!k.includes(l.kind)) k.push(l.kind);
+      kinds.set(l.ref.seq, k);
+    }
+    this.#kindsCache.set(cut, { key, kinds });
+    return kinds;
   }
   async landmarks(opts: LandmarkOptions = {}): Promise<Landmark[]> {
     const cut = opts.cut ?? this.#h.current;
@@ -1851,7 +1937,7 @@ class CartonImpl implements Carton {
       if (!want.has(kind) || seq >= before || seq < 0 || seq > log.length) return;
       const r = ref(seq);
       const personal = kind === "start" || kind === "before";
-      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
+      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, change: seq > 0 ? log[seq - 1]?.id ?? null : null, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
     };
     // recorded by the app (mark): this machine's own, from the local ephemeral table
     if (RECORDED_KINDS.some((k) => want.has(k))) {
@@ -1925,6 +2011,7 @@ class CartonImpl implements Carton {
     const by = opts.by ?? this.#actor();
     const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}) };
     await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, seq, kind, at], value: row }]);
+    this.#marks++;
     this.#emit({ type: "landmarks", branchId: cut });
     const r: StateRef = { branchId: cut, seq, pending: [] };
     return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, personal: kind === "start", local: true, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };
@@ -1954,7 +2041,7 @@ class CartonImpl implements Carton {
       // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); the server keeps no
       // restoreOf, so History reads it as a restore there, as it does a shared cut's restore
       const r = await this.#planShared(cut, opts.id, (tail) => ({ doc: plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!).doc, author, kind: "restore" }));
-      return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+      return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
     }
     const r = await this.#mutate(
       undefined,
@@ -1966,19 +2053,88 @@ class CartonImpl implements Carton {
       },
       { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) },
     );
-    return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut)) };
+    return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
   }
-  async bringBackChoices(_ref: StateRef | string, _opts: { cut?: string } = {}): Promise<BringBackChoices> {
-    throw new Error("not implemented: bringBackChoices");
-  }
-  /** A retried bring-back answers from its first try: what it did, read again from the change it made. */
-  async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string): Promise<BroughtBack> {
+  async bringBackChoices(ref: StateRef | string, opts: { cut?: string } = {}): Promise<BringBackChoices> {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh();
     const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
-    const of = typeof t === "string" ? t : nodeId(t.branchId, t.seq);
-    const doc = this.#doc(t), now = this.#h.viewOf(this.#h.head(cut))!;
-    const rec = (E.getIn(doc, [coll, id], this.schema) ?? E.getIn(now, [coll, id], this.schema)) as Rec | undefined;
-    return { record: E.pathKey([coll, id]), name: recordName(this.schema, coll, rec, doc), how: "changed", parts: [], of };
+    const then = this.#doc(t), now = this.#h.viewOf(this.#h.head(cut))!;
+    const tl = this.schema.timeline;
+    // the clips: the timeline's collection, else the one whose records sit on another's (items on tracks)
+    const colls = Object.entries(this.schema.collections);
+    const coll = tl?.collection ?? colls.find(([, c]) => c.parent)?.[0] ?? colls[0]![0];
+    const spec = this.schema.collections[coll]!;
+    const byId = (d: Doc) => new Map(((d[coll] as Rec[] | undefined) ?? []).map((r) => [String(r[spec.key]), r]));
+    const a = byId(then), b = byId(now);
+    // who deleted or added it, and when: the versions since `ref` on this cut that touched it (newest, oldest)
+    const node = parseNode(typeof t === "string" ? (NODE_RE.test(t) ? t : this.#node(t)) : nodeId(t.branchId, t.seq));
+    const since = new Map<PathKey, { first: { author: Actor | null; at: number }; last: { author: Actor | null; at: number } }>();
+    if (node.branchId === cut) for (const v of await this.touched({ cut, after: node.seq })) for (const k of v.records) {
+      const x = since.get(k), w = { author: v.author, at: v.at };
+      since.set(k, { first: x?.first ?? w, last: w });
+    }
+    const side = (r: Rec) => {
+      const text = this.schema.collections[coll]?.words?.(r)?.[0];
+      return {
+        ...(tl && typeof r[tl.start] === "number" ? { start: r[tl.start] as number } : {}),
+        ...(tl && typeof r[tl.end] === "number" ? { end: r[tl.end] as number } : {}),
+        ...(typeof text === "string" ? { text } : {}),
+        ...(tl && typeof r[tl.lane] === "string" ? { track: r[tl.lane] as string } : {}),
+      };
+    };
+    const row = (id: string, r: Rec, d: Doc) => {
+      const noun = spec.nounOf?.(r);
+      return { record: E.pathKey([coll, id]), name: recordName(this.schema, coll, r, d), ...(noun ? { noun } : {}) };
+    };
+    const out: BringBackChoices = { changed: [], deleted: [], added: [], same: 0 };
+    for (const [id, x] of a) {
+      if (spec.nounOf?.(x) === null) continue;
+      const y = b.get(id);
+      if (!y) {
+        const w = since.get(E.pathKey([coll, id]))?.last;
+        out.deleted.push({ ...row(id, x, then), then: side(x), ...(w ? { by: w.author, at: w.at } : {}) });
+      } else if (E.deepEqual(x, y) && !partsDiffer(this.schema, coll, x, then, y, now)) out.same++;
+      // (its own parts too: a title's text entry, as restoreClip covers them: review N0 #4)
+      else out.changed.push({ ...row(id, y, now), then: side(x), now: side(y) });
+    }
+    for (const [id, y] of b) {
+      if (a.has(id) || spec.nounOf?.(y) === null) continue;
+      const w = since.get(E.pathKey([coll, id]))?.first;
+      out.added.push({ ...row(id, y, now), now: side(y), ...(w ? { by: w.author, at: w.at } : {}) });
+    }
+    const at = (c: { then?: { start?: number }; now?: { start?: number } }) => c.now?.start ?? c.then?.start ?? 0;
+    for (const l of [out.changed, out.deleted, out.added]) l.sort((x, y) => at(x) - at(y));
+    return out;
   }
+  /**
+   * A retried bring-back (the same `id`) answers as its first try did (review N0 #5): what it did, read again from the
+   * states just before and after the change it made (a shared cut's pending one from its queue), or nothing made.
+   */
+  async #broughtAgain(ref: StateRef | string, coll: string, id: string, cut: string, r: CommitResult): Promise<BroughtBack> {
+    const t = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
+    const of = typeof t === "string" ? (NODE_RE.test(t) ? this.#h.canon(t) : t) : this.#h.canon(nodeId(t.branchId, t.seq));
+    const record = E.pathKey([coll, id]);
+    const change = (r as { change?: ConfirmedChange | null }).change ?? null;
+    let before: Doc | null = null, after: Doc | null = null;
+    if (r.status === "confirmed" && change && !(r as { empty?: boolean }).empty) {
+      const c = change.branchId ?? cut;
+      before = this.#h.viewOf(nodeId(c, change.seq - 1));
+      after = this.#h.viewOf(nodeId(c, change.seq));
+    } else if (r.status === "pending") {
+      const p = (await this.pendingChanges(cut)).changes.find((x) => x.id === (r as { id?: string }).id);
+      if (p) [before, after] = [p.before, p.after];
+    }
+    const get = (d: Doc | null) => (d ? (E.getIn(d, [coll, id], this.schema) as Rec | undefined) : undefined);
+    const was = get(before), is = get(after);
+    const name = change?.restoreName ?? recordName(this.schema, coll, is ?? was ?? (E.getIn(this.#doc(t), [coll, id], this.schema) as Rec | undefined), after ?? undefined);
+    if (!before || !after) return { record, name, how: "same", parts: [], of };
+    const how: BroughtBack["how"] = !is ? "removed" : !was ? "added" : "changed";
+    const parts = [...new Set(E.diff(before, after, this.schema).flatMap((op) => (op.op === "remap" ? [] : [E.pathKey(op.path.slice(0, 2).map(String))])))].filter((k) => k !== record && !!this.schema.collections[k.split("/")[0]!]);
+    return { record, name, how, parts, of };
+  }
+
   /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
   #leftOutN = new Map<string, number>();
   #leftOutChanges(cut: string, v: Version): number {
@@ -2508,6 +2664,16 @@ class CartonImpl implements Carton {
    */
   async compact(opts: { cut?: string; olderThanDays?: number } = {}): Promise<{ squashed: number }> {
     await this.#whole();
+    // the versions the app recorded as landmarks (an export, a send, a start) keep their state, as pinned ones do (review
+    // N0 #2). Read before the plan: a landmark recorded meanwhile is on a head, which no compaction squashes (the last K
+    // changes and everything newer than the cutoff stay)
+    const marked = new Map<string, Set<number>>();
+    for (const { key } of await this.store.range(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX] })) {
+      const [cut, seq] = [key[1], Number(key[2])];
+      if (typeof cut !== "string" || !Number.isInteger(seq)) continue;
+      if (!marked.has(cut)) marked.set(cut, new Set());
+      marked.get(cut)!.add(seq);
+    }
     let squashed = 0;
     const plan: StoreWrite[] = [];
     await this.#mutate(
@@ -2518,7 +2684,7 @@ class CartonImpl implements Carton {
         const cutoff = (this.#opts.clock?.() ?? Date.now()) - (opts.olderThanDays ?? 90) * 864e5;
         for (const rec of this.#h.cuts()) {
           if ((opts.cut && rec.id !== opts.cut) || rec.sequencer.kind !== "local" || rec.tracking || rec.shallow || rec.kind === "published") continue;
-          squashed += this.#compactCut(rec.id, cutoff, plan);
+          squashed += this.#compactCut(rec.id, cutoff, plan, marked.get(rec.id));
         }
       },
       // the pins as read for this plan: a pin another process writes before the plan lands moves the token, the write
@@ -2534,10 +2700,10 @@ class CartonImpl implements Carton {
     }
     return { squashed };
   }
-  #compactCut(cut: string, cutoff: number, writes: StoreWrite[]): number {
+  #compactCut(cut: string, cutoff: number, writes: StoreWrite[], marked?: ReadonlySet<number>): number {
     const h = this.#h;
     const log = h.changes(cut);
-    const keep = new Set<number>();
+    const keep = new Set<number>(marked ?? []);
     const seqOf = new Map(log.map((c) => [c.id, c.seq]));
     for (const c of log) {
       if (c.kind && c.kind !== "edit") keep.add(c.seq); // undo, revert, restore, fold, partial revert

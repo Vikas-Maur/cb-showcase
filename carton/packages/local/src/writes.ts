@@ -344,7 +344,7 @@ export interface ViewPrinter {
    * WriteOp `open` (Carton UX v2): show a view in the editor windows that have the project open, for `by` (the agent
    * that asked). Resolves with how many were told; absent (a headless helper): none.
    */
-  openView?(view: OpenView, by: Actor): Promise<{ opened: number }>;
+  openView?(view: OpenView, by: Actor): Promise<{ opened: number; shown?: { status: "opened" | "offered" | "refused"; why?: string } }>;
   /**
    * carton.db may have moved under the holder (another process wrote it, B11): the materializer reads head and brings
    * the files up to it, or does nothing when it already shows that head (cardboard-adapter `e352fea`). The holder's
@@ -571,7 +571,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "open": {
       // shows something in the editor, saves nothing: only a holder that runs the app's pages can (a helper can't)
       const told = opts.materializer?.openView ? await opts.materializer.openView({ view: op.view, from: op.from, to: op.to }, author) : { opened: 0 };
-      return { status: "confirmed", seq: 0, ref: null, notices, opened: told.opened };
+      return { status: "confirmed", seq: 0, ref: null, notices, opened: told.opened, ...("shown" in told && told.shown ? { shown: told.shown } : {}) };
     }
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
     case "undo": case "redo": {

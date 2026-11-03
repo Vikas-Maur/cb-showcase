@@ -477,6 +477,8 @@ extend({
         if (!cfg) throw new Error("Share this project first");
         const token = await store.sessionFor(bundlePath, projectId).token();
         const inv = await host.createInvite({ host: cfg.host, projectId, token, role, ttlMs });
+        // Carton UX v2 (N0): a link made is a Sent landmark (DESIGN-V2 §2.1), off the answer's path
+        void Promise.resolve(api.carton?.(projectId)).then((lc) => lc?.carton.mark?.("sent", { label: role === "viewer" ? "Shared a link to watch" : "Shared a link to edit", ...(api.actorOf ? { by: api.actorOf("person") } : {}) })).catch(() => {});
         // with when it stops working, when its token says (the Share dialog keeps a link only until then)
         const expiresAt = host.inviteExpiry(inv);
         return { link: host.inviteLink(cfg.host, projectId, inv), role, ...(expiresAt ? { expiresAt } : {}) };

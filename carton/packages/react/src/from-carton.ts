@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, betweenCuts, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -35,6 +35,8 @@ import { clock as clockWords, versionLabel, versionShort } from "./format.ts";
 import { actorLabel } from "./actors.ts";
 import type {
   Actor,
+  AlignEntry,
+  BringBackChoice,
   CartonUi,
   Change,
   ClipKind,
@@ -48,8 +50,10 @@ import type {
   FoldPlan,
   FoldResult,
   Ghost,
+  FindHit,
   HistoryFilter,
   HistorySource,
+  Landmark,
   Peer,
   Preview,
   Published,
@@ -1044,7 +1048,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         if (e.cards.length) addCards(e.cards, undefined, e.branchId);
         break;
       }
+      // a landmark recorded (an export, a send), or a version that may be one (a name, a turn, a restore's Before)
+      case "landmarks":
+        hub.notify("landmarks");
+        break;
       case "change": {
+        hub.notify("landmarks");
         const c = e.change;
         // Partial-fold decisions follow every cut's changes, not only the current cut's (R5-1).
         const rev = Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : [];
@@ -1321,6 +1330,16 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return v ? versionLabel(v, { ...labelCtx(), start: true }) : "An earlier version";
   };
 
+  /**
+   * A version of another cut in words (Carton UX v2, DESIGN-V2 §1.12: compare across cuts): its cut and its moment
+   * ("“30s Instagram cut” at 12:20 pm"); its head is the cut's name, as `refLabel` says.
+   */
+  const refLabelOf = async (ref: string): Promise<string> => {
+    const n = nodeOf(ref);
+    if (!n || n.cut === cutId || cuts.some((c) => c.head === ref) || versionAt(ref)) return refLabel(ref);
+    const v = (await carton.log({ cut: n.cut, before: n.seq + 1, limit: 1 }).catch(() => []))[0];
+    return v && v.ref.seq === n.seq ? `${cutWords(n.cut)} at ${clockWords(v.at, { now: clock() })}` : refLabel(ref);
+  };
   // ------------------------------------------------------------ change rows (PLAN 0.1, 0.2)
   const valueOpt = opts.valueWords ? { value: opts.valueWords } : {};
   const clipKindOf = (r: ChangeRow): ClipKind => (opts.clipKind ?? defaultClipKind)(r, schema);
@@ -1391,6 +1410,74 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       p.catch(() => changeCache.delete(key));
     }
     return p;
+  };
+  // ------------------------------------------------------------ Carton UX v2 (N0): two cuts, find, landmarks
+  /** A cut's name in a sentence: Main cut as it is, any other in quotes ("“30s Instagram cut”"). */
+  const cutWords = (id: string): string => {
+    const c = cuts.find((x) => x.id === id), r = records.find((x) => x.id === id);
+    const name = c?.label ?? r?.name ?? "another cut";
+    return c?.kind === "main" || r?.kind === "main" ? name : `“${name}”`;
+  };
+  const cutOfRef = (ref: string): string => nodeOf(ref)?.cut ?? ref;
+  /** Two cuts' differences (DESIGN-V2 §1.12): the same rows as `changes`, said as where a clip is. Cached per pair. */
+  const cutsCache = new Map<string, Promise<readonly Change[]>>();
+  const cutsBetween = (a: string, b: string): Promise<readonly Change[]> => {
+    const key = `${a}|${b}`;
+    const hit = cutsCache.get(key);
+    if (hit) return hit;
+    const p = (async () => {
+      const [list, da, db] = await Promise.all([rowsBetween(a, b), carton.checkout(a), carton.checkout(b)]);
+      const rb = cutOfRef(b);
+      return betweenCuts(list, da, db, schema, { left: cutWords(cutOfRef(a)), right: cutWords(rb), here: rb === cutId }).map((r) => toChange(r)).sort(byPlace);
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      cutsCache.set(key, p);
+      if (cutsCache.size > 16) cutsCache.delete(cutsCache.keys().next().value!);
+      p.catch(() => cutsCache.delete(key));
+    }
+    return p;
+  };
+  /** The clip-by-clip match of two versions (DESIGN-V2 §1.15 `ui.align`), by identity. Cached per pair. */
+  const alignCache = new Map<string, Promise<readonly AlignEntry[]>>();
+  const align = (a: string, b: string): Promise<readonly AlignEntry[]> => {
+    const key = `${a}|${b}`;
+    const hit = alignCache.get(key);
+    if (hit) return hit;
+    const p = (async (): Promise<readonly AlignEntry[]> => {
+      if (!tl) return [];
+      const [da, db] = await Promise.all([carton.checkout(a), carton.checkout(b)]);
+      const k = schema.collections[tl.collection]?.key ?? "id";
+      const out = new Map<string, AlignEntry>();
+      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+      for (const [d, side] of [[da, "a"], [db, "b"]] as const) {
+        for (const r of (d[tl.collection] as Rec[] | undefined) ?? []) {
+          const id = String(r[k]);
+          const was = out.get(id);
+          const name = schema.label?.(tl.collection, r, d);
+          const start = num(r[tl.start]), end = num(r[tl.end]);
+          out.set(id, {
+            ...(was ?? { item: id }),
+            ...(name && !was?.name ? { name } : {}),
+            ...(side === "a" ? { ...(start !== undefined ? { aStart: start } : {}), ...(end !== undefined ? { aEnd: end } : {}) } : { ...(start !== undefined ? { bStart: start } : {}), ...(end !== undefined ? { bEnd: end } : {}) }),
+            ...(typeof r[tl.lane] === "string" && (side === "b" || !was?.track) ? { track: r[tl.lane] as string } : {}),
+          });
+        }
+      }
+      const at = (e: AlignEntry) => e.bStart ?? e.aStart ?? 0;
+      return [...out.values()].sort((x, y) => at(x) - at(y));
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      alignCache.set(key, p);
+      if (alignCache.size > 8) alignCache.delete(alignCache.keys().next().value!);
+      p.catch(() => alignCache.delete(key));
+    }
+    return p;
+  };
+  const rowIdOf = (change: string | null, ref: { branchId: string; seq: number }) => change ?? `${ref.branchId}@${ref.seq}`;
+  const itemOfRecord = (record: string | undefined): string | undefined => {
+    if (!record || !tl) return undefined;
+    const [c, id] = splitPathKey(record);
+    return c === tl.collection ? id : undefined;
   };
   /** A row's own changes (the version card): a version's, as log() gives them; a turn's, all of it (from before its first version). */
   const changesInCache = new Map<string, Promise<readonly Change[]>>();
@@ -1547,8 +1634,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           b: B.map(shot(lb)),
           matches,
           // a version by its name or what it did, never its ref (an id)
-          aLabel: refLabel(a),
-          bLabel: refLabel(b),
+          aLabel: await refLabelOf(a),
+          bLabel: await refLabelOf(b),
           ...(changes === undefined ? {} : { changes }),
         };
       })();
@@ -1716,7 +1803,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     me: () => me,
     actor: (key) => actors.get(key),
 
-    changes: (a, b) => changesBetween(a, b),
+    changes: (a, b, o) => (o?.between === "cuts" ? cutsBetween(a, b) : changesBetween(a, b)),
     changesIn: (versionId) => changesIn(versionId),
     async undoTurnOf(versionId) {
       const i = pos.get(versionId);
@@ -1776,6 +1863,81 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (!cards.length) return { ok: true, ...made };
       addCards(cards, undefined, onCut);
       return { ok: true, conflicts, ...made };
+    },
+    async find(text, o) {
+      if (typeof carton.find !== "function") return { clips: [], hits: [], total: 0, versions: 0 };
+      const r = await carton.find(text, { cut: cutId, ...(o?.limit !== undefined ? { limit: o.limit } : {}), ...(o?.before !== undefined ? { before: o.before } : {}), ...(o?.fields ? { fields: o.fields } : {}), ...(o?.allCuts ? { allCuts: true } : {}), now: clock() });
+      const hits: FindHit[] = r.matches.map((m) => {
+        const itemId = itemOfRecord(m.record);
+        return {
+          versionId: rowIdOf(m.change, m.ref),
+          ref: `${m.ref.branchId}@${m.ref.seq}`,
+          cutId: m.ref.branchId,
+          at: m.at,
+          author: ui(m.author),
+          field: m.field,
+          fields: m.fields,
+          snippet: m.snippet,
+          hits: m.hits,
+          ...(itemId !== undefined ? { itemId } : {}),
+          ...(m.recordName ? { clipName: m.recordName } : {}),
+          ...(m.span ? { span: m.span } : {}),
+          ...(m.landmarks ? { landmarks: m.landmarks } : {}),
+        };
+      });
+      const clips = r.clips.flatMap((c) => {
+        const itemId = itemOfRecord(c.record);
+        return itemId === undefined ? [] : [{ itemId, name: c.name, cutId: c.cut, ...(c.deleted ? { deleted: true } : {}) }];
+      });
+      return { clips, hits, total: r.total, versions: r.versions };
+    },
+    async landmarks(o) {
+      if (typeof carton.landmarks !== "function") return [];
+      const list = await carton.landmarks({ cut: cutId, ...(o?.kinds ? { kinds: o.kinds } : {}), ...(o?.limit !== undefined ? { limit: o.limit } : {}) });
+      return list.map((l): Landmark => ({
+        id: l.id,
+        kind: l.kind,
+        versionId: rowIdOf(l.change ?? null, l.ref),
+        ref: `${l.ref.branchId}@${l.ref.seq}`,
+        at: l.at,
+        by: l.by ? ui(l.by) : null,
+        ...(l.label ? { label: l.label } : {}),
+        ...(l.before ? { before: l.before } : {}),
+        ...(l.after ? { after: l.after } : {}),
+        personal: l.personal,
+        local: l.local,
+        picture: l.picture,
+      }));
+    },
+    async restoreClip(ref, itemId, o) {
+      if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
+      const onCut = carton.cut;
+      const res = await carton.restoreClip(ref, [tl?.collection ?? "items", itemId], { author: opts.me, ...(o?.remove ? { remove: true } : {}) });
+      await refreshUndo();
+      const made = res.brought.how === "same" ? {} : madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
+      return { ...made, how: res.brought.how, clipName: res.brought.name };
+    },
+    async bringBackChoices(ref) {
+      const r = await carton.bringBackChoices(ref, { cut: cutId });
+      const row = (c: (typeof r.changed)[number]): BringBackChoice => ({
+        itemId: itemOfRecord(c.record) ?? splitPathKey(c.record)[1] ?? c.record,
+        name: c.name,
+        ...(c.noun ? { noun: c.noun } : {}),
+        ...(c.then ? { then: { ...(c.then.start !== undefined ? { start: c.then.start } : {}), ...(c.then.end !== undefined ? { end: c.then.end } : {}), ...(c.then.text !== undefined ? { text: c.then.text } : {}) } } : {}),
+        ...(c.now ? { now: { ...(c.now.start !== undefined ? { start: c.now.start } : {}), ...(c.now.end !== undefined ? { end: c.now.end } : {}), ...(c.now.text !== undefined ? { text: c.now.text } : {}) } } : {}),
+        ...(c.by !== undefined ? { by: c.by ? ui(c.by) : null } : {}),
+        ...(c.at !== undefined ? { at: c.at } : {}),
+      });
+      return { changed: r.changed.map(row), deleted: r.deleted.map(row), added: r.added.map(row), same: r.same };
+    },
+    align,
+    async landmarkPicture(key) {
+      return (await opts.pictures?.get(key)) ?? null;
+    },
+    async saveLandmarkPicture(key, jpeg) {
+      if (!opts.pictures) return;
+      if (typeof jpeg !== "string" || !jpeg.startsWith("data:image/jpeg;base64,") || jpeg.length > 90_000) throw new Error("A landmark's picture is a small JPEG (a data:image/jpeg URL of at most 64 KB)");
+      await opts.pictures.put(key, jpeg);
     },
     async clipVersions(itemId, o) {
       const record = pathKey([tl?.collection ?? "items", itemId]);

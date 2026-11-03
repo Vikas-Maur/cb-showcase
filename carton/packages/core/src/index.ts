@@ -8,6 +8,7 @@ export * from "./carton.ts";
 export * from "./find.ts";
 export * from "./landmarks.ts";
 export * from "./bring-back.ts";
+export * from "./cut-words.ts";
 export * as sequencer from "./sequencer/index.ts";
 export * as sync from "./sync/index.ts";
 export type * from "./plugins.ts";
