@@ -25,8 +25,12 @@ import { Button, Dialog, MenuButton, MenuLabel, radioKeys } from "./ui.ts";
 
 /** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
 const sigOf = (c: Conflict) => c.sig ?? `${c.title}|${c.mine.summary}|${c.mine.where ?? ""}|${c.theirs.summary}|${c.theirs.where ?? ""}`;
-/** A change's fingerprint: what its row says (the sentence, who, when, whether it can be left out). */
-const changeSig = (c: FoldChange) => `${c.summary}|${c.author.key}|${c.at}|${c.locked ? 1 : 0}|${c.leftOut ?? ""}`;
+/**
+ * A change's fingerprint: what its row says (the sentence, who, whether it can be left out, an earlier fold's), never
+ * its time: a plan asked again may give a change a time of its own (the capture rig's "2 h ago"), and the row reads the
+ * same.
+ */
+const changeSig = (c: FoldChange) => `${c.summary}|${c.author.key}|${c.locked ? 1 : 0}|${c.leftOut ?? ""}`;
 
 /**
  * What the person chose in the dialog, handed to its host when it closes for See them side by side, and back when

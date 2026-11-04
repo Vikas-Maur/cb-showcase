@@ -45,7 +45,10 @@ test(name("Back to Fold in…: the ticks and the pick come back as they were, no
   assert.deepEqual([t.from, t.into, t.left.length, Object.keys(t.picks).length], ["cut-ig", "cut-main", 1, 1]);
   await m.unmount();
 
-  // Back to Fold in…: the same ticks, the same pick, the same count, and nothing to say
+  // Back to Fold in…: the same ticks, the same pick, the same count, and nothing to say (a plan asked again may give
+  // its changes times of their own: the rows read the same, so nothing changed)
+  const planned = ui.planFold.bind(ui);
+  ui.planFold = async (f, i, o) => { const pl = await planned(f, i, o); return { ...pl, changes: pl.changes.map((c) => ({ ...c, at: c.at + 1234 })) }; };
   const back = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {}, ticks: t })));
   await flush();
   assert.deepEqual({ boxes: boxes(back), radios: radios(back), button: button(back) }, was);
@@ -53,6 +56,7 @@ test(name("Back to Fold in…: the ticks and the pick come back as they were, no
   await back.unmount();
 
   // the cuts changed while the person compared: the change they left out went, one came, the conflict reads differently
+  ui.planFold = planned;
   const plan = await ui.planFold("cut-ig", "cut-main");
   const author = plan.changes[0]!.author;
   const moved: FoldPlan = {

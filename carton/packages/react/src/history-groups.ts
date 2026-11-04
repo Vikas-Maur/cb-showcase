@@ -96,7 +96,8 @@ export interface GroupOptions {
   readonly runs?: (day: number, newest: boolean) => boolean;
   /**
    * With `runs` on the newest day: its newest this many versions stay rows (grouped as any day's are) above its story,
-   * so the latest changes read as they are. Default 0.
+   * so the latest changes read as they are; more when the line would fall inside a turn or a person's group (the rest
+   * of it stays with it). Default 0.
    */
   readonly keepNewest?: number;
 }
@@ -234,7 +235,14 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
         else hidden++;
       }
     } else if (alone && opts.runs?.(day, newest)) {
-      const top = newest && opts.keepNewest ? Math.max(j, i - opts.keepNewest) : i;
+      let top = newest && opts.keepNewest ? Math.max(j, i - opts.keepNewest) : i;
+      // the kept rows end where a row does: never half a turn or half a person's group above the line, half below
+      while (top < i && top > j) {
+        const a = versions[top]!, b = versions[top + 1]!;
+        const one = opts.group && ((!!b.run && a.run === b.run) || (joins(a) && joins(b) && a.author.key === b.author.key && b.at - a.at <= GROUP_GAP_MS));
+        if (!one) break;
+        top--;
+      }
       if (top < i) emit(i, top, rows);
       story(top, j);
     } else emit(i, j, rows);

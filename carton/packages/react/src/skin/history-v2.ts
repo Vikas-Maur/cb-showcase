@@ -23,6 +23,8 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-fold-reticked svg){flex:none;margin-top:2px;color:var(--cb-warn)}
 /* a landmark row's own change, before who: it gives way first (who and "only you see this" stay whole) */
 :where(${S}) :where(.carton-landmark-change){flex:0 1000 auto;min-width:24px;overflow:hidden;text-overflow:ellipsis;color:var(--cb-fg-2)}
+/* (who never shrinks beside it: a sub-pixel share of the shrink would cut "Named by You" to "Named by Yo…") */
+:where(${S}) :where(.carton-landmark-change ~ .carton-actor-name, .carton-landmark-change ~ .carton-more){flex-shrink:0}
 :where(${S}) :where(.carton-landmark-change + .carton-actor-name, .carton-landmark-change + .carton-more)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}
 :where(${S}) :where(.carton-find-snippet){min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-find-why ~ .carton-find-snippet, .carton-find-why ~ .carton-actor-name, .carton-find-why ~ .carton-more)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}

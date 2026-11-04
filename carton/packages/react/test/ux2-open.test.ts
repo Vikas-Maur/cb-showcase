@@ -115,6 +115,9 @@ test("nothing today: the newest day reads as a story below its newest three vers
   const keys2 = groupHistory(withToday, () => false, opts).map((r) => r.key);
   assert.deepEqual(keys2.slice(0, 2), [`day:${today}`, "group:n1"]);
   assert.deepEqual(keys2.slice(2), [`day:${today - 1}`, "run:f1", "s", "run:e1", "x"], "a past day, all of it a story");
+  // the line never falls inside a person's group: f4–f6 two minutes apart are one group, kept whole with f3 and f2
+  const close = all.map((x) => (/^f[2-6]$/.test(x.id) ? { ...x, at: t - 30 * 60_000 + Number(x.id.slice(1)) * 2 * 60_000 } : x));
+  assert.deepEqual(groupHistory(close, () => false, opts).map((r) => r.key), [`day:${today - 1}`, "group:f2", "run:f1", "s", "run:e1", "x"]);
   // without keepNewest the newest day folds whole, as a past day does
   assert.deepEqual(groupHistory(all, () => false, { ...opts, keepNewest: 0 }).map((r) => r.key), [`day:${today - 1}`, "run:f1", "s", "run:e1", "x"]);
 });
