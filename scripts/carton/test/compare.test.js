@@ -24,7 +24,7 @@ test.before(async () => {
   await esbuild.build({
     bundle: true, format: "cjs", logLevel: "warning", absWorkingDir: CARTON, nodePaths: [path.join(CARTON, "node_modules")],
     platform: "browser", target: "chrome140", outfile: path.join(OUT, "carton-ui.cjs"),
-    stdin: { contents: 'export * from "./ui.js";\nexport { endOf, elsewhereRefs } from "./compare.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
+    stdin: { contents: 'export * from "./ui.js";\nexport { endOf, elsewhereRefs, comparingLabel, roomFix, readyCountdown } from "./compare.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
   const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
@@ -261,11 +261,13 @@ test("N1 §1.10: no second player: Flip only; one that fails: Flip, and one toas
   } finally { await m.done(); }
 });
 
-test("N1 §1.7: the ways out, each to your edit: Esc, the chip's ✕, Done comparing, ← History, closing History", opt, async () => {
+test("N1 §1.7: the ways out, each to your edit: Esc, the chip's ✕, Done comparing, ← History, the frame label's ✕, another tab", opt, async () => {
   const m = await mount();
   try {
     const ref = m.older().ref;
     const back = async (how) => {
+      if (how === "label" && m.side.querySelector("aside")) await m.cmd("carton-history");
+      if (how === "tab" && !m.side.querySelector("aside")) await m.cmd("carton-history");
       await m.open(ref);
       assert.ok(m.page().comparing(), how);
       const n = m.did.previews.length;
@@ -273,7 +275,10 @@ test("N1 §1.7: the ways out, each to your edit: Esc, the chip's ✕, Done compa
       else if (how === "chip") await m.cmd("carton-back");
       else if (how === "done") await m.click(m.compare().querySelector(".carton-compare-done"));
       else if (how === "history") await m.click(m.list().querySelector(".carton-changes-nav button"));
-      else if (how === "close") await m.cmd("carton-history");
+      // History closed: the frame's own label, and its ✕
+      else if (how === "label") await m.click(m.compare().querySelector(".carton-compare-frame-label .carton-frame-back"));
+      // Comments in History's place (its See it as it was is viewing, which never stacks on Compare)
+      else if (how === "tab") await m.click([...m.side.querySelectorAll("[role=tab]")].find((t) => t.getAttribute("aria-label") === "Comments"));
       await m.settle(40);
       assert.equal(m.page().comparing(), null, how);
       assert.equal(m.did.previews.at(-1), null, `${how}: the editor back to your edit`);
@@ -284,9 +289,268 @@ test("N1 §1.7: the ways out, each to your edit: Esc, the chip's ✕, Done compa
       assert.equal(m.did.stage, null, `${how}: the stage is Cardboard's again`);
     };
     await m.cmd("carton-history");
-    for (const how of ["esc", "chip", "done", "history"]) await back(how);
-    await back("close");
+    for (const how of ["esc", "chip", "done", "history", "label", "tab"]) await back(how);
   } finally { await m.done(); }
+});
+
+const ctrlShiftH = async (m) => {
+  await act(async () => { document.body.dispatchEvent(new window.KeyboardEvent("keydown", { key: "H", code: "KeyH", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); await sleep(30); });
+  await m.settle();
+};
+
+test("ux2 room: closing History keeps Compare on (the title bar's icon, Ctrl+Shift+H, the panel's ✕); the frame's own label then, its words open the list", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    const c = m.page().comparing();
+    const label = `Comparing ${c.left.label} with your edit · ${ROWS.length} changes`;
+    assert.ok(m.list(), "History is the change list");
+    assert.equal(!!m.compare().querySelector(".carton-compare-frame-label"), false, "the list is on screen: no label on the frame");
+    const holds = m.did.holds, previews = m.did.previews.length;
+    const closes = [
+      ["the title bar's icon", () => m.cmd("carton-history")],
+      ["Ctrl+Shift+H", () => ctrlShiftH(m)],
+      ["the panel's ✕", () => m.click(m.side.querySelector('aside button[aria-label="Close"]'))],
+    ];
+    for (const [how, close] of closes) {
+      if (!m.list()) await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+      assert.ok(m.list(), `${how}: open first`);
+      await close();
+      await m.settle(40);
+      assert.equal(!!m.side.querySelector("aside"), false, `${how}: History closed`);
+      assert.equal(m.page().comparing()?.left.ref, c.left.ref, `${how}: still comparing`);
+      assert.ok(m.compare(), `${how}: the stage view stays`);
+      assert.equal(m.compare().getAttribute("data-mode"), "side", `${how}: Side by side stays`);
+      assert.ok(m.stage.querySelector("[data-test-player]"), `${how}: the second player stays`);
+      assert.equal(m.did.stage?.mode, "side", `${how}: the hole for the editor's picture stays`);
+      assert.equal(m.chip().comparing?.label, U.comparingLabel(c), `${how}: the chip stays`);
+      assert.notEqual(m.did.aside.at(-1), false, `${how}: the Library stays aside`);
+      assert.equal(m.compare().querySelector(".carton-compare-frame-label").textContent, label, `${how}: the frame's own label (§1.9)`);
+      assert.equal(m.compare().querySelector(".carton-compare-frame-open")?.getAttribute("title"), "Show the changes in History");
+    }
+    assert.equal(m.did.holds, holds, "the editor wasn't swapped back and forth");
+    assert.equal(m.did.previews.length, previews, "nor shown your edit");
+    // the marks, Play both and Flip still work with History closed
+    assert.ok(m.tl.querySelector("[data-timeline-canvas-surface] .carton-tl-mark"), "the timeline's marks");
+    await m.click(m.compare().querySelector(".carton-compare-transport button"));
+    assert.ok(m.page().compareBoth(), "Play both");
+    await m.key(" ");
+    // a click on the label's words: History again, straight to the change list
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    assert.ok(m.list(), "History opens on the change list");
+    assert.equal(!!m.compare().querySelector(".carton-compare-frame-label"), false, "and the frame's label goes");
+    assert.equal(m.page().comparing()?.left.ref, c.left.ref);
+    // Esc still ends it, with History open or closed
+    await m.cmd("carton-history");
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null, "Esc with History closed");
+    assert.equal(m.did.previews.at(-1), null);
+  } finally { await m.done(); }
+});
+
+test("ux2 room: the agent's History closes with its Compare, unless the person closed it; a mode change keeps the claim; a tab switched to stays", opt, async () => {
+  const m = await mount();
+  try {
+    let n = 0;
+    const ask = async () => {
+      await act(async () => { m.bridge.fire({ id: m.bridge.projectId, topic: "compare", compare: { from: m.older().ref, to: "cut-main", by: { kind: "agent", id: "director" }, byName: "Director", at: Date.now(), request: `room-${++n}` } }); await sleep(40); });
+      await m.settle(80);
+      assert.ok(m.page().comparing(), "opened");
+      assert.ok(m.list(), "History opened to its list");
+    };
+    await act(async () => { await sleep(2100); });
+    // the agent opened History: Compare's end closes it, also after a mode change (the same comparison)
+    await ask();
+    await m.click(m.compare().querySelector('[role=radio][data-mode="wipe"]'));
+    assert.equal(m.compare().getAttribute("data-mode"), "wipe");
+    await m.key("Escape");
+    assert.equal(m.page().comparing(), null);
+    assert.equal(!!m.side.querySelector("aside"), false, "the History the agent opened closes with it");
+    // the person closes it: Compare stays; opened again by them, it stays open after Compare
+    await act(async () => { await sleep(2100); });
+    await ask();
+    await m.cmd("carton-history");
+    assert.ok(m.page().comparing(), "closing History by hand doesn't end Compare");
+    assert.equal(!!m.side.querySelector("aside"), false);
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    assert.ok(m.list(), "History again, theirs now");
+    await m.click(m.compare().querySelector(".carton-compare-done"));
+    assert.equal(m.page().comparing(), null);
+    assert.ok(m.side.querySelector("aside"), "the History they opened stays open");
+    await m.cmd("carton-history");
+    // a tab switched to while the agent's Compare is on: Compare ends, the tab stays
+    await act(async () => { await sleep(2100); });
+    await ask();
+    await m.click([...m.side.querySelectorAll("[role=tab]")].find((t) => t.getAttribute("aria-label") === "Comments"));
+    await m.settle(40);
+    assert.equal(m.page().comparing(), null);
+    assert.equal(m.side.querySelector("[role=tab][aria-selected=true]")?.getAttribute("aria-label"), "Comments", "Comments stays open");
+  } finally { localStorage.removeItem("carton.compareMode"); await m.done(); }
+});
+
+/** Layout for happy-dom (it has none): widths by selector (or a rect from a function of the element), and the editor's chat column. */
+function layout(sizes) {
+  const real = window.HTMLElement.prototype.getBoundingClientRect;
+  window.HTMLElement.prototype.getBoundingClientRect = function () {
+    for (const [sel, w] of Object.entries(sizes)) if (this.matches?.(sel)) return typeof w === "function" ? w(this) : { x: 0, y: 0, top: 0, left: 0, right: w, bottom: 400, width: w, height: 400 };
+    return real.call(this);
+  };
+  const chat = document.createElement("div");
+  chat.setAttribute("data-analytics-region", "editor-chat");
+  chat.innerHTML = '<div data-testid="local-agent-panel"></div>';
+  document.body.appendChild(chat);
+  return { relayout: async (m, next) => { Object.assign(sizes, next); await act(async () => { window.dispatchEvent(new window.Event("resize")); await sleep(20); }); await m.settle(); }, restore: () => { window.HTMLElement.prototype.getBoundingClientRect = real; chat.remove(); } };
+}
+
+test("ux2 room: Side by side greyed for the width: a click closes History when that makes the room (Compare stays on), else its tooltip names what to close", opt, async () => {
+  // the laptop's layout (a 1444 px window, History and the chat open): a 624 px stage, History 384, the chat 380
+  const sizes = { ".carton-compare-root": 624, "[data-carton-stage-host]": 624, ".carton-sidebar": 384, '[data-testid="local-agent-panel"]': 380 };
+  const L = layout(sizes);
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await L.relayout(m, {});
+    const side = () => m.compare().querySelector('[role=radio][data-mode="side"]');
+    assert.equal(m.compare().getAttribute("data-mode"), "flip", "under 682 px: Flip");
+    assert.ok(side().hasAttribute("data-off"), "Side by side greyed");
+    assert.equal(side().getAttribute("aria-disabled"), null, "but a click does something");
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Click to close History and make room.");
+    await m.click(side());
+    assert.equal(!!m.side.querySelector("aside"), false, "History closed");
+    assert.ok(m.page().comparing(), "Compare stays on");
+    assert.equal(m.page().comparing().mode, "side");
+    await L.relayout(m, { ".carton-compare-root": 1008, "[data-carton-stage-host]": 1008 });
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "the wider stage shows Side by side");
+    assert.ok(m.stage.querySelector("[data-test-player]"));
+    assert.ok(m.compare().querySelector(".carton-compare-frame-label"), "with the frame's own label");
+    // History open but not enough on its own: the tooltip names the fewest to close, and the click does nothing
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    await L.relayout(m, { ".carton-compare-root": 370, "[data-carton-stage-host]": 370, ".carton-sidebar": 300, '[data-testid="local-agent-panel"]': 200 });
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Close History and the chat, or widen the window.");
+    assert.equal(side().getAttribute("aria-disabled"), "true");
+    await m.click(side());
+    assert.ok(m.list(), "History stays open");
+    // (the stage is flex: the chat's width moves it too)
+    await L.relayout(m, { ".carton-compare-root": 380, "[data-carton-stage-host]": 380, '[data-testid="local-agent-panel"]': 400 });
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Close the chat or widen the window.", "the chat alone");
+    // History closed, nothing beside the stage to close: widen the window
+    await m.cmd("carton-history");
+    await L.relayout(m, { ".carton-compare-root": 600, "[data-carton-stage-host]": 600, '[data-testid="local-agent-panel"]': 0 });
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Widen the window.");
+    assert.ok(m.page().comparing());
+  } finally { L.restore(); await m.done(); }
+});
+
+test("ux2 room: the frame's label coming or going moves the pictures without resizing them: the hole for the editor's picture follows", opt, async () => {
+  // the pictures' box 20 px lower while the frame has its label (the compare bar moves down for it), the same size
+  const L = layout({ "[data-hole]": (el) => { const top = el.closest(".carton-compare")?.hasAttribute("data-label") ? 120 : 100; return { x: 400, y: top, top, left: 400, right: 756, bottom: top + 200, width: 356, height: 200 }; } });
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    assert.equal(m.did.stage?.hole?.top, 100, "History open: no label");
+    await m.cmd("carton-history");
+    assert.ok(m.compare().hasAttribute("data-label"));
+    assert.equal(m.did.stage?.hole?.top, 120, "History closed: the label, and the hole measured again");
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    assert.equal(m.did.stage?.hole?.top, 100, "History again");
+  } finally { L.restore(); await m.done(); }
+});
+
+test("ux2 room: roomFix: History alone is a click; else the fewest to close, History, then the chat, then the Library", opt, () => {
+  assert.deepEqual(U.roomFix(58, { history: 384, chat: 380, library: 0 }), { click: true, parts: ["history"] });
+  assert.deepEqual(U.roomFix(312, { history: 300, chat: 380, library: 0 }), { click: false, parts: ["chat"] });
+  assert.deepEqual(U.roomFix(312, { history: 300, chat: 200, library: 0 }), { click: false, parts: ["history", "chat"] });
+  assert.deepEqual(U.roomFix(312, { history: 0, chat: 200, library: 240 }), { click: false, parts: ["chat", "library"] });
+  assert.deepEqual(U.roomFix(900, { history: 300, chat: 200, library: 240 }), { click: false, parts: [] });
+  assert.deepEqual(U.roomFix(100, { history: 0, chat: 0, library: 0 }), { click: false, parts: [] });
+});
+
+test("ux2 room: the second player's 2 s count only while the window is visible; once it failed, Side by side or Wipe picked tries again (one toast)", opt, async () => {
+  let vis = "hidden", readyNow = false, mounts = 0;
+  const desc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+  Object.defineProperty(document, "visibilityState", { get: () => vis, configurable: true });
+  const show = async (v) => { vis = v; await act(async () => { document.dispatchEvent(new window.Event("visibilitychange")); await sleep(5); }); };
+  // a second player that says ready only when told (Chromium's paused rAF, in a hidden window)
+  function Slow({ onReady }) {
+    React.useEffect(() => { mounts++; if (readyNow) onReady?.(true); }, [onReady]);
+    return h("canvas", { "data-test-player": "" });
+  }
+  const m = await mount({ player: Slow });
+  try {
+    await act(async () => { U.__forTests.toasts.set(null); await sleep(5); });
+    await m.open(m.older().ref);
+    assert.equal(m.compare().getAttribute("data-mode"), "side");
+    await act(async () => { await sleep(2400); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "hidden: 2.4 s and still waiting, not Flip only");
+    assert.equal(m.toast()?.textContent ?? null, null);
+    await show("visible");
+    await act(async () => { await sleep(1200); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "visible for 1.2 s: still within its 2 s");
+    // hidden again for a while: the count waits
+    await show("hidden");
+    await act(async () => { await sleep(1500); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "the count paused while hidden");
+    await show("visible");
+    await act(async () => { await sleep(1300); });
+    await m.settle(60);
+    assert.equal(m.compare().getAttribute("data-mode"), "flip", "2 s of visible time without ready: Flip");
+    assert.match(m.toast()?.textContent ?? "", /side by side here\. Showing it as a flip\./);
+    // Side by side and Wipe greyed, and a click tries again
+    const radio = (k) => m.compare().querySelector(`[role=radio][data-mode="${k}"]`);
+    for (const k of ["side", "wipe"]) {
+      assert.ok(radio(k)?.hasAttribute("data-off"), `${k} greyed`);
+      assert.equal(radio(k).getAttribute("aria-disabled"), null);
+      assert.equal(radio(k).getAttribute("data-carton-tip"), "Couldn't show both sides here. Click to try again.");
+    }
+    await act(async () => { U.__forTests.toasts.set(null); await sleep(5); });
+    let before = mounts;
+    await m.click(radio("wipe"));
+    assert.equal(m.compare().getAttribute("data-mode"), "wipe", "Wipe tries again");
+    assert.equal(mounts, before + 1, "a new second player");
+    await act(async () => { await sleep(2300); });
+    await m.settle(60);
+    assert.equal(m.compare().getAttribute("data-mode"), "flip", "not ready again: Flip");
+    assert.equal(m.toast()?.textContent ?? null, null, "the toast was once");
+    before = mounts;
+    readyNow = true;
+    await m.click(radio("side"));
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "Side by side tries again");
+    assert.equal(mounts, before + 1);
+    await act(async () => { await sleep(2300); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "it said ready: Side by side stays");
+    assert.equal(radio("wipe").hasAttribute("data-off"), false, "nothing greyed now");
+  } finally {
+    if (desc) Object.defineProperty(document, "visibilityState", desc); else delete document.visibilityState;
+    await m.done();
+  }
+});
+
+test("ux2 room: readyCountdown: fails after the visible time only; stops clean", opt, async () => {
+  const doc = new window.EventTarget();
+  let vis = "visible", failed = 0;
+  Object.defineProperty(doc, "visibilityState", { get: () => vis });
+  const stop = U.readyCountdown(() => failed++, 300, doc);
+  await sleep(150);
+  vis = "hidden"; doc.dispatchEvent(new window.Event("visibilitychange"));
+  await sleep(400);
+  assert.equal(failed, 0, "hidden: waits");
+  vis = "visible"; doc.dispatchEvent(new window.Event("visibilitychange"));
+  await sleep(300);
+  assert.equal(failed, 0, "at least half a second once visible again");
+  await sleep(350);
+  assert.equal(failed, 1);
+  stop();
+  const stop2 = U.readyCountdown(() => failed++, 100, doc);
+  stop2();
+  await sleep(200);
+  assert.equal(failed, 1, "stopped: never fails");
 });
 
 test("N1 §1.8: an edit tried while comparing: one line in Compare's words, Done comparing, and the stage pulses", opt, async () => {

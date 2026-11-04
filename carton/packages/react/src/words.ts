@@ -682,6 +682,17 @@ export const words = {
   compareModes: { side: "Side by side", wipe: "Wipe", flip: "Flip" } as Record<"side" | "wipe" | "flip", string>,
   compareModesLabel: "How to compare",
   sideBySideNeedsRoom: "Side by side needs a wider stage. Close the chat or widen the window.",
+  // what to close for the room, named by the host from what's open (the fewest that give enough), or a click when
+  // closing History alone does it (it closes, Compare stays on)
+  sideNeedsRoomClick: "Side by side needs a wider stage. Click to close History and make room.",
+  sideNeedsRoomClose: (parts: readonly string[]) => parts.length
+    ? `Side by side needs a wider stage. Close ${parts.length < 2 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]},`} or widen the window.`
+    : "Side by side needs a wider stage. Widen the window.",
+  roomParts: { history: "History", chat: "the chat", library: "the Library" } as Record<"history" | "chat" | "library", string>,
+  // Side by side or Wipe after the second picture didn't start (§1.10): greyed, and a click tries again
+  compareRetry: "Couldn't show both sides here. Click to try again.",
+  // the frame's own label while History is closed: a click on its words opens History to the change list
+  frameLabelOpen: "Show the changes in History",
   differences: (n: number) => plural(n, "difference", "differences"),
   doneComparing: "Done comparing",
   doneComparingKey: "Done comparing (Esc)",

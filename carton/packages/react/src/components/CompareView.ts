@@ -71,6 +71,12 @@ export interface CompareBarProps {
   modes: readonly CompareMode[];
   /** Side by side greyed (the stage is too narrow), with its reason as the tooltip. */
   sideOff?: boolean;
+  /** That reason as the host words it from what is open (what to close); else "Close the chat or widen the window". */
+  sideTip?: string | null;
+  /** A click on the greyed Side by side when the host can make the room itself (it closes History): not disabled then. */
+  onSideOff?: (() => void) | null;
+  /** The second picture didn't start (§1.10): Side by side and Wipe greyed with these words; picking one tries again. */
+  retry?: string | null;
   /** Under 600 px: icons only (Flip keeps its word), no count, "Done". */
   compact?: boolean;
   onMode: (m: CompareMode) => void;
@@ -83,13 +89,14 @@ export interface CompareBarProps {
 export function CompareBar(p: CompareBarProps) {
   const words = useWords();
   const list = p.modes;
+  const narrow = (m: CompareMode) => m === "side" && !!p.sideOff;
   const pick = (m: CompareMode) => {
-    if (m === "side" && p.sideOff) return;
+    if (narrow(m)) return void p.onSideOff?.();
     if (m !== p.mode) p.onMode(m);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    const open = list.filter((m) => !(m === "side" && p.sideOff));
+    const open = list.filter((m) => !narrow(m));
     const i = open.indexOf(p.mode);
     const next = open[(i + (e.key === "ArrowRight" ? 1 : -1) + open.length) % open.length];
     e.preventDefault();
@@ -106,9 +113,13 @@ export function CompareBar(p: CompareBarProps) {
       "div",
       { className: "carton-compare-modes", role: "radiogroup", "aria-label": words.compareModesLabel, onKeyDown },
       ...list.map((m) => {
-        const off = m === "side" && !!p.sideOff;
+        // greyed: Side by side for the width (a click makes the room when the host can), Side by side and Wipe after a
+        // failed start (a click tries again)
+        const off = narrow(m) || (!!p.retry && m !== "flip");
+        const dead = narrow(m) && !p.onSideOff;
         const on = m === p.mode;
         const iconOnly = !!p.compact && m !== "flip";
+        const tip = narrow(m) ? p.sideTip || words.sideBySideNeedsRoom : off ? p.retry : iconOnly ? words.compareModes[m] : undefined;
         return h(
           "button",
           {
@@ -116,10 +127,12 @@ export function CompareBar(p: CompareBarProps) {
             type: "button",
             role: "radio",
             "aria-checked": on,
-            "aria-disabled": off || undefined,
+            "aria-disabled": dead || undefined,
             "aria-label": iconOnly ? words.compareModes[m] : undefined,
+            "aria-description": off ? tip : undefined,
             "data-mode": m,
-            "data-carton-tip": off ? words.sideBySideNeedsRoom : iconOnly ? words.compareModes[m] : undefined,
+            "data-off": off ? "" : undefined,
+            "data-carton-tip": tip,
             tabIndex: on ? 0 : -1,
             className: "carton-compare-mode",
             onClick: () => pick(m),
@@ -181,8 +194,14 @@ export interface CompareStageViewProps {
   onPlayBoth?: () => void;
   /** Play both's progress, 0–1, on the right side's time. */
   progress?: number;
-  /** The frame's own label, when the change list isn't on screen (the drawer hidden): ⇆ label · count ✕. */
+  /** The frame's own label, when the change list isn't on screen (History closed, the drawer hidden): ⇆ label · count ✕. */
   frameLabel?: string | null;
+  /** A click on the frame label's words: History again, on the change list. */
+  onFrameLabel?: (() => void) | null;
+  /** The compare bar's greyed modes: Side by side's reason, its click (makes the room), a failed start (CompareBarProps). */
+  sideTip?: string | null;
+  onSideOff?: (() => void) | null;
+  retry?: string | null;
   pulse?: number;
   className?: string;
 }
@@ -230,10 +249,12 @@ export function CompareStageView(p: CompareStageViewProps) {
   return h(
     "section",
     { className: cx("carton-compare", p.className), "aria-label": p.label, "data-mode": p.mode, "data-label": p.frameLabel ? "" : undefined, "data-pulse": p.pulse ? (p.pulse % 2 ? "a" : "b") : undefined },
-    h(CompareBar, { mode: p.mode, modes: p.modes, sideOff: !!p.sideOff, compact: !!p.compact, onMode: p.onMode, count: p.count ?? null, onDone: p.onDone }),
+    h(CompareBar, { mode: p.mode, modes: p.modes, sideOff: !!p.sideOff, sideTip: p.sideTip ?? null, onSideOff: p.onSideOff ?? null, retry: p.retry ?? null, compact: !!p.compact, onMode: p.onMode, count: p.count ?? null, onDone: p.onDone }),
     area,
     p.mode === "side" ? null : transport,
-    p.frameLabel ? h("div", { className: "carton-compare-frame-label" }, h(Glyph, { name: "compare", size: 13 }), h("span", null, p.frameLabel), h("button", { type: "button", className: "carton-frame-back", "aria-label": words.doneComparingKey, title: words.doneComparingKey, onClick: p.onDone }, h(Icon, { name: "x", size: 12 }))) : null,
+    p.frameLabel ? h("div", { className: "carton-compare-frame-label" }, h(Glyph, { name: "compare", size: 13 }),
+      p.onFrameLabel ? h("button", { type: "button", className: "carton-compare-frame-open", title: words.frameLabelOpen, onClick: p.onFrameLabel }, p.frameLabel) : h("span", null, p.frameLabel),
+      h("button", { type: "button", className: "carton-frame-back", "aria-label": words.doneComparingKey, title: words.doneComparingKey, onClick: p.onDone }, h(Icon, { name: "x", size: 12 }))) : null,
   );
 }
 
@@ -487,7 +508,11 @@ ${SK} .carton-compare-modes{display:inline-flex;align-items:center;height:28px;p
 ${SK} .carton-compare-mode{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--cb-fg-3);font:500 12.5px var(--cb-font);white-space:nowrap;cursor:pointer}
 ${SK} .carton-compare-mode:hover{color:var(--cb-fg-1)}
 ${SK} .carton-compare-mode[aria-checked=true],${SK} .carton-compare-mode[aria-pressed=true]{background:#ffffff1f;color:var(--cb-fg-1)}
-${SK} .carton-compare-mode[aria-disabled=true]{color:#ffffff40;cursor:default}
+${SK} .carton-compare-mode[data-off]{color:#ffffff40}
+${SK} .carton-compare-mode[data-off]:not([aria-disabled=true]):hover{color:#ffffff99}
+${SK} .carton-compare-mode[aria-disabled=true]{cursor:default}
+${SK} .carton-compare-modes>.carton-compare-mode:first-child[data-carton-tip]:hover::after{left:0;transform:none;animation-name:carton-tip-l}
+@keyframes carton-tip-l{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
 ${SK} .carton-compare-mode:focus-visible{outline:2px solid color-mix(in srgb,var(--cb-ring) 60%,transparent);outline-offset:1px}
 ${SK} .carton-compare-count{color:var(--cb-fg-3);white-space:nowrap}
 ${SK} .carton-compare-area{flex:1;min-height:0;display:flex;gap:12px;padding:4px 12px 0;pointer-events:none;container-type:size}
@@ -525,7 +550,10 @@ ${SK} .carton-compare-progress{flex:1;height:4px;border-radius:4px;background:#f
 ${SK} .carton-compare-progress i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--cb-fg-2)}
 ${SK} .carton-compare-step{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 ${SK} .carton-compare-frame-label{position:absolute;left:0;top:0;display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 3px 0 8px;border-radius:0 0 7px 0;background:#8ab4ff;color:#0b1730;font-size:12px;font-weight:500;max-width:calc(100% - 24px)}
-${SK} .carton-compare-frame-label>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${SK} .carton-compare-frame-label>span,${SK} .carton-compare-frame-open{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+${SK} .carton-compare-frame-open{min-width:0;padding:0;border:0;border-radius:3px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+${SK} .carton-compare-frame-open:hover{text-decoration:underline}
+${SK} .carton-compare-frame-open:focus-visible{outline:2px solid #0b1730;outline-offset:1px}
 ${SK} .carton-cut-row{position:relative}
 ${SK} .carton-cut-compare{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 8px;border:0;border-radius:6px;background:var(--cb-secondary);color:var(--cb-fg-1);font:500 12px var(--cb-font);opacity:0;cursor:pointer}
 ${SK} .carton-cut-row:hover .carton-cut-compare,${SK} .carton-cut-compare:focus,${SK} .carton-cut-row:focus-within .carton-cut-compare{opacity:1}

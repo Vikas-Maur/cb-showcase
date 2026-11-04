@@ -558,8 +558,10 @@ export function backToEdit(ui) {
  * panel closes: review of feat/ux-1-viewing #3); a conflict's side belongs to its card on the stage.
  */
 const leavesWithPanel = (ui, next) => {
-  // closing History ends Compare (DESIGN-V2 §1.7); opening it (an agent's Compare, from Comments: review #6) doesn't
-  if (ui.comparing?.()) return next !== "history";
+  // Compare stays on with History closed, for the room (the title bar's icon, Ctrl+Shift+H, the panel's ✕: the frame
+  // then has its own label, §1.9); another tab in its place (Comments, whose See it as it was is viewing) ends it, and
+  // opening History (an agent's Compare, from Comments: review #6) doesn't
+  if (ui.comparing?.()) return next != null && next !== "history";
   const v = viewingOf(ui) ?? ui.pendingView?.() ?? null;
   return !!v && v.kind !== "conflict";
 };
@@ -862,7 +864,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   // Closing the panel, or switching its tab, brings your edit back from what the panel showed you (PLAN 1.3, DESIGN
   // §2): a version History played, a teammate's cut, Comments' "See it as it was". A conflict's side, seen from its
   // card on the stage, stays until that card or Esc leaves it. However the panel closes: its ✕, Esc, Ctrl+Shift+H, the
-  // title bar's icon.
+  // title bar's icon. Compare is the exception: it stays on with History closed (leavesWithPanel).
   const shownPanel = useRef(panel);
   useEffect(() => {
     const was = shownPanel.current;
@@ -903,7 +905,8 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     else if (a === "carton-back") void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
   }), [bridge, conn]);
   useEffect(() => {
-    const f = (p) => (p === "share" ? setShare(true) : setPanelState(p));
+    // (`only`: only while that panel is the one open: Compare closes the History it opened, never a tab switched to since)
+    const f = (p, only) => (p === "share" ? setShare(true) : setPanelState((was) => (only && was !== only ? was : p)));
     panelRequests.add(f);
     return () => { panelRequests.delete(f); };
   }, []);
@@ -1160,7 +1163,7 @@ function StageViewing({ projectId, bridge, panel }) {
 const showToast = (text, actions, tone, icon, o) => toasts.show(text, actions, tone, icon, o);
 // Compare's edit-attempt line goes when Compare does
 showToast.clearViewing = () => { if (toasts.value?.tone === "viewing") toasts.set(null); };
-const openPanel = (p) => { for (const f of panelRequests) f(p); };
+const openPanel = (p, only) => { for (const f of panelRequests) f(p, only); };
 /** The layer over the stage: viewing's frame, the conflict cards' floating stack, the toasts and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge, player = null, portal = null }) {
   const [conn, ready] = useConn(projectId, bridge);

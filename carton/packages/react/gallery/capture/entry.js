@@ -522,7 +522,8 @@ function Chat() {
 function Library() {
   return h("div", { className: "cap-library" },
     h("div", { className: "cap-rail" }, ...Array.from({ length: 7 }, (_, i) => h("span", { key: i, className: "cap-rail-ico", "data-on": i === 0 ? "" : undefined }))),
-    h("div", { className: "cap-lib" }, h("p", { className: "cap-lib-title" }, "Library"), h("div", { className: "cap-lib-search" }, "Search project media…"), h("div", { className: "cap-lib-thumb" }), h("p", { className: "cap-lib-name" }, "clip.mp4")));
+    // (data-editor-left-panel: Cardboard's own Library panel, which Compare measures for the room beside the stage)
+    h("div", { className: "cap-lib", "data-editor-left-panel": "" }, h("p", { className: "cap-lib-title" }, "Library"), h("div", { className: "cap-lib-search" }, "Search project media…"), h("div", { className: "cap-lib-thumb" }), h("p", { className: "cap-lib-name" }, "clip.mp4")));
 }
 
 // Compare's stage host (N1), as editor-panel.js's __cbCartonStageHost renders it (data-carton-compare and the hole's
@@ -554,7 +555,8 @@ function Editor() {
             : h("div", { className: "cap-stage bg-muted/60 relative", "data-carton-stage-host": "" }, h(Video), h(CartonStage, { projectId: pid, bridge, key: pid }))),
         scenario.n1 ? h(N1Timeline, { Wrap: TimelineWrap }) : h(Timeline)),
       h(CartonSide, { projectId: pid, bridge, key: pid }),
-      h(Chat)));
+      // Cardboard's chat region (display: contents, its column inside), as Compare measures it
+      h("div", { style: { display: "contents" }, "data-analytics-region": "editor-chat" }, h(Chat))));
 }
 function TitleOnly() {
   const [strip, setStrip] = useState({ panel: null, live: null });

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { compareMarks, followTime, leadTime, playLength, playSchedule, sidesAt, stepAt, storyAt, stripOf, HOLD_BACK } from "../src/compare.ts";
 import { compareModeShown, compareModesFor } from "../src/components/CompareView.ts";
 import { alignRows } from "../src/shots.ts";
+import { words } from "../src/words.ts";
 import type { Change, Shot, ShotDiff } from "../src/model.ts";
 
 const shots = (...lens: [number, number][]): Shot[] => {
@@ -102,6 +103,14 @@ test("the stage's modes by width (DESIGN-V2 §1.9) and without a second player (
   assert.equal(compareModeShown("side", compareModesFor(640, true)), "flip", "the width rule wins");
   assert.equal(compareModeShown("wipe", compareModesFor(640, true)), "wipe");
   assert.equal(compareModeShown("wipe", compareModesFor(900, false)), "flip", "no second player: Flip only");
+});
+
+test("Side by side's reason names what to close, in §1.9's words (one, two, three parts, or none: widen the window)", () => {
+  const p = words.roomParts;
+  assert.equal(words.sideNeedsRoomClose([p.chat]), words.sideBySideNeedsRoom, "the chat alone: §1.9's own sentence");
+  assert.equal(words.sideNeedsRoomClose([p.history, p.chat]), "Side by side needs a wider stage. Close History and the chat, or widen the window.");
+  assert.equal(words.sideNeedsRoomClose([p.history, p.chat, p.library]), "Side by side needs a wider stage. Close History, the chat and the Library, or widen the window.");
+  assert.equal(words.sideNeedsRoomClose([]), "Side by side needs a wider stage. Widen the window.");
 });
 
 test("Play both (DESIGN-V2 §1.4): each shot starts on both sides together; the shorter side waits; a shot only one side has gets a slate on the other", () => {

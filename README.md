@@ -589,15 +589,25 @@ What changes with it on:
     - Wipe: one picture with a line you drag, or move with ← →;
     - Flip: hold B, or press the pill, to see the other side.
     Play both plays them in step by shot. Side by side needs a stage 682 px wide, and the Library steps aside for it.
-    Narrower than that, Compare shows Flip. Without a second player it shows only Flip, and says so once.
+    Narrower than that, Compare shows Flip with Side by side greyed. If closing History would make the room (a laptop
+    with History and the chat open), a click on Side by side closes History and shows it; otherwise its tooltip says
+    what to close (History, the chat, the Library) or to widen the window. Without a second player it shows only Flip.
+    If the second player doesn't start within 2 s, Compare shows Flip and says so once; Side by side and Wipe stay
+    greyed, and picking one tries again. The 2 s count only while the window is on screen, so a minimised window
+    doesn't fall back to Flip.
   - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost or seam for removed,
     amber with "←4 s" for moved, and amber for trimmed or changed. Above the tracks is a strip of the other version on
     its own time.
   - **History** becomes the list of changes ("differences" between two cuts). A click jumps both players and the
     timeline there, and ▶ or Enter plays that spot on both sides. Its footer offers Restore your edit to it… (asked
     first) or, between cuts, Fold in changes from it….
-  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit ✕". Esc, its ✕, Done comparing,
-    ← History and closing History all go back to your edit, where the playhead stays at the change.
+  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit ✕". Esc, its ✕, Done comparing and
+    ← History all go back to your edit, where the playhead stays at the change.
+  - **History can close while comparing**, for a bigger picture: its icon, Ctrl+Shift+H or the panel's ✕ keep Compare
+    on and give the stage the room. The frame then shows its own label, "⇆ Comparing “Sent to client” with your edit ·
+    7 changes ✕": a click on its words opens History on the list again, and its ✕ ends Compare. The marks, Play both
+    and Flip work as before. History that an agent opened for its comparison closes again when Compare ends, unless you
+    closed it yourself.
   - **Nothing can be edited while comparing.** An edit tried gives one line, "You're comparing … [Done comparing] Esc",
     and Export goes back to your edit first.
   - **An agent's request** opens Compare only when you're idle. Mid-edit it waits up to 8 s; while you're viewing,

@@ -13,7 +13,7 @@
 import { createElement as h, Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
-  actorLabel, clock, compareMarks, compareModeShown, compareModesFor, cutColor, cutRef, followTime, isMainCut, leadTime, rowRange, stepAt, stripOf, timecode,
+  actorLabel, clock, compareMarks, compareModeShown, compareModesFor, SIDE_MIN, cutColor, cutRef, followTime, isMainCut, leadTime, rowRange, stepAt, stripOf, timecode,
   playLength, playSchedule, sidesAt, storyAt, CompareRowDetail, fromBringBack, bringBackLine, homeCut,
   useCartonUi, versionLabel, words,
 } from "@carton/react";
@@ -135,6 +135,49 @@ export function elsewhereRefs(ui, refs) {
 
 /** The chip's and the stage region's words: "Comparing “Sent to client” with your edit". */
 export const comparingLabel = (c) => (c ? words.comparing(c.left.label, c.right.label) : "");
+
+/**
+ * The second player's 2 s to say it's ready (§1.10), counted while the window is visible: a minimised window is hidden
+ * (rAF, which the player's ready check runs on, stops; timers don't), and it fell to Flip only. Hidden, the count waits;
+ * shown again, it goes on (at least half a second for the first frames). Returns its stop.
+ */
+export function readyCountdown(fail, ms = READY_MS, doc = document) {
+  let left = ms, since = 0, timer = 0;
+  const check = () => {
+    if (doc.visibilityState !== "hidden") { if (!timer) { since = performance.now(); timer = setTimeout(fail, left); } }
+    else if (timer) { clearTimeout(timer); timer = 0; left = Math.max(500, left - (performance.now() - since)); }
+  };
+  check();
+  doc.addEventListener("visibilitychange", check);
+  return () => { clearTimeout(timer); doc.removeEventListener("visibilitychange", check); };
+}
+
+/**
+ * What closing each part beside the stage would give it, in px (§1.9, read only while Side by side is greyed for the
+ * width): History while it sits in the row (as a drawer it covers the chat and gives nothing), the chat column and the
+ * Library (Cardboard's own: 0 when collapsed, as Compare leaves it).
+ */
+export function roomBeside(doc = document) {
+  const w = (el) => (el ? Math.round(el.getBoundingClientRect().width) : 0);
+  return {
+    history: w(doc.querySelector('.carton-sidebar[data-fit="inline"]')),
+    chat: w(doc.querySelector('[data-analytics-region="editor-chat"] > *')),
+    library: w(doc.querySelector("[data-editor-left-panel]")),
+  };
+}
+/**
+ * How to get `need` more px for Side by side from `room` (roomBeside): `click` when closing History alone is enough
+ * (the greyed Side by side's click closes it, and Compare stays on); else `parts`, the fewest to close (History first,
+ * then the chat, then the Library), or none when even all of them isn't enough (widen the window).
+ */
+export function roomFix(need, room) {
+  const open = ["history", "chat", "library"].filter((k) => room?.[k] > 0);
+  if (open[0] === "history" && room.history >= need) return { click: true, parts: ["history"] };
+  const sets = [];
+  for (let m = 1; m < 1 << open.length; m++) sets.push(open.filter((_, i) => m & (1 << i)));
+  sets.sort((a, b) => a.length - b.length);
+  return { click: false, parts: sets.find((x) => x.reduce((t, k) => t + room[k], 0) >= need) ?? [] };
+}
 
 // ---------------------------------------------------------------- the comparison, on the page's view model
 
@@ -500,8 +543,12 @@ function usePlayhead(bridge, on) {
   return [t, playing];
 }
 
-/** An element's box, kept up to date (ResizeObserver), relative to `host`. */
-function useBox(host) {
+/**
+ * An element's box, kept up to date (ResizeObserver), relative to `host`. `moved`: measured again when it changes, for
+ * a move that isn't a resize (ResizeObserver doesn't see one): the frame's label coming or going moves the compare bar,
+ * and with it the pictures, 20 px.
+ */
+function useBox(host, moved) {
   const [el, setEl] = useState(null);
   const [box, setBox] = useState(null);
   useLayoutEffect(() => {
@@ -519,7 +566,7 @@ function useBox(host) {
     if (hostEl) ro?.observe(hostEl);
     window.addEventListener("resize", measure);
     return () => { ro?.disconnect(); window.removeEventListener("resize", measure); };
-  }, [el, host]);
+  }, [el, host, moved]);
   return [setEl, box];
 }
 
@@ -562,36 +609,53 @@ export function CompareStage({ projectId, bridge, player: Player, portal, panel,
   useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel });
   useEffect(() => () => window.__cartonStageMode?.(null), []);
   if (!c) return h(StageOff, null);
-  return h(CompareOn, { key: `${c.left.ref}|${c.right.ref}`, ui, c, projectId, bridge, Player, portal, panel, toast });
+  return h(CompareOn, { key: `${c.left.ref}|${c.right.ref}`, ui, c, projectId, bridge, Player, portal, panel, toast, openPanel });
 }
 function StageOff() {
   useEffect(() => { window.__cartonStageMode?.(null); }, []);
   return null;
 }
 
-function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
+function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast, openPanel }) {
   const data = ui.compareData?.() ?? null;
   const selected = ui.compareSelected?.() ?? null;
   const flipped = !!ui.compareFlipped?.();
   const stageEl = useCallback(() => document.querySelector("[data-carton-stage-host]"), []);
   const [rootRef, rootBox] = useBox(stageEl);
-  const [holeRef, hole] = useBox(stageEl);
+  // (the frame's own label shows while the change list isn't on screen: History closed, or the drawer hidden, §1.9)
+  const labelled = panel !== "history";
+  const [holeRef, hole] = useBox(stageEl, labelled);
   const width = rootBox?.width ?? 0;
-  // the second player: none in this bundle, it failed, or it didn't start within 2 s → Flip only (§1.10)
+  // the second player: none in this bundle → Flip only; it failed, or didn't start within 2 s of the window being
+  // visible → Flip, with Side by side and Wipe greyed: picking one tries it again (§1.10; `attempt` is a new player)
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const told = useRef(false);
-  const avail = compareModesFor(width, !!Player && !failed);
-  const mode = compareModeShown(c.mode, avail);
+  const avail = compareModesFor(width, !!Player);
+  const mode = failed ? "flip" : compareModeShown(c.mode, avail);
   const needsPlayer = mode === "side" || mode === "wipe";
   const [ready, setReady] = useState(false);
   const onReady = useCallback((r) => { if (r) setReady(true); }, []);
+  const failedRef = useRef(failed);
+  failedRef.current = failed;
+  const pickMode = useCallback((m) => {
+    if (failedRef.current && m !== "flip") { setFailed(false); setReady(false); setAttempt((n) => n + 1); }
+    ui.compareMode?.(m);
+  }, [ui]);
   // the edit-attempt line goes with Compare
   useEffect(() => () => toast?.clearViewing?.(), [toast]);
   useEffect(() => {
     if (!needsPlayer || ready || failed || !Player) return undefined;
-    const t = setTimeout(() => setFailed(true), READY_MS);
-    return () => clearTimeout(t);
-  }, [needsPlayer, ready, failed, Player]);
+    return readyCountdown(() => setFailed(true));
+  }, [needsPlayer, ready, failed, Player, attempt]);
+  // Side by side greyed for the width (§1.9): what would make the room, read from what is open beside the stage. When
+  // closing History is enough, a click on it closes History (Compare stays on) and shows Side by side; else its
+  // tooltip names what to close, or says to widen the window
+  const [room, setRoom] = useState(null);
+  useLayoutEffect(() => { setRoom(avail.sideOff ? roomBeside() : null); }, [avail.sideOff, width, panel]);
+  const fix = avail.sideOff && room ? roomFix(SIDE_MIN - width, room) : null;
+  const sideTip = fix ? (fix.click ? words.sideNeedsRoomClick : words.sideNeedsRoomClose(fix.parts.map((k) => words.roomParts[k]))) : null;
+  const makeRoom = useCallback(() => { openPanel?.(null, "history"); pickMode("side"); }, [openPanel, pickMode]);
   useEffect(() => {
     if (!failed || told.current || c.mode === "flip") return;
     told.current = true;
@@ -650,7 +714,7 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
   const count = n == null ? null : c.acrossCuts ? words.differences(n) : words.changes(n);
   const label = comparingLabel(c);
   // the frame's own label when the list isn't on screen (the panel closed, or the drawer hidden: §1.9)
-  const frameLabel = panel === "history" ? null : `${label}${count ? ` · ${count}` : ""}`;
+  const frameLabel = labelled ? `${label}${count ? ` · ${count}` : ""}` : null;
 
   // an edit tried while comparing (§1.8): Cardboard's refusal path asks here first; one line, one pulse
   const [pulse, setPulse] = useState(0);
@@ -731,16 +795,19 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast }) {
   const leftDoc = data?.leftDoc ?? null;
   const onFail = useCallback(() => setFailed(true), []);
   const playerEl = useMemo(() => (needsPlayer && Player && !failed && leftDoc
-    ? h(PlayerBoundary, { onFail }, h(Player, { doc: leftDoc, follow, onReady, clock: ui.compareLeftClock }))
-    : null), [needsPlayer, Player, failed, leftDoc, follow, onReady, onFail]);
+    ? h(PlayerBoundary, { key: attempt, onFail }, h(Player, { doc: leftDoc, follow, onReady, clock: ui.compareLeftClock }))
+    : null), [needsPlayer, Player, failed, leftDoc, follow, onReady, onFail, attempt]);
   return h("div", { ref: rootRef, className: "carton-compare-root" },
     h("span", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
     h(CompareStageView, {
       left: leftSide, right: rightSide, label, mode, modes: avail.modes, sideOff: avail.sideOff, compact: avail.compact,
-      onMode: (m) => ui.compareMode?.(m), count, onDone: () => void ui.closeCompare?.(),
+      sideTip, onSideOff: fix?.click && openPanel ? makeRoom : null, retry: failed && Player ? words.compareRetry : null,
+      onMode: pickMode, count, onDone: () => void ui.closeCompare?.(),
       player: playerEl, ratio, holeRef, flipped, onFlip: (show) => ui.compareFlip?.(show),
       wipe, onWipe: setWipe, playing, onPlayBoth: () => ui.comparePlayBoth?.(), progress: bothNow ? (bothNow.length > 0 ? bothNow.T / bothNow.length : 0) : length > 0 ? t / length : 0,
       frameLabel, pulse,
+      // its words open History again, straight to the change list (§1.9)
+      onFrameLabel: openPanel ? () => openPanel("history") : null,
     }),
     // (while Flip shows the left side the timeline shows it too: the marks, which are the right side's, wait)
     portal && !flipped ? h(CompareTimeline, { ui, c, data, bridge, portal, selected, leftAt, playing }) : null);
@@ -968,6 +1035,9 @@ const IDLE_KEYS_MS = 2000, WAIT_MS = 8000;
 function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
   const panelRef = useRef(panel);
   panelRef.current = panel;
+  // the comparison whose History the agent opened, until the person closes that History
+  const claim = useRef(null);
+  useEffect(() => { if (panel !== "history") claim.current = null; }, [panel]);
   useEffect(() => {
     if (typeof bridge.onEvent !== "function") return undefined;
     const seen = new Set();
@@ -993,15 +1063,20 @@ function useCompareAsks({ ui, bridge, projectId, toast, openPanel, panel }) {
       const wasClosed = panelRef.current !== "history";
       ui.openCompare?.(ask.from, ask.to, { by, request: ask.request }).then(() => {
         answer(ask, "opened");
-        // History opens to the change list if it was closed, and closes again on exit if the agent opened it (§1.13)
-        if (wasClosed) {
+        // History opens to the change list if it was closed, and closes again on exit if the agent opened it (§1.13):
+        // not once the person has closed it themselves (Compare stays on then; a History they open again is theirs),
+        // nor a panel they switched to meanwhile. The same comparison in another mode or on a new head is still it
+        const mine = ui.comparing?.();
+        if (wasClosed && mine) {
           openPanel?.("history");
-          const mine = ui.comparing?.();
+          claim.current = mine;
           const off = ui.onCompare?.(() => {
             const now = ui.comparing?.();
-            if (now === mine) return;
+            if (now && now.left.ref === mine.left.ref && now.by === mine.by) return;
             off?.();
-            if (!now) openPanel?.(null);
+            const ours = claim.current === mine;
+            if (ours) claim.current = null;
+            if (!now && ours) openPanel?.(null, "history");
           });
         }
         toast?.(`${words.openedComparison(by)} ${words.escToGoBack}.`, null, null, "compare");

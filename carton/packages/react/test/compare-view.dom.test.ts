@@ -67,6 +67,56 @@ test(name("the modes are a radio group: ← → move and pick; Side by side grey
   assert.ok(!$(m.container, ".carton-compare-count"), "the count goes");
 });
 
+test(name("a greyed Side by side the host can make room for: clickable, its words as the tooltip; a failed start greys Side by side and Wipe, and a pick tries again"), async () => {
+  let made = 0;
+  const tip = "Side by side needs a wider stage. Click to close History and make room.";
+  const s = stage({ sideOff: true, mode: "flip", sideTip: tip, onSideOff: () => made++ });
+  const m = await render(s.el);
+  let radios = $$(m.container, "[role=radio]");
+  assert.ok(radios[0]!.hasAttribute("data-off"), "greyed");
+  assert.equal(radios[0]!.getAttribute("aria-disabled"), null, "not disabled: its click does something");
+  assert.equal(radios[0]!.getAttribute("data-carton-tip"), tip);
+  assert.equal(radios[0]!.getAttribute("aria-description"), tip);
+  await click(radios[0]);
+  assert.equal(made, 1, "the host makes the room");
+  assert.deepEqual(s.calls, [], "and no mode is picked here");
+  // the host's own words without a click: disabled, as before
+  await m.rerender(stage({ sideOff: true, mode: "flip", sideTip: "Side by side needs a wider stage. Close History and the chat, or widen the window." }).el);
+  radios = $$(m.container, "[role=radio]");
+  assert.equal(radios[0]!.getAttribute("aria-disabled"), "true");
+  assert.match(radios[0]!.getAttribute("data-carton-tip") ?? "", /Close History and the chat, or widen the window\.$/);
+  // the second picture didn't start: Side by side and Wipe greyed, each a pick that tries again; Flip as usual
+  const r = stage({ mode: "flip", retry: "Couldn't show both sides here. Click to try again." });
+  await m.rerender(r.el);
+  radios = $$(m.container, "[role=radio]");
+  assert.deepEqual(radios.map((x) => x.hasAttribute("data-off")), [true, true, false]);
+  assert.deepEqual(radios.map((x) => x.getAttribute("aria-disabled")), [null, null, null]);
+  assert.equal(radios[1]!.getAttribute("data-carton-tip"), "Couldn't show both sides here. Click to try again.");
+  await click(radios[1]);
+  await click(radios[0]);
+  assert.deepEqual(r.calls, [["mode", "wipe"], ["mode", "side"]]);
+});
+
+test(name("the frame's own label (History closed): its words open History, its ✕ is Done comparing"), async () => {
+  let opened = 0;
+  const s = stage({ frameLabel: "Comparing “Sent to client” with your edit · 7 changes", onFrameLabel: () => opened++ });
+  const m = await render(s.el);
+  const root = $(m.container, ".carton-compare")!;
+  assert.ok(root.hasAttribute("data-label"), "the bar moves down for it");
+  const words = $(root, ".carton-compare-frame-open")!;
+  assert.equal(words.tagName, "BUTTON");
+  assert.equal(words.textContent, "Comparing “Sent to client” with your edit · 7 changes");
+  assert.equal(words.getAttribute("title"), "Show the changes in History");
+  await click(words);
+  assert.equal(opened, 1);
+  await click($(root, ".carton-compare-frame-label .carton-frame-back"));
+  assert.deepEqual(s.calls, [["done"]]);
+  // a host without the click: the words as text, as before
+  await m.rerender(stage({ frameLabel: "Comparing “Sent to client” with your edit" }).el);
+  assert.equal($(m.container, ".carton-compare-frame-open"), null);
+  assert.equal($(m.container, ".carton-compare-frame-label > span")?.textContent, "Comparing “Sent to client” with your edit");
+});
+
 test(name("Wipe: one picture, the left player cut at the line; the line is a slider (← → Shift Home End, double-click)"), async () => {
   const s = stage({ mode: "wipe", wipe: 40 });
   const m = await render(s.el);
