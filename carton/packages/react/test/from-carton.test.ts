@@ -169,10 +169,12 @@ test("fold in with a conflict card: the pick decides, nothing is lost", async ()
   assert.equal(plan.conflicts.length, 1);
   const card = plan.conflicts[0]!;
   assert.equal(card.id, "items/a/name");
-  assert.equal(card.mine.summary, '"Mine"');
-  assert.equal(card.theirs.summary, '"Theirs"');
+  assert.equal(card.mine.summary, "“Mine”");
+  assert.equal(card.theirs.summary, "“Theirs”");
   assert.equal(card.mine.where, "Main cut", "your side names the cut you fold into");
   assert.equal(card.theirs.where, "alt", "their side names the cut you fold in");
+  // a fold's card comes with its sentences, as the stage's do (design QA G30: no fallback words on a real path)
+  assert.ok(card.mine.text && card.mine.did && card.mine.what && card.theirs.text && card.theirs.did && card.theirs.what, JSON.stringify(card));
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { [card.id]: "theirs" } });
   assert.equal(r.ok, true);
   assert.equal(((await carton.head(main)).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Theirs");
@@ -207,7 +209,7 @@ test("compare and watch the changes: real shots, aligned, and the N shots / X s 
   assert.equal(c.b.length, 20);
   assert.equal(c.diff.shots, 1, "one clip's look changed: one shot differs");
   // what changed, in History's words (UI audit P2-5)
-  assert.deepEqual(c.changes, ["Changed 'B' color \"red\" → \"blue\""]);
+  assert.deepEqual(c.changes, ["Changed the color of “B” to “blue”"]);
   assert.equal(c.diff.seconds, 5);
   const d = await ui.shotDiff(first, head);
   assert.equal(d.a.length, 4);
@@ -266,8 +268,8 @@ test("late conflicts addressed to you become cards; picking your side commits it
   assert.equal(ui.conflicts().length, 1);
   const card = ui.conflicts()[0]!;
   assert.equal(card.provisional, "theirs");
-  assert.equal(card.mine.summary, '"Mine"');
-  assert.equal(card.theirs.summary, '"Head"');
+  assert.equal(card.mine.summary, "“Mine”");
+  assert.equal(card.theirs.summary, "“Head”");
   assert.equal(card.theirs.author.name, "Bob");
   await ui.resolve(card.id, "mine");
   assert.equal(ui.conflicts().length, 0);
@@ -286,7 +288,7 @@ test("a GUI save's notices, addressed to the generic person, reach the resolved 
   assert.equal(ui.conflicts().length, 0, "a teammate's notice isn't yours");
   emit({ type: "notice", notice: { to: "human/person", kind: "late-conflict", text: "", by: bob, cards: [card] } });
   assert.equal(ui.conflicts().length, 1, "your own GUI save's conflict shows as a card");
-  assert.equal(ui.conflicts()[0]!.mine.summary, '"Mine"');
+  assert.equal(ui.conflicts()[0]!.mine.summary, "“Mine”");
   emit({ type: "notice", notice: { to: "human/person", kind: "rejected", text: "", by: bob, cards: [{ ...card, path: "items/b/name" }] } });
   assert.equal(ui.conflicts().length, 2, "and so does its rejection");
   ui.dispose();
@@ -412,7 +414,7 @@ test("regress #1: an agent CLI's view saves (Claude Code with CLAUDECODE=1, no h
   ] as Actor[]) assert.deepEqual([ui(a).key, ui(a).kind, ui(a).isYou], ["human/alice", "human", true], a.name);
 });
 
-test("ui-words: the import row is the person's ('Started the project's history', You, never 'Imported' for a created project: UI audit P2-18); the cut's start names no one", async () => {
+test("ui-words: the import row is the person's ('Project created', You, never 'Imported' for a created project: UI audit P2-18; PLAN 0.4); the cut's start names no one", async () => {
   const me: Actor = { kind: "human", id: "person", group: "alice@laptop" };
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: me });
   const ui = make(carton, { me });
@@ -420,10 +422,11 @@ test("ui-words: the import row is the person's ('Started the project's history',
   await settle();
   const rows = ui.history().all!();
   const imp = rows.find((v) => v.kind === "import")!;
-  assert.equal(imp.summary, "Started the project's history");
+  assert.equal(imp.summary, "Project created");
+  assert.equal(imp.start, "created");
   assert.deepEqual([imp.author.isYou, imp.author.kind], [true, "human"]);
   const root = rows.find((v) => v.seq === 0)!;
-  assert.deepEqual([root.summary, root.author.kind, root.author.name], ["Started the cut", "system", ""]);
+  assert.deepEqual([root.summary, root.author.kind, root.author.name, root.start], ["Project created", "system", "", "created"]);
   // the empty root it was imported over: nothing to preview, restore or make a cut from (laptop, build 915eb36)
   assert.equal(root.empty, true);
   assert.equal(imp.empty, undefined);

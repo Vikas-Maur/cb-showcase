@@ -20,7 +20,7 @@ const load = ({ enabled }) => {
     adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; },
     armed: () => armed,
     flush: async () => { log.push(["flush", armed]); armed = false; },
-    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
+    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head" && !answers.head) return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
     on: () => () => {},
     deserialize: (d) => d,
     projects: { getState: () => ({ projects: [disk.doc] }), setState: (s) => log.push(["projects", s.projects.length]) },
@@ -127,7 +127,68 @@ test("H6 (laptop bugs 3, 4): the session's start goes with each step; the projec
   assert.ok(!t.log.some((l) => l[0] === "replace"), "the project wasn't fetched again");
 });
 
-test("a preview is read-only: changes wait, undo doesn't take it, and Return to current takes head", async () => {
+// UX redesign PLAN 5.3: a toast's Undo is Ctrl+Z's own path (the pending save first, the session, the project adopted,
+// the buttons) for exactly what one action made; the worker answers "moved" when that isn't on top any more, and
+// Cardboard's own undo never runs for it. Ctrl+Z of a restore or a fold tells the page, with the step's own versions.
+test("PLAN 5.3: a toast's Undo and Redo: Ctrl+Z's path, for exactly what one action made", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.setState({ cartonSince: 1234 });
+  t.setArmed(true);
+  const made = { cut: "main", changes: ["c-restore"] };
+  t.answers.undo = () => ({ status: "confirmed", id: "u1", project: t.project(300, [{ id: "b", endTime: 6 }]), can: { undo: true, redo: true }, made: { cut: "main", changes: ["u1"] }, told: "undo-restore" });
+  const r = await t.c.undoMade(made);
+  assert.equal(t.log[0][0], "flush", "the waiting save goes first");
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "undo", { projectId: "p1", since: 1234, only: { cut: "main", changes: ["c-restore"] } }]);
+  assert.deepEqual([r.status, r.told, r.made], ["confirmed", "undo-restore", { cut: "main", changes: ["u1"] }], "the worker's answer, for the toast");
+  assert.deepEqual(t.state().timelineItems, [{ id: "b", endTime: 6 }], "the project adopted, as Ctrl+Z's is");
+  assert.deepEqual([t.state().cartonCanUndo, t.state().cartonCanRedo], [true, true]);
+  // Redo: the same, the other way
+  t.answers.redo = () => ({ status: "confirmed", id: "r1", can: { undo: true, redo: false } });
+  await t.c.redoMade(r.made);
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "redo", { projectId: "p1", since: 1234, only: { cut: "main", changes: ["u1"] } }]);
+  // something on top since: nothing done, and never Cardboard's own undo
+  const own = [];
+  t.setState({ undo: () => own.push("undo") });
+  t.answers.undo = () => ({ status: "moved", can: { undo: true, redo: false } });
+  assert.equal((await t.c.undoMade(made)).status, "moved");
+  t.answers.undo = () => ({ status: "unavailable" });
+  assert.equal((await t.c.undoMade(made)).status, "unavailable");
+  t.answers.undo = () => { throw new Error("worker gone"); };
+  await assert.rejects(t.c.undoMade(made), /worker gone/);
+  assert.deepEqual(own, [], "Cardboard's undo never ran");
+  await assert.rejects(t.c.undoMade(null), /Nothing to undo/);
+  await assert.rejects(t.c.undoMade({ cut: "main", changes: [] }), /Nothing to undo/);
+  // Ctrl+Z still falls back to Cardboard's own when Carton can't
+  assert.equal(t.c.undo(), true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(own, ["undo"], "Ctrl+Z whose step failed: Cardboard's own undo, as before");
+});
+
+test("PLAN 5.3: Ctrl+Z or redo of a restore or a fold tells the page what it was, with the step's own versions", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const seen = [];
+  const off = t.c.onStep((s) => seen.push(s));
+  t.answers.undo = () => ({ status: "confirmed", id: "u1", made: { cut: "main", changes: ["u1"] }, told: "undo-fold" });
+  t.c.undo();
+  await new Promise((r) => setTimeout(r, 10));
+  // a plain edit's undo: nothing to tell (the editor's own undo is seen on the timeline)
+  t.answers.undo = () => ({ status: "confirmed", id: "u2", made: { cut: "main", changes: ["u2"] } });
+  t.c.undo();
+  await new Promise((r) => setTimeout(r, 10));
+  // a toast's own Undo is told by the toast, not again here
+  t.answers.undo = () => ({ status: "confirmed", id: "u3", made: { cut: "main", changes: ["u3"] }, told: "undo-restore" });
+  await t.c.undoMade({ cut: "main", changes: ["x"] });
+  assert.deepEqual(seen, [{ which: "undo", told: "undo-fold", made: { cut: "main", changes: ["u1"] } }]);
+  off();
+  t.answers.redo = () => ({ status: "confirmed", id: "r1", made: { cut: "main", changes: ["r1"] }, told: "redo-fold" });
+  t.c.redo();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(seen.length, 1, "unsubscribed");
+});
+
+test("a preview is read-only: changes wait, undo doesn't take it, and Back to my edit takes head", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
   await t.c.preview("p1", "main@3");
@@ -144,11 +205,28 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
   assert.equal(t.c.stale, false);
 });
 
+// Review of the UX data #3: a version asked for, then "Back to my edit" before its checkout answered: the editor stays
+// on your edit; the late answer shows nothing.
+test("a preview whose checkout answers after a newer one (back to your edit) shows nothing", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let answer;
+  t.answers.checkout = () => new Promise((r) => (answer = r));
+  const slow = t.c.preview("p1", "main@3");
+  await new Promise((r) => setImmediate(r));
+  await t.c.preview("p1", null);
+  assert.equal(t.state().cartonPreview, null);
+  answer(t.project(150, [{ id: "old", endTime: 2 }]));
+  await slow;
+  assert.equal(t.state().cartonPreview, null, "still your edit");
+  assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
+});
+
 // Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
-// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Return to current puts it
+// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Back to my edit puts it
 // back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is
 // Cardboard's `playheadTime` while paused (its `currentTime` follows the pointer's hover then: review #1) and its
-// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Watch the changes, a
+// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Play in History, a
 // comment's timecode, play) is the person's, even one that ends where the preview put it (review #3).
 function cardboardPlayhead(t, { at, hover = null }) {
   const subs = new Set();
@@ -163,7 +241,7 @@ function cardboardPlayhead(t, { at, hover = null }) {
   t.store.clock = () => clock;
   return { set, subs, play: (s) => { clock = s; set({ isPlaying: true }); }, hover: (h) => set({ currentTime: h }) };
 }
-test("final N5: a preview shorter than the playhead takes it to its end; Return to current puts it back", async () => {
+test("final N5: a preview shorter than the playhead takes it to its end; Back to my edit puts it back", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
   t.disk.doc = t.project(200, [{ id: "a", endTime: 10 }]);
@@ -181,7 +259,7 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
   assert.equal(p.subs.size, 0, "and nothing is left listening");
   // moved during the preview, even back to where the preview put it: the person's place stays
   await t.c.preview("p1", "main@2");
-  t.c.seek(0.5); // Watch the changes, a comment's timecode
+  t.c.seek(0.5); // Play in History, a comment's timecode
   t.state().setPlaybackPosition(1.5); // a click on the ruler, at the version's end
   await t.c.preview("p1", null);
   assert.equal(t.state().playheadTime, 1.5, "where the person put it");
@@ -219,9 +297,134 @@ test("final N5: a preview shorter than the playhead takes it to its end; Return 
   assert.equal(off.state().cartonPreview, null);
 });
 
+// Play and Before (docs/carton-ux PLAN 4.3): holding Before flips the editor between two states at the same moment, so
+// neither flip may wait on the worker. Before's side is checked out ahead (prefetch, when playing starts) and kept, as is
+// every confirmed version or pin a preview shows; back to current puts the editor's own timeline back at once and only
+// then reads head, adopting it if it moved meanwhile and nothing of the person's is unsaved.
+test("Play and Before: a version checked out ahead shows without a round trip; back to current is at once, head read after", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const mine = [{ id: "mine", endTime: 5 }];
+  t.disk.doc = t.project(200, mine);
+  t.setState({ cartonBase: 200, tracks: [{ id: "t1" }], timelineItems: mine, aspectRatio: "16:9" });
+  const checkouts = () => t.calls.filter((c) => c[1] === "checkout").length;
+  const heads = () => t.calls.filter((c) => c[1] === "head").length;
+  t.c.prefetch("p1", "main@3");
+  assert.equal(checkouts(), 1, "checked out when playing starts");
+  await t.c.preview("p1", "main@3");
+  assert.equal(checkouts(), 1, "the flip didn't ask the worker again");
+  assert.deepEqual(t.state().timelineItems, [{ id: "old", endTime: 2 }]);
+  assert.equal(t.c.editLength(), 5, "your edit's length while another version shows");
+  // back: the editor's own timeline is there before any answer
+  const back = t.c.preview("p1", null);
+  assert.equal(t.state().cartonPreview, null);
+  assert.equal(t.state().timelineItems, mine, "the same timeline, at once");
+  assert.equal(t.state().cartonBase, 200);
+  await back;
+  assert.equal(heads(), 1, "head is still read");
+  assert.equal(t.log.filter((l) => l[0] === "adopt").length, 2, "head hadn't moved: not adopted again");
+  // the flip back and forth again: no checkout, no wait
+  await t.c.preview("p1", "main@3");
+  await t.c.preview("p1", null);
+  assert.equal(checkouts(), 1);
+});
+
+test("Play and Before: a change during the preview, or head moved meanwhile, still ends on head; a save under way is kept", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const mine = [{ id: "mine", endTime: 5 }];
+  t.disk.doc = t.project(200, mine);
+  t.setState({ cartonBase: 200, tracks: [{ id: "t1" }], timelineItems: mine, aspectRatio: "16:9" });
+  // a change came while it showed (stale): back reads head first, as before
+  await t.c.preview("p1", "main@3");
+  t.disk.doc = t.project(300, [{ id: "theirs", endTime: 6 }]);
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 300, carton: true });
+  const back = t.c.preview("p1", null);
+  assert.deepEqual(t.state().cartonPreview, { ref: "main@3" }, "no fast step after a change");
+  await back;
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [300, [{ id: "theirs", endTime: 6 }]]);
+  // head moved with no event seen (one in flight): the fast step, then head
+  t.setState({ cartonBase: 300 });
+  await t.c.preview("p1", "main@3");
+  t.disk.doc = t.project(400, [{ id: "newer", endTime: 7 }]);
+  await t.c.preview("p1", null);
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]]);
+  // the person edited right after the fast step (a save armed when head answers): their edit stays; its save goes
+  // first and its echo brings head
+  await t.c.preview("p1", "main@3");
+  let ran = 0;
+  t.answers.head = () => (ran++, t.setArmed(true), t.project(500, [{ id: "other", endTime: 8 }]));
+  await t.c.preview("p1", null);
+  assert.equal(ran, 1, "the simulated edit ran while head was read");
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [400, [{ id: "newer", endTime: 7 }]], "not overwritten under the person");
+  // their save went out and was done before head answered (nothing armed or in flight by then): head was read before
+  // it, so it isn't adopted over it either; the save's own events bring head
+  t.setArmed(false);
+  await t.c.preview("p1", "main@3");
+  t.answers.head = () => (ran++, t.c.saveMeta({ id: "p1", stateUpdatedAt: 401 }, { ownedFields: ["tracks", "timelineItems"] }), t.project(500, [{ id: "other", endTime: 8 }]));
+  await t.c.preview("p1", null);
+  assert.equal(ran, 2, "the save ran while head was read");
+  assert.deepEqual(t.state().timelineItems, [{ id: "newer", endTime: 7 }], "a save made since the fast step: head not adopted over it");
+  // an undo or redo under way for the project: its answer is adopted, not this head
+  // (head read before the undo, answered after it: older than what the undo adopted)
+  let headDone;
+  t.answers.head = () => new Promise((r) => (headDone = r));
+  let stepDone;
+  t.answers.undo = () => new Promise((r) => (stepDone = r));
+  await t.c.preview("p1", "main@3");
+  const back2 = t.c.preview("p1", null); // the fast step: back on the editor's own timeline
+  assert.equal(t.c.undo(), true); // Ctrl+Z at once, before head answers
+  await new Promise((r) => setTimeout(r, 5));
+  stepDone({ status: "confirmed", project: t.project(700, [{ id: "undone", endTime: 3 }]) });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(t.state().timelineItems, [{ id: "undone", endTime: 3 }], "the undo's answer is adopted");
+  // head answers only now, older than the undo (review #1): the undo's result stays
+  headDone(t.project(600, [{ id: "late", endTime: 9 }]));
+  await back2;
+  assert.deepEqual([t.state().cartonBase, t.state().timelineItems], [700, [{ id: "undone", endTime: 3 }]], "a late head never replaces the undo");
+});
+
+test("Play and Before: only versions that never change are kept, a few at a time; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const checkouts = (ref) => t.calls.filter((c) => c[1] === "checkout" && c[2].ref === ref).length;
+  // a cut's head moves: never kept
+  t.c.prefetch("p1", "cut-main");
+  await t.c.preview("p1", "cut-main");
+  await t.c.preview("p1", "cut-main");
+  assert.equal(checkouts("cut-main"), 2);
+  // a pin's header is kept, like a seq
+  const pin = "main@57~3f9a1c0e b:3f9a1c0e p:ab by person";
+  t.c.prefetch("p1", pin);
+  await t.c.preview("p1", pin);
+  assert.equal(checkouts(pin), 1);
+  // at most four: the oldest goes
+  for (const r of ["main@1", "main@2", "main@3", "main@4", "main@5"]) t.c.prefetch("p1", r);
+  await t.c.preview("p1", "main@1");
+  assert.equal(checkouts("main@1"), 2, "evicted, checked out again");
+  await t.c.preview("p1", "main@5");
+  assert.equal(checkouts("main@5"), 1, "still kept");
+  // another project's version is its own
+  t.c.prefetch("p2", "main@5");
+  assert.equal(t.calls.filter((c) => c[1] === "checkout" && c[2].projectId === "p2").length, 1);
+  // a failed checkout isn't kept
+  let fail = true;
+  t.answers.checkout = () => { if (fail) { fail = false; throw new Error("gone"); } return t.project(150, []); };
+  t.c.prefetch("p1", "main@9");
+  await new Promise((r) => setTimeout(r, 0));
+  await t.c.preview("p1", "main@9");
+  assert.equal(checkouts("main@9"), 2);
+  // Carton off: nothing at all
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.c.prefetch("p1", "main@3");
+  assert.equal(off.c.editLength(), undefined);
+  assert.deepEqual(off.calls.map((c) => c[1]), ["enabled"]);
+});
+
 // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
 // a double-click on one) and dropped what was typed. Cardboard's own edits are refused there by its guard (`me()`:
-// its "Previewing an earlier version. Return to current to edit." over the timeline); the text editor isn't a write, so
+// its refusal over the timeline); the text editor isn't a write, so
 // patch-carton.js asks the bridge first. Refused only in a Carton preview, never with Carton off.
 test("baseline P3-9: an edit that isn't a write is refused in a preview, with Cardboard's own note; not otherwise", async () => {
   const t = load({ enabled: true });
@@ -314,6 +517,28 @@ test("the editor's clip selection, as its store holds it, for the preview's Esc;
   assert.equal(off.c.selection(), null);
 });
 
+// History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected, by the name the change sentences
+// give it: its own name or text, else its media's file name; nothing for none, several, or Carton off.
+test("the one clip selected, by its name, for History's Only “clip”; nothing for none or several, or with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.store.projects.getState = () => ({ projects: [{ id: "p1", media: [{ id: "m1", data: { fileName: "interview-b.mp4" } }] }] });
+  t.store.raw({ timelineItems: [{ id: "a", name: "  Interview   B " }, { id: "b", mediaItemId: "m1" }, { id: "c", textContent: "Summer launch" }, { id: "d", type: "video" }] });
+  assert.equal(t.c.selectedClip(), null, "nothing selected");
+  for (const [id, name] of [["a", "Interview B"], ["b", "interview-b.mp4"], ["c", "Summer launch"], ["d", "video"]]) {
+    t.store.raw({ selectedTimelineItemIds: [id] });
+    assert.deepEqual(t.c.selectedClip(), { id, name });
+  }
+  t.store.raw({ selectedTimelineItemIds: ["a", "b"] });
+  assert.equal(t.c.selectedClip(), null, "several selected");
+  t.store.raw({ selectedTimelineItemIds: ["gone"] });
+  assert.equal(t.c.selectedClip(), null, "a clip this version doesn't have");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.store.raw({ selectedTimelineItemIds: ["a"], timelineItems: [{ id: "a", name: "A" }] });
+  assert.equal(off.c.selectedClip(), null);
+});
+
 test("the title bar's icons: the page hears carton:command and reports the panel open to main; nothing with Carton off", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
@@ -356,6 +581,11 @@ test("the panel report carries a shared project's live summary for the title bar
   t.c.reportPanel(null);
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(sent, [["carton:panel", { panel: "share", live }], ["carton:panel", { panel: null }]]);
+  // Carton UX redesign PLAN 2.1: and the cut chip's part (the cut, what is viewed, Share open)
+  sent.length = 0;
+  t.c.reportPanel("history", undefined, { share: true, cut: { name: "30s cut", dot: "#f59e0b" }, viewing: { label: "Leo's Main cut" } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent, [["carton:panel", { panel: "history", share: true, cut: { name: "30s cut", dot: "#f59e0b" }, viewing: { label: "Leo's Main cut" } }]]);
 });
 
 test("laptop, final candidate P2-1: a state with no aspect ratio is adopted with Cardboard's default (the layouts panel splits it); a refused undo is said, and Cardboard's own undo doesn't run", async () => {
@@ -392,7 +622,10 @@ test("laptop, final candidate P1-1: a save that fails in the page is told (at mo
   const err = new RangeError("Invalid time value");
   t.c.saveFailed(err);
   t.c.saveFailed(err);
-  assert.deepEqual(told, ["Your last change couldn't be saved. It's on screen, but it isn't in the project yet."], "once, not on every edit");
+  assert.deepEqual(told, ["Your last change wasn't saved. Do it again, or reopen the project."], "once, not on every edit");
+  // QA G8: DESIGN §6.7's words, the same as @carton/react's (this bundle can't import them)
+  const { words } = await import(require("url").pathToFileURL(require("path").join(__dirname, "../../../carton/packages/react/src/words.ts")).href);
+  assert.equal(told[0], words.saveFailed);
   // a save lands (its echo): the next failure is told again
   t.c.saveMeta({ id: "p1", stateUpdatedAt: 150 }, { ownedFields: ["tracks", "timelineItems"] });
   await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 150, carton: true });
@@ -573,4 +806,157 @@ test("laptop, merge/prod-2: Carton's views share one IPC listener per channel (n
   assert.equal(calls, 3, "the other subscription still hears it");
   b();
   assert.equal(added.get("carton:event"), 0);
+});
+
+// Carton UX redesign PLAN 1.4: Cardboard's own refusal (its xv, patch-carton.js) asks the bridge first while a Carton
+// preview is shown: a Carton part of the page says it (the edit-attempt toast), or nobody does and Cardboard's note
+// shows. Never with Carton off, never outside a preview; a part that throws doesn't stop the next.
+test("PLAN 1.4: an edit refused while viewing is told by the page's Carton part, else by Cardboard's note; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  assert.equal(t.c.blocked(), false, "no preview: Cardboard's own refusal (an agent's lock, say)");
+  await t.c.preview("p1", "main@3");
+  assert.equal(t.c.blocked(), false, "no Carton part listening: Cardboard's note, in Carton's words");
+  const told = [];
+  const offA = t.c.onBlocked(() => { told.push("a"); return true; });
+  const offB = t.c.onBlocked(() => { throw new Error("boom"); });
+  assert.equal(t.c.blocked(), true, "told");
+  assert.deepEqual(told, ["a"], "the newest that throws doesn't keep the one before from telling");
+  offB();
+  const offC = t.c.onBlocked(() => false);
+  assert.equal(t.c.blocked(), true, "a part with nothing viewed passes to the next");
+  offC();
+  offA();
+  assert.equal(t.c.blocked(), false, "nobody left");
+  await t.c.preview("p1", null);
+  t.c.onBlocked(() => { told.push("x"); return true; });
+  assert.equal(t.c.blocked(), false, "back to your edit: Cardboard's");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.setState({ cartonPreview: { ref: "main@3" } });
+  off.c.onBlocked(() => true);
+  assert.equal(off.c.blocked(), false, "Carton off: Cardboard's");
+});
+
+// PLAN 1.6 (DESIGN §9): Export never exports what is viewed. beforeExport is null when nothing is (Export opens at
+// once); else the page's Carton part goes back its own way, the editor then takes head itself, and Export waits for it:
+// it opens only on your edit. Without a Carton part the bridge leaves the preview itself. Carton off: null.
+test("PLAN 1.6: Export while viewing goes back to your edit first; at once when nothing is viewed; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  assert.equal(t.c.beforeExport(), null, "nothing viewed");
+  const asked = [];
+  const offPart = t.c.onBack((why) => { asked.push(why); return null; });
+  assert.equal(t.c.beforeExport(), null, "the page's part has nothing viewed either");
+  await t.c.preview("p1", "main@3");
+  offPart();
+  // the page's part goes back (its own way), and Export waits for it and for head in the editor
+  let back = null;
+  const offB = t.c.onBack((why) => { asked.push(why); return new Promise((r) => (back = r)); });
+  const p = t.c.beforeExport();
+  assert.ok(p && typeof p.then === "function", "Export waits");
+  let done = false;
+  p.then(() => (done = true));
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(done, false, "until your edit is back");
+  back();
+  await p;
+  assert.equal(t.state().cartonPreview, null, "the editor shows head");
+  assert.deepEqual(asked, ["export", "export"]);
+  offB();
+  // without a Carton part: the bridge leaves the preview itself, and Export opens on head
+  await t.c.preview("p1", "main@3");
+  await t.c.beforeExport();
+  assert.equal(t.state().cartonPreview, null, "your edit");
+  assert.equal(t.c.beforeExport(), null);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.setState({ cartonPreview: { ref: "main@3" } });
+  assert.equal(off.c.beforeExport(), null, "Carton off: Export as Cardboard opens it");
+});
+
+// Review of feat/ux-1-viewing #1: two Exports while viewing, the second before the first is back. The page goes back
+// once per ask (its viewing hasn't cleared yet), and the older return, superseded in the bridge, used to count as done:
+// Export opened on the old timeline. Now both wait for one guard, which resolves only with head in the editor; a
+// version viewed again meanwhile makes it fail, and Export doesn't open.
+test("review #1: Exports asked while one goes back share it; a return superseded by a newer view doesn't open Export", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  await t.c.preview("p1", "main@3");
+  // head answers late, when released: the returns are under way while the next is asked
+  const release = [];
+  let slow = true;
+  const invoke = t.store.invoke;
+  t.store.invoke = (ch, m) => (slow && m.method === "head" ? new Promise((r) => release.push(() => r(t.disk.doc))) : invoke(ch, m));
+  const until = async (n) => { for (let i = 0; i < 50 && release.length < n; i++) await new Promise((r) => setTimeout(r, 2)); assert.equal(release.length, n); };
+  let asks = 0;
+  const offPart = t.c.onBack(() => { asks++; return t.c.preview("p1", null); });
+  const a = t.c.beforeExport();
+  await until(1);
+  const b = t.c.beforeExport();
+  assert.equal(a, b, "a second Export meanwhile waits for the same return");
+  assert.equal(asks, 1, "the page went back once");
+  let opened = 0;
+  a.then(() => opened++, () => {});
+  release.shift()();
+  await until(1);
+  assert.equal(opened, 0, "the page's return alone isn't enough: head in the editor first");
+  release.shift()();
+  await a;
+  assert.equal(opened, 1);
+  assert.equal(t.state().cartonPreview, null, "Export opens on your edit");
+  // a version viewed again while the guard's own return waits for head: superseded, so not back: Export doesn't open,
+  // and the person is told
+  offPart();
+  slow = false;
+  const told = [];
+  t.c.onNotice((x) => told.push(x));
+  await t.c.preview("p1", "main@3");
+  slow = true;
+  const c = t.c.beforeExport();
+  await until(1);
+  slow = false;
+  await t.c.preview("p1", "main@4");
+  release.shift()();
+  await assert.rejects(c, /still viewing/, "Export doesn't open");
+  assert.deepEqual(t.state().cartonPreview, { ref: "main@4" }, "the newer view stays");
+  assert.match(told.at(-1), /^Export didn't open/);
+  assert.equal(t.c.beforeExport() === c, false, "the next Export asks anew");
+});
+
+// Review of feat/ux-1-viewing #2: leaving a teammate's cut is a cut switch (no preview), which the editor adopts from
+// its change event a moment after the switch answers. Export waits for head in the editor, not for the switch alone.
+test("review #2: Export from a teammate's cut waits until the editor shows your cut's head", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  // the editor shows the teammate's cut (not a preview: a read-only cut switched to)
+  t.setState({ cartonBase: 100, timelineItems: [{ id: "theirs", endTime: 3 }] });
+  let switched = false;
+  t.c.onBack(() => Promise.resolve().then(() => { switched = true; t.disk.doc = t.project(300, [{ id: "mine", endTime: 5 }]); }));
+  await t.c.beforeExport();
+  assert.equal(switched, true);
+  assert.deepEqual(t.state().timelineItems.map((i) => i.id), ["mine"], "your cut's head in the editor");
+  assert.equal(t.state().cartonBase, 300);
+});
+
+// PLAN 1.3: a conflict's See it brings its clip into view without selecting it (a selection takes viewing's first Esc).
+test("PLAN 1.3: See it moves the playhead to the clip without selecting it", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const did = [];
+  t.store.raw({ timelineItems: [{ id: "clip-a", startTime: 4.5, endTime: 8 }], selectTimelineItem: (id) => did.push(["select", id]), setPlaybackPosition: (s) => did.push(["seek", s]) });
+  assert.equal(t.c.reveal("clip-a", { select: false }), true);
+  assert.deepEqual(did, [["seek", 4.5]]);
+});
+
+// QA G24: Share's title ("Share “Weekend reel”") is the editor's own project name, read from its store as each dialog
+// opens (scripts/carton/ui.js ShareHost): Cardboard's initializeEditor sets it before the editor renders, and its
+// rename (setProjectName) changes it; never a name kept from an earlier opening.
+test("QA G24: the pages' projectName is the editor store's, renamed with it", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.setState({ projectName: "Weekend reel" });
+  assert.equal(t.c.projectName, "Weekend reel");
+  t.setState({ projectName: "Weekend reel v2" });
+  assert.equal(t.c.projectName, "Weekend reel v2", "a rename shows at the next opening");
 });

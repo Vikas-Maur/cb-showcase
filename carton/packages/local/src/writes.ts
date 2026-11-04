@@ -32,13 +32,25 @@ export type WriteOp =
   | { kind: "commit"; cut?: string; base?: string | StateRef | HeldBase; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
   | { kind: "restore"; ref: string; cut?: string; head?: boolean }
+  /**
+   * Bring back one clip (Carton UX v2, `cb restore <version> --clip <name or id>`): core's `restoreClip`, under the
+   * request's id. `record`: `timelineItems/<id>`. `remove`: also when the clip wasn't there then (it is removed).
+   */
+  | { kind: "restoreClip"; ref: string; record: PathKey; cut?: string; remove?: boolean; head?: boolean; expect?: string }
+  /**
+   * Open a view in the editor (Carton UX v2, `cb compare <a> [b] --show`): the holder tells the app's pages
+   * (`ViewPrinter.openView`), which open Compare on those two versions. Saves nothing; never starts a helper. Answered
+   * `{status: "confirmed", opened}`: how many editor windows were told (0: none has the project open).
+   */
+  | { kind: "open"; view: "compare"; from: string; to: string }
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
   /**
    * ⌘Z (undo) and its redo for an actor group (default: the author's). `app` and `since` (core's UndoScope): the app's
-   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`.
+   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`. `expect` (a
+   * change id): only that entry, or nothing (core's StackMoved, code STACK_MOVED): a toast's Undo (UX redesign PLAN 5.3).
    */
-  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
-  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean; expect?: ChangeId }
+  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean; expect?: ChangeId }
   | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
@@ -60,6 +72,13 @@ export type WriteOp =
   | { kind: "share"; cut?: string }
   /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
   | { kind: "closeCard"; change: ChangeId | null; path: PathKey };
+
+/** What WriteOp `open` shows: Compare from one version to another (refs as `cb` resolved them: node ids or cut ids). */
+export interface OpenView {
+  view: "compare";
+  from: string;
+  to: string;
+}
 
 export interface WriteRequest {
   /** Stable change id made by the calling process (`<rid>.<n>`): a retried call never makes a second change. */
@@ -103,7 +122,7 @@ export const WAIT_MS = 5000;
  * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
  * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "redo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "restoreClip", "open", "revert", "undo", "redo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -125,7 +144,7 @@ export async function withRaceRetry<T>(idempotent: boolean, fn: () => Promise<T>
 export function destCut(op: WriteOp): string | undefined {
   switch (op.kind) {
     case "fold": return op.into;
-    case "commit": case "restore": case "revert": case "undo": case "redo": case "undoTurn": case "pin": case "share": return op.cut;
+    case "commit": case "restore": case "restoreClip": case "revert": case "undo": case "redo": case "undoTurn": case "pin": case "share": return op.cut;
     default: return undefined;
   }
 }
@@ -321,6 +340,11 @@ export interface ViewPrinter {
    * follows; a frozen timeline.tsx doesn't).
    */
   onCutSwitch?(cut: string): void | Promise<void>;
+  /**
+   * WriteOp `open` (Carton UX v2): show a view in the editor windows that have the project open, for `by` (the agent
+   * that asked). Resolves with how many were told; absent (a headless helper): none.
+   */
+  openView?(view: OpenView, by: Actor): Promise<{ opened: number; shown?: { status: "opened" | "offered" | "refused"; why?: string } }>;
   /**
    * carton.db may have moved under the holder (another process wrote it, B11): the materializer reads head and brings
    * the files up to it, or does nothing when it already shows that head (cardboard-adapter `e352fea`). The holder's
@@ -539,9 +563,19 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     }
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
+    case "restoreClip": {
+      r = await carton.restoreClip(op.ref, op.record, { author, cut: op.cut, id: req.id, ...(op.remove ? { remove: true } : {}), ...(typeof op.expect === "string" ? { expect: op.expect } : {}) });
+      extra = { brought: r.brought };
+      break;
+    }
+    case "open": {
+      // shows something in the editor, saves nothing: only a holder that runs the app's pages can (a helper can't)
+      const told = opts.materializer?.openView ? await opts.materializer.openView({ view: op.view, from: op.from, to: op.to }, author) : { opened: 0 };
+      return { status: "confirmed", seq: 0, ref: null, notices, opened: told.opened, ...("shown" in told && told.shown ? { shown: told.shown } : {}) };
+    }
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
     case "undo": case "redo": {
-      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}) };
+      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}), ...(typeof op.expect === "string" ? { expect: op.expect } : {}) };
       r = await carton[op.kind](op.group ?? author.group, { cut: op.cut, author, id: req.id, ...scope });
       break;
     }

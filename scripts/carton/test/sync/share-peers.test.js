@@ -1,4 +1,4 @@
-// The Share panel with a teammate here (UI audit P1-1). The real carton-ui code (scripts/carton/ui.js with sync/ui.js,
+// The Share dialog (the Share panel until Carton UX redesign PLAN 8.1) with a teammate here (UI audit P1-1). The real carton-ui code (scripts/carton/ui.js with sync/ui.js,
 // bundled as scripts/carton/build.js bundles carton-ui.js) on React 19's client renderer in a DOM (happy-dom), inside a
 // stand-in for Cardboard's own tab boundary ("This tab hit a snag"), fed what the library worker really sends: the
 // Share panel's status from Live.view() (scripts/carton/sync/live.js) after a teammate's presence arrives, as the sync
@@ -118,11 +118,11 @@ test("Share open with a teammate here, as the worker sends them: the editor stay
   try {
     assert.ok(!m.container.querySelector("#snag"), "the editor tab hit a snag: " + m.caught.map((e) => e?.message).join("; "));
     assert.ok(!!m.container.querySelector("#editor"), "the editor is still there");
-    const share = m.container.querySelector(".carton-share");
-    assert.ok(!!share, "the Share panel is open");
+    const share = m.container.querySelector(".carton-share-dialog");
+    assert.ok(!!share, "the Share dialog is open");
     const row = [...share.querySelectorAll("li")].find((li) => li.textContent.includes("Alice"));
     assert.ok(!!row, "Alice is listed: " + share.textContent);
-    assert.match(row.textContent, /Editing/);
+    assert.match(row.textContent, /Here now · editing/);
     assert.match(row.querySelector(".carton-avatar")?.getAttribute("style") ?? "", /--carton-actor:\s*#[0-9a-f]{6}/i, "her avatar has her colour");
     assert.equal(row.querySelector(".carton-avatar-initials")?.textContent, "A");
   } finally { await m.done(); }
@@ -134,7 +134,7 @@ test("a teammate with no `who` (a replica that sent none): listed by the actor t
   const m = await openShare(status(l));
   try {
     assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
-    assert.match(m.container.querySelector(".carton-share li")?.textContent ?? "", /Leo/);
+    assert.match(m.container.querySelector(".carton-share-dialog li:not([data-you])")?.textContent ?? "", /Leo/);
   } finally { await m.done(); }
 });
 
@@ -190,7 +190,7 @@ test("guard, panel: an entry it can't show is skipped and logged once; the rest 
   const m = await openShare({ ...good, peers: [...bad, ...good.peers] });
   try {
     assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
-    assert.deepEqual([...m.container.querySelectorAll(".carton-share li")].map((li) => li.textContent), ["AAliceEditing"]);
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["AAliceHere now · editing"]);
     const skips = logged.filter((e) => /skipped/.test(e.msg ?? ""));
     assert.equal(skips.length, 1, "logged once: " + JSON.stringify(logged));
     assert.doesNotMatch(JSON.stringify(skips), /Alice|"W"|human\/z/, "never an entry's own text");
@@ -198,14 +198,14 @@ test("guard, panel: an entry it can't show is skipped and logged once; the rest 
   // only "Nobody else is here" when none can be shown
   const m2 = await openShare({ ...good, peers: bad });
   try {
-    assert.match(m2.container.querySelector(".carton-share")?.textContent ?? "", /Nobody else is here right now\./);
+    assert.match(m2.container.querySelector(".carton-share-dialog")?.textContent ?? "", /Nobody else is here right now\./);
   } finally { await m2.done(); }
 });
 
-test("boundary: any throw in the side panel shows a message in the panel, never takes the editor tab down", opt, async () => {
+test("boundary: any throw in the Share dialog shows a message in the dialog, never takes the editor tab down", opt, async () => {
   const sync = window.__cartonSyncUi;
   let boom = true;
-  window.__cartonSyncUi = { ...sync, SharePanel: (p) => { if (boom) throw new TypeError("Cannot read properties of undefined (reading 'length')"); return h(sync.SharePanel, p); } };
+  window.__cartonSyncUi = { ...sync, ShareDialog: (p) => { if (boom) throw new TypeError("Cannot read properties of undefined (reading 'length')"); return h(sync.ShareDialog, p); } };
   logged.length = 0;
   const { live: l, presence } = await live();
   presence(ALICE, editing);
@@ -213,9 +213,9 @@ test("boundary: any throw in the side panel shows a message in the panel, never 
   try {
     assert.ok(!m.container.querySelector("#snag"), "the editor tab hit a snag");
     assert.ok(!!m.container.querySelector("#editor"), "the editor is still there");
-    const alert = m.container.querySelector(".carton-sidebar [role=alert]");
-    assert.ok(!!alert, "the panel says so: " + m.container.textContent);
-    assert.ok(!!m.container.querySelector(".carton-sidebar [role=tablist]"), "its tabs and Close still work");
+    const alert = m.container.querySelector("[role=dialog] [role=alert]");
+    assert.ok(!!alert, "the dialog says so: " + m.container.textContent);
+    assert.ok(!!m.container.querySelector("[role=dialog] .carton-dialog-close"), "its ✕ still closes it");
     const errs = logged.filter((e) => e.ev === "error");
     assert.equal(errs.length, 1, "logged once: " + JSON.stringify(logged));
     assert.equal(errs[0].panel, "share");
@@ -225,8 +225,8 @@ test("boundary: any throw in the side panel shows a message in the panel, never 
     assert.ok(!!again, "Try again");
     await act(async () => { again.click(); await sleep(20); });
     await act(async () => { await sleep(20); });
-    assert.ok(!m.container.querySelector(".carton-sidebar [role=alert]"), "the message went");
-    assert.match(m.container.querySelector(".carton-share li")?.textContent ?? "", /Alice/);
+    assert.ok(!m.container.querySelector("[role=dialog] [role=alert]"), "the message went");
+    assert.match(m.container.querySelector(".carton-share-dialog li:not([data-you])")?.textContent ?? "", /Alice/);
   } finally { window.__cartonSyncUi = sync; await m.done(); }
 });
 
@@ -239,9 +239,77 @@ test("two agents of one teammate (same id, their own agentId) are two rows, each
   console.error = (...a) => { errors.push(a.join(" ")); };
   const m = await openShare(status(l));
   try {
-    assert.deepEqual([...m.container.querySelectorAll(".carton-share li")].map((li) => li.textContent), ["CCClaude CodeEditing captions", "CCClaude CodeTrimming"]);
+    // an agent wears its own mark (no letters), and its line is what it's doing (QA G3)
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => li.textContent), ["Claude CodeEditing captions", "Claude CodeTrimming"]);
     assert.ok(!errors.some((e) => /same key/.test(e)), "no duplicate React keys: " + errors.join("\n"));
   } finally { console.error = was; await m.done(); }
+});
+
+test("QA G3, G11: each teammate with their role, their agent under them as theirs (\"Alice's Director\"), and You as History draws you", opt, async () => {
+  const { live: l, presence } = await live();
+  const who = (id, name, role) => ({ id, name, ...(role ? { role } : {}) });
+  presence(ALICE, { activity: "Editing", who: who("alice", "Alice", "editor") });
+  // her Director's own presence: the agent's actor, told as hers as core tells one (`owner`), with no `who`
+  presence({ kind: "agent", id: "director", agentId: "t1", name: "Director", group: "alice-pc/alice", app: true, owner: { id: "alice", name: "Alice" } }, { activity: "Working on “Add a title card”" });
+  presence({ kind: "human", id: "mia", name: "Mia" }, { activity: null, idle: true, who: who("mia", "Mia", "commenter") });
+  // a role this app doesn't know, and none at all (an older app): no role shown
+  presence({ kind: "human", id: "bo", name: "Bo" }, { activity: "Editing", who: who("bo", "Bo", "admin") });
+  presence({ kind: "human", id: "cy", name: "Cy" }, { activity: "Editing", who: who("cy", "Cy") });
+  // a Director whose person isn't here, told with its owner as core tells an agent's actor
+  presence({ kind: "agent", id: "director", agentId: "t9", name: "Director", owner: { id: "dee", name: "Dee Ray" } }, { activity: "Working on “Trim the intro”" });
+  const st = status(l);
+  assert.deepEqual(st.peers.map((p) => [p.actor.key, p.actor.parent ?? null, p.role ?? null]), [
+    ["human/alice", null, "editor"], ["agent/director/t1", "human/alice", null], ["human/mia", null, "commenter"], ["human/bo", null, null], ["human/cy", null, null], ["agent/director/t9", "human/dee", null],
+  ]);
+  assert.deepEqual(st.peers[1].actor.owner, { id: "alice", name: "Alice" });
+  const m = await openShare({ ...st, role: "owner", name: "Bob" });
+  try {
+    assert.ok(!m.container.querySelector("#snag"), m.caught.map((e) => e?.message).join("; "));
+    const rows = [...m.container.querySelectorAll(".carton-share-dialog li")].map((li) => [li.querySelector(".carton-share-name")?.textContent, li.querySelector(".carton-share-sub")?.textContent, li.querySelector(".carton-share-role")?.textContent ?? null, li.hasAttribute("data-under")]);
+    assert.deepEqual(rows, [
+      ["You", "Bob · here now", "Owner", false],
+      ["Alice", "Here now · editing", "Can edit", false],
+      ["Alice's Director", "Working on “Add a title card”", null, true],
+      ["Mia", "Here, not editing", "Can comment", false],
+      ["Bo", "Here now · editing", null, false],
+      ["Cy", "Here now · editing", null, false],
+      // a teammate by first name in every author slot (design QA G27, actorLabel)
+      ["Dee's Director", "Working on “Trim the intro”", null, false],
+    ]);
+    const lis = [...m.container.querySelectorAll(".carton-share-dialog li")];
+    // You: "Y", as History draws you, before and after a share (not the account's initial)
+    assert.equal(lis[0].querySelector(".carton-avatar-initials")?.textContent, "Y");
+    // the Director's own mark, not a letter, in Alice's colour
+    const mark = lis[2].querySelector(".carton-avatar");
+    assert.equal(mark?.getAttribute("data-agent"), "director");
+    assert.equal(lis[2].querySelector(".carton-avatar-initials"), null);
+    assert.equal(mark.style.getPropertyValue("--carton-actor"), lis[1].querySelector(".carton-avatar").style.getPropertyValue("--carton-actor"), "her agent in her colour");
+    assert.ok(lis[1].querySelector("[data-here]"), "who is here wears the ring");
+    assert.equal(lis[2].querySelector("[data-here]"), null, "her agent doesn't: hers says it");
+    assert.equal(lis[3].querySelector("[data-here]"), null, "nor someone idle (faded)");
+  } finally { await m.done(); }
+});
+
+test("review of fix/ux2-b: a teammate's subagent reads as their agent (\"Alice's Director\"), with or without them here", opt, async () => {
+  const { live: l, presence } = await live();
+  const sub = (agentId, owner) => ({ kind: "subagent", id: "director/chat1/turn2/sub-Explore-" + agentId, agentId, name: "Director", subagentType: "Explore", owner });
+  presence(ALICE, editing);
+  presence(sub("a1", { id: "alice", name: "Alice" }), { activity: "Looking for the intro" });
+  presence(sub("a2", { id: "dee", name: "Dee" }), { activity: "Trimming" });
+  const st = status(l);
+  assert.deepEqual(st.peers.slice(1).map((p) => [p.actor.kind, p.actor.parent]), [["agent", "human/alice"], ["agent", "human/dee"]]);
+  const m = await openShare(st);
+  try {
+    const rows = [...m.container.querySelectorAll(".carton-share-dialog li:not([data-you])")].map((li) => [li.querySelector(".carton-share-name")?.textContent, li.hasAttribute("data-under")]);
+    assert.deepEqual(rows, [["Alice", false], ["Alice's Director", true], ["Dee's Director", false]]);
+  } finally { await m.done(); }
+});
+
+test("QA G3: the app's own presence is the person's, even from a worker whose handle is an agent's (started from an agent's terminal)", opt, async () => {
+  const { live: l, presence } = await live();
+  // CODEX_* or CLAUDECODE in the worker's environment: core tells its handle's actor as Codex, with its owner
+  presence({ kind: "agent", id: "codex@alice-pc", name: "Codex", owner: { id: "alice", name: "Alice" } }, { activity: "Editing", who: { id: "alice", name: "Alice", role: "editor" } });
+  assert.deepEqual(l.view().peers.map((p) => [p.actor, p.role]), [[{ key: "human/alice", kind: "human", id: "alice", name: "Alice" }, "editor"]]);
 });
 
 test("boundary, stage layer: a throw over the stage shows a small Try again there, never takes the editor tab down", opt, async () => {
@@ -272,8 +340,8 @@ test("P2-11: a teammate who is here without input says idle instead of leaving: 
   assert.deepEqual(st.peers.map((p) => [p.actor.name, p.idle]), [["Alice", true]]);
   const m = await openShare(st);
   try {
-    const row = [...m.container.querySelectorAll(".carton-share li")].find((li) => li.textContent.includes("Alice"));
-    assert.ok(!!row, "listed: " + m.container.querySelector(".carton-share")?.textContent);
+    const row = [...m.container.querySelectorAll(".carton-share-dialog li")].find((li) => li.textContent.includes("Alice"));
+    assert.ok(!!row, "listed: " + m.container.querySelector(".carton-share-dialog")?.textContent);
     assert.match(row.getAttribute("style") ?? "", /opacity:\s*0\.55/);
   } finally { await m.done(); }
   presence(ALICE, { activity: "Editing", who: { id: "alice", name: "Alice" } });

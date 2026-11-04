@@ -242,7 +242,10 @@ if (mode === "--cli") {
     // and adds its tools before list_media.
     replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
     replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
-    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
+    // (`lib` as a getter, Carton UX v2 N0: the server's library `s` is set after its tools are registered, so a value
+    // taken here was undefined and every Carton tool failed with "reading 'projects'"; Cardboard's own tools read it
+    // when called, as this does now)
+    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:()=>s,result:Y}),p("list_media",');
     // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
     // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
     // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
@@ -288,11 +291,14 @@ if (mode === "--cli") {
     // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
     // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
     // For a shared project the report also carries a small live summary (sync state, who is here: UI audit P2-11),
-    // and the strip gets {panel, live} instead of the panel's name alone.
-    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){_e.emit(r,\"carton:command\",{action:t.action});return}");
+    // and the strip gets {panel, live} instead of the panel's name alone. The cut chip (Carton UX redesign PLAN 2.1)
+    // adds the cut and what is being viewed to the report, and its own commands (carton-cuts, carton-back); the cut
+    // chip and Share hand the keyboard to the page they open something in (main-bridge.js takesKeys), so the cuts
+    // menu and the Share dialog take arrows and Esc at once, not after a click.
+    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
     replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
-    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.live?{panel:t?.panel??null,live:t.live}:t?.panel??null)}),');
+    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop
@@ -343,6 +349,12 @@ if (mode === "--cli") {
     replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
     replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
     replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
+    // Carton UX redesign PLAN 1.4: an edit tried while viewing gets Carton's one line ("You're looking at …" with Back to
+    // my edit, and a pulse of the stage's frame) in place of Cardboard's note over the timeline. xv is where Cardboard
+    // raises that note for every edit its guard refuses (me(), and the store's own rejected writes), so every path it
+    // guards keeps its guard: this changes only what is said, and only in a Carton preview (cartonPreview is never set
+    // with Carton off). With no Carton part of the page to say it, Cardboard's note says it, in Carton's words above.
+    replace("function xv(){const t=ne.getState(),e=ure(t);", "function xv(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=ure(t);");
     replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
     // Laptop, final candidate P1-1: a save that fails in the page (its project couldn't be written out: there, media
     // entries with no dates) was only logged, and every edit was lost unseen. The bridge tells the person (a toast over
@@ -356,17 +368,52 @@ if (mode === "--cli") {
     replace('e().pushTimelineHistory("rippleDeleteAllGaps"),t({timelineItems:i.timelineItems})', 'e().pushTimelineHistory("rippleDeleteAllGaps"),window.__carton.intent({kind:"remap",tracks:[n],gaps:r}),t({timelineItems:i.timelineItems})');
     replace('return e().pushTimelineHistory("removeSilences"),t(c=>({', 'return e().pushTimelineHistory("removeSilences"),r.results.forEach(c=>window.__carton.intent({kind:"remap",tracks:[c.sourceItem.trackId],at:c.sourceItem.endTime,delta:-c.timeSaved,lineage:{from:c.itemId,to:c.newItemIds}})),t(c=>({');
     replace('i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")', 'window.__carton.intent({kind:"split",id:n,at:r,into:[a.firstClip.id,a.secondClip.id]}),i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")');
+    // Carton UX v2 (N0, DESIGN-V2 §2.1): an export that finished is an Exported landmark. Rx is where the editor hands
+    // every telemetry event to main (export_completed: the Export dialog's, with its resolution); the bridge only notes
+    // it (one worker call, not awaited), and Cardboard's own capture runs as before.
+    replace("Rx=(t,e)=>{const n=ree(t,e)??nee(t,e)", 'Rx=(t,e)=>{t==="export_completed"&&window.__carton?.exported?.(e);const n=ree(t,e)??nee(t,e)');
     prepend(require("./carton/renderer-bridge"));
   });
   // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.
   patch(indexFile, (replace) => {
     replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
+    // Carton UX redesign PLAN 1.6 (DESIGN §9): an agent's scripted export (export.start, which opens Export on the
+    // editor's timeline) never exports a version the person is viewing: back to their edit first (the bridge's
+    // beforeExport, null when nothing is viewed or Carton is off), then the export as before.
+    replace('"export.start":async e=>{const t=ks();if(t.isExporting)', '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=ks();if(t.isExporting)');
   });
   // Carton in the editor (EditorRoute-*.js, editor-panel.js, scripts/carton/ui.js): the History or Share panel, a
   // full-height column beside the agent's chat sidebar; and a layer over the stage (the preview's column) with the
-  // conflict cards' floating stack and the preview banner. With Carton off the editor's row and stage are Cardboard's.
+  // conflict cards' floating stack and viewing's frame (UX redesign PLAN 1.1, in place of the preview banner). With
+  // Carton off the editor's row and stage are Cardboard's.
   patch(editorFile, (replace, prepend) => {
     replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
+    // Carton UX redesign PLAN 1.5: the timeline's wrapper (EditorRoute's "editor-timeline" region, a display:contents
+    // div round aZ, the timeline) is editor-panel.js's __cbCartonTimeline, which renders the same div and, with Carton
+    // on, data-carton-viewing while viewing (the timeline's frame, its clips muted: ui.js TIMELINE_CSS) and
+    // data-carton-cut on a cut other than Main (its name and dot in the timeline's toolbar). With Carton off it renders
+    // Cardboard's div as it is. Always this component, whether Carton is on or not yet known, so the timeline is never
+    // mounted again when main's answer comes.
+    replace('c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})', 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})');
+    // Compare in the editor (UX v2, N1), unchanged text only: what editor-panel.js's second player and Compare's stage
+    // and timeline layers rely on, so a Cardboard that renamed or reshaped one fails here, not in the app. The preview
+    // engine's hook (YD) with its props and its own clock when not driven by the playback clock (Ee); its answer's canvas;
+    // the playback clock (hn), the aspect ratio's size (L2) and the editor store (U) in this bundle's imports; the stage's
+    // picture wrapper (Side by side moves it to the right half); the timeline's scroll area, tracks surface and track rows
+    // (the marks sit on the surface, at each clip's start × pixelsPerSecond on its track's row).
+    for (const anchor of [
+      "function YD(e){const{width:t,height:n,timelineItems:a,tracks:r,mediaItems:s,currentTime:i,isPlaying:l,masterVolume:d,enabled:u,",
+      "drivenByExternalClock:S=!1,", "Ee=l&&!S,", "return{diagnostics:A,getDecoderDiagnostics:pt,frameScheduler:O,canvasRef:M,isReady:Ke,",
+      "aI as hn,", "fW as L2,", "aD as U,", "du as Na,",
+      'children:[c.jsx("div",{className:"absolute inset-0 flex items-center justify-center",style:{transform:`translate(${w.x}px, ${w.y}px) scale(${w.scale})`,',
+      'className:"timeline-horizontal-scrollbar relative flex flex-1 flex-col overflow-x-auto overflow-y-hidden","data-timeline-scroll":!0',
+      '"data-timeline-canvas-surface":!0', '"data-track-id":r.id,', "pixelsPerSecond:L.pixelsPerSecond",
+    ]) replace(anchor, anchor);
+    // Carton UX redesign PLAN 1.6 (DESIGN §9): Export (sZ: Ctrl+E, the title bar's Export, the menu) never exports a
+    // version the person is viewing. While viewing, the bridge's beforeExport goes back to their edit first (the toast
+    // "Back to your edit to export it.") and Export opens once the editor shows it, asked once (__again); if going back
+    // fails, Export doesn't open. Nothing viewed, or Carton off: null, and Export opens at once, as before.
+    replace("sZ=e=>{U.getState().setIsPlaying(!1),", "sZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>sZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),");
     // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
     // the editor's own snapshot stacks, which Carton's undo never pops. During a read-only preview neither applies
     // (Ctrl+Z already does nothing there), so both look unavailable (UI audit P3-12).
@@ -375,8 +422,8 @@ if (mode === "--cli") {
     // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened, from Enter on a selected
     // title and from a double-click on a title or caption, and dropped what was typed (opening it is no write, so
     // Cardboard's guard of its edits never saw it). Both ask the bridge first, which refuses only in a Carton preview,
-    // with Cardboard's own "Previewing an earlier version. Return to current to edit." Crop mode, the double-click's
-    // other branch, is refused by Cardboard's guard already.
+    // through Cardboard's own refusal (its guard, then xv: the edit-attempt toast, PLAN 1.4). Crop mode, the
+    // double-click's other branch, is refused by Cardboard's guard already.
     replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
     replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
     // Regress prod3 (baseline P3-9 family): in a read-only preview a selected title or caption still showed the stage's
@@ -389,10 +436,20 @@ if (mode === "--cli") {
     replace("const g=je.getState().getProjectById(a)??f;return vt(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return vt(async()=>{const{updateProjectScoped:b}");
     prepend(require("./carton/editor-panel"));
   });
-  // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose
-  // editor reports Carton's panel state (strip-buttons.js). A build without the strip's file leaves it as it is.
+  // The title bar's Carton parts (tabs-*.js, the tab strip; strip-buttons.js), only on a tab whose editor reports
+  // Carton's panel state: the cut chip (Carton UX redesign PLAN 2.1) before Cardboard's own "16:9 ⌄" (Bt), so the cut
+  // sits beside the project settings where people look for them; the History and Share icons before "Report an
+  // issue" (Ut). One anchor for both: the editor controls' row (Wt), aspect ratio, credits, report. A build without the
+  // strip's file leaves it as it is.
   if (tabsFile) patch(tabsFile, (replace, prepend) => {
-    replace("t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),", "t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),");
+    replace(
+      "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),",
+      "t.cartonPanel!==void 0&&n.jsx(__cbCartonCutChip,{panel:t.cartonPanel}),n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),",
+    );
+    // The editor controls' row (Wt) may shrink (QA G4): in a narrow window the cut chip, the one part of it that gives
+    // way (min-w-0 shrink), shortens before the row pushes the window's own buttons out of the title bar. Its other
+    // parts keep their size, so without Carton's chip nothing in the row changes.
+    replace('className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"', 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"');
     prepend(require("./carton/strip-buttons"));
   });
 } else {

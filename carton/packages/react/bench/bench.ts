@@ -2,11 +2,11 @@
 // - list:  mount History with N versions, then scroll it; compare with rendering every row (no virtualization).
 // - live:  a busy shared project (versions arriving in bursts, ghosts at 20 Hz, presence at 1 Hz): renders per
 //          component, DOM mutations per region, frame times.
-// - play:  Play changes in Watch the changes: frame times, time spent in our per-frame work, renders during playback.
+// - play:  Play all in the Changes view (PLAN 4.2): frame times, time spent in our per-frame work, renders during playback.
 import { createElement as h } from "react";
 import { createRoot } from "react-dom/client";
-import { CartonProvider, ConflictList, CutsMenu, GhostLayer, HistoryPanel, PresenceAvatars, PublishedStatus, SyncStatusWords, UndoTurnButton, WatchTheChanges } from "../src/index.ts";
-import { createMockUi, makeShotDiff } from "../src/mock.ts";
+import { CartonProvider, ChangesView, ConflictList, CutsMenu, GhostLayer, HistoryPanel, PresenceAvatars, PublishedStatus, SyncStatusWords, UndoTurnButton, type Change, type CartonUi } from "../src/index.ts";
+import { createMockUi, people } from "../src/mock.ts";
 import { injectCardboardSkin } from "../src/skin/cardboard.ts";
 
 declare const __CARTON_RUNTIME__: string;
@@ -162,13 +162,17 @@ async function live(seconds: number, vps: number, burst: number) {
   return { seconds, versionsAdded: ui.history().count("all") - v0, renders: { ...renders }, mutations: mut, topicCalls: calls, frames };
 }
 
-async function play(shots: number, seconds: number) {
+async function play(n: number, seconds: number) {
   await hookPreact();
   const ui = createMockUi({ versions: 10, seed: 3 });
-  const diff = makeShotDiff(shots, 3);
+  // `n` changes over the edit, two seconds apart, each its own clip: a range of a day's work (26) or of weeks (2000)
+  const length = Math.max(38, n * 2 + 2);
+  const list: Change[] = Array.from({ length: n }, (_, i) => ({ key: `timelineItems/c${i}`, text: `Trimmed “Clip ${i + 1}”, now ends at 0:${String((i * 2 + 2) % 60).padStart(2, "0")}`, kind: "change", clip: i % 5 ? "video" : "title", itemId: `c${i}`, at: i * 2, end: i * 2 + 1.5, author: i % 3 ? people.alice : people.terminal, when: Date.now() - (n - i) * 60_000 }));
+  const fake = Object.assign(Object.create(ui), { changes: async () => list }) as CartonUi;
+  const from = ui.history().all!()[2]!;
   const holder = document.createElement("div");
   holder.setAttribute("data-carton-skin", "cardboard");
-  holder.style.width = "1180px";
+  holder.style.cssText = "width:384px;height:640px;display:flex;flex-direction:column";
   root.appendChild(holder);
   let frameCalls = 0;
   // A host preview that draws every frame, like a real player would.
@@ -176,22 +180,83 @@ async function play(shots: number, seconds: number) {
   canvas.width = 640;
   canvas.height = 360;
   const ctx = canvas.getContext("2d")!;
-  const onFrame = (side: string, t: number) => {
+  const onFrame = (t: number) => {
     frameCalls++;
-    ctx.fillStyle = side === "a" ? "#422" : "#242";
+    ctx.fillStyle = "#242";
     ctx.fillRect(0, 0, 640, 360);
     ctx.fillStyle = "#fff";
     ctx.fillText(t.toFixed(3), 20, 40);
   };
-  createRoot(holder).render(h(CartonProvider, { ui }, h(WatchTheChanges, { a: "x@1", b: "x@2", diff, onFrame, context: 1 })));
+  createRoot(holder).render(h(CartonProvider, { ui: fake }, h(ChangesView, { from, onBack: () => {}, host: { onFrame, length: () => length } })));
   await sleep(300);
   for (const k of Object.keys(renders)) delete renders[k];
   const stop = recordFrames();
-  (holder.querySelector(".carton-watch-play") as HTMLButtonElement).click();
+  (holder.querySelector(".carton-play-all .carton-btn") as HTMLButtonElement).click();
   await sleep(seconds * 1000);
-  const playing = holder.querySelector(".carton-watch-play")?.textContent;
+  const playing = holder.querySelector(".carton-play-all .carton-btn")?.textContent;
   const frames = stop();
-  return { shots, seconds, frameCalls, stillPlaying: playing === "Pause", renders: { ...renders }, frames };
+  return { changes: n, seconds, frameCalls, stillPlaying: playing === "Pause", renders: { ...renders }, frames };
+}
+
+/**
+ * Carton UX v2 search (N2, DESIGN-V2 §2.3): History with N versions (landmarks on), a word typed a key at a time, as
+ * the field gets it (the input's own setter, then "input"). Per key: the time the key's own work takes (to the next
+ * frame), DOM mutations in the list and renders while typing. Then the last key to the results on screen, and the
+ * mock's own find inside it (the engine's search is N0's: the panel's part is the rest, after the 90 ms wait).
+ */
+async function find(n: number, word: string) {
+  await hookPreact();
+  const ui = createMockUi({ versions: n, seed: 1, landmarks: true });
+  let findMs = 0;
+  const find0 = ui.find!.bind(ui);
+  ui.find = async (q, o) => {
+    const t = performance.now();
+    const r = await find0(q, o);
+    if (q) findMs += performance.now() - t;
+    return r;
+  };
+  const holder = document.createElement("div");
+  holder.setAttribute("data-carton-skin", "cardboard");
+  holder.style.cssText = "width:384px;height:800px;display:flex;flex-direction:column";
+  root.appendChild(holder);
+  const r = createRoot(holder);
+  r.render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 700 })));
+  await sleep(300);
+  await nextFrame();
+  const input = holder.querySelector(".carton-search-input") as HTMLInputElement;
+  const list = holder.querySelector(".carton-history-list")!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  for (const k of Object.keys(renders)) delete renders[k];
+  let muts = 0;
+  const mo = new MutationObserver((l) => (muts += l.length));
+  mo.observe(list, { subtree: true, childList: true, attributes: true, characterData: true });
+  const keys: number[] = [];
+  input.focus();
+  for (let i = 1; i <= word.length; i++) {
+    const t = performance.now();
+    setter.call(input, word.slice(0, i));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextFrame();
+    keys.push(performance.now() - t);
+    await sleep(40); // a quick typist: 40 ms between keys, under the 90 ms wait
+  }
+  muts += mo.takeRecords().length;
+  mo.disconnect();
+  const typing = { keys, listMutations: muts, renders: { ...renders } };
+  const t1 = performance.now();
+  while (!holder.querySelector(".carton-find-count, .carton-find-empty")) await nextFrame();
+  const toResults = performance.now() - t1;
+  const rowsInDom = holder.querySelectorAll(".carton-version").length;
+  const shown = holder.querySelector(".carton-find-count")?.textContent ?? "";
+  // back to the whole list
+  const t2 = performance.now();
+  setter.call(input, "");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  while (holder.querySelector(".carton-find-count")) await nextFrame();
+  const toAll = performance.now() - t2;
+  r.unmount();
+  holder.remove();
+  return { n: ui.history().count("all"), word, typing, toResults, findMs, rowsInDom, shown, toAll };
 }
 
 /** What the browser gives an empty page: the frame-rate ceiling every other number is read against. */
@@ -201,5 +266,5 @@ async function idle(seconds: number) {
   return { seconds, frames: stop() };
 }
 
-(window as unknown as Record<string, unknown>).__bench = { list, live, play, idle, runtime };
+(window as unknown as Record<string, unknown>).__bench = { list, live, play, idle, find, runtime };
 (window as unknown as Record<string, unknown>).__benchReady = true;

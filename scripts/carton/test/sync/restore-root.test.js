@@ -88,7 +88,7 @@ test("1. Restore and New cut from here on \"Started the cut\": not offered, refu
     assert.ok(before.tracks.length && before.items.length && before.media.length, "the seeded project has tracks, clips and media");
     const p = await panel(pc, id, "root-panel");
     const root = p.rows().find((v) => v.seq === 0);
-    assert.equal(root.summary, "Started the cut");
+    assert.equal(root.summary, "Project created"); // History's start, in the redesign's words (PLAN 0.4)
     assert.equal(root.empty, true, "the panel's row says it holds nothing (no Preview, New cut from here or Restore)");
     assert.ok(p.rows().filter((v) => v.seq > 0).every((v) => !v.empty), "only the root");
     // asked anyway (an older page, a script): refused in plain words, nothing written

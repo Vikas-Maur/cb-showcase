@@ -348,6 +348,8 @@ export const cardboardSchema: Schema = defineSchema({
       // a title is no clip (laptop re-check P3-8, P3-10: "7 clips" for 1 clip and 6 titles), nor a code graphic or a
       // caption
       nounOf: (r) => ITEM_NOUNS.get(r.type),
+      // Find (Carton UX v2): what a person typed into a clip: a title's text, a caption's words, a voiceover's script
+      words: itemWords,
       labels: ITEM_LABELS,
       groups: [{ name: "time", fields: [...TIME_FIELDS], algebra: timeAlgebra(TL) }],
       fields: itemFields,
@@ -360,6 +362,8 @@ export const cardboardSchema: Schema = defineSchema({
       nounOf: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) ? null : undefined),
       // whose it is: the item that names it, `mediaItemId` (laptop, merge/prod-2 N-1; regress prod3 P3-C)
       partOf: { collection: ITEMS, field: "mediaItemId" },
+      // a title's own entry holds its text too (`data.content`)
+      words: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) && typeof (r.data as Rec | undefined)?.content === "string" ? [(r.data as Rec).content as string] : []),
       labels: MEDIA_LABELS,
       phrases: MEDIA_PHRASES,
       fields: {
@@ -387,6 +391,14 @@ export const cardboardSchema: Schema = defineSchema({
   },
 });
 
+/** The text a person typed into a timeline item, for Find: a title's, a caption's (and its segments'), a voiceover's. */
+function itemWords(r: Rec): string[] {
+  const out: string[] = [];
+  for (const f of ["textContent", "captionText", "voiceoverText"]) if (typeof r[f] === "string" && (r[f] as string).trim()) out.push(r[f] as string);
+  const segs = r.captionSegments;
+  if (Array.isArray(segs)) for (const g of segs) if (g && typeof (g as Rec).text === "string" && ((g as Rec).text as string).trim()) out.push((g as Rec).text as string);
+  return out;
+}
 /** Text that names something: trimmed to `max` characters; undefined for anything else or blank. */
 function words(v: unknown, max = 40): string | undefined {
   if (typeof v !== "string") return undefined;

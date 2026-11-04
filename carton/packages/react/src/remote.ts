@@ -8,9 +8,12 @@
 // however long History is. Summaries are described only for the rows the renderer shows: it asks with "want".
 
 import { TopicHub } from "./hub.ts";
+import { itemFilter } from "./item-filter.ts";
 import type {
   Actor,
   CartonUi,
+  Change,
+  ClipVersions,
   Conflict,
   Cut,
   Ghost,
@@ -23,24 +26,34 @@ import type {
   Topic,
   UndoTurn,
   Version,
+  Viewing,
+  Working,
 } from "./model.ts";
 
 type SmallTopic = Exclude<Topic, "history">;
-const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview"];
+const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "conflicts", "undo", "published", "preview", "viewing", "working", "landmarks"];
 
 /** Async methods the client may call on the served view model. */
 const METHODS = [
   "compare", "credits", "shotDiff", "planFold", "switchCut", "newCut", "renameCut", "fold",
   "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit", "conflictRef",
+  "view", "changes", "changesIn", "undoTurnOf", "clipVersions",
+  // Carton UX v2 (N0)
+  "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture", "bringBackChoices", "align",
+  // Carton UX v2 (N2c): another cut's History, for Compare with… on any cut
+  "cutHistory",
+  // a person's group of edits, said by what it came to (Windows check of b14f8a4e)
+  "netWords",
 ] as const;
 type Method = (typeof METHODS)[number];
 
 export type ServerMessage =
-  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean; conflictRef?: boolean } }
+  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean; conflictRef?: boolean; netWords?: boolean } }
   | { t: "topic"; topic: SmallTopic; value: unknown; actors?: Actor[] }
   | { t: "history"; length: number; rows: [number, Version][]; actors?: Actor[] }
   | { t: "ret"; id: number; ok: true; value: unknown }
-  | { t: "ret"; id: number; ok: false; error: string };
+  // (`code` and `token`: an engine refusal's own, e.g. N0b's ChangedSince, so the page can tell it apart and ask again)
+  | { t: "ret"; id: number; ok: false; error: string; code?: string; token?: string };
 
 export type ClientMessage =
   | { t: "hello" }
@@ -48,7 +61,8 @@ export type ClientMessage =
   | { t: "want"; ids: string[] };
 
 const read = (ui: CartonUi, t: SmallTopic): unknown =>
-  t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : ui.preview();
+  // landmarks: a signal only (read them with landmarks())
+  t === "landmarks" ? null : t === "sync" ? ui.sync() : t === "cuts" ? ui.cuts() : t === "peers" ? ui.peers() : t === "ghosts" ? ui.ghosts() : t === "conflicts" ? ui.conflicts() : t === "undo" ? ui.undoTurn() : t === "published" ? ui.published() : t === "viewing" ? ui.viewing() : t === "working" ? ui.working() : ui.preview();
 
 /** Every actor a value mentions, so the client can name subagents' agents. */
 function actorsIn(value: unknown, out: Set<string>, list: Actor[], ui: CartonUi, depth = 0) {
@@ -124,7 +138,7 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
     sentRev = ui.history().revision();
     const actors: Actor[] = [];
     actorsIn([ui.me(), topics, sent], sentActors, actors, ui);
-    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function", conflictRef: typeof ui.conflictRef === "function" } });
+    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function", conflictRef: typeof ui.conflictRef === "function", netWords: typeof ui.netWords === "function" } });
     for (const t of SMALL)
       offs.push(
         ui.subscribe(t, () => {
@@ -157,7 +171,10 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
           .then(() => fn.apply(ui, m.args))
           .then(
             (value) => send({ t: "ret", id: m.id, ok: true, value: value ?? null }),
-            (e: unknown) => send({ t: "ret", id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) }),
+            (e: unknown) => {
+              const x = e as { code?: unknown; token?: unknown } | null;
+              send({ t: "ret", id: m.id, ok: false, error: e instanceof Error ? e.message : String(e), ...(typeof x?.code === "string" ? { code: x.code } : {}), ...(typeof x?.token === "string" ? { token: x.token } : {}) });
+            },
           );
       }
     },
@@ -168,15 +185,20 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
   };
 }
 
+// The filters' rows (PLAN 0.4): a person's named versions (an agent turn is named after its prompt: a turn, not a
+// named version), and your own changes.
+const isNamed = (v: Version) => !!v.name && v.kind !== "turn";
+const isMine = (v: Version) => v.author.kind === "human" && !!v.author.isYou;
+
 /** The renderer side: a CartonUi that mirrors a served one. Send `{t:"hello"}` happens on creation. */
 export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; receive(m: ServerMessage): void; ready: Promise<void> } {
   const hub = new TopicHub<Topic>();
   const actors = new Map<string, Actor>();
-  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null };
+  const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null, viewing: null, working: null, landmarks: null };
   let me: Actor = { key: "human/unknown", kind: "human", name: "You", isYou: true };
   // Changed in place: memoized rows keep their objects, and the indexes are kept incrementally.
   let rows: Version[] = [];
-  let named: number[] = [], turns: number[] = [];
+  let named: number[] = [], turns: number[] = [], mine: number[] = [];
   const pos = new Map<string, number>();
   let revision = 0;
   let nextId = 1;
@@ -188,11 +210,13 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   const reindexFrom = (start: number) => {
     while (named.length && named[named.length - 1]! >= start) named.pop();
     while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    while (mine.length && mine[mine.length - 1]! >= start) mine.pop();
     for (let i = start; i < rows.length; i++) {
       const v = rows[i]!;
       pos.set(v.id, i);
-      if (v.name) named.push(i);
+      if (isNamed(v)) named.push(i);
       if (v.kind === "turn") turns.push(i);
+      if (isMine(v)) mine.push(i);
     }
     revision++;
   };
@@ -212,8 +236,18 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     });
   };
 
-  const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
+  // "Only “clip”" (PLAN 0.8): the served view model's per-version index, asked for once per clip and History change
+  const lastConfirmed = () => {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.seq !== null) return rows[i]!.id;
+    return undefined;
+  };
+  const items = itemFilter({ ask: (item, o) => call<ClipVersions>("clipVersions", item, ...(o ? [o] : [])), pos: (id) => pos.get(id), structure: () => `${rows.length}|${lastConfirmed() ?? ""}`, newest: lastConfirmed, changed: () => hub.notify("history") });
+  const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
+  // History isn't known until the served side's first `init`: till then every filter says it is loading, so a panel
+  // mounted at once shows its loading rows, never "no versions yet" (docs/carton-ux PLAN 3.4)
+  let known = false;
   const history: HistorySource = {
+    status: (f) => (!known ? { loading: true } : typeof f === "object" ? items.status(f.item) : { loading: false }),
     all: () => rows,
     revision: () => revision,
     count: (f) => (f === "all" ? rows.length : view(f)!.length),
@@ -249,6 +283,20 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
       calls.set(id, { ok: ok as (v: unknown) => void, fail });
       send({ t: "call", id, method, args });
     });
+  // Changes between two versions are fixed once both are confirmed (`cut@seq`): kept per pair, like the server's
+  const changeCache = new Map<string, Promise<readonly Change[]>>();
+  const changes = (a: string, b: string, o?: { between?: "versions" | "cuts" }): Promise<readonly Change[]> => {
+    const key = `${a}|${b}|${o?.between ?? ""}`;
+    const hit = changeCache.get(key);
+    if (hit) return hit;
+    const p = o?.between ? call<readonly Change[]>("changes", a, b, o) : call<readonly Change[]>("changes", a, b);
+    if (/@\d+$/.test(a) && /@\d+$/.test(b)) {
+      changeCache.set(key, p);
+      if (changeCache.size > 16) changeCache.delete(changeCache.keys().next().value!);
+      p.catch(() => changeCache.delete(key));
+    }
+    return p;
+  };
   const learn = (list?: Actor[]) => {
     if (list) for (const a of list) actors.set(a.key, a);
   };
@@ -264,13 +312,15 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     undoTurn: () => topics.undo as UndoTurn | null,
     published: () => topics.published as Published | null,
     preview: () => topics.preview as Preview | null,
+    viewing: () => topics.viewing as Viewing | null,
+    working: () => topics.working as Working | null,
     me: () => me,
     actor: (k) => actors.get(k),
     compare: (a, b) => call("compare", a, b),
     credits: (id) => call("credits", id),
     shotDiff: (a, b) => call("shotDiff", a, b),
     planFold: (f, i, o) => call("planFold", f, i, o),
-    switchCut: (id) => call("switchCut", id),
+    switchCut: (id, o) => (o ? call("switchCut", id, o) : call("switchCut", id)),
     newCut: (n, r) => call("newCut", n, r),
     fold: (f, i, o) => call("fold", f, i, o),
     resolve: (id, c) => call("resolve", id, c),
@@ -281,11 +331,26 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     publish: (id) => call("publish", id),
     openPreview: (r, l) => void call("openPreview", r, l),
     blockEdit: () => void call("blockEdit"),
+    view: (t) => call("view", t),
+    changes,
+    changesIn: (id) => call("changesIn", id),
+    undoTurnOf: (id) => call("undoTurnOf", id),
+    clipVersions: (item, o) => call("clipVersions", item, ...(o ? [o] : [])),
+    // Carton UX v2 (N0)
+    find: (text, o) => call("find", text, ...(o ? [o] : [])),
+    landmarks: (o) => (o ? call("landmarks", o) : call("landmarks")),
+    restoreClip: (ref, item, o) => call("restoreClip", ref, item, ...(o ? [o] : [])),
+    landmarkPicture: (key) => call("landmarkPicture", key),
+    saveLandmarkPicture: (key, jpeg) => call("saveLandmarkPicture", key, jpeg),
+    bringBackChoices: (ref) => call("bringBackChoices", ref),
+    cutHistory: (cut, o) => call("cutHistory", cut, ...(o ? [o] : [])),
+    align: (a, b) => call("align", a, b),
   };
 
   const receive = (m: ServerMessage) => {
     switch (m.t) {
       case "init":
+        known = true;
         me = m.me;
         learn(m.actors);
         for (const t of SMALL) topics[t] = m.topics[t];
@@ -293,11 +358,16 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         pos.clear();
         named = [];
         turns = [];
+        mine = [];
+        items.clear();
         reindexFrom(0);
         if (m.can.renameCut) ui.renameCut = (id, n) => call("renameCut", id, n);
         else delete ui.renameCut;
         if (m.can.conflictRef) ui.conflictRef = (id, side) => call("conflictRef", id, side);
         else delete ui.conflictRef;
+        // (a served side without it, an older worker: a group of edits reads its newest's sentence, as before)
+        if (m.can.netWords) ui.netWords = (a, b) => call("netWords", a, b);
+        else delete ui.netWords;
         for (const t of [...SMALL, "history" as const]) hub.notify(t);
         markReady();
         break;
@@ -327,7 +397,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         if (!c) break;
         calls.delete(m.id);
         if (m.ok) c.ok(m.value);
-        else c.fail(new Error(m.error));
+        else c.fail(Object.assign(new Error(m.error), m.code !== undefined ? { code: m.code } : {}, m.token !== undefined ? { token: m.token } : {}));
         break;
       }
     }

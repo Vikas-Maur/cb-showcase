@@ -8,6 +8,14 @@ const C = (cx: number, cy: number, r: number, fill = false) => h("circle", { cx,
 
 const shapes = {
   history: [P("M3.6 12.4A8.5 8.5 0 1 0 6 6.1"), P("M3.4 3.9v4.4h4.4"), P("M12 7.8V12l3.1 2")],
+  // Carton UX v2 (N2): History's search, Compare (⇆), and the landmarks' own marks: an export, a send, a day's start,
+  // a safety point before a restore
+  search: [C(11, 11, 6.5), P("M20 20l-4.3-4.3")],
+  compare: [P("M4 8h15"), P("M15 4l4 4-4 4"), P("M20 16H5"), P("M9 12l-4 4 4 4")],
+  exportUp: [P("M12 15V3.5"), P("M7.5 8L12 3.5 16.5 8"), P("M5 13v6.5h14V13")],
+  send: [P("M20.5 3.5L10 14"), P("M20.5 3.5l-6.5 17-4-6.5-6.5-4z")],
+  sun: [C(12, 12, 3.6), P("M12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M5.6 18.4l1.3-1.3M17.1 6.9l1.3-1.3")],
+  shield: [P("M12 3.5l7 2.6v5.4c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6.1z")],
   // Version history: a stack of saved versions. Not the clock above, which is the chat's own "chat history" button in
   // the same title bar (UI audit P2-14).
   versions: [P("M12 3.8l8.2 4.2-8.2 4.2-8.2-4.2z"), P("M3.8 12.2l8.2 4.2 8.2-4.2"), P("M3.8 16.2l8.2 4.2 8.2-4.2")],
@@ -23,7 +31,8 @@ const shapes = {
   pause: [h("rect", { x: 6.5, y: 5, width: 3.6, height: 14, rx: 1, fill: "currentColor", stroke: "none" }), h("rect", { x: 13.9, y: 5, width: 3.6, height: 14, rx: 1, fill: "currentColor", stroke: "none" })],
   flag: [P("M5.5 21V4"), P("M5.5 4.5h11.3l-2.4 4 2.4 4H5.5")],
   bookmark: [P("M7 3.8h10a.8.8 0 0 1 .8.8v15.6l-5.8-3.7-5.8 3.7V4.6a.8.8 0 0 1 .8-.8z")],
-  cut: [C(6.5, 18, 2.4), C(6.5, 6, 2.4), C(17.5, 6, 2.4), P("M6.5 8.4v7.2"), P("M17.5 8.4c0 4.6-4.6 5-9.4 7.9")],
+  // A cut: scissors (DESIGN §4.1, "✂ Main cut"), as Cardboard's own split tool reads
+  cut: [C(6.3, 6.8, 2.5), C(6.3, 17.2, 2.5), P("M8.5 8.1L20 16.4"), P("M8.5 15.9L20 7.6")],
   fold: [P("M12 20.5V12.8L6.5 7.3V3.5"), P("M12 12.8l5.5-5.5V3.5"), P("M8.8 17.4l3.2 3.2 3.2-3.2")],
   // Agents' own marks (UI audit P2-15), drawn for Carton in the set's weight, never a product's logo: Claude Code a
   // burst, Codex a hexagon, the Director a clapperboard. Any other agent keeps the sparkle.
@@ -40,6 +49,8 @@ const shapes = {
   x: [P("M6.5 6.5l11 11M17.5 6.5l-11 11")],
   comment: [P("M4.5 5.5h15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4.5 3.5v-3.5h-1a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z")],
   target: [C(12, 12, 7), C(12, 12, 2.2), P("M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3")],
+  // a note's "That moment changed since" (Comments, PLAN 9.1)
+  info: [C(12, 12, 8.5), P("M12 11v5"), C(12, 8, 0.9, true)],
   link: [P("M10.2 13.8a3.6 3.6 0 0 0 5.1 0l3-3a3.6 3.6 0 0 0-5.1-5.1l-1 1"), P("M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-3 3a3.6 3.6 0 0 0 5.1 5.1l1-1")],
   dots: [C(5.5, 12, 1.5, true), C(12, 12, 1.5, true), C(18.5, 12, 1.5, true)],
   next: [P("M17.5 5.5v13"), h("path", { d: "M6 6.4v11.2a.7.7 0 0 0 1.1.6l8.2-5.6a.7.7 0 0 0 0-1.2L7.1 5.8a.7.7 0 0 0-1.1.6z", fill: "currentColor", stroke: "none" })],
@@ -48,6 +59,32 @@ const shapes = {
   dot: [C(12, 12, 3, true)],
   arrowLeft: [P("M19 12H5.5"), P("M11 6.5L5.5 12l5.5 5.5")],
   users: [C(9, 8.8, 3.3), P("M3 19.5c1-3.1 3.3-4.7 6-4.7s5 1.6 6 4.7"), P("M15.2 5.8a3.3 3.3 0 0 1 0 6.1"), P("M17.4 14.9c1.6.6 2.9 2.1 3.6 4.6")],
+
+  // ---- the redesign's History and change rows (docs/carton-ux DESIGN §5.1, §6.1)
+  // Agents' own marks in History's rows (PLAN 3.1), simplified and drawn in the set's weight: the Director an arc of
+  // bars (Cardboard's own mark), Codex a knot. Claude Code keeps the burst above.
+  bars: [P("M4.5 9.5v5M8 7.5v8.5M12 7v10M16 7.5v8.5M19.5 9.5v5")],
+  knot: [P("M12 4.2a4 4 0 0 1 3.8 2.6 4 4 0 0 1 3.4 5.4 4 4 0 0 1-2.4 6.2 4 4 0 0 1-6.5 1.4 4 4 0 0 1-5.6-3.2A4 4 0 0 1 4 10.3a4 4 0 0 1 4.3-4.6A4 4 0 0 1 12 4.2z"), P("M9.5 10.5l2 1.5-2 1.5M13 14h2")],
+  // The kinds of clip a change row shows (Cardboard's timeline: video, title, caption, audio, image, code, project)
+  film: [h("rect", { x: 3.5, y: 5.5, width: 17, height: 13, rx: 2 }), P("M7.5 5.5v13M16.5 5.5v13M3.5 9.5h4M3.5 14.5h4M16.5 9.5h4M16.5 14.5h4")],
+  text: [P("M6 7V5.5h12V7M12 5.5v13M9.5 18.5h5")],
+  cc: [h("rect", { x: 3.5, y: 5.5, width: 17, height: 13, rx: 2 }), P("M10.5 10.2a2.3 2.3 0 1 0 0 3.6M17 10.2a2.3 2.3 0 1 0 0 3.6")],
+  music: [P("M9 18.5V6l10-2v12.5"), C(6.5, 18.5, 2.5), C(16.5, 16.5, 2.5)],
+  image: [h("rect", { x: 3.5, y: 4.5, width: 17, height: 15, rx: 2 }), C(9, 9.5, 1.8), P("M20.5 15.5l-5-5-9 9")],
+  code: [P("M8.5 8L4.5 12l4 4M15.5 8l4 4-4 4")],
+  layers: [P("M12 4l8 4-8 4-8-4z"), P("M4 12l8 4 8-4")],
+  // History's cut bar, its filter, and the list's "↑ Newest"
+  filter: [P("M4 6h16M7 12h10M10 18h4")],
+  arrowUp: [P("M12 19V5"), P("M6 11l6-6 6 6")],
+  // Undo this turn (a turn's own changes taken out), apart from Restore's arrow round a clock
+  undo: [P("M9 14L4 9l5-5"), P("M4 9h10.5a5.5 5.5 0 0 1 0 11H11")],
+  restoreArc: [P("M4.5 8.5V4M4.5 8.5H9"), P("M5 8.5A8 8 0 1 1 4 12")],
+  // A named version's mark: the bookmark, filled
+  bookmarkFill: [h("path", { d: "M6.5 3.5h11v17l-5.5-4-5.5 4z", fill: "currentColor" })],
+  // A fold's mark: two lines coming into one
+  foldIn: [P("M7 4v4.5a5 5 0 0 0 5 5h0a5 5 0 0 0 5-5V4"), P("M12 13.5V21"), P("M9 18l3 3 3-3")],
+  // Footage still on its way (the stage's notice), apart from Offline's cloud (design QA G23)
+  hourglass: [P("M6.5 3.5h11M6.5 20.5h11"), P("M7.5 3.5v2.2a4.5 4.5 0 0 0 1.6 3.4L12 12l2.9-2.9a4.5 4.5 0 0 0 1.6-3.4V3.5"), P("M7.5 20.5v-2.2a4.5 4.5 0 0 1 1.6-3.4L12 12l2.9 2.9a4.5 4.5 0 0 1 1.6 3.4v2.2")],
 } satisfies Record<string, unknown[]>;
 
 export type IconName = keyof typeof shapes;

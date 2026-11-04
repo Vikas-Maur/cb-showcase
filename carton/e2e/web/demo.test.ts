@@ -7,7 +7,7 @@
 //   5. Bob goes offline (the button), trims a clip and edits a caption; Alice trims the same clip end. Bob rejoins:
 //      the clean edit rebases silently, the clash is a conflict card; Bob picks his side, and Alice sees it.
 //   6. Real offline (the browser's network off): Bob's edit waits, then lands when the network is back.
-//   7. Watch the changes: Alice compares the first version with now and plays the changes.
+//   7. The Changes view: Alice compares the first version with her edit and plays the changes.
 //   8. Alice publishes; a viewer opens the watch page (the published version), and is told when newer edits exist.
 // A third test per host: comments (REQ-C3). Alice comments at a moment on a clip; Bob sees the marker and the thread
 // live and replies; a viewer reads them and has no box to write in; Alice moves the clip and the comment follows it;
@@ -285,16 +285,16 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await bobCtx.setOffline(false);
       await waitCaption(alice, "cap-3", "Written with no network", 20_000);
 
-      // 7. Watch the changes: the first version against now
-      await alice.locator('[aria-label="Actions for Started the cut"]').click();
-      await alice.getByRole("menuitem", { name: "Compare with current" }).click();
-      await alice.getByRole("button", { name: "Watch the changes" }).click();
-      await alice.getByTestId("watch").waitFor();
-      await alice.getByRole("button", { name: "Play changes" }).click();
+      // 7. The Changes view (docs/carton-ux PLAN 4.1): the first version against your edit, in place of History's list;
+      // Play all plays each change on her own edit (nothing is viewed, so no banner); Esc goes back to the list
+      await alice.locator('[aria-label="Actions for Project created"]').click();
+      await alice.getByRole("menuitem", { name: "Compare with your edit" }).click();
+      await alice.locator(".carton-changes-view").waitFor();
+      await alice.getByRole("button", { name: "Play all" }).click();
       await pause(1500);
-      await shot(alice, `${kind}-7-watch-alice`);
+      await shot(alice, `${kind}-7-changes-alice`);
       await alice.keyboard.press("Escape");
-      await alice.getByTestId("watch").waitFor({ state: "detached", timeout: 5000 });
+      await alice.locator(".carton-changes-view").waitFor({ state: "detached", timeout: 5000 });
       await alice.locator(".carton-preview-banner").waitFor({ state: "detached", timeout: 5000 });
 
       // 8. publish, open the watch page as a viewer, then newer edits
@@ -463,7 +463,7 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       const cuts = alice.locator(".carton-cuts-trigger");
       // a cut of her own, from Main's head: it lives on her machine
       await cuts.click();
-      await alice.getByRole("menuitem", { name: "New cut from here" }).click();
+      await alice.getByRole("menuitem", { name: "New cut from your edit" }).click();
       await alice.getByPlaceholder("30s Instagram cut").fill("30s Instagram cut");
       await alice.getByRole("button", { name: "Create" }).click();
       await alice.locator(".carton-cuts-name", { hasText: "30s Instagram cut" }).waitFor();
@@ -474,22 +474,24 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await editCaption(alice, "cap-4", "Follow for part two");
       await pause(300);
       assert.equal((await clipTimes(bob, "clip-1")).end, c1.end, "Bob's Main cut doesn't see the cut's edits");
-      // fold in some of it: the trim, not the caption
+      // back on Main, fold in some of it: the trim, not the caption. The menu's one Fold entry folds into the cut
+      // you're on, from your cut changed most recently (UX redesign PLAN 6.1).
       await cuts.click();
-      await alice.getByRole("menuitem", { name: /^Fold into/ }).click();
+      await alice.getByRole("menuitemradio", { name: /^Main cut/ }).click();
+      await alice.locator(".carton-cuts-name", { hasText: "Main cut" }).waitFor();
+      await cuts.click();
+      await alice.getByRole("menuitem", { name: "Fold in changes from a cut…" }).click();
       const dialog = alice.locator(".carton-dialog");
       await dialog.waitFor();
-      const caption = dialog.locator("li, .carton-fold-change", { hasText: "Follow for part two" }).locator("input[type=checkbox]");
+      await dialog.getByRole("button", { name: /^From: 30s Instagram cut/ }).waitFor();
+      const caption = dialog.locator(".carton-fold-change", { hasText: "Follow for part two" }).locator("input[type=checkbox]");
       await caption.uncheck();
       await shot(alice, `${kind}-fold-dialog`);
-      await dialog.getByRole("button", { name: "Fold in 1 of 2" }).click();
+      await dialog.getByRole("button", { name: "Fold in 1 change" }).click();
       await dialog.waitFor({ state: "detached", timeout: 10_000 });
       await waitClip(bob, "clip-1", "data-end", trimmed.end);
       assert.equal(await captionOf(bob, "cap-4"), "See you next weekend", "the left-out edit stays out");
-      // back on Main, "Fold in the rest" from History
-      await cuts.click();
-      await alice.getByRole("menuitemradio", { name: "Main cut" }).click();
-      await alice.locator(".carton-cuts-name", { hasText: "Main cut" }).waitFor();
+      // on Main, "Fold in the rest" from History
       // the newest version is the fold's inverse (the part left out): its menu offers the rest
       const row = alice.locator(".carton-version").first();
       await row.waitFor({ timeout: 10_000 });

@@ -1,9 +1,11 @@
 // Every word the components show, in one place. They are the editor words the user chose for Carton (PLAN §0.1),
 // never git's. A host can pass its own copy (for another language) to <CartonProvider words>.
 
-import { duration, seconds } from "./format.ts";
-
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** A length in seconds as Bring back says it: "3 s", "1.5 s" (whole seconds from 10 s up). */
+const secondsWord = (s: number) => `${s < 10 && !Number.isInteger(s) ? s.toFixed(1) : Math.round(s)} s`;
+/** A label that ends a sentence: its full stop, unless it ends in an ellipsis ("…”", never "…”."; design QA G21). */
+const stop = (label: string) => (/…[”"’']?$/.test(label) ? label : `${label}.`);
 
 export const words = {
   // §0.1 nouns
@@ -25,7 +27,6 @@ export const words = {
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
   historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No agent turns yet.",
-  checkpoint: "Checkpoint",
   // Day headers in a long History (UI audit P2-17)
   today: "Today",
   yesterday: "Yesterday",
@@ -36,14 +37,13 @@ export const words = {
   showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
   hideChanges: (n: number) => (n === 1 ? "Hide the change" : "Hide the changes"),
   turnEdits: (n: number) => plural(n, "edit", "edits"),
-  provisional: "Waiting to sync",
-  provisionalHint: "This version gets its final place in History once it reaches the server.",
+  provisional: "Not sent yet",
+  provisionalHint: "This version gets its final place in History once it's sent.",
   restore: "Restore",
   preview: "Preview",
   create: "Create",
   restoreHint: "Restoring saves this version as a new version. Nothing is lost.",
   emptyVersionHint: "The history starts here, before the project was added. There's nothing to restore.",
-  compareWithCurrent: "Compare with current",
   nameVersion: "Name this version",
   nameVersionPlaceholder: "Sent to client, Monday",
   rename: "Rename",
@@ -103,43 +103,14 @@ export const words = {
   laterEdit: (who: string | null, at?: string) => `${who ? `${who}'s` : "Your"} later edit${at ? ` (${at})` : ""}`,
   keepEarlier: "Keep earlier",
   keepLater: "Keep later",
-  showingNow: "Showing now",
+  showingNow: "In the timeline",
   // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
-  seePreview: "Preview",
   yourEdit: "Your edit",
   theirEdit: (name: string) => `${name}'s edit`,
-  seePreviewOf: (side: string) => `Preview: ${side}`,
   showOnTimeline: "Show on timeline",
   // The floating stack of cards: collapsed to a pill; a card set aside stays reachable from it, never decided
   conflictsPill: (n: number) => plural(n, "conflict", "conflicts"),
-  hideConflicts: "Hide conflicts",
   setAside: "Not now",
-  setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
-  setAsideList: (n: number) => `Set aside (${n})`,
-  showAgain: "Show again",
-  conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
-
-  // Compare card
-  compare: "Compare",
-  watchTheChanges: "Watch the changes",
-  clips: (n: number) => plural(n, "clip", "clips"),
-  // Compare's clip count with the other kinds of item apart (laptop re-check P3-10): "1 clip, 6 titles"
-  clipsAnd: (clips: number, kinds: readonly { noun: string; n: number }[]) =>
-    [...(clips || !kinds.length ? [plural(clips, "clip", "clips")] : []), ...kinds.map((k) => plural(k.n, k.noun, `${k.noun}s`))].join(", "),
-  length: (s: number) => duration(s),
-  // The Compare card's summary (UI audit P2-5): changes and seconds, as Watch the changes counts them; never shots.
-  compareSummary: (changes: number | null, s: number, total: number) =>
-    changes === 0 || (changes == null && s <= 0) ? "No differences" : `${changes == null ? "" : `${plural(changes, "change", "changes")} · `}${seconds(s)} of ${seconds(total)} differ`,
-  compareChanges: "What changed",
-  compareMore: (n: number) => `Show ${n} more`,
-  compareLess: "Show fewer",
-  differ: (shots: number, s: number, total: number) =>
-    shots === 0 ? "No shots differ" : `${plural(shots, "shot", "shots")} / ${seconds(s)} of ${seconds(total)} differ`,
-  current: "Current",
-  factWhen: "When",
-  factWho: "Who",
-  factClips: "Clips",
-  factLength: "Length",
 
   // Credits
   creditsFor: (clip: string) => `Credits for ${clip}`,
@@ -177,42 +148,625 @@ export const words = {
   upToDateHint: "Everyone on this cut sees the same edit.",
   offlineHint: "Keep editing. Your edits are saved here and sent when you're back online.",
 
-  // Watch the changes (§9)
+  // Play and Before (DESIGN §5.3): the transport's Before (hold) and Pause
   before: "Before",
-  after: "After",
-  playChanges: "Play changes",
   pause: "Pause",
-  unchangedShots: (n: number) => `${plural(n, "unchanged shot", "unchanged shots")}`,
-  removed: "Removed",
-  added: "Added",
-  changed: "Changed",
-  // The counter steps through the sections of the edit that differ, not the changes (laptop re-check P3-11: "2 changes ·
-  // Change 1 of 2" beside Compare's "3 changes"): one section can hold several changes, and a change can show nowhere.
-  changeOf: (i: number, n: number) => `Section ${i} of ${n}`,
-  nextChange: "Next section",
-  previousChange: "Previous section",
-  noChanges: "No changes to watch. The two versions look the same.",
-  // What differs: changes, counted as Compare and History count them, and seconds; never shots.
-  watchSummary: (changes: number, s: number, total: number) =>
-    changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
-  // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
-  shownInPlayer: "Shown in the player, read-only",
-  noPicture: "Preview not available here",
 
-  // Read-only preview (§9, R2-16)
-  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
-  previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // Viewing (§9, R2-16; DESIGN §4.2): what the stage shows when it isn't your edit
+  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "You're looking at your edit from 12:41 pm".
+  previewing: (label: string) => `You're looking at ${label.replace(/^Your\b/, "your")}`,
   // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
   versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
-  readOnly: "Read-only",
-  returnToCurrent: "Return to current to edit",
-  returnToCurrentKey: "Return to current (Esc)",
-  previewBlocked: "This is a preview, so edits don't apply here.",
+  returnToCurrent: "Back to my edit",
+  returnToCurrentKey: "Back to my edit (Esc)",
+  previewBlocked: "Go back to your edit to change it.",
 
   // Times
   justNow: "just now",
   loading: "Loading…",
   failed: "Something went wrong. Try again.",
+
+  // ------------------------------------------------------------------------------------------------------------------
+  // The redesign's words (DESIGN §8, PLAN 0.3). Counted in "changes" everywhere; "version" only for a folded day.
+  // A version is named by versionLabel() (format.ts) and a moment by clock(): these take their results.
+
+  // Title bar
+  backToMyEdit: "Back to my edit",
+  backToMyEditKey: "Back to my edit (Esc)",
+  versionHistory: "Version history (Ctrl+Shift+H)",
+  share: "Share",
+  hereNames: (names: readonly string[]) => `${names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`} ${names.length === 1 ? "is" : "are"} here`,
+  offlineNotSent: (n: number) => (n ? `Offline: ${plural(n, "change", "changes")} not sent yet` : "Offline"),
+
+  // Cuts menu
+  fromTeammates: "From teammates",
+  viewOnly: "View only",
+  cutWho: (who: string, when: string) => `${who} · ${when}`,
+  now: "now",
+  // A moment in a short list (the cuts menu, the Fold dialog's rows): "now", "4 min ago", "2 h ago", "11:02 am", "yesterday", "Oct 30"
+  yesterdayShort: "yesterday",
+  workingNow: "working now",
+  newCutFromYourEdit: "New cut from your edit",
+  foldInFromCut: "Fold in changes from a cut…",
+  renameCutNamed: (name: string) => `Rename “${name}”`,
+  openHistory: "Open History",
+  agentsWorkHere: "Agents work on the cut you're on.",
+  workingOnCut: (agent: string, cut: string) => `${agent} is working on ${cut}, and agents work on the cut you're on.`,
+  switchWhenDone: "Switch when it finishes",
+  switchNow: "Switch now",
+  // A switch waiting for an agent's turn to end (PLAN 6.1): said under the cut bar until it runs, with a way out
+  switchQueued: (cut: string, agent: string) => `Switches to ${cut} when ${agent} finishes.`,
+  switchQueuedRow: (agent: string) => `Switches when ${agent} finishes`,
+  dontSwitch: "Don't switch",
+  // More than 12 cuts: a search field at the top of the menu
+  findCut: "Find a cut",
+  noCutMatches: "No cut has that name.",
+  // A teammate's cut, viewed (DESIGN §6.3): what you can do with it, above its History
+  foldIntoCut: (cut: string) => `Fold into ${cut}…`,
+  newCutFromIt: "New cut from it",
+  teammateCut: (label: string) => `You're looking at ${stop(label)} You can fold it in or copy it as a new cut; it stays as its owner left it.`,
+
+  // History head and filter
+  comments: "Comments",
+  show: "Show",
+  filters: { all: "All versions", named: "Named versions", turns: "Agent turns", mine: "Your changes" } as Record<"all" | "named" | "turns" | "mine", string>,
+  onlyClip: (clip: string) => `Only “${clip}”`,
+  onlyClipHint: "The clip selected on the timeline",
+  removeFilter: "Show all versions",
+  clipSince: (when: string) => `Versions since ${when} only`,
+  filterEmpty: { all: "No versions yet.", named: "No named versions yet. Name one to find it again.", turns: "No agent turns yet. When an agent edits, its turn shows here.", mine: "No changes of yours yet." } as Record<"all" | "named" | "turns" | "mine", string>,
+  clipEmpty: (clip: string) => `No versions changed “${clip}” yet.`,
+
+  // Rows
+  nowRow: "Now",
+  viewingMark: "Viewing",
+  working: "Working",
+  changes: (n: number) => plural(n, "change", "changes"),
+  changesOf: (n: number, of: number) => `${n} of ${plural(of, "change", "changes")}`,
+  namedBy: (who: string) => `Named by ${who}`,
+  notSentYet: "Not sent yet",
+  notSentHint: "This version gets its final place in History once it's sent.",
+  availableOnceSent: "Available once it's sent",
+  projectCreated: "Project created",
+  historyStartsHere: "History starts here",
+  startOn: (title: string, day: string) => `${title} · ${day}`,
+  groupOpen: (n: number) => `Show these ${plural(n, "change", "changes")}`,
+
+  // Days
+  dayVersions: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
+  newest: "Newest",
+
+  // An agent working
+  changesSoFar: (n: number) => `${plural(n, "change", "changes")} so far`,
+  keepEditing: (agent: string) => `Keep editing. ${agent} sees your changes when its turn ends.`,
+
+  // Empty and loading
+  historyEmptyTitle: "Your edit's history starts here",
+  historyEmptyBody: "Every change, yours or an agent's, is saved as a version. Look back at any of them, play what changed, or restore one. Nothing is lost.",
+  cutStarted: (cut: string, when: string) => `${cut} · started ${when}`,
+  todayAt: (time: string) => `today at ${time}`,
+
+  // Version card
+  changesSince: (n: number) => `Your edit has ${plural(n, "change", "changes")} since this`,
+  seeThem: "See them",
+  andMore: (n: number) => `and ${n} more`,
+  playAll: "Play all",
+  playThisChange: "Play this change",
+  beforeHint: "Hold to see how it was before (or press B)",
+  restoreEllipsis: "Restore…",
+  undoThisTurn: "Undo this turn",
+  undoThisTurnHint: (n: number) => `Takes out only ${n === 1 ? "this change" : `these ${n} changes`}. Later changes stay.`,
+  changesIn: (label: string) => `Changes in ${label}`,
+  noPosition: "—",
+  // A change row's kind chip, for screen readers ("Title, added"): the chip itself is colour and a corner mark
+  clipKinds: { video: "Video", title: "Title", caption: "Caption", audio: "Audio", image: "Image", code: "Code graphic", project: "Project" } as Record<"video" | "title" | "caption" | "audio" | "image" | "code" | "project", string>,
+  changeKinds: { add: "added", remove: "removed", change: "changed" } as Record<"add" | "remove" | "change", string>,
+  changeChip: (clip: string, kind: string) => `${clip}, ${kind}`,
+  // A change's who and when, under its sentence when a list mixes authors: "Claude Code · 12:48 pm"
+  changeWho: (who: string, when: string) => (who ? `${who} · ${when}` : when),
+  // An older version whose state your edit still has: no "N changes since"
+  sameSinceThis: "Your edit is the same as this version",
+  // A card's list of changes that is long: the rest in the Changes view
+  seeAll: (n: number) => `See all ${n}`,
+  showLess: "Show fewer",
+  loadingChanges: "Reading what changed",
+  noChangesInVersion: "Nothing in the edit changed.",
+  // An action that failed, in its card, with the reason in its tooltip (DESIGN §6.1 Errors)
+  undoTurnFailed: "Couldn't undo this turn. Try again.",
+  newCutFailed: "Couldn't make the cut. Try again.",
+  // The live row of an agent working: its mark ringed in green, for screen readers
+  agentWorking: (agent: string) => `${agent} is working`,
+  // The credits of the clip History is filtered to (PLAN 0.8, 9.2): "Added by You on Oct 30 · trimmed by Director"
+  // A "Timing" credit is said by what its change did: trimmed, moved, or both; "timing changed" only when that isn't
+  // known (design QA G7: editors say "retimed" for a speed change). Trim, Move and TrimMove are those verbs.
+  creditVerb: { Added: "added", Timing: "timing changed", Trim: "trimmed", Move: "moved", TrimMove: "trimmed and moved", Change: "changed", Text: "text changed", Color: "color changed", Volume: "volume changed", Name: "renamed" } as Record<string, string>,
+  creditPart: (verb: string, who: string, when: string) => `${verb} by ${who}${when ? ` ${when}` : ""}`,
+  creditOn: (day: string) => `on ${day}`,
+  creditAt: (time: string) => `at ${time}`,
+  // Group rows (DESIGN §6.1): the chevron that lists a person's run of changes, one by one
+  groupClose: (n: number) => `Hide these ${plural(n, "change", "changes")}`,
+  // History list's live region and keys
+  historyKeys: "Enter opens a version, Space plays it, F2 names it",
+  cardRegion: (label: string) => `Changes in ${label}`,
+
+  // Row menu
+  playItsChanges: "Play its changes",
+  compareWithYourEdit: "Compare with your edit",
+  renameEllipsis: "Rename…",
+  newCutFromVersion: "New cut from this version…",
+  restoreMenuHint: "Go back to this version. Later changes stay in History.",
+
+  // Restore confirmation
+  restoreQuestion: (label: string) => `Restore ${label}?`,
+  restoreBody: (n: number) =>
+    n
+      ? `Your edit goes back to how it was then. The ${plural(n, "change", "changes")} made since ${n === 1 ? "is" : "are"} undone. ${n === 1 ? "It stays" : "They stay"} in History, and Ctrl+Z brings ${n === 1 ? "it" : "them"} back.`
+      : "Your edit goes back to how it was then. Ctrl+Z brings it back.",
+  seeThe: (n: number) => `See the ${n}`,
+
+  // Name and new cut
+  newCutTitle: "New cut from this version",
+  newCutSwitch: (cut: string) => `You'll switch to it. ${cut} stays as it is.`,
+  makeCut: "Make cut",
+
+  // Changes view
+  changesSinceTitle: (when: string) => `Changes since ${when}`,
+  changesFromTo: (from: string, to: string) => `From ${from} to ${to}`,
+  changesBetween: (from: string, to: string) => `Changes from ${from} to ${to}`,
+  yourEditNow: "your edit now",
+  changesLength: (n: number, length: string) => `${plural(n, "change", "changes")} · ${length}`,
+  noChangesSince: (when: string) => `No changes since ${when}`,
+  sameAs: (label: string) => `Your edit is the same as ${stop(label)}`,
+  restoreThisVersion: "Restore this version…",
+  backToHistory: "History",
+  // Workstream 4 (the Changes view between two versions, neither your edit; the back button's tooltip; a retry)
+  noChangesBetween: (from: string, to: string) => `No changes from ${from} to ${to}`,
+  sameVersions: "The two versions are the same.",
+  backToHistoryKey: "Back to History (Esc)",
+  tryAgain: "Try again",
+
+  // Viewing
+  beforeOf: (label: string) => `Before ${label}`,
+  ownedCut: (owner: string, cut: string) => `${owner}'s ${cut}`,
+  sideOf: (who: string, what: string, clip: string) => `${who}'s ${what} of “${clip}”`,
+  yourSideOf: (what: string, clip: string) => `Your ${what} of “${clip}”`,
+  lookingAt: (label: string) => `You're looking at ${stop(label)}`,
+  lookingAtAnnounce: (label: string) => `Looking at ${stop(label)} Esc to go back.`,
+  backAnnounce: "Back to your edit",
+  backToExport: "Back to your edit to export it.",
+  loadFailed: "Couldn't load this version. Try again.",
+  readOnlyRole: "You can watch and comment on this project, not edit it.",
+
+  // Conflict card
+  bothDid: (clip: string, other: string, verb: string) => `“${clip}”: you and ${other} both ${verb} it`,
+  pickLead: "Pick the one to keep. Until you pick, yours is in the timeline.",
+  yours: "Yours",
+  theirs: (name: string) => `${name}'s`,
+  both: "Both",
+  yourEarlier: "Your earlier change",
+  yourLater: "Your later change",
+  seeIt: "See it",
+  seeingIt: "Seeing it",
+  keepTheirs: (name: string) => `Keep ${name}'s`,
+  onTimeline: "On timeline",
+  notNow: "Not now",
+  conflictsToPick: (n: number) => `${plural(n, "conflict", "conflicts")} to pick`,
+  stillWorking: (agent: string) => `${agent} is still working. Pick now, or when it's done.`,
+  changedAgain: (agent: string) => `${agent} changed it again. Pick again.`,
+  // The card's title and lead (Workstream 7, conflict-words.ts): the clip, then what each side did; the lead says which
+  // side is in the timeline until you pick. Core keeps the head's side there, and that isn't always yours.
+  conflictBoth: (subject: string, a: string, b: string, did: string) => `${subject}: ${a} and ${b} both ${did}`,
+  conflictEach: (subject: string, a: string, didA: string, b: string, didB: string) => `${subject}: ${a} ${didA} and ${b} ${didB}`,
+  conflictTwice: (subject: string, who: string | null) => `${subject}: two of ${who ? `${who}'s` : "your"} changes disagree`,
+  conflictTwiceLead: (who: string | null, did: string, close: boolean) => `${who ?? "You"} ${did} twice, from two places${close ? ", at nearly the same time" : ""}.`,
+  conflictTwiceEach: (who: string | null, first: string, then: string) => `${who ?? "You"} ${first} in one place and ${then} in another.`,
+  /** `shown`: the side in the timeline now, mid-sentence ("yours", "Claude Code's", "your later change"); null: both. */
+  pickLeadFor: (shown: string | null, canKeepBoth: boolean) =>
+    `${canKeepBoth ? "Pick one to keep, or keep both." : "Pick the one to keep."} Until you pick, ${shown === null ? "both are" : `${shown} is`} in the timeline.`,
+  theirEarlier: (who: string) => `${who}'s earlier change`,
+  theirLater: (who: string) => `${who}'s later change`,
+  seeSide: (side: string) => `See ${side.replace(/^Yours\b/, "yours").replace(/^Your\b/, "your")}`,
+  notNowHint: "Keep it for later. Nothing is decided until you pick.",
+  pickOne: "Pick the one to keep",
+  conflictOf: (i: number, n: number) => `${i} of ${n}`,
+  nextConflict: "Next conflict",
+  // Viewing a side (the chip, the frame's label): "Claude Code's move of “Interview B”" is sideOf/yourSideOf above
+  sideAlone: (who: string, what: string) => `${who}'s ${what}`,
+  yourSideAlone: (what: string) => `Your ${what}`,
+  orderedSideOf: (name: string, clip?: string) => (clip ? `${name} to “${clip}”` : name),
+  bothChangesTo: (clip?: string) => (clip ? `Both changes to “${clip}”` : "Both changes"),
+  // What a side did, as a sentence about the card's clip (DESIGN §8 "(a conflict side) Moved it to start at 0:07")
+  sideMoved: (at: string) => `Moved it to start at ${at}`,
+  sideTrimmedEnd: (at: string) => `Trimmed it to end at ${at}`,
+  sideTrimmedStart: (at: string) => `Trimmed it to start at ${at}`,
+  sideRetimed: (from: string, to: string) => `Set it to play ${from}–${to}`,
+  sideSlipped: (at: string) => `Slipped it to play its media from ${at}`,
+  sideLeft: (from: string, to: string) => `Left it at ${from}–${to}`,
+  sideAdded: (at: string) => `Added it at ${at}`,
+  sideAddedNoTime: "Added it",
+  sideRemoved: "Removed it",
+  sideToTrack: (track: string) => `Moved it to ${track}`,
+  sideAnotherTrack: "another track",
+  sideOrder: "Put it in another place in the order",
+  sideText: (v: string) => `Changed it to ${v}`,
+  sideRenamed: (v: string) => `Renamed it ${v}`,
+  sideBigger: (label: string, v: string) => `Made it bigger (${label} ${v})`,
+  sideSmaller: (label: string, v: string) => `Made it smaller (${label} ${v})`,
+  sideSet: (label: string, v: string) => `Set its ${label} to ${v}`,
+  sideCleared: (label: string) => `Cleared its ${label}`,
+  sideItsValue: "value",
+  sideChangedField: (label: string) => `Changed its ${label}`,
+  sideChanged: "Changed it",
+  sideMore: (n: number) => `and ${plural(n, "more change", "more changes")}`,
+  // ... as a verb phrase for the title ("you and Claude Code both moved it")
+  didMove: "moved it",
+  didTrim: "trimmed it",
+  didRetime: "changed when it plays",
+  didSlip: "slipped it",
+  didAdd: "added it",
+  didRemove: "removed it",
+  didReorder: "reordered it",
+  didRename: "renamed it",
+  didChange: "changed it",
+  didChangeField: (label: string) => `changed its ${label}`,
+  // ... and as a noun for the viewing label ("Claude Code's move of “Interview B”")
+  whatMove: "move",
+  whatTrim: "trim",
+  whatRetime: "timing",
+  whatSlip: "slip",
+  whatAdd: "placement",
+  whatRemove: "removal",
+  whatRename: "renaming",
+  whatEdit: "edit",
+
+  // Fold dialog
+  foldInChanges: "Fold in changes",
+  foldFrom: "From",
+  foldIntoWord: "into",
+  youreOnIt: "you're on it",
+  foldWhat: (into: string, from: string, made: string) => `${into} gets what changed on “${from}” since it was made from ${made}.`,
+  cantLeaveOut: "Can't be left out: it's a setting for the whole project",
+  leftOutOn: (day: string) => `Left out on ${day}`,
+  leftOutTogether: "These were left out together, so they come in together.",
+  bothCutsDid: (verb: string, clip: string) => `Both cuts ${verb} “${clip}”. Pick one:`,
+  pickOneFor: (clip: string) => `Pick one for “${clip}”`,
+  leftOutLine: (n: number, from: string) => `${plural(n, "change is", "changes are")} left out. ${n === 1 ? "It stays" : "They stay"} on “${from}”, and you can fold ${n === 1 ? "it" : "them"} in later.`,
+  foldUndoLine: "Ctrl+Z takes the whole fold back.",
+  foldInN: (n: number) => `Fold in ${plural(n, "change", "changes")}`,
+  alreadyHas: (into: string, from: string) => `${into} already has everything from “${from}”.`,
+  // The dialog's line with names as cutRef() gives them (Main cut bare, any other cut in curly quotes): the one made from
+  // the other, or neither (PLAN 6.3)
+  foldLine: (into: string, from: string, parent: string, when: string) => `${into} gets what changed on ${from} since it was made from ${parent} ${when}.`,
+  // A moment after a noun ("made from Main cut at 12:20 pm"), from clock()'s "12:20 pm", "yesterday at 4:10 pm", "Oct 30 at 4:10 pm"
+  atMoment: (clock: string, day: "today" | "yesterday" | "other") => (day === "today" ? `at ${clock}` : day === "yesterday" ? clock : `on ${clock}`),
+  foldLinePlain: (into: string, from: string) => `${into} gets what changed on ${from}.`,
+  // Only what an earlier partial fold left out is left to fold (DESIGN §6.4, after/fold-rest.png)
+  foldRestLine: (n: number, day: string) => `${plural(n, "change was", "changes were")} left out when you folded this cut in on ${day}. ${n === 1 ? "It" : "They"} can come in now.`,
+  foldRestLinePlain: (n: number) => `${plural(n, "change was", "changes were")} left out when you folded this cut in. ${n === 1 ? "It" : "They"} can come in now.`,
+  // A conflict's sides in the dialog: "Main cut's: starts at 0:18" · who
+  cutsSide: (cut: string, what: string) => `${cut}'s: ${what}`,
+  bothCutsChanged: (title: string) => `Both cuts changed ${title}. Pick one:`,
+
+  // Toasts (DESIGN §6.7)
+  undo: "Undo",
+  redo: "Redo",
+  restoredToast: (label: string) => `Restored ${stop(label)} Later changes are in History.`,
+  foldedToast: (n: number, from: string, into: string) => `Folded ${plural(n, "change", "changes")} from “${from}” into ${into}.`,
+  switchToCut: (cut: string) => `Switch to ${cut}`,
+  onCutNow: (cut: string) => `You're on “${cut}” now.`,
+  cutUnchanged: (cut: string) => `${cut} is unchanged.`,
+  switchBackTo: (cut: string) => `Switch back to ${cut}`,
+  keptToast: (label: string) => `Kept ${stop(label)}`,
+  tookOutToast: (label: string, n: number) => `Took out ${label} (${plural(n, "change", "changes")}).`,
+  restoreUndone: "Restore undone.",
+  foldUndone: "Fold undone.",
+  // Workstream 5 (PLAN 5.2, 5.3): the toasts' other forms, with the cuts named as cutRef() names them (Main cut bare,
+  // any other cut in curly quotes)
+  foldedInto: (n: number | null, from: string, into: string) => (n ? `Folded ${plural(n, "change", "changes")} from ${from} into ${into}.` : `Folded ${from} into ${into}.`),
+  foldedRestToast: (n: number | null) => (n ? `Folded in the rest: ${plural(n, "change", "changes")}.` : "Folded in the rest."),
+  onCutRefNow: (cut: string) => `You're on ${cut} now.`,
+  onCutMadeFrom: (cut: string, _from: string) => `You're on “${cut}” now.`,
+  restoreRedone: "Restore redone.",
+  foldRedone: "Fold redone.",
+  pickUndone: (back: string | null) => (back ? `Pick undone. ${back} is back.` : "Pick undone."),
+  pickRedone: "Pick redone.",
+  turnBack: (label: string) => `${label} is back.`,
+  tookOut: (label: string) => `Took out ${stop(label)}`,
+  stepDone: (which: "undo" | "redo") => (which === "undo" ? "Undone." : "Redone."),
+  tookOutAgain: (label: string) => `Took out ${label} again.`,
+  // a toast's Undo (or Redo) after something else landed on top: nothing is done (the worker checked)
+  stepMoved: (which: "undo" | "redo") => `Not ${which === "undo" ? "undone" : "redone"}: something changed since. History has every version.`,
+  stepMovedPart: (which: "undo" | "redo") => `Only part of it was ${which === "undo" ? "undone" : "redone"}: something changed since. History has every version.`,
+  stepFailed: (which: "undo" | "redo") => `Couldn't ${which}. Try again.`,
+  saveFailed: "Your last change wasn't saved. Do it again, or reopen the project.",
+  restoreFailed: "Couldn't restore this version. Try again.",
+
+  // Share and Join
+  shareTitle: (project: string) => `Share “${project}”`,
+  shareLead: "Edit together, live, with the whole history. Teammates get preview copies of your video; the originals stay on this computer.",
+  sharingServer: "Sharing server",
+  sharingServerHint: "The address whoever runs your sharing server gave you.",
+  change: "Change",
+  yourName: "Your name",
+  yourNameHint: "Teammates see this beside your changes.",
+  shareProject: "Share project",
+  people: "People",
+  roles: { owner: "Owner", editor: "Can edit", commenter: "Can comment", viewer: "Can watch" } as Record<"owner" | "editor" | "commenter" | "viewer", string>,
+  hereNowLine: "Here now",
+  lastHereYesterday: "Last here yesterday",
+  invite: "Invite",
+  copyLink: "Copy link",
+  copied: "Copied",
+  anyoneCanJoin: "Anyone with this link can join and edit.",
+  sending: (n: number) => `Sending ${plural(n, "change", "changes")}`,
+  offlineLine: (n: number) => `You're offline. Keep editing: ${plural(n, "change is", "changes are")} saved here and ${n === 1 ? "is" : "are"} sent when you're back.`,
+  joinTitle: "Join a shared project",
+  joinLead: "Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it.",
+  inviteLink: "Invite link",
+  joinAs: (name: string) => `You'll join as ${name}.`,
+  joinAndOpen: "Join and open",
+
+  // Stage
+  offlineChip: (n: number) => `Offline · ${plural(n, "change", "changes")} not sent yet`,
+  clipsOnTheirWay: (n: number, from: string) => `${plural(n, "clip is", "clips are")} still on ${n === 1 ? "its" : "their"} way from ${from}`,
+  clipsOfflineUntil: (names: string) => `${names} show as Offline until they arrive. Nothing was removed.`,
+
+  // Carton UX v2, History (N2: docs/carton-ux/v2 DESIGN-V2 §2–§4): Go back…, Bring back one clip, search, landmarks,
+  // peek, Compare with… and the Compare button
+  goBack: "Go back…",
+  goBackTo: (label: string) => `Go back to ${label}`,
+  goBackAfter: (n: number) => (n ? `${plural(n, "change was", "changes were")} made after it.` : "Nothing was changed after it."),
+  goBackChoices: "Ways to go back",
+  turnOf: (time: string, who: string) => `${time}, ${who}'s turn`,
+  bringBackOne: "Bring back one clip",
+  bringBackOneLine: "Pick a clip. Only it goes back to how it was. Everything else stays as it is now.",
+  chooseAClip: "Choose a clip…",
+  bringBackAsItWas: (clip: string) => `Bring back “${clip}” as it was`,
+  undoWhoseTurn: (who: string) => `Undo ${who}'s turn`,
+  undoTurnLine: (n: number, after: number) => `Takes out only its ${plural(n, "change", "changes")}. ${after ? `The ${after} made after ${after === 1 ? "stays" : "stay"}.` : "Nothing else changes."}`,
+  restoreWhole: "Restore the whole edit",
+  restoreWholeLine: (n: number) => (n ? `Your edit becomes this version. The ${plural(n, "change", "changes")} after it ${n === 1 ? "is" : "are"} undone. ${n === 1 ? "It stays" : "They stay"} in History.` : "Your edit becomes this version."),
+  newCutHere: "Start a new cut from here",
+  newCutHereLine: "Your edit stays as it is. A new cut starts from this version, and you switch to it.",
+  nameTheNewCut: "Name the new cut…",
+  chooseOne: "Choose one",
+  ctrlZUndoesThese: "Ctrl+Z undoes any of these",
+  bringBackLead: (when: string) => `As it was at ${when}. Only the clip you pick changes.`,
+  changedSince: (n: number) => `Changed since · ${n}`,
+  deletedSince: (n: number) => `Deleted since · ${n}`,
+  notThereYet: (when: string, n: number) => `Not there yet at ${when} · ${n}`,
+  thenNow: (then: string, now: string) => `Then ${then} · now ${now}`,
+  wasAt: (span: string) => `Was ${span}`,
+  deletedBy: (who: string, when: string) => `deleted by ${who} at ${when}`,
+  addedByAt: (who: string, when: string) => `Added by ${who} at ${when}`,
+  bringBackBtn: "Bring back",
+  takeOutBtn: "Take out",
+  findAClip: "Find a clip",
+  noClipDiffers: "Every clip is the same as now.",
+  bringBackQ: (clip: string) => `Bring back “${clip}”?`,
+  takeOutQ: (clip: string) => `Take out “${clip}”?`,
+  // Bring back's confirmation (DESIGN-V2 §3.2, from N0b's place and ripple) and its toast
+  bringBackChangedLead: (when: string) => `It goes back to how it was at ${when}: its timing, text, look and settings.`,
+  asItWasAt: (when: string) => `It goes back to how it was at ${when}.`,
+  goesBackWhere: (at: string | null) => `It goes back where it was${at ? `, at ${at}` : ""}.`,
+  placeTaken: (names: string, at: string | null) => `Its place is taken by ${names}, so it goes on a new track above${at ? `, at ${at}` : ""}.`,
+  anotherClip: "another clip",
+  takeOutLead: "It wasn't in this version, so it comes out of your edit.",
+  restMovesLater: (s: number) => `Everything after it moves ${secondsWord(s)} later.`,
+  restMovesEarlier: (s: number) => `Everything after it moves ${secondsWord(s)} earlier.`,
+  nothingElseMoves: "Nothing else moves.",
+  ctrlZTakesBack: "Ctrl+Z takes it back.",
+  ctrlZPutsBack: "Ctrl+Z puts it back.",
+  clipChangedNothing: (clip: string) => `“${clip}” just changed again. Nothing was brought back.`,
+  onNewTrack: (names: string | null) => `Its place was taken${names ? ` by ${names}` : ""}, so it's on a new track above.`,
+  restMovedLater: (s: number) => `Everything after it moved ${secondsWord(s)} later.`,
+  restMovedEarlier: (s: number) => `Everything after it moved ${secondsWord(s)} earlier.`,
+  findShowing: (n: number, total: number) => `The newest ${n} of ${plural(total, "version", "versions")}`,
+  findShowAll: "Show them all",
+  bringBackNamed: (clip: string) => `Bring back “${clip}”`,
+  takeOutNamed: (clip: string) => `Take out “${clip}”`,
+  seeItFirst: "See it first",
+  bringBackFailed: "Couldn't bring it back. Try again.",
+  broughtBackToast: (clip: string, when: string) => `Brought back “${clip}” as it was at ${when}.`,
+  tookOutClipToast: (clip: string) => `Took out “${clip}”.`,
+  alreadyAsItWas: (clip: string) => `“${clip}” is already as it was then.`,
+  bringBackUndone: (clip: string) => `“${clip}” is as it was before you brought it back.`,
+  bringBackRedone: (clip: string) => `Brought back “${clip}” again.`,
+  thenText: (text: string) => `Then “${text}”`,
+  sameAsNow: (n: number) => `${plural(n, "other clip is", "other clips are")} the same as now.`,
+  backToChoices: "Back to the ways to go back",
+  findPlaceholder: "Find a clip, a word, a person…",
+  findLabel: "Find in History",
+  clearFind: "Clear search",
+  findCount: (n: number) => plural(n, "version", "versions"),
+  findClip: (clip: string) => `“${clip}”, the clip`,
+  onlyThisClip: "Only this clip",
+  findNone: (q: string) => `No versions mention “${q}”`,
+  findNoneHint: "Try a clip's name, words from a title or caption, an agent's request, or a person.",
+  findSearched: (cut: string) => `Searched ${cut}.`,
+  // "Search every cut" (DESIGN-V2 §2.3; design QA v2 G13)
+  searchEveryCut: "Search every cut",
+  findingEveryCut: "Searching every cut…",
+  // ("either" only when this cut has none: a filter may hide this cut's own; review of fix/ux2-last #3)
+  findNoneAnywhere: (q: string, either: boolean) => `No other cut mentions “${q}”${either ? " either" : ""}.`,
+  findOnOtherCuts: (n: number) => `${plural(n, "version", "versions")} on other cuts`,
+  seeOnItsCut: "See it as it was on its cut",
+  versionOnCut: (cut: string, time: string) => `${cut} at ${time}`,
+  findFields: { name: "Name", prompt: "Prompt", clip: "Clip name", text: "Title or caption text", person: "Person", day: "Day" } as Record<"name" | "prompt" | "clip" | "text" | "person" | "day", string>,
+  wasHere: (clip: string, span: string) => `“${clip}” was ${span} here`,
+  findMore: (n: number) => `${n} more`,
+  findFailed: "Couldn't search History. Try again.",
+  landmarkTags: { exported: "Exported", sent: "Sent", named: "Named", before: "Before", start: "Start", turn: "" } as Record<"exported" | "sent" | "named" | "before" | "start" | "turn", string>,
+  exportedTitle: (preset?: string) => preset || "Exported",
+  sharedWith: (who?: string) => (who ? `Shared with ${who}` : "Shared"),
+  sessionTitle: "How it was when you opened it",
+  safetyTitle: { restore: "Restoring an earlier version", fold: "Folding in another cut", "undo-turn": "Undoing an agent's turn", "bring-back": "Bringing back a clip" } as Record<"restore" | "fold" | "undo-turn" | "bring-back", string>,
+  /**
+   * A Before landmark's title from the row that came right after it (DESIGN-V2 §2.1: "Restoring the 11:02 am version"),
+   * so two restores' safety points can be told apart; null when its words aren't one of these (the generic title then).
+   */
+  safetyTitleOf: (after: string): string | null => {
+    const m = /^(Restored|Brought back|Folded in|Took out|Undid) (.+)$/.exec(after);
+    if (!m) return null;
+    const verb = ({ Restored: "Restoring", "Brought back": "Bringing back", "Folded in": "Folding in", "Took out": "Taking out", Undid: "Undoing" } as Record<string, string>)[m[1]!]!;
+    // (a bring-back's "from 10:20 am" is the landmark's own row's time: the clip is enough. Cut after the clip's
+    // closing quote, never inside a name with " from " in it: "“View from the pier”", review of fix/ux2-qa #1)
+    return `${verb} ${m[1] === "Brought back" ? m[2]!.replace(/^(“[^”]*”|a clip) from .+$/, "$1") : m[2]}`;
+  },
+  keptForYou: "Kept for you",
+  onlyYouSee: "only you see this",
+  /** A group of edits that came to nothing: what it changed, it changed back. */
+  groupNoNet: "No change in the end",
+  /** A group's title while its words are worked out (a moment, once). */
+  groupLoading: "Several edits",
+  alsoLandmark: (tag: string) => `also ${tag.toLowerCase()}`,
+  landmarksFilter: "Landmarks",
+  landmarksFilterHint: "Exports, sends, names, agent turns, each day's start",
+  landmarksEmpty: "No landmarks yet. Exports, sends, named versions, agent turns and each day's start show here.",
+  dayVersionsMarks: (n: number, marks: number) => `${plural(n, "version", "versions")} · ${plural(marks, "landmark", "landmarks")}`,
+  peekHint: "Click to open · hold to peek",
+  // a past day's run between two landmarks (DESIGN-V2 §2.5): "18 changes by You and Claude Code"; four or more people
+  // are the first two and "2 others"
+  runOf: (n: number, names: readonly string[]) => {
+    const xs = names.length > 3 ? [...names.slice(0, 2), plural(names.length - 2, "other", "others")] : names;
+    return `${plural(n, "change", "changes")}${xs.length ? ` by ${xs.length < 2 ? xs[0] : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`}` : ""}`;
+  },
+  holding: "Holding",
+  holdingLabel: (label: string) => `${label} · holding`,
+  peekShowing: (label: string) => `Showing ${label}. Release to go back.`,
+  compare: "Compare",
+  compareYourEditWith: "Compare your edit with…",
+  versionYouSent: "The version you sent",
+  lastExport: "The last export",
+  thisMorning: "How it was this morning",
+  whenYouOpened: (time: string) => `When you opened it · ${time}`,
+  anotherCut: "Another cut",
+  pickAVersion: "Pick a version…",
+  pickAVersionLine: "Then click one in the list",
+  compareWith: "Compare with…",
+  comparingFrom: (label: string) => `Comparing from ${label}`,
+  comparingYourEdit: "Comparing with your edit now",
+  clickASecond: "Click a second version, or another cut:",
+  clickAVersion: "Click a version to compare it with your edit, or another cut:",
+  fromPill: "From",
+  pickAnnounce: (label: string) => `Pick a second version to compare with ${label}`,
+  leavePick: "Stop picking",
+  compareThis: (label: string) => `Compare with ${label}`,
+  thatCutNow: (cut: string) => `${cut} now`,
+  // Compare with… on another cut (N2c): that cut's History, to pick from
+  pickOnCut: (cut: string) => `Pick a version on ${cut}`,
+  backToCut: (cut: string) => `Back to ${cut}`,
+  cutAsItIsNow: (cut: string) => `${cut} as it is now`,
+  readingItsHistory: "Reading its History…",
+  cutHistoryFailed: "Couldn't read that cut's History. Try again.",
+  aVersionOn: (cut: string) => `A version on ${cut}…`,
+  compareFailed: "Couldn't compare them. Try again.",
+
+  // Share and Join, the dialogs' own words beside the ones above (Carton UX redesign PLAN 8.1, 8.2; scripts/carton/sync/ui.js)
+  shareThisProject: "Share this project",
+  sharingServerPlaceholder: "share.example.com",
+  sharingNow: "Sharing…",
+  youHereNow: (name: string) => `${name} · here now`,
+  hereNotEditing: "Here, not editing",
+  nobodyElseHere: "Nobody else is here right now.",
+  whoCanDoWhat: "Who can do what",
+  anyoneCanJoinTo: (role: string) => (role === "viewer" ? "Anyone with this link can join and watch." : role === "commenter" ? "Anyone with this link can join and comment." : "Anyone with this link can join and edit."),
+  inviteWhenOnline: "You can make a link when you're back online.",
+  offlineLineNone: "You're offline. Keep editing: your changes are saved here and are sent when you're back.",
+  joiningNow: "Joining…",
+  openingNow: "Opening…",
+  inYourLibrary: (name: string) => `“${name}” is in your library now.`,
+  openIt: "Open",
+  // the footage notice for one clip (clipsOfflineUntil is the plural's)
+  clipOfflineUntil: (name: string) => `${name} shows as Offline until it arrives. Nothing was removed.`,
+
+  // Compare in the editor (docs/carton-ux v2 DESIGN-V2 §1, N1)
+  comparing: (left: string, right: string) => `Comparing ${left} with ${right}`,
+  comparingAnnounce: (left: string, right: string, n: string) => `Comparing ${left} with ${right}. ${n}. Esc to go back.`,
+  compareModes: { side: "Side by side", wipe: "Wipe", flip: "Flip" } as Record<"side" | "wipe" | "flip", string>,
+  compareModesLabel: "How to compare",
+  sideBySideNeedsRoom: "Side by side needs a wider stage. Close the chat or widen the window.",
+  // what to close for the room, named by the host from what's open (the fewest that give enough), or a click when
+  // closing History alone does it (it closes, Compare stays on)
+  sideNeedsRoomClick: "Side by side needs a wider stage. Click to close History and make room.",
+  sideNeedsRoomClose: (parts: readonly string[]) => parts.length
+    ? `Side by side needs a wider stage. Close ${parts.length < 2 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]},`} or widen the window.`
+    : "Side by side needs a wider stage. Widen the window.",
+  roomParts: { history: "History", chat: "the chat", library: "the Library" } as Record<"history" | "chat" | "library", string>,
+  // Side by side or Wipe after the second picture didn't start (§1.10): greyed, and a click tries again
+  compareRetry: "Couldn't show both sides here. Click to try again.",
+  // the frame's own label while History is closed: a click on its words opens History to the change list
+  frameLabelOpen: "Show the changes in History",
+  differences: (n: number) => plural(n, "difference", "differences"),
+  doneComparing: "Done comparing",
+  doneComparingKey: "Done comparing (Esc)",
+  done: "Done",
+  yourEditNowLabel: "Your edit now",
+  sameShot: "same shot",
+  waiting: "waiting",
+  notInSide: (clip: string, side: string) => `${clip} isn't in ${side}`,
+  itsShotPlays: "Its shot plays on the other side.",
+  playBoth: "Play both",
+  inStepByShot: "In step by shot",
+  inStepByShotHint: "Both sides play the same shot together. A shot that's longer on one side waits for the other.",
+  wipeHint: "Drag the line, or ← →, to wipe between them",
+  wipeLabel: (left: string, right: string) => `Wipe between ${left} and ${right}`,
+  wipeValue: (pct: number, right: string) => `${pct} % ${right}`,
+  showing: "Showing",
+  holdBToFlip: "Hold B to flip, or click",
+  compareFrom: "From",
+  compareTo: "to",
+  compareWithWord: "with",
+  restoreEditTo: (label: string) => `Restore your edit to ${label}…`,
+  foldInFrom: (label: string) => `Fold in changes from ${label}…`,
+  compareThisCut: "Compare",
+  compareThisCutHint: (cut: string) => `Compare ${cut} with the cut you're on`,
+  youreComparing: (left: string, right: string) => `You're comparing ${left} with ${right}.`,
+  youreComparingTwo: "You're comparing two earlier versions.",
+  openedComparison: (who: string) => `${who} opened a comparison.`,
+  openedComparisonAnnounce: (who: string, left: string, right: string, n: string) => `${who} opened a comparison: ${left} with ${right}. ${n}. Esc to go back.`,
+  escToGoBack: "Esc to go back",
+  comparisonReady: (who: string, left: string, right: string) => `${who} has a comparison ready: ${left} with ${right}.`,
+  sideBySideFailed: (left: string) => `Couldn't show ${left} side by side here. Showing it as a flip.`,
+  compareCountLength: (n: string, length: string) => `${n} · ${length}`,
+  compareStage: (left: string, right: string) => `Comparing ${left} with ${right}`,
+  bothPlayersThere: "Both players are there.",
+  legendAdded: "added",
+  legendRemoved: "removed",
+  legendChanged: "changed or moved",
+  removedHere: (clip: string, secs: string) => `Removed ${clip} here (${secs})`,
+  newTrack: "new track",
+  anEarlierVersion: "an earlier version",
+  yourEditSaid: "your edit",
+  // Compare's row detail (DESIGN-V2 §1.5): Then / Now
+  compareThen: "Then",
+  // Compare's other ways in (DESIGN-V2 §1.2, §1.11): a playing card, Fold in, a teammate's cut
+  sideBySideBtn: "Side by side",
+  seeThemSideBySide: "See them side by side",
+  /**
+   * Back to Fold in…, when the changes to fold in changed while the person compared (an agent, a teammate): what of
+   * their ticks and picks couldn't be kept as they were, in one plain sentence; null when everything was kept.
+   */
+  foldTicksLost: (n: { gone: number; stuck?: number; changed: number; added: number; repick: number }): string | null => {
+    const parts = [
+      n.gone ? `${plural(n.gone, "change", "changes")} you left out ${n.gone === 1 ? "isn't" : "aren't"} there any more` : "",
+      n.stuck ? `${plural(n.stuck, "change", "changes")} you left out can't be left out now` : "",
+      n.changed ? `${plural(n.changed, "change", "changes")} you left out ${n.changed === 1 ? "is" : "are"} different now (still left out)` : "",
+      n.added ? `${plural(n.added, "new change is", "new changes are")} ticked` : "",
+      n.repick ? `${plural(n.repick, "conflict", "conflicts")} to pick again` : "",
+    ].filter(Boolean);
+    if (!parts.length) return null;
+    const list = parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+    return `Some changes are different since you compared: ${list}. Check the ticks before you fold in.`;
+  },
+  backToFoldIn: "Back to Fold in…",
+  compareWithCut: (cut: string) => `Compare with ${cut}`,
+  compareNow: "Now",
+  thisShot: "This shot",
+  // the title bar's chip while a version is slow to come (design QA G1): "Loading Director's “Add captions…”"
+  loadingView: (label: string) => `Loading ${label}`,
+  // the chip while what is on screen hasn't been named yet (a swap from the cache, a moment before its label)
+  anotherVersion: "Another version",
 };
 
 export type Words = typeof words;

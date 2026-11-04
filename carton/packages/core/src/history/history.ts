@@ -1147,8 +1147,8 @@ export class History {
     return out;
   }
   /** Redo for an actor group: re-apply what the newest undo on its redo stack took back (a revert of that undo). */
-  redo(cutId: string, group: string, { author, id, scope }: { author?: Actor; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
-    return this.#step(cutId, id, () => this.planRedo(cutId, group, { author, scope }));
+  redo(cutId: string, group: string, { id, ...o }: { author?: Actor; id?: ChangeId; scope?: UndoScope; check?: TopCheck | undefined } = {}): CommitResult & { entry?: UndoEntry } {
+    return this.#step(cutId, id, () => this.planRedo(cutId, group, o));
   }
   /** An undo or a redo, planned and committed under `id`: a retry with it answers the first one. */
   #step(cutId: string, id: ChangeId | undefined, plan: () => (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null): CommitResult & { entry?: UndoEntry } {
@@ -1160,9 +1160,13 @@ export class History {
     const { entry, ...c } = p;
     return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
   }
-  /** What redo for an actor group would do, without doing it (a shared cut queues it); null when nothing is to redo. */
-  planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor | undefined; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+  /**
+   * What redo for an actor group would do, without doing it (a shared cut queues it); null when nothing is to redo.
+   * `check` (TopCheck) is shown the redo stack's newest entry first.
+   */
+  planRedo(cutId: string, group: string, { author, tail, scope, check }: { author?: Actor | undefined; tail?: Tail; scope?: UndoScope | undefined; check?: TopCheck | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const top = this.redoStack(cutId, group, tail, scope)[0];
+    check?.(top);
     if (!top) return null;
     const p = this.planRevert(cutId, top.changeId, { author: author ?? top.author, tail, what: "redo" });
     return "status" in p ? p : { ...p, entry: top };
@@ -1172,16 +1176,18 @@ export class History {
    * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
    * invalid comes back as conflicts, never silently.
    */
-  undo(cutId: string, group: string, { author, turn = true, id, scope }: { author?: Actor; turn?: boolean; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
-    return this.#step(cutId, id, () => this.planUndo(cutId, group, { author, turn, scope }));
+  undo(cutId: string, group: string, { id, ...o }: { author?: Actor; turn?: boolean; id?: ChangeId; scope?: UndoScope; check?: TopCheck | undefined } = {}): CommitResult & { entry?: UndoEntry } {
+    return this.#step(cutId, id, () => this.planUndo(cutId, group, o));
   }
   /**
    * What ⌘Z for an actor group would do, without doing it (a shared cut queues it): the inverse of the newest entry of
-   * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty.
+   * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty. `check`
+   * (TopCheck) is shown that newest entry first.
    */
-  planUndo(cutId: string, group: string, { author, turn = true, tail, scope }: { author?: Actor | undefined; turn?: boolean; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+  planUndo(cutId: string, group: string, { author, turn = true, tail, scope, check }: { author?: Actor | undefined; turn?: boolean; tail?: Tail; scope?: UndoScope | undefined; check?: TopCheck | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const stack = this.undoStack(cutId, group, tail, scope);
     const top = stack[0];
+    check?.(top);
     if (!top) return null;
     const log = this.#log(cutId, tail);
     // an agent turn: the entries from the newest on while they share its turn (all of them when they all do)
@@ -1626,6 +1632,13 @@ export interface UndoScope {
   since?: number;
   app?: boolean;
 }
+/**
+ * Shown the undo (or redo) stack's newest entry (undefined: none) where the step is planned, before anything is planned
+ * or changed, on the stack the step uses (a shared cut's pending tail included); after a retried `id` is answered. A
+ * throw refuses the step and nothing has changed. Carton's `expect` (a toast's Undo, UX redesign PLAN 5.3: only that
+ * change, else StackMoved) is one: a check here reads no stack of its own, and costs History's bundle a few bytes.
+ */
+export type TopCheck = (top: UndoEntry | undefined) => void;
 const inScope = (c: ConfirmedChange, group: string, scope: UndoScope): boolean => groupOf(c.author) === group && (!scope.app || c.author.app === true) && (scope.since === undefined || c.at >= scope.since);
 /** The changes an undo change took back, from every undo change in the log. */
 function undoneIn(log: readonly ConfirmedChange[]): Set<ChangeId> {

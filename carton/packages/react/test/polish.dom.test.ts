@@ -1,11 +1,10 @@
 // The UI audit of 2026-11-02 (docs/ui-audit/REPORT.md on audit/ui-2026-11-02), in a DOM: keyboard, Esc and focus in
 // every layer, the words, and the states it found wrong. `npm test` runs this file on React 19 and on preact/compat.
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, type } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, CommentsPanel, CompareCard, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges, createMockComments } from "../src/index.ts";
-import { timecode } from "../src/components/WatchTheChanges.ts";
-import { createMockUi } from "../src/mock.ts";
+import { CartonProvider, CommentsPanel, CutsMenu, FoldInDialog, HistoryPanel, createMockComments } from "../src/index.ts";
+import { createMockUi, people } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
 
 const h = React.createElement;
@@ -13,64 +12,6 @@ afterEach(cleanup);
 after(closeDom);
 const wrap = (ui: CartonUi, ...children: unknown[]) => h(CartonProvider, { ui }, ...(children as never[]));
 const name = (t: string) => `${t} [${runtime}]`;
-
-test(name("P1-7, P2-6, P3-13: Watch puts Before/After above the picture, counts changes, and never shows a made-up frame"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  let closed = 0;
-  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", inPlayer: true, onClose: () => closed++ })));
-  await flush();
-  const root = $(m.container, ".carton-watch")!;
-  // Before / After has its own row above the picture, not at the end of the controls (where it ran out of the panel).
-  const abRow = $(root, ".carton-watch-abrow")!;
-  assert.ok(abRow.querySelector("[role=radiogroup]"), "the A/B toggle in its own row");
-  assert.equal($(root, ".carton-watch-controls [role=radiogroup]"), null, "not in the controls row");
-  assert.ok(abRow.compareDocumentPosition($(root, ".carton-watch-stage")!) & 4, "the toggle comes before the picture");
-  // The summary and the counter speak of the same thing: changes.
-  assert.match($(root, ".carton-watch-summary")!.textContent ?? "", /^4 changes · \d+\.\d s of \d+\.\d s$/);
-  assert.match(root.textContent ?? "", /Section 1 of 4/);
-  assert.doesNotMatch(root.textContent ?? "", /shots? \//);
-  // No stand-in card: where the picture is, in words.
-  assert.equal($(root, ".carton-stage-shot"), null);
-  assert.match($(root, ".carton-stage-note")!.textContent ?? "", /Shown in the player, read-only/);
-  // Cardboard's timecode: "0:00 / 0:12", in the text face.
-  assert.match($(root, ".carton-watch-clock")!.textContent ?? "", /^\d+:\d\d \/ \d+:\d\d$/);
-  // Focus came in, so Esc reaches it, and closes only this layer.
-  assert.equal(document.activeElement, root);
-  await key(root, "Escape");
-  assert.equal(closed, 1);
-  await m.unmount();
-});
-
-test(name("P2-6: a host with no player of its own says there is no picture, not that the player shows it"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9" })));
-  await flush();
-  assert.match($(m.container, ".carton-stage-note")!.textContent ?? "", /Preview not available here/);
-  await m.unmount();
-});
-
-test(name("P2-1: the Before/After toggle is one tab stop and moves with the arrow keys, which don't also skip a change"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9" })));
-  await flush();
-  const root = $(m.container, ".carton-watch")!;
-  const [before, after] = $$(root, "[role=radio]");
-  assert.equal(after!.getAttribute("aria-checked"), "true");
-  assert.deepEqual([before!.tabIndex, after!.tabIndex], [-1, 0]);
-  after!.focus();
-  await key(after!, "ArrowLeft");
-  assert.equal(before!.getAttribute("aria-checked"), "true");
-  assert.equal(document.activeElement, before);
-  assert.match(root.textContent ?? "", /Section 1 of 4/, "the arrow moved the toggle, not the change");
-  assert.equal(ui.preview()?.ref, "main@3");
-  await m.unmount();
-});
-
-test("timecode reads as Cardboard's player does", () => {
-  assert.equal(timecode(0, 6), "0:00 / 0:06");
-  assert.equal(timecode(65.9, 125), "1:05 / 2:05");
-  assert.equal(timecode(3725, 3725), "1:02:05 / 1:02:05");
-});
 
 const raf = () => new Promise((r) => requestAnimationFrame(() => r(null)));
 const rect = (el: Element, r: { top: number; bottom: number; left?: number; right?: number }) => {
@@ -112,45 +53,66 @@ test(name("P2-3: a row's menu opens above it when there's no room below"), async
   await m.unmount();
 });
 
-test(name("P2-1, P2-5: the Compare card takes focus, Esc closes only it, and the compared row is marked"), async () => {
+test(name("P2-1, P2-5 (the Changes view, PLAN 4.1): it takes focus, Esc closes only it, and focus is back on the row it came from"), async () => {
   const ui = createMockUi({ versions: 30 });
   let outer = 0;
   // the side panel around it closes on Esc (scripts/carton/ui.js: a React handler, as here)
-  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600, currentRef: "main@30" }))));
-  await click($$(m.container, "[role=option]")[3]!.querySelector(".carton-version-more"));
-  await click(byText(m.container, "[role=menuitem]", "Compare with current"));
+  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600 }))));
+  const row = $$(m.container, ".carton-version")[2]!;
+  const title = row.querySelector(".carton-version-title")!.textContent;
+  await click(row.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Compare with your edit"));
   await flush();
-  const card = $(m.container, ".carton-compare")!;
-  assert.equal(document.activeElement, card);
-  assert.equal($$(m.container, "[role=option]")[3]!.dataset.compared, "");
-  await key(card, "Escape");
+  const view = $(m.container, ".carton-changes-view")!;
+  assert.ok(view.contains(document.activeElement), "focus is in the Changes view");
+  await key(document.activeElement, "Escape");
   await raf();
-  assert.equal($(m.container, ".carton-compare"), null);
+  assert.equal($(m.container, ".carton-changes-view"), null);
   assert.equal(outer, 0, "the panel around it never saw that Esc");
   assert.ok((document.activeElement as HTMLElement).classList.contains("carton-history-list"));
+  assert.equal($(m.container, ".carton-version[data-active] .carton-version-title")?.textContent, title, "on the row it came from");
   await m.unmount();
 });
 
-test(name("P2-1: the History filters are one tab stop and move with the arrow keys"), async () => {
+test(name("P2-1: the History filter is one button whose menu moves with the arrow keys; Esc gives focus back to it"), async () => {
   const ui = createMockUi({ versions: 30 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const radios = $$(m.container, "[role=radio]");
-  assert.deepEqual(radios.map((r) => r.tabIndex), [0, -1, -1]);
-  radios[0]!.focus();
-  await key(radios[0]!, "ArrowRight");
-  assert.equal($$(m.container, "[role=radio]")[1]!.getAttribute("aria-checked"), "true");
-  assert.equal(document.activeElement, $$(m.container, "[role=radio]")[1]);
+  const btn = $(m.container, ".carton-filter-btn")!;
+  assert.equal(btn.getAttribute("aria-haspopup"), "menu");
+  assert.equal($$(m.container, "[role=radio]").length, 0, "no segmented bar taking a row of its own (AUDIT H6)");
+  await click(btn);
+  const items = $$(m.container, "[role=menuitemradio]");
+  assert.deepEqual(items.map((i) => i.textContent), ["All versions", "Named versions", "Agent turns", "Your changes"]);
+  assert.equal(items[0]!.getAttribute("aria-checked"), "true");
+  assert.equal(document.activeElement, items[0], "focus is in the menu");
+  await key(document.activeElement, "ArrowDown");
+  assert.equal(document.activeElement, $$(m.container, "[role=menuitemradio]")[1]);
+  await key(document.activeElement, "Escape");
+  assert.equal($(m.container, "[role=menu]"), null);
+  assert.equal(document.activeElement, $(m.container, ".carton-filter-btn"), "focus back on the filter button");
   await m.unmount();
 });
 
-test(name("P2-7: the preview banner names the version by its time and author, not by a change's summary"), async () => {
+test(name("P2-7: Play on an older version views it, named by its time and author, not by a change's summary"), async () => {
   const ui = createMockUi({ versions: 30 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const plain = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.provisional === undefined && r.dataset.kind !== "turn")!;
-  rect(plain, { top: 0, bottom: 52 });
+  // a plain edit of yours, not the newest: "Trimmed “Product close-up”…" is Codex's; your group is "Moved “Interview B”…"
+  const plain = $$(m.container, ".carton-version").find((r) => r.dataset.group !== undefined)!;
   plain.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   await flush();
-  assert.match(ui.preview()?.label ?? "", /^the version from \d{1,2}:\d{2}(\s?[AP]M)? \(.+\)$/);
+  assert.equal(ui.viewing(), null, "a double-click views nothing (DESIGN §4.2)");
+  await click(plain);
+  await waitFor(() => !!byText(m.container, ".carton-card-version button", "Play all") && !(byText(m.container, ".carton-card-version button", "Play all") as HTMLButtonElement).disabled, "Play all");
+  await click(byText(m.container, ".carton-card-version button", "Play all"));
+  await flush();
+  // one label for a version (PLAN 0.9): who and when, always with am/pm
+  assert.match(ui.viewing()?.label ?? "", /^(Your|.+'s) edit from \d{1,2}:\d{2} [ap]m$/);
+  assert.equal(ui.viewing()?.kind, "version");
+  // its row says so: "Viewing ✕"
+  const viewed = $(m.container, ".carton-version[data-viewing]")!;
+  assert.match(viewed.textContent ?? "", /Viewing/);
+  await click($(viewed, ".carton-version-back"));
+  assert.equal(ui.viewing(), null, "its ✕ goes back to your edit");
   await m.unmount();
 });
 
@@ -161,10 +123,11 @@ test(name("P2-19, P2-1: Main's cut menu folds another cut in here; leaving New c
   const trigger = $(m.container, ".carton-menu-trigger")!;
   assert.equal(trigger.getAttribute("aria-label"), "Cut: Main cut");
   await click(trigger);
-  await click(byText(m.container, "[role=menuitem]", "Fold “30s Instagram cut” in here"));
-  assert.deepEqual(folds, [["cut-ig", "cut-main"]]);
+  // into the cut you're on (Main), from the cut changed most recently: the Director's
+  await click(byText(m.container, "[role=menuitem]", "Fold in changes from a cut…"));
+  assert.deepEqual(folds, [["cut-dir", "cut-main"]]);
   await click($(m.container, ".carton-menu-trigger"));
-  await click(byText(m.container, "[role=menuitem]", "New cut from here"));
+  await click(byText(m.container, "[role=menuitem]", "New cut from your edit"));
   const input = $(m.container, ".carton-menu-form input")!;
   assert.equal(document.activeElement, input);
   await key(input, "Escape");
@@ -195,18 +158,6 @@ test(name("P2-1, P2-20: Esc on a typed reply asks once before discarding it; the
   assert.match($(thread, ".carton-comment-esc")?.textContent ?? "", /Press Esc again to discard it/);
   await key($(thread, "textarea")!, "Escape");
   assert.equal($(thread, "textarea"), null, "a second Esc discards it");
-  await m.unmount();
-});
-
-test(name("review finding 4: Space and the arrows in Watch never reach Cardboard's own shortcuts, nor does a button's Space"), async () => {
-  const ui = createMockUi({ versions: 10 });
-  let reached = 0;
-  const m = await render(wrap(ui, h("div", { onKeyDown: () => reached++ }, h(WatchTheChanges, { a: "main@3", b: "main@9" }))));
-  await flush();
-  const root = $(m.container, ".carton-watch")!;
-  for (const k of [" ", "ArrowRight", "ArrowLeft"]) await key(root, k);
-  await key(byText(root, "button", "Play changes") ?? byText(root, "button", "Pause"), " ");
-  assert.equal(reached, 0);
   await m.unmount();
 });
 
@@ -242,7 +193,7 @@ test(name("P2-17: a long History is grouped by day; a folded day keeps its ancho
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   const today = $$(m.container, ".carton-day")[0]!;
   assert.equal(today.getAttribute("aria-expanded"), "true", "today is open");
-  assert.match(today.textContent ?? "", /^Today\d[\d,]* versions$/);
+  assert.equal(today.textContent, "Today", "an open day shows no count (docs/carton-ux DESIGN §6.1)");
   assert.ok($$(m.container, "[role=option]").length < 40, "still a window of rows at 10k");
   // fold today: the older days, folded from the start, come into view
   await click(today);
@@ -289,40 +240,28 @@ test(name("P2-17: the reader keeps their place in a grouped History while versio
   };
   await scrollTo(5200); // 100 rows down
   const before = list.scrollTop;
-  const topRow = () => $$(m.container, ".carton-vrow").map((r) => [r, parseFloat((r.style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "0")] as const).filter(([, y]) => y <= list.scrollTop).sort((a, b) => b[1] - a[1])[0]![0].querySelector("[role=option]")!.id;
-  const was = topRow();
-  await act(async () => { ui.addVersion(); ui.addVersion(); });
+  const ty = (r: HTMLElement) => parseFloat((r.style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "0");
+  const topRow = () => $$(m.container, ".carton-vrow").map((r) => [r, ty(r)] as const).filter(([, y]) => y <= list.scrollTop).sort((a, b) => b[1] - a[1])[0]![0];
+  const was = topRow(), id = was.querySelector("[role=option]")!.id, y0 = ty(was);
+  // two versions by two teammates, so each is a row of its own (a person's run of edits is one row: DESIGN §6.1)
+  await act(async () => { ui.addVersion({ author: people.bob }); ui.addVersion({ author: people.priya }); });
   await flush();
-  assert.equal(list.scrollTop, before + 2 * 52, "shifted by the two rows that arrived above");
-  assert.equal(topRow(), was, "the same row is still at the top");
+  const now = $$(m.container, ".carton-vrow").find((r) => r.querySelector("[role=option]")?.id === id)!;
+  assert.equal(ty(now) - y0, 2 * 56, "the two rows that arrived above moved it down");
+  assert.equal(list.scrollTop, before + 2 * 56, "and the view moved with it");
+  assert.equal(topRow().querySelector("[role=option]")!.id, id, "the same row is still at the top");
   await m.unmount();
 });
 
-test(name("P2-5: the Compare card lists what changed, five at once, the rest on Show more"), async () => {
-  const ui = createMockUi({ versions: 30 });
-  const changes = ["Moved 'Intro' 0:02.0 → 0:04.0", "Changed 'W1' text \"Hi\" → \"Hello world\"", "Trimmed 'Outro' end 6.0 s → 4.5 s", "Added caption 'Sale'", "Deleted video 'B-roll'", "Changed 'Intro' volume 100 → 80", "Moved 'CTA' 0:30.0 → 0:31.0"];
-  const comparison = { ...(await ui.compare("main@3", "main@30")), changes };
-  const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@30", comparison })));
-  await flush();
-  const card = $(m.container, ".carton-compare")!;
-  assert.match($(card, ".carton-compare-diff")!.textContent ?? "", /^7 changes · /);
-  assert.deepEqual($$(card, ".carton-compare-change").map((li) => li.textContent), changes.slice(0, 5));
-  await click(byText(card, "button", "Show 2 more"));
-  assert.equal($$(card, ".carton-compare-change").length, 7);
-  await click(byText(card, "button", "Show fewer"));
-  assert.equal($$(card, ".carton-compare-change").length, 5);
-  // the same two versions
-  const same = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@3", comparison: { ...comparison, changes: [], diff: { shots: 0, seconds: 0, total: 10 } } })));
-  await flush();
-  assert.equal($(same.container, ".carton-compare-diff")!.textContent, "No differences");
-  assert.equal($(same.container, ".carton-compare-changes"), null);
-  await same.unmount();
-  await m.unmount();
-});
-
-test(name("P2-17 with P1-5: a version's changes open in place inside a History grouped by day"), async () => {
+test(name("P2-17 with P1-5: a version's card opens in place inside a History grouped by day"), async () => {
   const ui = createMockUi({ versions: 10_000 });
-  await act(async () => { ui.addVersion({ summary: "Folded in 'Client review' (2 of 3 changes)", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s", "Changed 'W2' text", "Trimmed 'Intro'"] } as never); });
+  await act(async () => {
+    ui.addVersion({ author: people.bob, summary: "Folded in “Client review”", kind: "fold" }, [
+      { key: "a", text: "Moved “clip.mp4” 2 s later (now starts at 0:02)", kind: "change", clip: "video", at: 2, end: 6 },
+      { key: "b", text: "Changed “W2” to “Hello”", kind: "change", clip: "title", at: 4, end: 8 },
+      { key: "c", text: "Trimmed “Intro”, now ends at 0:05", kind: "change", clip: "video", at: 0, end: 5 },
+    ]);
+  });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 800 })));
   await flush();
   const top = (el: Element) => parseFloat(((el as HTMLElement).style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "NaN");
@@ -330,13 +269,14 @@ test(name("P2-17 with P1-5: a version's changes open in place inside a History g
   // the day header, then the new version, then the rest of today
   assert.ok(vrows()[0]!.querySelector(".carton-day"), "today's header first");
   const row = vrows()[1]!, next = vrows()[2]!;
-  assert.ok(row.querySelector(".carton-version-expand"));
   const nextTop = top(next), rowHeight = parseFloat(row.style.height);
-  await click(row.querySelector(".carton-version-expand"));
+  await click(row.querySelector(".carton-version"));
   await flush();
   const opened = vrows()[1]!;
-  assert.equal(opened.querySelector(".carton-version-expand")!.getAttribute("aria-expanded"), "true");
-  assert.equal($$(opened, ".carton-version-details li").length, 3);
+  assert.equal(opened.querySelector(".carton-version")!.getAttribute("aria-expanded"), "true");
+  // its changes in timeline order, as change rows: where, what kind of clip, what happened
+  assert.deepEqual($$(opened, ".carton-change-time").map((t) => t.textContent), ["0:00", "0:02", "0:04"]);
+  assert.equal($$(opened, ".carton-change-chip[data-clip=title]").length, 1);
   const extra = parseFloat(opened.style.height) - rowHeight;
   assert.ok(extra > 0, "the opened row is taller");
   assert.equal(top(vrows()[2]!), nextTop + extra, "the rows below it move down by exactly that, in the grouped layout");

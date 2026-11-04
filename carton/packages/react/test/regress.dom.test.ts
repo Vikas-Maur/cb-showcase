@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { VirtualList } from "../src/virtual.ts";
 import { dayNumber } from "../src/history-groups.ts";
-import { createMockUi } from "../src/mock.ts";
+import { createMockUi, people } from "../src/mock.ts";
 import { commentsSkin } from "../src/comments/skin.ts";
 import { cardboardSkin } from "../src/skin/cardboard.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -20,20 +20,24 @@ const name = (t: string) => `${t} [${runtime}]`;
 // made these tests fail from the day after it.
 const todayAt = (hour: number) => {
   const d = new Date();
-  d.setHours(hour, 0, 0, 0);
+  d.setHours(Math.floor(hour), Math.round((hour % 1) * 60), 0, 0);
   return d.getTime();
 };
 const ty = (el: Element) => parseFloat(((el as HTMLElement).style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "NaN");
 
 // Regress #2: a reader who picked a version, then scrolled away from it (into an older day), was pulled back to it when a
 // new version arrived: the active row's index and the rows' layout moved, and the list kept the active row in view.
-for (const [label, hour, grouped] of [["grouped by day, scrolled into an older day", 1, true], ["one day", 14, false]] as const)
+// (the mock's newest 80 minutes are the redesign's story, its other versions before them: at 2:20 am, yesterday starts
+// about 48 rows down)
+for (const [label, hour, grouped] of [["grouped by day, scrolled into an older day", 2 + 20 / 60, true], ["one day", 14, false]] as const)
   test(name(`regress #2: a new version keeps the reader's place after they picked a row and scrolled away (${label})`), async () => {
     const ui = createMockUi({ versions: 120, now: todayAt(hour) });
     const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
     await flush();
     const list = $(m.container, ".carton-history-list")!;
-    assert.equal($$(m.container, ".carton-day").length > 0, grouped, grouped ? "the History spans two days" : "one day: no day headers");
+    // (every History has its day headers now, "Today" too: docs/carton-ux DESIGN §6.1)
+    assert.ok($$(m.container, ".carton-day").length > 0);
+    assert.equal(new Set(ui.history().all!().map((v) => dayNumber(v.at))).size > 1, grouped, grouped ? "the History spans two days" : "one day");
     const scrollTo = async (y: number) => {
       list.scrollTop = y;
       await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
@@ -50,9 +54,10 @@ for (const [label, hour, grouped] of [["grouped by day, scrolled into an older d
     const before = list.scrollTop;
     const topRow = () => $$(m.container, ".carton-vrow").map((r) => [r, ty(r)] as const).filter(([, y]) => y <= list.scrollTop).sort((a, b) => b[1] - a[1])[0]![0].querySelector("[role=option]")!.id;
     const was = topRow();
-    await act(async () => { ui.addVersion(); });
+    // a teammate's version: a row of its own (a person's run of edits would join their row: DESIGN §6.1)
+    await act(async () => { ui.addVersion({ author: people.bob }); });
     await flush();
-    assert.equal(list.scrollTop, before + 52, "shifted by the row that arrived above, never back to the picked row");
+    assert.equal(list.scrollTop, before + 56, "shifted by the row that arrived above, never back to the picked row");
     assert.equal(topRow(), was, "the same row is still at the top");
     // the picked row is still the picked one, wherever it is now
     assert.equal($$(m.container, ".carton-version[data-active]").length, 0, "the picked row is off screen (it stays picked)");
@@ -165,15 +170,21 @@ test(name("regress P3-5: Esc on a row's menu leaves that row picked, and ↓ goe
   await m.unmount();
 });
 
-// Regress P3-12: a version's one change was offered as "Show all 1 changes".
-test(name("regress P3-12: a version of one change offers \"Show the change\""), async () => {
+// Regress P3-12: a version's one change was offered as "Show all 1 changes". A version's count reads "1 change", and
+// its card lists that one change, with no "and N more".
+test(name("regress P3-12: a version of one change reads \"1 change\", and its card lists the one"), async () => {
   const ui = createMockUi({ versions: 10 });
-  await act(async () => { ui.addVersion({ summary: "Folded 'Client review' into 'Main cut'", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s"] } as never); });
+  await act(async () => {
+    ui.addVersion({ author: people.bob, kind: "fold", summary: "Folded in “Client review”" }, [{ key: "x", text: "Moved “clip.mp4” 2 s later (now starts at 0:02)", kind: "change", clip: "video", at: 2, end: 6 }]);
+  });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
-  const toggle = $(m.container, ".carton-version-expand")!;
-  assert.equal(toggle.getAttribute("aria-label"), "Show the change");
-  assert.equal(toggle.textContent, "1 change");
+  const row = $$(m.container, ".carton-version")[0]!;
+  assert.match($(row, ".carton-version-count")!.textContent ?? "", /^1 change$/);
+  await click(row);
+  await flush();
+  assert.equal($$(m.container, ".carton-card-version .carton-change").length, 1);
+  assert.equal($(m.container, ".carton-card-more"), null, "no \"and N more\"");
   await m.unmount();
 });
 
@@ -201,10 +212,37 @@ test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolle
   list.scrollTop = top + 52 * 12;
   await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
   const before = list.scrollTop;
-  for (let i = 0; i < 3; i++) {
-    await act(async () => { ui.addVersion(); });
+  // three versions, each a row of its own (by turns, so no two join one person's row: DESIGN §6.1)
+  for (const author of [people.bob, people.priya, people.bob]) {
+    await act(async () => { ui.addVersion({ author }); });
     await flush();
   }
-  assert.equal(list.scrollTop, before + 3 * 52, "moved only by the three rows that arrived above, never back to Yesterday's header");
+  assert.equal(list.scrollTop, before + 3 * 56, "moved only by the three rows that arrived above, never back to Yesterday's header");
   await m.unmount();
+});
+
+// Design QA v2 G16: the pinned day header said "Today" for a header's height after yesterday's rows reached the top. Its
+// day is the row under its bottom edge (32 px down), not the row at the very top, which the pinned header covers.
+test(name("design QA v2 G16: the first visible row is read under the pinned header's bottom edge"), async () => {
+  // rows: Today's header (32), two versions (56 each), Yesterday's header (32), its versions; tops 0, 32, 88, 144, 176…
+  const heights = [32, 56, 56, 32, 56, 56, 56, 56, 56, 56];
+  const seen: number[] = [];
+  const view = (at?: number) => h(VirtualList, { count: heights.length, rowHeight: 56, heightOf: (i: number) => heights[i]!, layoutKey: "same", rowKey: (i: number) => `r${i}`, label: "History", initialHeight: 200, renderRow: (i: number) => h("div", null, `r${i}`), onFirstVisible: (i: number) => seen.push(i), ...(at === undefined ? {} : { firstVisibleAt: at }) });
+  for (const at of [undefined, 32]) {
+    seen.length = 0;
+    const m = await render(view(at));
+    const list = $(m.container, ".carton-vlist") as HTMLElement;
+    let st = 0;
+    Object.defineProperty(list, "scrollTop", { get: () => st, set: (v: number) => (st = v), configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
+    // 120 px down: the top is inside Today's last version (88–144); 32 px lower is Yesterday's header (144–176)
+    st = 120;
+    await act(() => {
+      list.dispatchEvent(new Event("scroll"));
+    });
+    await flush();
+    await act(() => new Promise<void>((r) => setTimeout(r, 20)));
+    assert.equal(seen.at(-1), at === undefined ? 2 : 3, at === undefined ? "without an offset: the row at the top" : "History's: the row under the header");
+    await m.unmount();
+  }
 });

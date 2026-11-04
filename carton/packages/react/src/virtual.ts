@@ -80,6 +80,20 @@ export interface VirtualListProps {
   onScrolledChange?: (scrolled: boolean) => void;
   /** One row opened to `extra` px more than the others (a version's list of changes, UI audit P1-5). */
   expanded?: { index: number; extra: number } | null;
+  /**
+   * A key on the list before its own handling (History's → ← Space F2 Esc, docs/carton-ux DESIGN §7), with the active
+   * row (-1: none). Return true when taken: the list then does nothing more with it, and nobody else sees it.
+   */
+  onKey?: (e: KeyboardEvent<HTMLDivElement>, index: number) => boolean;
+  /** Set to scroll the list back to its top ("↑ Newest"): called with a function that does it. */
+  scrollTopRef?: { current: (() => void) | null };
+  /** The row at the top of the view changed (History's sticky day header): called only when it does. */
+  onFirstVisible?: (index: number) => void;
+  /**
+   * How far down the view `onFirstVisible`'s row is read, in px (default 0): History's pinned day header covers the
+   * view's top 32 px, so its day is the row under its bottom edge (design QA v2 G16: it lagged a header's height).
+   */
+  firstVisibleAt?: number;
 }
 
 export function VirtualList(p: VirtualListProps) {
@@ -112,6 +126,9 @@ export function VirtualList(p: VirtualListProps) {
   const scrolled = useRef(false);
   const onScrolledChange = useRef(p.onScrolledChange);
   onScrolledChange.current = p.onScrolledChange;
+  const onFirstVisible = useRef(p.onFirstVisible);
+  onFirstVisible.current = p.onFirstVisible;
+  const firstShown = useRef(-1);
 
   const recompute = useCallback(() => {
     const el = ref.current;
@@ -126,9 +143,17 @@ export function VirtualList(p: VirtualListProps) {
       scrolled.current = st > 0;
       onScrolledChange.current?.(scrolled.current);
     }
+    if (onFirstVisible.current && p.count > 0) {
+      const y = st + (st > 0 ? (p.firstVisibleAt ?? 0) : 0);
+      const first = tops ? rowAt(tops, p.count, y) : Math.min(p.count - 1, Math.floor(y / p.rowHeight));
+      if (first !== firstShown.current) {
+        firstShown.current = first;
+        onFirstVisible.current(first);
+      }
+    }
     setRange((prev) => (prev[0] === next[0] && prev[1] === next[1] ? prev : next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewport, p.rowHeight, p.count, overscan, tops]);
+  }, [viewport, p.rowHeight, p.count, overscan, tops, p.firstVisibleAt]);
 
   // A scroll's new rows are rendered in a task after the frame (as React's scheduler does for scroll), never inside
   // it: preact/compat renders state set in a scroll handler at once, which put a whole window of row mounts on the
@@ -170,11 +195,13 @@ export function VirtualList(p: VirtualListProps) {
     lastCount.current = p.count;
     if (tops) {
       // Rows of their own heights: find the row that was at the top, wherever the change put it.
+      // (how far into it, within its height now: a row that got shorter, a landmark's title back on one line, keeps
+      // the view on it rather than on the row under it; design QA v2 G9)
       const a = anchor.current;
       if (!el || !a || el.scrollTop <= 0) return;
       for (let i = 0; i < p.count; i++) {
         if (rowKeyRef.current(i) !== a.key) continue;
-        const y = tops[i]! + a.into;
+        const y = tops[i]! + Math.max(0, Math.min(a.into, tops[i + 1]! - tops[i]! - 1));
         if (Math.abs(y - el.scrollTop) >= 1) el.scrollTop = y;
         break;
       }
@@ -184,6 +211,30 @@ export function VirtualList(p: VirtualListProps) {
   }, [p.count, p.newestFirst, p.rowHeight, tops]);
 
   useLayoutEffect(recompute, [recompute]);
+  // A list that goes away was scrolled no more: the host's "scrolled" said so until its next scroll, so a list put back
+  // at its top (History while a search loads, design QA v2) kept "↑ Newest" over rows that were already the newest
+  useEffect(
+    () => () => {
+      if (scrolled.current) onScrolledChange.current?.(false);
+    },
+    [],
+  );
+
+  // "↑ Newest": back to the top (the host keeps a ref to call it)
+  useEffect(() => {
+    const r = p.scrollTopRef;
+    if (!r) return;
+    r.current = () => {
+      const el = ref.current;
+      if (!el) return;
+      anchor.current = null;
+      el.scrollTop = 0;
+      recomputeRef.current();
+    };
+    return () => {
+      r.current = null;
+    };
+  }, [p.scrollTopRef]);
 
   useEffect(() => {
     const el = ref.current;
@@ -223,9 +274,14 @@ export function VirtualList(p: VirtualListProps) {
     e.stopPropagation();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Keys typed in a field inside a row (naming a version) belong to the field, not to the list.
+    // Keys typed in a field inside a row (naming a version) belong to the field, not to the list; so do keys inside a
+    // part of a row that has keys of its own (a version's card and its change rows: `data-own-keys`).
     const t = e.target as HTMLElement;
-    if (t !== e.currentTarget && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.tagName === "BUTTON" || t.isContentEditable)) return;
+    if (t !== e.currentTarget && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.tagName === "BUTTON" || t.isContentEditable || !!t.closest?.("[data-own-keys]"))) return;
+    if (p.onKey?.(e, p.active ?? -1)) {
+      take(e);
+      return;
+    }
     if (!p.onActiveChange || !p.count) return;
     const page = Math.max(1, Math.floor(viewport / p.rowHeight) - 1);
     const cur = p.active ?? -1;

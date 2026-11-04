@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
+import { cardboardValue, describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
@@ -461,6 +461,51 @@ const actorOf = (id) => {
 // "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
 // session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
 // recorded as. GUI saves stay recorded as "person" either way.
+// Carton UX v2 (N0). The worker's way to an agent's Compare (`cb compare … --show`: the holder's openView), set by
+// workerServices; a page has this long to say whether it opened (DESIGN-V2 §1.13: it may wait 8 s for the person).
+let openViewIn = null;
+const COMPARE_ANSWER_MS = 10_000;
+/**
+ * A project's landmark pictures (DESIGN-V2 §2.2): `<bundle>/.carton/pictures/<key>.jpg`, one per version (core's
+ * `pictureKey`), at most 64 KB each, written whole (a temporary file renamed over it).
+ */
+function landmarkPictures(bundlePath) {
+  const dir = path.join(bundlePath, ".carton", "pictures");
+  const file = (key) => {
+    if (typeof key !== "string" || !/^[A-Za-z0-9._-]+@\d+$/.test(key)) throw new Error("not a picture key");
+    return path.join(dir, key + ".jpg");
+  };
+  return {
+    get: async (key) => {
+      try { return "data:image/jpeg;base64," + (await fs.promises.readFile(file(key))).toString("base64"); }
+      catch { return null; }
+    },
+    put: async (key, jpeg) => {
+      const bytes = Buffer.from(String(jpeg).replace(/^data:image\/jpeg;base64,/, ""), "base64");
+      if (!bytes.length || bytes.length > 65536 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("a landmark's picture is a JPEG of at most 64 KB");
+      await fs.promises.mkdir(dir, { recursive: true });
+      const tmp = file(key) + "." + process.pid + ".tmp";
+      await fs.promises.writeFile(tmp, bytes);
+      await fs.promises.rename(tmp, file(key));
+    },
+  };
+}
+/**
+ * A Start landmark before the person's first change after an hour away (DESIGN-V2 §2.1), from the change event, after
+ * the save: one small write at most an hour apart, never on the save's path. Once per project handle.
+ */
+const startWatched = new WeakSet();
+function watchStarts(lc, me) {
+  if (startWatched.has(lc)) return;
+  startWatched.add(lc);
+  let last = null;
+  lc.carton.on((e) => {
+    if (e.type !== "change" || !e.local || e.change?.author?.kind !== "human") return;
+    const at = e.change.at, prev = last;
+    last = at;
+    if (prev !== null && at - prev >= 3_600_000 && e.seq > 0) void lc.carton.mark?.("start", { ref: { branchId: e.branchId, seq: e.seq - 1, pending: [] }, once: "version", by: me, at: prev + 1 }).catch(() => {});
+  });
+}
 const meOf = (lc) => {
   const who = lc.carton.identity?.();
   return who ? { kind: "human", id: who.id, name: who.name, group: localGroup(), app: true } : actorOf("person");
@@ -498,6 +543,18 @@ async function keepStepCards(lc, bundlePath, author, which, cards) {
 // `sameCard` tells them apart) once, so resolving a card removes every kept card identical to it, and no other. An
 // agent's view-save cards are the other way round; sync/view-cards.js shows them to the person (`agentCards`).
 const panels = new Map();
+// An agent working on a project (UX redesign 0.7): the in-app turn main says is running, per bundle and chat, newest
+// last. Every History panel on that project shows it (fromCarton's setWorking), one opened later too.
+const workingTurns = new Map();
+// The newest running turn of a bundle, in fromCarton's setWorking shape, or null.
+const workingOf = (bundlePath) => {
+  const turns = [...(workingTurns.get(bundlePath)?.values() ?? [])];
+  return turns.at(-1) ?? null;
+};
+const showWorking = (bundlePath) => {
+  const w = workingOf(bundlePath);
+  for (const h of panels.get(bundlePath) ?? []) try { h.setWorking?.(w); } catch {}
+};
 
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
@@ -1530,20 +1587,48 @@ export const cardboard14 = {
     const servers = new Map(); // client → serveUi
     const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
     const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
-    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards }, own) };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards, openView: (projectId, view, by) => (openViewIn ? openViewIn(projectId, view, by) : Promise.resolve({ opened: 0 })) }, own) };
   },
   workerServices({ library, emit, bundleOf, lcOf, servers }) {
+    // Carton UX v2 (N0): which project each page's panel shows (an agent's Compare goes to those pages), and the
+    // Compare asks waiting for a page's answer (DESIGN-V2 §1.13)
+    const clientProject = new Map();
+    const compareAsks = new Map();
+    openViewIn = async (projectId, view, by) => {
+      const pages = [...clientProject.values()].filter((p) => p === projectId).length;
+      if (!pages || view?.view !== "compare") return { opened: 0 };
+      const request = `compare-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const cutOf = (r) => String(r).replace(/@\d+$/, "");
+      const name = by?.name ?? { claude: "Claude Code", codex: "Codex" }[by?.provider] ?? (by?.kind === "agent" ? "An agent" : "Someone");
+      const answer = new Promise((resolve) => {
+        const t = setTimeout(() => { compareAsks.delete(request); resolve(null); }, COMPARE_ANSWER_MS);
+        t.unref?.();
+        compareAsks.set(request, (a) => { clearTimeout(t); compareAsks.delete(request); resolve(a); });
+      });
+      emit({ kind: "carton", id: projectId, topic: "compare", compare: { from: String(view.from), to: String(view.to), between: cutOf(view.from) === cutOf(view.to) ? "versions" : "cuts", by: { kind: String(by?.kind ?? "agent"), id: String(by?.id ?? ""), ...(by?.name ? { name: by.name } : {}) }, byName: name, at: Date.now(), request } });
+      const shown = await answer;
+      return { opened: pages, ...(shown ? { shown } : {}) };
+    };
     // A page's History panel: a fromCarton handle on the project's Carton, served to that page (serveUi).
     const servePanel = async (projectId, client) => {
       const lc = await lcOf(projectId);
       if (!lc) return null;
       const me = meOf(lc);
-      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids.
-      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard });
-      const ui = handle.ui ?? handle;
+      // Cards and change rows in the editor's words: what each side did differently, a clip by its media's file name,
+      // volume in percent, speed as ×; never ids. A card's sides are change sentences too ("Moved it to start at 0:20",
+      // docs/carton-ux PLAN 7.1), in the same units.
       const bundlePath = bundleOf(projectId);
+      // Carton UX v2 (N0): a landmark's picture (DESIGN-V2 §2.2), kept beside the project's history as a small JPEG
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue, ...(bundlePath ? { pictures: landmarkPictures(bundlePath) } : {}) });
+      const ui = handle.ui ?? handle;
+      // the editor opened the project: how it was then is a Start landmark (once per version, this person's own)
+      void lc.carton.mark?.("start", { once: "version", by: me }).catch(() => {});
+      watchStarts(lc, me);
+      clientProject.set(client, projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
       panels.get(bundlePath).add(handle);
+      // an agent already working on it (0.7)
+      if (workingOf(bundlePath)) handle.setWorking?.(workingOf(bundlePath));
       // Cards kept from earlier GUI saves are shown too, until resolved: each on the cut its change was made on (core's
       // notice says which). fromCarton files a reported card under the cut it is on, so a notice is reported only while
       // the panel is on its cut: at the start, and again after the panel switches cut (review H8 r2 #3: one from cut A
@@ -1574,14 +1659,16 @@ export const cardboard14 = {
       // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
       // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
       // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+      // (Carton UX v2 N0: and a bring-back of one clip)
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "restoreClip", "nameVersion", "undo", "undoTurnOf", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).
           const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
-          // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
+          // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js). Its answer
+          // says what the pick made, if anything (`made`, for its toast's Undo: PLAN 5.3), as fromCarton's own does.
           const agents = views.isAgent(card);
-          const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
+          const r = agents ? (await views.resolve(lc, handle, a[0], a[1])).answer : await f.apply(ui, a);
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
           else if (headRefusals.has(bundlePath)) throw new Error(HEAD_REFUSED);
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
@@ -1635,6 +1722,7 @@ export const cardboard14 = {
       const close = () => {
         for (const off of offs) off();
         servers.delete(client);
+        clientProject.delete(client);
         panels.get(bundlePath)?.delete(handle);
         s.close();
         handle.dispose?.();
@@ -1677,31 +1765,95 @@ export const cardboard14 = {
       const [u, r] = await Promise.all([lc.carton.undoStack(group, { ...scope, limit: 1 }), lc.carton.redoStack(group, { ...scope, limit: 1 })]);
       return { undo: u.length > 0, redo: r.length > 0 };
     };
-    const step = async (which, projectId, since) => {
+    // A toast's Undo or Redo (UX redesign PLAN 5.3) is Ctrl+Z's own step for exactly what one action made (`only`: its
+    // cut and change ids, oldest first): only while those are still the newest things this step would take back (or put
+    // again) on that cut, newest first, is anything done; else nothing is written ("moved": a later edit, the person's
+    // own or an agent's they started, is on top, and an Undo now would take that back instead). Ctrl+Z itself still
+    // takes the newest. The ids are the action's (fromCarton's `made`) or a step's own (this answer's `made`). Checked
+    // here first (nothing written when they aren't all on top), and each step again inside its own write (core's
+    // `expect`), so an edit landing between the check and a step is never the one taken back (review of WS5 #1).
+    const onStack = async (lc, which, since, only) => {
+      const { group, ...scope } = scopeOf(since);
+      const n = only.changes.length;
+      const top = await (which === "undo" ? lc.carton.undoStack(group, { ...scope, cut: only.cut, limit: n }) : lc.carton.redoStack(group, { ...scope, cut: only.cut, limit: n }));
+      return top.length === n && top.every((e, i) => e.changeId === only.changes[n - 1 - i]);
+    };
+    // What a Ctrl+Z took back, when it was a restore or a fold (PLAN 5.3: "Restore undone." [Redo]), read while head goes
+    // into project.json. Cheap: the version of the change it undid (its entry, `undid`), read alone, nothing described
+    // (the review of WS5 measured Ctrl+Z slower when every one read the undo's whole version in words). Only an undo of
+    // a revert (a redo, Fold in the rest) asks core's words for the undo's own version, which follow such a chain back
+    // to the restore or the fold. A redo says nothing: its toast's own Redo knows what it puts back.
+    const STEPPED = /^(undo|redo)-(restore|fold)$/;
+    const toldOf = async (lc, cut, which, r) => {
+      if (which !== "undo" || r?.status !== "confirmed" || r.empty || !r.id || typeof r.undid?.seq !== "number") return null;
+      const seq = r.undid.seq;
+      const [v] = await lc.carton.log({ cut, before: seq + 1, limit: 1 });
+      if (v?.ref?.seq !== seq) return null;
+      if (v.kind === "restore") return "undo-restore";
+      // a fold, and a fold-some (its fold and partial revert are one version, of kind merge)
+      if (v.kind === "merge") return "undo-fold";
+      if (v.kind !== "revert") return null;
+      const [u] = await lc.carton.log({ cut, limit: 1, summary: true, rows: true });
+      return u?.change === r.id && STEPPED.test(u.title?.kind ?? "") ? u.title.kind : null;
+    };
+    const step = async (which, projectId, since, only) => {
       const lc = await lcOf(projectId);
       if (!lc) return { status: "unavailable" };
-      const op = { kind: which, ...scopeOf(since) }, actor = actorOf("person");
+      const valid = only && typeof only.cut === "string" && Array.isArray(only.changes) && only.changes.length > 0 && only.changes.every((x) => typeof x === "string");
+      if (only && !valid) return { status: "moved" };
+      const cut = valid ? only.cut : lc.carton.cut;
+      if (valid && !(await onStack(lc, which, since, only))) return { status: "moved", ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+      const op = { kind: which, ...scopeOf(since), ...(valid ? { cut } : {}) }, actor = actorOf("person");
       const here = extensions.find((e) => typeof e.serveHere === "function");
       const bundlePath = bundleOf(projectId);
       // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
       let r;
-      try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
-      catch (e) {
-        // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
-        // page says so, and never falls back to Cardboard's own undo
-        if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
-        throw e;
+      const made = [];
+      // (an action that made several versions, a fold with what earlier partial folds left out, takes as many steps,
+      // newest first, each only if its version is the newest on the stack then: core's `expect`, inside the write)
+      const n = valid ? only.changes.length : 1;
+      for (let i = 0; i < n; i++) {
+        const stepOp = valid ? { ...op, expect: only.changes[n - 1 - i] } : op;
+        try { r = (bundlePath && (await here?.serveHere(bundlePath, stepOp, actor))) ?? (await lc.write(stepOp, { actor, gui: true })); }
+        catch (e) {
+          // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
+          // page says so, and never falls back to Cardboard's own undo
+          if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+          // something else landed on top since the check: this step changes nothing
+          if (e?.code === "STACK_MOVED") { r = { status: "moved" }; break; }
+          throw e;
+        }
+        if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+        if (r?.status === "error" && r.code === "STACK_MOVED") { r = { status: "moved" }; break; }
+        if ((r?.status !== "confirmed" && r?.status !== "pending") || !r.id || r.empty) break;
+        made.push(r.id);
       }
-      if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+      // moved before anything was taken back: nothing to write out (moved part-way: the steps made are said, `made`)
+      if (r?.status === "moved" && !made.length) return { status: "moved", ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
       // local's write path answers a clash as `conflicts` (the cards)
       if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
-      // what is left to undo and redo, read while head goes into project.json
-      const [project, can] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null)]);
+      // what is left to undo and redo, and what the step was, read while head goes into project.json
+      const [project, can, told] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null), toldOf(lc, cut, which, r).catch(() => null)]);
       if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}) };
+      // `made`: the versions the step made (oldest first), what its toast's Redo or Undo takes back in turn
+      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}), ...(made.length ? { made: { cut, changes: made } } : {}), ...(told ? { told } : {}) };
     };
     return {
       ping: async () => "pong",
+      // Carton UX v2 (N0): a page's answer to an agent's Compare (`compare` event): opened, offered or refused
+      compareAnswer: async ({ request, status, why }) => {
+        const f = compareAsks.get(String(request));
+        if (f && ["opened", "offered", "refused"].includes(status)) f({ status, ...(typeof why === "string" ? { why } : {}) });
+        return { status: f ? "ok" : "unknown" };
+      },
+      // A landmark the page saw happen (DESIGN-V2 §2.1): an export finished (`exported`, its preset), a link made or a
+      // video published (`sent`). The person's; on a shared cut it reaches teammates through the sync server (core).
+      mark: async ({ projectId, kind, label }) => {
+        const lc = await lcOf(projectId);
+        if (!lc || (kind !== "exported" && kind !== "sent")) return { status: "unavailable" };
+        const l = await lc.carton.mark(kind, { by: meOf(lc), ...(typeof label === "string" && label ? { label: label.slice(0, 120) } : {}) });
+        return { status: "ok", landmark: l };
+      },
       head: async ({ projectId }) => library.projects.read(projectId),
       checkout: async ({ projectId, ref }) => {
         const lc = await lcOf(projectId);
@@ -1715,9 +1867,10 @@ export const cardboard14 = {
       // so where this worker's View holds the project's lease its holder serves the step here, in this process (request
       // R4: local's write path would reach that same holder through its control socket); anywhere else (another
       // process holds the lease, no View runs) it goes through local's write path as before. `since`: when the editor's
-      // session began (the bridge's); the answer says what is left to undo and redo (`can`).
-      undo: ({ projectId, since }) => step("undo", projectId, since),
-      redo: ({ projectId, since }) => step("redo", projectId, since),
+      // session began (the bridge's); the answer says what is left to undo and redo (`can`). `only` (a toast's Undo or
+      // Redo, PLAN 5.3): exactly those versions, or nothing ("moved"); the answer's `made` and `told` say what it did.
+      undo: ({ projectId, since, only }) => step("undo", projectId, since, only),
+      redo: ({ projectId, since, only }) => step("redo", projectId, since, only),
       // What Ctrl+Z and redo can do now, for the editor's buttons and shortcuts.
       undoState: async ({ projectId, since }) => {
         const lc = await lcOf(projectId);
@@ -1729,6 +1882,25 @@ export const cardboard14 = {
       // `until`, its end. Review P2 (lap2): those actors are the same in every turn of a session, and the request can
       // reach this worker after the next turn's edits; bounded by the turn's end, it never takes the next turn's version
       // (a request without `until` has no end, as before).
+      // An in-app agent turn started or ended (main's turnStarted / turnEnded; UX redesign 0.7): the project's History
+      // panels show it working ("Director · Working · 2 changes so far") until it ends. `actors`: the ids its edits are
+      // recorded by. The prompt is its row's title, never logged.
+      working: async ({ projectId, chat, done, provider, actor, prompt, since, actors }) => {
+        const bundlePath = bundleOf(projectId);
+        if (!bundlePath || typeof chat !== "string") return { status: "unavailable" };
+        let turns = workingTurns.get(bundlePath);
+        if (done) turns?.delete(chat);
+        else {
+          const label = turnLabel(prompt) || "Working";
+          if (!turns) workingTurns.set(bundlePath, (turns = new Map()));
+          turns.delete(chat); // newest last
+          const name = { director: "Director", claude: "Claude Code", codex: "Codex", gemini: "Gemini", cursor: "Cursor" }[provider] ?? String(provider ?? "Agent");
+          turns.set(chat, { actor: { kind: "agent", id: String(actor ?? `${provider}/${chat}`), name }, label, ...(typeof since === "number" ? { since } : {}), ...(Array.isArray(actors) ? { actors: actors.map(String) } : {}) });
+        }
+        if (turns && !turns.size) workingTurns.delete(bundlePath);
+        showWorking(bundlePath);
+        return { status: "ok" };
+      },
       nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };

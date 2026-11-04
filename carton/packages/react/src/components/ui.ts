@@ -14,8 +14,8 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { actorColor, actorDetail, actorLabel, initials } from "../actors.ts";
-import { useCartonUi, useWords } from "../hooks.ts";
+import { actorColor, actorDetail, actorLabel, agentOf, initials } from "../actors.ts";
+import { useCartonUi, useCartonUiIfAny, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Actor } from "../model.ts";
 
@@ -63,9 +63,15 @@ export function Button(p: ButtonProps) {
   );
 }
 
-/** Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15). */
-const agentMark = (name: string | undefined): IconName =>
-  /claude/i.test(name ?? "") ? "burst" : /codex/i.test(name ?? "") ? "hexagon" : /director/i.test(name ?? "") ? "clapper" : "sparkle";
+/**
+ * Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15, PLAN 3.1): the Director an
+ * arc of bars (Cardboard's), Claude Code a burst, Codex a knot; any other agent the sparkle.
+ */
+const MARKS: Record<"director" | "claude" | "codex", IconName> = { director: "bars", claude: "burst", codex: "knot" };
+const agentMark = (a: Actor): IconName => {
+  const k = agentOf(a);
+  return k ? MARKS[k] : "sparkle";
+};
 
 /**
  * An actor's avatar. `named`: its name is shown beside it (History rows, cards, Credits), so the avatar is decoration:
@@ -73,12 +79,15 @@ const agentMark = (name: string | undefined): IconName =>
  * has none.
  */
 export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?: number; title?: string; named?: boolean }) {
-  const ui = useCartonUi();
+  // Comments draws its people with it too, and may have no CartonProvider: then agents aren't looked up by key
+  const ui = useCartonUiIfAny();
+  const byKey = ui ? ui.actor.bind(ui) : undefined;
   const words = useWords();
   if (actor.kind === "system") return null;
-  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3).
-  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, ui.actor.bind(ui));
-  const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
+  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3), everywhere
+  // it is drawn: History, Comments and Share (design QA G11).
+  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, byKey);
+  const label = title ?? actorLabel(actor, byKey, words.you);
   // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
   const letters = (s: string) => (size < 20 ? Array.from(s)[0] ?? "?" : s);
   const style: CSSProperties = { width: size, height: size, fontSize: Math.max(7, Math.round(size * (size < 20 ? 0.5 : 0.4))), ["--carton-actor" as string]: color };
@@ -87,11 +96,13 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
       ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.isYou ? words.you : actor.name)))
       : actor.kind === "subagent" && !named
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
-        : h(Icon, { name: agentMark(actor.name), size: Math.round(size * 0.62) });
+        : h(Icon, { name: agentMark(actor), size: Math.round(size * 0.62) });
   // Beside a name, a subagent is its agent ("Director"): the agent's look too.
+  // data-agent: which agent's mark it is (a skin colours Claude Code's burst as Claude's own: History's rows, PLAN 3.1)
+  const agent = agentOf(actor) ?? undefined;
   return named
-    ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, style, "aria-hidden": true }, glyph)
-    : h("span", { className: "carton-avatar", "data-kind": actor.kind, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
+    ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, "data-agent": agent, style, "aria-hidden": true }, glyph)
+    : h("span", { className: "carton-avatar", "data-kind": actor.kind, "data-agent": agent, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
 }
 
 /**
@@ -150,7 +161,8 @@ export function tipIfCut(e: { currentTarget: EventTarget | null }) {
   const el = e.currentTarget as HTMLElement | null;
   if (!el) return;
   const text = el.textContent ?? "";
-  if (el.scrollWidth > el.clientWidth + 1) {
+  // (cut off at its end, or its last part on a line of its own that isn't shown: a row title's place, design QA G14)
+  if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
     if (el.title !== text) el.title = text;
   } else if (el.title) el.removeAttribute("title");
 }
@@ -284,6 +296,10 @@ export interface MenuButtonProps {
   /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
   ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
+  /** Filled with a function that opens the menu (focus goes into it): a host can open it from elsewhere (the cuts menu). */
+  openRef?: { current: (() => void) | null };
+  /** A class on the menu itself. */
+  menuClassName?: string;
 }
 
 /** A button that opens a menu below it. */
@@ -304,6 +320,7 @@ export function MenuButton(p: MenuButtonProps) {
     setOpen(false);
     btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
+  if (p.openRef) p.openRef.current = () => setOpen(true);
   return h(
     "div",
     { className: "carton-menu-anchor", "data-align": p.align ?? "start" },
@@ -328,7 +345,7 @@ export function MenuButton(p: MenuButtonProps) {
       },
       p.trigger,
     ),
-    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current] }, p.children(close))) : null,
+    open ? h("div", { id, className: "carton-menu-pop" }, h(MenuList, { label: p.label, onClose: close, ignore: () => [btn.current], className: p.menuClassName }, p.children(close))) : null,
   );
 }
 
@@ -343,6 +360,8 @@ export interface DialogProps {
   /** Text for the close button. */
   closeLabel?: string;
   describedBy?: string;
+  /** Beside the title, before the close button: a status ("Up to date" in the Share dialog). */
+  aside?: ReactNode;
 }
 
 /** A modal dialog: focus moves in and is trapped, Escape closes, focus returns to where it was. */
@@ -396,6 +415,7 @@ export function Dialog(p: DialogProps) {
         "div",
         { className: "carton-dialog-head" },
         h("h2", { id: titleId, className: "carton-dialog-title" }, p.title),
+        p.aside ?? null,
         h(Button, { variant: "ghost", icon: "x", label: p.closeLabel ?? words.close, onClick: p.onClose, className: "carton-dialog-close" }),
       ),
       h("div", { className: "carton-dialog-body" }, p.children),

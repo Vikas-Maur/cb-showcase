@@ -414,7 +414,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `key` | A key with Ctrl/Alt/Win anywhere, or any key outside a text field, that ran no shortcut or menu item | `combo`, `handled` (`false`: nothing took it; `native`: it pressed a focused button, named in `on`), `field` (see below) |
 | `director.answer` | An agent question was answered | `kind` (`generation`, `question`, `clone`), `outcome` (`approved`, `skipped`, `replied`, `answered`), `waitMs`, `via` (`key:Ctrl+Enter`, `pointer`…), `credits` |
 | `toast` | An error or warning toast | `kind`, `msg`, `detail` |
-| `error` | An uncaught error in a page; with Carton, also one its side panel or stage layer caught (the editor stays: the panel says so), and a teammate's presence the Share panel skipped | `msg`, `src`, `rejection`, `panel` |
+| `error` | An uncaught error in a page; with Carton, also one its side panel, Share dialog or stage layer caught (the editor stays: the panel or dialog says so), and a teammate's presence the Share dialog skipped | `msg`, `src`, `rejection`, `panel` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
 | `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks, and with Carton a `[carton] a cb write waited … ms for timeline.tsx` line for each `cb` write the app took 500 ms or more to show (where the time went: the look at the history, the wait behind the app's other work and its longest tasks, the rewrite, what answered it) | `msg` |
 | `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |
@@ -461,8 +461,8 @@ accelerator tests.
 
 Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
 by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
-`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: History and Share are in the
-title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
+`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: the cut you're on, History and
+Share are in the title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
 (`false`, `off` and `no` work too; for every start, `setx CARDBOARD_CARTON 0` and restart Cardboard). With it off,
 every hook below runs Cardboard's own code, and the app and `cb` read the same variable, so they always agree.
 `build-windows.js --no-carton` leaves Carton out of the build altogether.
@@ -481,6 +481,45 @@ What changes with it on:
   turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). Your
   own Claude Code's edits are credited to "Claude Code" (they used to read "Director (chat …)", and its turns went
   unnamed). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one agent turn.
+- **Finding a version, and bringing back one clip** (Carton UX v2). Every change is a version, so a long history
+  needs finding, by you or your agent:
+  - `cb history <project> --find <words>` finds versions by a clip's name (before or after the change), title and
+    caption text they set, an agent's request, a version's name, a person or a day. Every word matches the start of
+    a word, in any order ("intr cap" finds "Add captions to the intro").
+  - `cb history <project> --landmarks` lists the versions people remember: exported, sent (a link made), named,
+    agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
+  - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
+    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+    It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
+    time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
+    taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
+  - `cb compare <project> <left> [right] --show` opens the comparison in your editor, also between two cuts.
+  - In place of a version you can write `sent`, `exported`, `today`, `now`, a version's name or a cut's name.
+  - The agents' instructions say when to use these ("go back to the version I sent the client", "bring back the old
+    intro", "show me what changed"). The History panel gets the same through its view model (`find`, `landmarks`,
+    `restoreClip`, the Bring back choices, `align`).
+  - The search index is built the first time you search, then kept and extended; nothing is added to saving or opening.
+    Exported and Sent landmarks stay on this computer until the sync server carries them.
+- **The History panel** (Ctrl+Shift+H) reads as a list of what happened, by day: each row says who (an agent's own
+  mark), what (an agent's prompt in quotes, a version's name, or the change itself: "Moved “Interview B” 2 s later")
+  and when (always with am/pm; the newest says **Now**). Your run of edits is one row ("You · 6 changes ›"), an agent
+  at work shows as a live row ("Keep editing. Director sees your changes when its turn ends."), and the cut's start is
+  one row at the bottom. A click opens the version's card under it: how far your edit has moved on since ("Your edit has
+  7 changes since this · See them"), where each change is in the edit (0:12) and on what kind of clip, Play all, and
+  **Go back…** (on the newest agent turn, Undo this turn). Go back… shows the four ways back side by side, smallest
+  first, each saying what it will do before anything happens: **Bring back one clip** (pick a clip that changed, was
+  deleted or wasn't there yet; only it goes back, "Brought back “B-roll pier” as it was at 10:20 am." [Undo]), **Undo
+  Director's turn** (an agent's turn only), **Restore the whole edit**, and **Start a new cut from here**. With a clip
+  selected on the timeline, Bring back is picked for it. A click never changes what the editor shows; only Play does,
+  and the row then says "Viewing ✕"; **press and hold** a row (or hold V) to peek at it on the stage, and let go to
+  come back. The versions people remember are marked on their own, as **landmarks**: Exported, Sent, Named, an agent's
+  turn, the day's Start, and Before (kept just before a restore, only for you), with a small picture of the version,
+  and a folded day keeps them in view. **Find a clip, a word, a person…** above the list finds versions by clip names,
+  title and caption text, agents' requests, names and people, newest first, each saying why it matched. **⇆ Compare**
+  answers "what changed since the version I sent / the last export / this morning / in another cut", and a row's ⋯ →
+  **Compare with…** picks any second version (or another cut) to compare with. A filter (the icon by the cut) shows
+  landmarks, named versions, agent turns, your changes, or only the versions that touched the clip selected on the
+  timeline, with that clip's credits.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
@@ -499,22 +538,92 @@ What changes with it on:
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
-- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
-  panel beside the agent's chat, in the chat's look (drag its edge to resize; under 340 px its tabs not open show their
-  icon only, so they stay clear of the close button); the same icon closes it, and the icon
-  of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
+- **The cut you're on, in the title bar**: on every project tab, before Cardboard's own "16:9 ⌄", a chip names the cut
+  the editor shows: "✂ Main cut ⌄", or a colour dot and the name for any other cut ("● 30s Instagram cut ⌄"; a long
+  name is cut off at 220 px, 150 px in a window under 1180 px wide, and shown whole in its tooltip). It follows every
+  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click opens History
+  with its cuts menu open, the keyboard in it (arrows, Enter, Esc). While the editor shows something other than your
+  own edit (an earlier version opened, a teammate's cut), the chip grows a second part saying what ("👁 The version
+  from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. In a narrow window the chip is what gives way, never the
+  window's own buttons: the editor controls beside the tabs may shrink now (they kept their full width and could push
+  the minimise, maximise and close buttons out at 960 px), the chip's name and label shorten first, and under 1000 px
+  while viewing the cut shows as its dot or scissors alone, its name in the tooltip. With Carton off there is no chip,
+  and nothing else in that row shrinks.
+- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. History opens a
+  full-height panel beside the agent's chat, in the chat's look (drag its edge to resize), with two tabs, History and
+  Comments; the same icon closes it, and shows as pressed while it is open. Share opens a dialog (below). Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
-  History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
-  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" or Esc (Undo and Redo
-  look unavailable meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question,
-  stays the editor's, whichever was selected first, and with focus in the History panel the first Esc returns from the
-  version and the next closes the panel). An edit tried meanwhile is refused with Cardboard's own "Previewing an earlier
-  version. Return to current to edit.", the stage's text editor included (Enter or a double-click on a title no longer
-  opens it there, and a selected title or caption shows no text toolbar there: nothing in it looks editable), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
-  playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. "Watch the
-  changes" moves the preview's playhead with it, so the frames are the real ones.
-  Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
-  switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
+  History: versions, compare with current and play the changes, restore, cuts, fold in (from the cut's own menu
+  too: "Fold “X” in here"). Every change reads as one sentence in the editor's words, the same in History, Compare and
+  the Fold dialog: verb first, the clip by its name, positions as the timeline shows them ("Trimmed “Intro”, now ends at
+  0:05", "Moved “W6” 2 s later (now starts at 0:09)", "Restored the 12:41 pm version", "Folded in “30s cut”"), and
+  times of day always with am/pm. A click, Enter or a double-click on a row opens its card and never changes the
+  preview. Only a deliberate step shows something other than your edit ("viewing"): Play on a version that isn't the
+  newest, a conflict side's See it, a comment's "See it as it was", a teammate's cut. There is no banner over the
+  picture: three quiet marks say it, with one label ("Director's “Add captions…”"): the title bar's chip, a thin blue
+  frame round the preview and the timeline (the timeline's clips muted), and the row in History ("👁 Viewing ✕"). When
+  History's list isn't on screen to show the row (the panel closed, Comments, a conflict's side), the frame carries the
+  label itself in a small tab on its top-left corner, with ✕. The marks follow what the preview actually shows: a
+  version Play or Before puts on the preview at once is framed at once (its label follows a moment later), and your
+  edit asked for is unframed at once. Esc, any of those ✕, closing the panel or switching its
+  tab brings your edit back (a conflict side stays until its card or Esc leaves it). Undo and Redo look unavailable
+  meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question, stays the
+  editor's, whichever was selected first, and with focus in the History panel the first Esc returns to your edit and
+  the next closes the panel. Play and See it never select a clip, so the first Esc is always viewing's. An edit tried
+  while viewing (a drag, a trim, Delete, Ctrl+Z, Enter or a double-click on a title) changes nothing: the frame pulses
+  once and one line says "You're looking at Director's “Add captions…”. [Back to my edit] Esc", in place of
+  Cardboard's own refusal note, from the same guard, so every edit Cardboard refuses there is still refused (the
+  stage's text editor doesn't open there either, and a selected title or caption shows no text toolbar: nothing in it
+  looks editable); with Carton off Cardboard's own note is unchanged. Export opened while viewing (Ctrl+E, the title
+  bar's Export, or an agent's export) goes back to your edit first ("Back to your edit to export it.") and exports
+  that, never what you were looking at. On a cut other than Main, the timeline's toolbar shows the cut's name and colour
+  dot beside the zoom. The keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
+  playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. Playing the
+  changes moves the preview's playhead with it, so the frames are the real ones. Viewing and the return are each
+  announced once to a screen reader.
+  **Compare** takes over the editor to show two versions, or two cuts, at once. Every way into it opens it: a card's
+  See them, a row's Compare with your edit, Shift+click on a second row, another cut's Compare in the cuts menu, or an
+  agent asked in the chat (`cb compare … --show`).
+  - **The stage** has three modes:
+    - Side by side: the other version in a second player on the left, Cardboard's own preview on the right;
+    - Wipe: one picture with a line you drag, or move with ← →;
+    - Flip: hold B, or press the pill, to see the other side.
+    Play both plays them in step by shot. Side by side needs a stage 682 px wide, and the Library steps aside for it.
+    Narrower than that, Compare shows Flip with Side by side greyed. If closing History would make the room (a laptop
+    with History and the chat open), a click on Side by side closes History and shows it; otherwise its tooltip says
+    what to close (History, the chat, the Library) or to widen the window. Without a second player it shows only Flip.
+    If the second player doesn't start within 2 s, Compare shows Flip and says so once; Side by side and Wipe stay
+    greyed, and picking one tries again. The 2 s count only while the window is on screen, so a minimised window
+    doesn't fall back to Flip.
+  - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost or seam for removed,
+    amber with "←4 s" for moved, and amber for trimmed or changed. Above the tracks is a strip of the other version on
+    its own time.
+  - **History** becomes the list of changes ("differences" between two cuts). A click jumps both players and the
+    timeline there, and ▶ or Enter plays that spot on both sides. Its footer offers Restore your edit to it… (asked
+    first) or, between cuts, Fold in changes from it….
+  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit ✕". Esc, its ✕, Done comparing and
+    ← History all go back to your edit, where the playhead stays at the change.
+  - **History can close while comparing**, for a bigger picture: its icon, Ctrl+Shift+H or the panel's ✕ keep Compare
+    on and give the stage the room. The frame then shows its own label, "⇆ Comparing “Sent to client” with your edit ·
+    7 changes ✕": a click on its words opens History on the list again, and its ✕ ends Compare. The marks, Play both
+    and Flip work as before. History that an agent opened for its comparison closes again when Compare ends, unless you
+    closed it yourself.
+  - **Nothing can be edited while comparing.** An edit tried gives one line, "You're comparing … [Done comparing] Esc",
+    and Export goes back to your edit first.
+  - **An agent's request** opens Compare only when you're idle. Mid-edit it waits up to 8 s; while you're viewing,
+    playing or in a dialog it offers a note with Open instead. Either way it tells `cb` which it did.
+  - **The second player** is Cardboard's own preview engine on a canvas of its own, muted. It exists only while Side
+    by side or Wipe shows: Flip and closing Compare free it, and paused it draws nothing between seeks.
+  Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in ("Folded 3 changes from “30s
+  cut” into Main cut.", the count the Fold dialog's button gave), Fold in the rest, a conflict card's pick, Undo this
+  turn ("Took out Claude Code's “Tighten the intro…” (4 changes).") and a new cut ("You're on “30s Instagram cut”,
+  made from Director's “Add captions…”. Main cut is unchanged.") each end with a short confirmation over the preview,
+  and so does switching cuts ("You're on “30s Instagram cut” now."). Each offers the next step: **Undo** (with Fold
+  in, also the cut it went into when you're not on it; with a cut, Switch back). Undo takes back exactly what that
+  action made, the same way Ctrl+Z does (the whole fold, both parts of a fold that brought in an earlier fold's rest),
+  then offers Redo ("Restore undone." [Redo]); if anything landed on top meanwhile it changes nothing and says so. A
+  pick of the side already in the timeline changes nothing, so it has no Undo. Ctrl+Z of a restore or a fold says so
+  too ("Fold undone." [Redo]). A confirmation stays while the pointer is on it or the keyboard is in it, else 6 s. A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to
   300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer, as
@@ -523,16 +632,29 @@ What changes with it on:
   under the chat column), the drawer ends above it too, so it never covers Fullscreen or Hide timeline.
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
-  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
+  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The box says where a note
+  goes before you write it ("Add a note at 0:13…", "At the playhead · 0:13"), following the playhead until you start;
+  times read as the editor's (0:06), a note on the whole video "Whole video". A note whose moment changed since says
+  so ("That moment changed since.") with **See it as it was**, which shows the version it was written on, as History's
+  Play does (Esc or ✕ comes back). Open, Resolved and All show once a note is resolved. The comment box grows
   with its text up to about eight lines, then scrolls, and has no resize grip.
-- **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
-  your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
-  once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
-  it. **See it:** "Preview" shows the timeline with that side kept, read-only, with the clip in view; "Show on
-  timeline" selects the clip and moves the playhead to it. On an agent's card your value is the
-  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
-  side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
-  two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
+- **Conflict cards** sit in the preview's bottom-right corner, one at a time: your own edits that clashed, and an
+  agent's view edit that clashed with yours (see "An agent's edit and yours at once" below). A card says in words what
+  each side did to which clip: "“Interview B”: you and Claude Code both moved it", then "Yours · 2 min ago: Moved it to
+  start at 0:18" and "Claude Code's · just now: Moved it to start at 0:20" ("Made it bigger (font size 120)", "Set its
+  opacity to 50%", "Removed it"; a clip by its name or file, never an id), and which side the timeline shows until you
+  pick ("Until you pick, yours is in the timeline."). The sides are radio buttons that only pick, starting on the side
+  shown; the one main button names the pick ("Keep yours", "Keep Claude Code's", "Keep both") and Enter presses it.
+  **See it** on a side shows that side on the preview, with the clip in view and the frame's label naming the side
+  ("Claude Code's move of “Interview B”"; "Seeing it"; again, Esc, or deciding brings your edit back); "On timeline"
+  selects the clip and moves the playhead to it. "Keep Director's" puts
+  the agent's in as your own version (Ctrl+Z takes it back), and the confirmation names it ("Kept Claude Code's move
+  of “Interview B”."). Two changes of your own read "Your earlier change · 10:04 am" and "Your later change", with
+  "Keep earlier" and "Keep later". While the agent is still working, the card says so; if it changes the same thing
+  again, a pick you made on the old values is dropped ("Claude Code changed it again. Pick again."). "1/2 ›" steps
+  through the cards; "Not now" folds them into a "2 conflicts to pick" pill and sends that card to the back, deciding
+  nothing. While History is open or you're looking at another version, the cards wait as the pill, whose click brings
+  your edit back and opens them.
 - **Who made each version** reads as you'd say it: "You" (a `cb` you typed included), a teammate's name, "Director",
   "Claude Code", "Codex", and a teammate's agent as theirs ("Leo's Director"). A subagent shows as the agent that
   started it; its type and the model are in the tooltip. The project's import reads "Imported the project" by you;
@@ -609,8 +731,8 @@ What changes with it on:
   both: the clip's own when the file or `.carton\media.json` has them, else the project's own date (no clip is older
   than its project); a title also gets what Cardboard's own titles have. A project already saved that way (one an
   earlier build recovered) gets them as Cardboard reads it, and its next save writes them. If a save still fails in
-  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check): "Your
-  last change couldn't be saved. It's on screen, but it isn't in the project yet." A refused undo says so the same way.
+  the editor, Carton says so over the stage, with a warning sign (it used to show a confirmation's green check), and
+  says what to do: "Your last change wasn't saved. Do it again, or reopen the project." A refused undo says so the same way.
 - **Undo never empties a project.** Ctrl+Z (or `cb undo`) right after recovering such a project undid the Restore,
   back into the state the bug left (a name, and no aspect ratio, tracks, clips or media), and the open tab crashed
   ("This tab hit a snag"). Now an undo, redo or revert that would leave the project with nothing in it is refused
@@ -834,8 +956,11 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" icon in the title bar): enter the sharing server's address and your name (asked once, then
-  shown as "Teammates see you as …" with Change). A host with open creation (the free web demo's) needs nothing else:
+- **Share** (the "Share" icon in the title bar; in a window under 1180 px wide, the Share button in the History panel's
+  head) opens a dialog over the editor, "Share “Weekend reel”" (it was a tab of the side panel). Not shared yet: enter
+  the sharing server's address (as people say it, "share.example.com" is enough; once used it is remembered and shown
+  as one line with Change) and your name (asked once, then shown as "Teammates see you as …" with Change), then Share
+  project; Enter in a field does the same. A host with open creation (the free web demo's) needs nothing else:
   you become the project's owner. Any other host asks for the invite you were given (the host's owner gets one with its
   admin token); the form shows that "Invite code" field only when the host asks for it. An address that can't be
   reached is said so at the address field, and every failure is a sentence that says what to do (can't reach the
@@ -844,25 +969,38 @@ with Carton off none of it runs at all.
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
-- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch", picked from a menu) that expires; not
-  offered while offline. **Join** (the Share panel of a project that isn't shared, "Join a shared project") in another
-  library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
-  tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
-  only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
-  "Join a shared project" button beside "Start a blank project" instead. The dialog stays until you press Open or
-  Done, also when the project you joined is the library's first (it used to close by itself there). Joining the first
-  project keeps the home page where you were (it jumped back to the Dashboard's top as the library's empty view gave
-  way to the grid) and brings the new tile into view.
+- **Shared**: the dialog shows the status by its title ("Up to date", "Sending 3 changes", "Offline"), then People:
+  You (drawn as History draws you, "Y", with the name teammates see and your role), and everyone here now with what
+  they're doing ("Here now · editing captions"; someone idle is faded) and what they may do ("Can edit", "Can comment":
+  each app tells its own role with its presence; an older app's teammate shows none). A teammate's agent (or a
+  subagent it started) is listed under them as theirs, with its own mark: "Leo's Director · Working on “Add a title
+  card”". Offline, an amber line
+  says your changes are kept here and sent when you're back; when sync can't go on for another reason, that one line
+  says why instead ("Can't sync: the sharing server needs an update. Your changes are saved here."), the server's own
+  message only in its tooltip.
+- **Invite** (the owner): who can do what ("Can edit", "Can comment", "Can watch", from a menu), the link, and Copy
+  link. The link for the role picked is made as the dialog opens and shown in its field, and kept for the next
+  openings while it surely works (an hour at most, and never past a minute before the invite expires; one whose expiry
+  the server's token doesn't say is made anew); "Anyone with this link can join and edit." Links expire; none can be
+  made offline, and it says so.
+  **Join** from the Dashboard: a "Join a shared project" tile beside "New project" (Carton on only) opens a dialog with
+  the invite link, "You'll join as Leo. Change" (or your name, the first time), and one button, Join and open: the
+  project arrives in the library with its history, opens in a tab of its own, and the dialog closes; its clips play
+  from the host. If the tab can't open, the dialog says the project is in your library, with Open to try again. An
+  empty library (a new user's first screen, "Make your first video") has a "Join a shared project" button beside
+  "Start a blank project" instead. The dialog lives through the library's first project arriving (it used to close by
+  itself there), and joining the first project keeps the home page where you were (it jumped back to the Dashboard's
+  top as the library's empty view gave way to the grid) and brings the new tile into view.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
-  The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
-  what they are doing. The title bar shows it too, with no panel open: a dot on the Share icon (amber offline, white
+  The Share dialog shows the status and who is in the project, with what they are doing. The title bar shows it too,
+  with nothing open: a dot on the Share icon (amber offline, white
   while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
-  says "Offline: 3 edits waiting" while edits wait (a click opens Share). Someone with the project open but idle stays
-  listed, faded. In a narrow window the title bar keeps only the History icon (Share is one of the panel's tabs), with
-  the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
-  panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
-  message), access refused, the host out of reach.
+  says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
+  listed, faded. In a narrow window the title bar keeps only the History icon (Share is in the History panel's head),
+  with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", the host's own
+  message in the tooltip), access refused, the host out of reach.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
@@ -875,7 +1013,9 @@ with Carton off none of it runs at all.
   Media Files", whose only way on is a red "Remove and Open" (which, live, would remove the clips for everyone). With
   Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
   is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
-  removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
+  removal; a notice over the preview says so in a title line ("2 clips are still on their way from your teammate"),
+  then which ones, by name ("“interview-b.mp4” and “broll-03.mp4” show as Offline until they arrive. Nothing was
+  removed."), and later that they have arrived. The dialog still
   appears for footage that was on this computer and is gone (moved, a drive unplugged). If the worker can't tell whose
   a clip is (it fails, or doesn't answer within 6 s), the clips go Offline too, never to the dialog, and the notice says
   to reopen the project to check again.

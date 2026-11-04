@@ -264,6 +264,29 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     one row of a larger set (the Fold dialog), `names = namingDoc(base, allOps)`, made once per plan, names the
     records the set adds ("Moved 'W1' to track 'Text 1'", a track the same fold adds). A track nothing names is
     "another track", never "track another track".
+  - **The app's change rows (UX redesign 0.1, 0.2; docs/carton-ux DESIGN §8).** `changeList(ops, base, schema, {
+    intent, names, value })` is the one sentence table every app surface uses (History, a version's card, the Changes
+    view, the Fold dialog, toasts): one `ChangeRow` per change as `countChanges` counts it (same count, always), verb
+    first, the record by its name in curly quotes, positions as the timeline's timecodes ("Trimmed “Intro”, now ends
+    at 0:05", "Moved “W6” 2 s later (now starts at 0:09)", "Made “W2” bigger (font size 100 → 222)", "Changed “Hello” to
+    “Hello world”", "Split “clip.mp4” at 0:04"), never an id or a hash, with `kind` (add, remove, change), the record
+    and where it is (`at`/`end`: after the change, before it for a removal). `value` words a field's value as the host
+    does (Cardboard: `cardboardValue`). `changeSummary(rows, schema)` sums several up by verb ("Moved “A” and “B”,
+    trimmed “C”"); a track added for the clips moved onto it is `minor`, said by their row ("Moved “W6” to a new
+    track"). `describe()` keeps its exact lines ("Trimmed 'Intro' end 6.0 s → 5.0 s") for `cb` and agents.
+    `describeCard`'s sides use the same words ("Moved it to start at 0:07") and give the record's `name`.
+    `log({ summary: true, rows: true })` adds each version's `rows`, a structured `title` (a fold with what it took of
+    how many, the rest of a partial fold, a restore with the version it restored, an undo or redo of either) and an
+    undo's `undoes`, so the app words them with its own clock ("Restored the 12:41 pm version"). None of this is in the
+    history bundle.
+  - **A restore says which version it brought back** (`Change.restoreOf`, a node id; not hashed, not in the change's
+    identity): set on a local cut's restore of a node or a cut; a held state (a pin's header) and a shared cut's restore
+    have none, and read as "an earlier version".
+  - **What each version touched** (UX redesign 0.8): `touched({ cut, record?, after?, upTo? })` lists, oldest first,
+    the records (`coll/id`, a root field by name) each version touched, from what its change declared when it was saved
+    (`paths`; a compacted change's own ops), so a clip's History ("Only “clip”") answers at 10k versions without
+    reading a state or diffing. Versions as `log()` lists them: a fold-some is one (its left-out records not touched),
+    a withdraw row none. A ripple's shift touches only what it names.
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
@@ -362,6 +385,120 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   process's compaction squashed into rows it hasn't taken in yet reads its history again when it takes them in (applying
   the squash on top of what it holds would lose what the run undid).
 
+## Carton UX v2, N0: find, landmarks, bring back one clip, compare across cuts, Compare on request
+
+Owner: N0 (`feat/ux2-n0`). N1 (Compare in the editor) and N2 (History's find UI) code against this. Words follow
+DESIGN-V2 (`design/carton-ux-v2` @ 68d40da1, `docs/carton-ux/v2/DESIGN-V2.md` §1.12, §1.13, §1.15, §2.1, §2.3, §3, §5,
+§6). Nothing here is in the history bundle (`packages/core/src/history/` is untouched; `node scripts/size.mjs` is
+unchanged by it).
+
+**Core (`@carton/core`).** New modules beside `carton.ts`: `find.ts`, `landmarks.ts`, `bring-back.ts`.
+- `carton.find(text, { cut?, allCuts?, limit = 50, before?, fields?, now? }) → { clips, matches, total, versions }`
+  (DESIGN-V2 §2.3). Every word of `text` matches the start of a word in what a version holds, in any order, any case,
+  accents ignored ("intr cap" finds "Add captions to the intro"). Fields by weight (`FindField`): `clip` (a clip it
+  touched, by its name before or after it, from the per-version `touched` index), `text` (title and caption text it
+  set: the schema's optional `CollectionDef.words(record)`), `prompt` (the request an agent turn's version is named
+  from), `name` (a version's name and its landmark words: "exported", "sent", "named", "start", "before"), `person`
+  (who made it, as `log()` tells them), `day` ("today", "yesterday", "monday", "oct 30"). Newest first; each
+  `FindMatch` has `field` (the best), `fields`, a `snippet` (at most about 80 characters, `…` where cut, never an id),
+  `hit` and `hits` (each word's [lo, hi) in it), for a clip or text match `record`, `recordName` and `span` (where the
+  clip was after it: "“Intro” was 0:00–0:06 here"), and `landmarks` (its landmark kinds). `clips`: the clips the words
+  name ("A clip first", with Only this clip), best first. The index is per cut, built on the first call by one forward
+  walk over the cut's rows, kept, and extended by the rows saved since on each later call (a compaction or a rebuild of
+  the cut starts it again). `find("")` builds it and matches nothing. Never on the save or open path (the brief's hard
+  rule, over §6's "built at save time": measured below).
+- `carton.landmarks({ cut?, kinds?, before?, limit = 200 }) → Landmark[]`, newest first (DESIGN-V2 §2.1). Kinds:
+  `exported`, `sent` (a share link made, a review link sent, a video published; a Published cut's version), `named`,
+  `turn` (an agent turn's newest version, labelled with its prompt name), `start` (how it was when the project was
+  opened, or before the first change after an hour away), `before` (the version just before a restore, a fold in, an
+  undo of a turn or a bring-back made on this replica: `before`, `after`). `LANDMARK_ORDER` says which one a row shows.
+  `personal`: Start and Before, only their person sees them ("Only you see this"). `local`: kept on this computer only:
+  Start and Before always; Exported and Sent are everyone's in DESIGN-V2, but no sync path carries them yet (a server
+  change: listed as left), so they are local for now. Recorded ones come from `carton.mark(kind, { ref?, cut?, label?,
+  by?, at?, once?: "day" | "version" })`, which writes one row to the local `ephemeral` table (`["landmark", cut, seq,
+  kind, at]`: never exported with history). `picture`: `pictureKey(ref)`, `<cut>@<seq>`: one picture per version.
+- `carton.restoreClip(ref, record, { cut?, author?, id?, remove? }) → CommitResult & { brought }` (DESIGN-V2 §3.2):
+  the clip (`timelineItems/<id>` or `[coll, id]`) as it was at `ref`, saved as a new version on top that changes nothing
+  else (kind `restore`, with `restoreOf`, `restoreRecord`, `restoreName` on a local cut; a shared cut queues it like
+  any change, and a teammate's newer edit of the clip becomes a card, as restore's do; the server keeps no `restoreOf`,
+  so there it reads as a restore). It covers the clip's record (every field: keyframes, captions, effects), its own
+  parts (`partOf`: a title's text entry), and what it needs that is gone since (its track, its media file), as they
+  were then. A clip deleted since goes back where it was. One that wasn't there then is taken out only with `remove:
+  true`; else `NotInVersion` (`code: "NOT_IN_VERSION"`) and nothing changes. `NoSuchClip` (`NO_SUCH_CLIP`) when neither
+  side has it. `brought: { record, name, how: changed | added | removed | same, parts, of }`; `same`: nothing saved
+  (confirmed, empty). A stable `id` as restore's. `log({ summary: true, rows: true })` titles it `{ kind: "bring-back",
+  of, record, name }`. Placement and the ripple: N0b, below.
+- `carton.bringBackChoices(ref, { cut? }) → { changed, deleted, added, same }`: "Choose a clip…"'s three groups.
+- **N0b (placement, the "changed again" check; added fields only).** A brought-back clip never lands on top of another
+  clip: if its place on its track is taken now, it goes on a new track made just above its own (before it in the track
+  order: Cardboard's first track is the top layer; named "<track> 2") at the same time; `brought.place` = `{ placed: "same" | "new-track", track?, takenBy? }`.
+  DESIGN-V2 §3.2's ripple: a clip deleted with a ripple (the deleting change recorded or inferred a remap taking out a
+  range that held it) comes back with the rest of its track moved back by that range (`later`); a clip added with one
+  (a gap inserted where it starts), taken out, moves the rest `earlier`; the version records that remap as its intent,
+  so a fold or a teammate's edit follows it, and one undo takes it all back. `brought.ripple` = `{ direction, by, at,
+  tracks, moved }`, or null when nothing else moved (the panel says so). `BringBackChoice` gains `token` (the clip as
+  it is now: a hash of its record and own parts, "absent" when gone), and `place` / `ripple` previewing the above for
+  the confirmation's line. `restoreClip(ref, record, { expect: token })` refuses a clip that changed since with
+  `ChangedSince` (`code: "CHANGED_SINCE"`, "“Intro” just changed again. Nothing was brought back.", the new `token`),
+  checked inside the write, nothing written. A retried id answers with the same place and ripple.
+- **Open (needs a sync-server deploy, not allowed 2026-11-03):** Exported and Sent landmarks reaching teammates
+  (DESIGN-V2 §2.1 "Everyone"): the server keeps a change's fields by a whitelist (`HISTORY_FIELDS`,
+  `packages/server/src/sequencer.ts`) and has no landmark message, so they stay `local` on the computer that recorded
+  them; the same whitelist drops `restoreOf`/`restoreRecord`, so a shared cut's bring-back reads as a restore to
+  teammates. Not done: a changed
+  clip whose old timing overlaps another goes on a new track as well (same rule); no other placement rule.
+- **Compare across cuts.** `diff(a, b, { shots?, rows? })`, `shots(a, b)` and `checkout` take versions of any two cuts
+  (a shared cut's, a teammate's tracking cut's); a cut id is that cut's head, read fresh. `rows: true` adds
+  `DiffResult.rows` (`changeList`) and `count` (`countChanges`).
+
+**Local (`@carton/local`).** WriteOps `{kind: "restoreClip", ref, record, cut?, remove?, head?}` (core's restoreClip
+under the request's id) and `{kind: "open", view: "compare", from, to}`: the holder calls its
+`ViewPrinter.openView(view, by)` and answers `{status: "confirmed", opened, shown?}` (`opened`: windows told, 0 when no
+holder or none has the project open: an `open` never starts a helper; `shown`: the editor's answer, below).
+
+**`cb` and MCP (`@carton/cli-mcp`), words as DESIGN-V2 §5.**
+- `cb history --find <text> [--all] [--all-cuts]`, `cb history --landmarks`, `cb restore <version> --clip <name or
+  id> [--remove]`, `cb compare <left> [right] --show`. A version may also be written as `sent`, `exported`, `today`,
+  `now`, a version's name, or a cut's name (that cut now).
+- MCP: `timeline_find`, `timeline_landmarks`, `timeline_restore_clip`, `timeline_compare` (with `show`).
+
+**The app (`scripts/carton`).**
+- `CartonUi` (`@carton/react` model.ts, optional methods, served by the worker through `serveUi` as the rest of the
+  History panel): `find(text, { allCuts? }) → FindHits`, `landmarks() → Landmark[]` (topic `landmarks` says when to read
+  them again), `restoreClip(ref, itemId, { remove?, expect? }) → BringBack` (N0b: `place`, `ripple`), `bringBackChoices(ref)` (N0b:
+  each choice's `token`, `place`, `ripple`), `align(a, b) →
+  AlignEntry[]` (DESIGN-V2 §1.15, cached per pair), `changes(a, b, { between: "cuts" })` (difference sentences),
+  `landmarkPicture(key) → data:image/jpeg URL | null`, `saveLandmarkPicture(key, jpegDataUrl)` (at most 64 KB; the
+  worker keeps it as `<bundle>/.carton/pictures/<key>.jpg`; `fromCarton({ pictures })`).
+- The worker's `mark({ projectId, kind, label? })` (carton namespace): the renderer bridge calls it when an export
+  finishes (`exported`, label its preset) and when a link is made or a video published (`sent`); the worker marks
+  `start` itself when it opens a project and before the first change after an hour away.
+- **The Compare event.** On `cb compare … --show`, the worker sends the pages a `carton:event`
+  `{ kind: "carton", id: <projectId>, topic: "compare", compare: OpenCompare }`, through the same channel the History
+  panel's messages and `cb cut switch` use. `OpenCompare`: `{ from, to, between, by: {kind, id, name?}, byName, at,
+  request }` (refs as History's `Version.ref`; a cut id is that cut's head). N1's `openCompare` in the renderer takes
+  it and answers the worker's `compareAnswer({ projectId, request, status: "opened" | "offered" | "refused", why? })`
+  within 10 s (DESIGN-V2 §1.13: it may wait up to 8 s for the person to be idle); `cb` prints what it said. No answer:
+  `cb` says it was sent to the editor.
+
+## Carton UX v2, N1: Compare in the editor
+
+Owner: N1 (`feat/ux2-n1`). N2 (History's find UI: "Compare with…" pick mode, §4.2's Compare button) calls this; N1's
+own entries (See them, Compare with your edit, Shift+click, the cuts menu's Compare, the agent's `cb compare --show`)
+go through it too.
+
+- `CartonUi.openCompare?(from, to?, opts?) → Promise<void>` (`@carton/react` model.ts), the page's own (the app's
+  `scripts/carton/compare.js`; the worker doesn't serve it). `from`, `to`: refs of any cut (History's `Version.ref`), a
+  `Cut.id` for that cut's head; `to` null or absent is your edit now. Sides go the right way round (DESIGN-V2 §1.1):
+  your edit or the cut you're on is the right side, else the older version (or the first picked cut) is the left.
+  `opts`: `{ mode?, at?, by?, request? }` (`OpenCompareOptions`). It ends viewing; a second call replaces the
+  comparison. Absent (a host without Compare, the gallery's mock): keep the panel's Changes view.
+- `closeCompare?()`, `comparing?() → Comparing | null` (`{ left, right, mode, acrossCuts, by? }`, each side a
+  `CompareEnd`: `ref`, `label`, `title`, `detail?`, `cutId?`, `you?`, `versionId?`), `onCompare?(f) → off`.
+- History while comparing: the side panel shows Compare's change list in place of `HistoryPanel` (the host decides;
+  `HistoryPanel` needs nothing new). `HistoryPanel`'s existing `onCompare(a, b)` prop is how the host routes its
+  entries to `openCompare`.
+
 ## Using it
 
 ```ts
@@ -424,3 +561,11 @@ lineage (a fold and a `.cbproj` edge carry it; a retime of a split clip is a car
 budget is 32 KB: about 1.9 KB for the work still to come, and each raise is written up like this one. Still about 35
 times smaller than Automerge's 1.14 MB gz of WASM (PLAN §19's figure). Verified: the proposal's numbers were re-measured
 by a separate agent (`gfv-scratch/carton/verify-size/`).
+
+**A toast's Undo: History shows the top, Carton checks it (2026-11-03, `fix/ux-size`).** UX redesign 5.3's `expect`
+on undo and redo (a toast's Undo takes back only the change it made, else `StackMoved`, code `STACK_MOVED`) was checked
+in History's `planUndo`/`planRedo`, with `StackMoved` in `common.ts`, and took the bundle to 32,100, over the budget.
+History now takes a `check` (`TopCheck`) instead, shown the stack's newest entry at the same place (inside the write,
+after a retried id is answered, on the stack the step already read), and `undo`/`redo` pass their options through to
+the plan; `expect`'s check and `StackMoved` are Carton's (`carton.ts`). The bundle is 31,994. A check of Carton's own
+reading the stack before History would have left History as before 5.3 (31,990) but read the stack twice per toast step.

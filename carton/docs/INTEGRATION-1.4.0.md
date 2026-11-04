@@ -39,7 +39,7 @@ each bundle (`scripts/carton/*-bridge.js`), and the bridges reach the packages t
 |---|---|---|
 | `resources/carton/carton-node.cjs` (CommonJS) | the facade, with `@carton/core`, `store-sqlite`, `cardboard`, `local` and `cli-mcp` | The library worker and main (`require`). The CLI (`require`, from the `createRequire` banner both CLI files already have) |
 | `resources/carton/engine-thread-main.js`, `helper-main.js` (ES modules; the folder's `package.json` says so) | `@carton/local`'s engine thread and headless helper, which wait at their top level | `@carton/local`, which finds them beside itself |
-| `resources/app.asar/dist/renderer/assets/carton-ui.js` (ES module) | `@carton/react` and the History panel's view model (`scripts/carton/ui.js`) | The editor's History/Share panel (a full-height column beside the chat) and its layer over the stage (the conflict stack, the preview banner), by `import("./carton-ui.js")` at the editor's first render |
+| `resources/app.asar/dist/renderer/assets/carton-ui.js` (ES module) | `@carton/react` and the History panel's view model (`scripts/carton/ui.js`) | The editor's History panel (a full-height column beside the chat), the Share dialog, and its layer over the stage (the conflict stack, the preview banner), by `import("./carton-ui.js")` at the editor's first render |
 
 **Why the Node side lives outside the asar,** next to `resources/cli/`:
 - The CLI is outside the asar already, and it must load the same engine. One copy keeps the app and `cb` on one engine
@@ -132,7 +132,7 @@ behind the hook, not counting the packages.
 | H11 | **`.cbproj`.** Save As writes a stored zip of the bundle minus the top-level names in a set (`cache`, `converted`, `proxies`, `.revs`). The walk compares only top-level names. Open Project refuses a project id already in the library ("This project ID already exists in your library", C9) | CLI and Worker: the set, the walk, the id check (6) | `.carton` joins the top-level exclusions. Carton's own view files in `.scratch/views/` (a print under Carton's rev line, its `.status` sidecar) are skipped by a nested check in the walk (R6-02); anything else there goes in. Both apply on or off, and Open Project removes the same from a staged bundle. The shallow export (or the opt-in `VACUUM INTO` copy) is written as its own entry. For a known project id with shared lineage, "Bring in their changes" (a DAG merge with cards) replaces the error. Imported view files are never applied | ~40 |
 | H12 | **Web `DocumentSyncService`** (dormant on desktop). An IndexedDB outbox commits whole documents: `POST /api/sync/document {projectUid, mutationId, expectedVersion, document}`. On conflict it preserves a local copy named "… (recovered conflict)" and takes the server's (B9) | S: commit, POST, recover, stage. `DocumentSyncStartup`: the copy's name (5) | Kit only: push changes with a base instead of whole documents, and rebase instead of preserving a copy | ~100 |
 | H13 | **CLI cloud mode** (`CARDBOARD_CLOUD_PROJECTS=1`). `df` PUTs the whole `project.json` with `ifVersion` and fails with `CloudConflictError` on a 412. `cb mcp` pulls before each tool call and pushes after | CLI: `df`. cb: pull and push around MCP calls (3) | Headless sync replaces the whole-file PUT. Pull fetches confirmed changes; push sends the pending queue (phase 3) | ~60 |
-| UI | **Editor left rail and panels.** The rail registry `V_`. The panels kept mounted at idle (`uf`). The panel switch `dP(tab)`. An empty slot above the editor body. The timeline wrapper | E: the rail, the mounted panels, the panel switch (3) | With Carton on: the editor's row gets a column before the chat sidebar, the History or Share panel at full height in the chat's look (versions, cuts, fold in, compare, Watch the changes, credits; Share), opened from the title bar's icons; and the stage (the preview's column, `bg-muted/60`) renders through a host that adds a layer with the preview banner and the conflict cards as a floating stack with "See it". The title bar (the tab strip, `tabs-*.js`) shows History and Share icons before "Report an issue" on a tab whose editor reports Carton's panel state: main routes their commands to the page as `carton:command`, and the page's `carton:panel` report joins the tab's editor state, which gives the icons their pressed look. With Carton off the row, the stage and the strip are Cardboard's | ~300 UI |
+| UI | **Editor left rail and panels.** The rail registry `V_`. The panels kept mounted at idle (`uf`). The panel switch `dP(tab)`. An empty slot above the editor body. The timeline wrapper | E: the rail, the mounted panels, the panel switch (3) | With Carton on: the editor's row gets a column before the chat sidebar, the History panel at full height in the chat's look (versions, cuts, fold in, compare, Watch the changes, credits; Comments), opened from the title bar's icons, and the Share dialog; and the stage (the preview's column, `bg-muted/60`) renders through a host that adds a layer with viewing's frame and the conflict cards as a floating stack with "See it"; the timeline's wrapper carries the viewing and cut marks. The title bar (the tab strip, `tabs-*.js`) shows, on a tab whose editor reports Carton's panel state, the cut chip (the cut the editor is on, and what it is viewing, with a ✕ back) before the aspect ratio (`Bt`), and History and Share icons before "Report an issue" (`Ut`), from one anchor in the editor controls' row (`Wt`): main routes their commands (`carton-history`, `carton-share`, `carton-cuts`, `carton-back`) to the page as `carton:command`, focusing the page for the cuts menu and the Share dialog, and the page's `carton:panel` report (main-bridge's `panel`: the panel, the live summary, Share open, the cut, the viewing label) joins the tab's editor state, which the strip draws. `Wt`'s own class may shrink (`min-w-0 shrink` for `shrink-0`), so in a narrow window the cut chip, the one part of it that gives way, shortens before the row pushes the window's buttons out. With Carton off the row, the stage and the strip are Cardboard's (nothing in `Wt` shrinks without the chip) | ~300 UI |
 | CLI | **Commands and MCP tools.** A commander program (`cardboard`, alias `cb`) and an MCP tool table `p(name, description, shape, readOnly, handler)` | cb: after every command is registered, before `list_media`, the banner of both CLI files (4) | `cb cut list\|new\|switch`, `cb fold <cut> [--check]`, `cb credits <clip>`, `cb restore <version>`, `cb compare <a> <b>`, `cb conflicts`, `cb resolve`, `cb publish`, with git aliases. MCP `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish` (`@carton/cli-mcp`) | ~30 |
 
 ## 4. The hooks in detail
@@ -378,8 +378,18 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 **Read-only preview (H4).**
 - Compare and the A/B toggle load an earlier version into the editor with the raw setter and set `cartonPreview`.
 - `Tm` (the editor's "editing blocked" predicate) then refuses every edit, whether it comes from a store action or the
-  gated `setState`. The refusal toast offers "Return to current to edit".
+  gated `setState`. Cardboard raises its refusal note in one place, `xv` (the guard `me()` and the gated setter's
+  `onRejectedWrite` both call it): in a Carton preview `xv` asks the bridge first (`blocked()`), and the page's stage
+  layer answers with the edit-attempt toast and a pulse of the stage's frame (UX redesign PLAN 1.4). Only what is said
+  changes: the edit was refused before `xv` runs. With no Carton part of the page to answer, Cardboard's note shows,
+  in Carton's words.
 - `de()` doesn't arm a save while previewing.
+- Viewing has no banner (PLAN 1.1): the stage layer draws a frame round the stage, with a label tab when History's list
+  isn't on screen, and the timeline's wrapper (EditorRoute's `editor-timeline` region, always `__cbCartonTimeline`)
+  carries `data-carton-viewing` (its frame and muted clips) and `data-carton-cut` (the cut's name in its toolbar) (PLAN
+  1.5).
+- Export (`sZ`, the EXPORT command) and an agent's `export.start` ask the bridge's `beforeExport()` first: while
+  viewing, your edit comes back before Export opens (PLAN 1.6).
 
 **Adopt (H5).**
 - Main marks every project change it broadcasts while Carton is on (`carton: true`), and the page takes the Carton path.
@@ -423,7 +433,7 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 
 **Telling the person (final candidate P1-1).**
 - `Jt`, the editor store's scoped save, logs a failure and rethrows; its catch also calls the bridge's `saveFailed`,
-  which shows "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." over the stage
+  which shows "Your last change wasn't saved. Do it again, or reopen the project." over the stage
   (at most every 20 s, again once a save has landed), with the warning look of Carton's other failures (N-3: it showed
   a confirmation's ✓), as does an undo refused. Such a failure happens in the page, before anything reaches the
   worker, so only the page can tell: a recovered project's date-less media made every save throw there, unseen.

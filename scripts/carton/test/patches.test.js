@@ -177,6 +177,109 @@ test("Carton on: the stage's text editor asks the bridge before it opens; the st
   assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
 });
 
+// Carton UX redesign PLAN 2.1: the title bar's cut chip goes before Cardboard's own "16:9 ⌄" (Bt) and the History and
+// Share icons before "Report an issue" (Ut), from one anchor in the tab strip's editor controls (Wt), which matches
+// once in Cardboard 1.4.0's strip as the Windows patch leaves it; main hands the strip the page's report through
+// main-bridge's panel, and the chip's and Share's commands hand the editor's page the keyboard.
+test("Carton on: the cut chip sits before the aspect ratio, the icons before Report an issue, each once; main relays the chip's report", { skip }, () => {
+  const tabs = fs.readFileSync(path.join(carton.assets, fs.readdirSync(carton.assets).find((n) => /^tabs-.*\.js$/.test(n))), "utf8");
+  const count = (s, t) => s.split(t).length - 1;
+  const anchor = "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),";
+  const plain = fs.readFileSync(path.join(win.assets, fs.readdirSync(win.assets).find((n) => /^tabs-.*\.js$/.test(n))), "utf8");
+  assert.equal(count(plain, anchor), 1, "the anchor, once, in the strip as the Windows patch leaves it");
+  assert.equal(count(tabs, "t.cartonPanel!==void 0&&n.jsx(__cbCartonCutChip,{panel:t.cartonPanel}),n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),"), 1);
+  assert.equal(count(tabs, "n.jsx(__cbCartonCutChip,"), 1, "the chip once");
+  assert.equal(count(tabs, "n.jsx(__cbCartonStrip,"), 1, "the icons once");
+  assert.ok(tabs.includes("function __cbCartonCutChip(") && tabs.includes("function __cbCartonStrip("), "with their code");
+  // QA G4: the editor controls' row may shrink, so the chip (min-w-0 shrink) gives way before the window's buttons do
+  assert.equal(count(plain, 'className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"'), 1, "the row's class, once");
+  assert.equal(count(tabs, 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"'), 1, "the row may shrink");
+  assert.equal(count(tabs, "flex shrink-0 items-center gap-[8px] self-center"), 0);
+  // Bt is the aspect ratio chip and Ut Report an issue, as the strip names them
+  assert.ok(/Bt=\(\{value:e\}\)=>\{[\s\S]{0,1600}"aria-label":"Aspect ratio"/.test(plain) || plain.includes('"data-analytics":"strip-aspect-ratio"'), "Bt is the aspect ratio's");
+  assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");
+  const main = fs.readFileSync(carton.main, "utf8");
+  assert.equal(count(main, '_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))})'), 1);
+  assert.equal(count(main, "if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}"), 1);
+  // main's own command handler, where it sends the active tab's webContents (r) the strip's commands
+  assert.ok(main.includes("activeContents(){return this.model.activeView()?.webContents??null}"), "r is the active tab's webContents");
+});
+
+// Carton UX redesign Workstream 1 (PLAN 1.4–1.6), on the bundles as the build patches them: each new anchor once, and
+// Cardboard's own refusal code (Tm, ure, _v, xv, me, as the patched store has them) run against the real renderer
+// bridge. In a Carton preview every edit its guard refuses (Delete, a drag or trim, Ctrl+Z, Enter on a title) is still
+// refused, with the page's edit-attempt toast in place of its note; with no Carton part listening, its note, in Carton's
+// words; with Carton off, or outside a preview (an agent's lock), Cardboard's own note, unchanged.
+test("PLAN 1.4–1.6: the refusal asks Carton first only in a preview, the timeline's wrapper and Export's two opens, each once", { skip }, () => {
+  const read = (dir, re) => fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((n) => re.test(n))), "utf8");
+  const editor = read(carton.assets, /^EditorRoute-.*\.js$/), store = read(carton.assets, /^installErrorTelemetry-.*\.js$/), index = fs.readFileSync(path.join(carton.assets, "index-DufLJgUU.js"), "utf8");
+  const plain = { editor: read(win.assets, /^EditorRoute-.*\.js$/), store: read(win.assets, /^installErrorTelemetry-.*\.js$/), index: fs.readFileSync(path.join(win.assets, "index-DufLJgUU.js"), "utf8") };
+  const count = (s, t) => s.split(t).length - 1;
+  // the anchors, once each in the bundles as the Windows patches leave them
+  assert.equal(count(plain.store, "function xv(){const t=ne.getState(),e=ure(t);"), 1);
+  assert.equal(count(plain.editor, 'c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})'), 1);
+  assert.equal(count(plain.editor, "sZ=e=>{U.getState().setIsPlaying(!1),"), 1);
+  assert.equal(count(plain.index, '"export.start":async e=>{const t=ks();if(t.isExporting)'), 1);
+  // and patched, once each
+  assert.equal(count(store, "function xv(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=ure(t);"), 1);
+  assert.equal(count(editor, 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})'), 1);
+  assert.equal(count(editor, '"data-analytics-region":"editor-timeline"'), 1, "the timeline's region is that one");
+  assert.ok(editor.includes("function __cbCartonTimeline(props)"), "with its code");
+  assert.equal(count(editor, "sZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>sZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),"), 1);
+  // sZ is Export's: the EXPORT command calls it, and it opens the Export dialog's store
+  assert.ok(editor.includes("tn(Vt.EXPORT,o.useCallback(()=>sZ(e),[e]))") && /sZ=\(e,__again\)=>\{[^]{0,420}Ro\.getState\(\)\.open\(\)\}/.test(editor), "sZ opens Export");
+  assert.equal(count(index, '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=ks();if(t.isExporting)'), 1);
+  // every edit path named in the plan goes through Cardboard's guard me() before it writes
+  for (const a of ["removeTimelineItems:(n,r)=>{if(me()", "updateTimelineItems:(n,r)=>{if(me()", "updateTimelineItem:(n,r,i)=>{if(me()", "commitReorder:()=>{if(me()", "undo:()=>{if(window.__carton.undo())return;if(me())return;"])
+    assert.equal(count(store, a), 1, a);
+  assert.ok(store.includes("isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv"), "the gated setter's refusals go through xv too");
+  // Cardboard's refusal code, as patched, against the real bridge (renderer-bridge.js)
+  const tm = store.match(/[,;]Tm=(t=>!!t\.cartonPreview\|\|ah\(\)\|\|t\.timelineLockState!=="unlocked"\|\|!!t\.projectId&&mv\(t\.projectId\)),rN=/)[1];
+  const from = store.indexOf("const lre=1800,"), to = store.indexOf("function me(){return _v()?(xv(),!0):!1}") + "function me(){return _v()?(xv(),!0):!1}".length;
+  assert.ok(from > 0 && to > from && to - from < 1500, "the refusal's code, in one piece");
+  const run = (enabled, start) => {
+    const w = {};
+    new Function("window", require("../renderer-bridge.js"))(w);
+    let state = { projectId: "p1", cartonPreview: null, timelineLockState: "unlocked", tracks: [], timelineItems: [], ...start };
+    const ne = { getState: () => state, setState: (p) => { state = { ...state, ...p }; } };
+    w.__carton.store({ state: () => state, raw: (p) => ne.setState(p), adopt: (p) => ne.setState(p), armed: () => false, flush: async () => {}, invoke: async (_c, { method }) => (method === "enabled" ? enabled : method === "checkout" || method === "head" ? { id: "p1", tracks: [], timelineItems: [], aspectRatio: "16:9" } : null), on: () => () => {}, deserialize: (d) => d, projects: { getState: () => ({ projects: [] }), setState() {} } });
+    const g = new Function("ne", "ah", "mv", "window", `const Tm=${tm};let kd=null;${store.slice(from, to)};return {me,xv};`)(ne, () => false, () => false, w);
+    return { w, g, state: () => state, set: (p) => ne.setState(p) };
+  };
+  return (async () => {
+    // Carton on, a preview: refused, and the page's part said it (no note of Cardboard's)
+    const on = run(true);
+    await on.w.__carton.ready;
+    await on.w.__carton.preview("p1", "main@3");
+    let told = 0;
+    const off = on.w.__carton.onBlocked(() => (told++, true));
+    for (const edit of ["Delete", "a drag", "a trim", "Ctrl+Z", "Enter on a title"]) assert.equal(on.g.me(), true, edit + " is refused");
+    assert.equal(told, 5, "each told by the page");
+    assert.equal(on.state().timelineInteractionFeedback, undefined, "and not by Cardboard's note");
+    // nobody listening: Cardboard's note, in Carton's words
+    off();
+    assert.equal(on.g.me(), true);
+    assert.equal(on.state().timelineInteractionFeedback?.message, on.w.__carton.previewMessage);
+    // back to your edit: not refused at all
+    on.set({ timelineInteractionFeedback: null });
+    await on.w.__carton.preview("p1", null);
+    assert.equal(on.g.me(), false, "your edit: nothing refused");
+    // an agent's lock, Carton on: Cardboard's own note, and the page isn't asked
+    on.w.__carton.onBlocked(() => (told++, true));
+    on.set({ timelineLockState: "locked" });
+    assert.equal(on.g.me(), true);
+    assert.equal(on.state().timelineInteractionFeedback?.message, "Agent is editing. Timeline is read-only.");
+    assert.equal(told, 5, "not asked outside a preview");
+    // Carton off: Cardboard's own refusal, word for word
+    const offc = run(false, { timelineLockState: "locked" });
+    await offc.w.__carton.ready;
+    offc.w.__carton.onBlocked(() => (told++, true));
+    assert.equal(offc.g.me(), true);
+    assert.equal(offc.state().timelineInteractionFeedback?.message, "Agent is editing. Timeline is read-only.");
+    assert.equal(told, 5);
+  })();
+});
+
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
@@ -208,6 +311,26 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
   assert.equal(JSON.parse(named.stdout.trim().split("\n").pop()).status, "named", named.stderr);
   assert.equal(json(null, "history", "Demo").versions.find((v) => v.by?.id === "director/chat1/turn1")?.name, "Make the intro tighter");
+  // UX redesign 0.7: a running in-app turn shows in the project's History panels as working (one opened during it too),
+  // with the changes it made so far, and no more once it ends
+  const working = spawnSync(process.execPath, ["-e", `
+    const { cardboard14 } = require(${JSON.stringify(path.join(out, "carton", "carton-node.cjs"))});
+    const sent = [];
+    const w = cardboard14.worker({ library: { projects: { bundlePathFor: () => ${JSON.stringify(b)}, read: async () => null } }, emit: (e) => e.kind === "carton" && sent.push(e.message) });
+    (async () => {
+      await w.working({ projectId: "p", chat: "chat1", provider: "director", actor: "director/chat1/turn3", actors: ["director/chat1/turn3"], prompt: "Add music under the interview. Then more.", since: Date.now() });
+      await w.ui({ projectId: "p", client: "c1", message: { t: "hello" } });
+      for (let i = 0; i < 100 && !sent.some((m) => m.t === "init"); i++) await new Promise((r) => setTimeout(r, 20));
+      const init = sent.find((m) => m.t === "init");
+      await w.working({ projectId: "p", chat: "chat1", done: true });
+      for (let i = 0; i < 100 && !sent.some((m) => m.t === "topic" && m.topic === "working"); i++) await new Promise((r) => setTimeout(r, 20));
+      const end = sent.find((m) => m.t === "topic" && m.topic === "working");
+      console.log(JSON.stringify({ working: init?.topics?.working ?? null, after: end ? end.value : "none" }));
+      process.exit(0);
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `], { env: env(), encoding: "utf8", timeout: 60_000 });
+  const shown = JSON.parse(working.stdout.trim().split("\n").pop());
+  assert.deepEqual([shown.working?.actor?.name, shown.working?.label, shown.working?.edits, shown.after], ["Director", "Add music under the interview", 0, null], working.stderr);
   // The live-sync half's seam: an extension's services join the worker's namespace beside Carton's own (never replacing
   // one), it gets each project's open Carton and hears of every Carton opened, and one that throws is left out.
   const ext = spawnSync(process.execPath, ["-e", `

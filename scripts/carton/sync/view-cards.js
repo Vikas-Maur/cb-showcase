@@ -193,6 +193,11 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
     present(ui, handle, lc, panelsNow) {
       raws.set(handle, ui.resolve);
       const base = ui.conflicts, turned = new WeakMap();
+      // What a side says (its summary, and its change sentence, verb and noun: docs/carton-ux PLAN 7.1) goes round with
+      // its value; the author and time stay where they are (review of feat/ux-7-conflicts #1: only the summary went
+      // round, so "Yours" read the agent's sentence and "Keep Claude Code's" kept the value shown under "Yours").
+      const said = ({ summary, text, did, what }) => ({ summary, ...(text !== undefined ? { text } : {}), ...(did !== undefined ? { did } : {}), ...(what !== undefined ? { what } : {}) });
+      const unsaid = ({ summary: _s, text: _t, did: _d, what: _w, ...rest }) => rest;
       let lastIn = null, lastOut = null;
       // Stable identities: the same list and the same cards give the same objects (hooks compare by identity).
       ui.conflicts = () => {
@@ -202,7 +207,7 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
         lastOut = list.map((c) => {
           if (!isAgent(handle.cardFor(c.id))) return c;
           let t = turned.get(c);
-          if (!t) turned.set(c, (t = { ...c, mine: { ...c.mine, summary: c.theirs.summary }, theirs: { ...c.theirs, summary: c.mine.summary }, provisional: "mine" }));
+          if (!t) turned.set(c, (t = { ...c, mine: { ...unsaid(c.mine), ...said(c.theirs) }, theirs: { ...unsaid(c.theirs), ...said(c.mine) }, provisional: "mine" }));
           return t;
         });
         return lastOut;
@@ -242,7 +247,9 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
 
     /**
      * The person picked on an agent's card ("mine": keep the person's value, "theirs": take the agent's). Returns false
-     * when the card isn't an agent's (the facade's own path then).
+     * when the card isn't an agent's (the facade's own path then), else `{ answer }`: the panel's answer to the pick, with
+     * the version it made (`made`, UX redesign PLAN 5.3: its toast's Undo takes back exactly that), or none when the
+     * value was there already.
      */
     async resolve(lc, handle, id, choice) {
       const card = handle.cardFor(id);
@@ -253,11 +260,14 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       // A side's value, committed by the person who chose it, as a document: when it is there already core finds nothing
       // to change and History gets no version (ops setting a field to the value it has would make one). A clash with a
       // change made since (a moment's window) comes back as the person's own card.
+      let made = null;
       const take = async (value) => {
         const head = await lc.carton.head(cut);
         const r = await lc.carton.commit({ cut, doc: apply(structuredClone(head.doc), cardOps(c, value), lc.carton.schema), base: head.ref, author: me });
         if (r.status === "rejected") throw new Error(r.reason);
         if (r.status === "conflicts") handle.reportConflicts(r.cards);
+        const changeId = r.status === "confirmed" ? (!r.empty && r.change?.id) || null : r.status === "pending" ? r.id : null;
+        if (changeId) made = { cut, changes: [changeId] };
       };
       if (choice === "theirs") await take(c.theirs);
       else {
@@ -275,7 +285,7 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       // fromCarton's own resolve with its "theirs" (the side on screen) drops the card from this panel and commits nothing
       await raw(id, "theirs");
       await close(lc, c, agentKey, cut);
-      return true;
+      return { answer: made ? { made } : {} };
     },
   };
 }

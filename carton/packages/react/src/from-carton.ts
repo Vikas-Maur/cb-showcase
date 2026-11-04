@@ -10,11 +10,14 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, betweenCuts, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
+  BroughtPlace as CoreBroughtPlace,
+  BroughtRipple as CoreBroughtRipple,
   Carton,
   CartonEvent,
+  ChangeRow,
   Choice,
   ConflictCard,
   CutRecord,
@@ -26,10 +29,22 @@ import type {
   UndoEntry,
   Version as CoreVersion,
 } from "@carton/core";
+import { cutColors } from "./cuts.ts";
 import { TopicHub } from "./hub.ts";
+import { itemFilter } from "./item-filter.ts";
+import { cardSentences, conflictWords, type SideSentence } from "./conflict-words.ts";
+import { clock as clockWords, versionLabel, versionShort } from "./format.ts";
+import { actorLabel, firstName } from "./actors.ts";
 import type {
   Actor,
+  AlignEntry,
+  BringBackChoice,
+  BringBackPlace,
+  BringBackRipple,
   CartonUi,
+  Change,
+  ClipKind,
+  ClipVersions,
   Comparison,
   Conflict,
   ConflictChoice,
@@ -39,8 +54,10 @@ import type {
   FoldPlan,
   FoldResult,
   Ghost,
+  FindHit,
   HistoryFilter,
   HistorySource,
+  Landmark,
   Peer,
   Preview,
   Published,
@@ -51,6 +68,9 @@ import type {
   UndoTurn,
   Version,
   VersionKind,
+  Viewing,
+  ViewTarget,
+  Working,
 } from "./model.ts";
 import { diffSummary } from "./shots.ts";
 
@@ -79,7 +99,14 @@ export interface FromCartonOptions {
    * Default: core's describeCard (what each side did differently, with the schema's labels, never ids). Cardboard:
    * `@carton/cardboard`'s describeCardboardCard.
    */
-  describeCard?: (card: ConflictCard, schema: Schema, doc?: Doc) => { title: string; mine: string; theirs: string; reason?: string };
+  describeCard?: (card: ConflictCard, schema: Schema, doc?: Doc) => { title: string; mine: string; theirs: string; reason?: string; name?: string };
+  /**
+   * A field's value in the host's words for the change sentences (PLAN 0.2), as describeCard's `value` (Cardboard's
+   * `cardboardValue`: volume "80%", speed "2×", a media by its file name). Default: core's words.
+   */
+  valueWords?: (key: string, value: unknown, doc: Doc | undefined) => string | undefined;
+  /** What kind of clip a change is about (the change row's colour). Default: from the schema's `nounOf` and the record's `type`. */
+  clipKind?: (row: ChangeRow, schema: Schema) => ClipKind;
   /** "Keep both" for a card, as the host expresses it (Cardboard: a new track or `alternatives`); null: not offered. */
   keepBoth?: (card: ConflictCard) => Choice | null;
   /** The side a late conflict shows until picked. H5: head's value stays, so "theirs". */
@@ -95,6 +122,11 @@ export interface FromCartonOptions {
   /** Re-read the store every N ms (other processes may append). 0: only on events and refresh(). */
   pollMs?: number;
   clock?: () => number;
+  /**
+   * Where landmark pictures are kept (Carton UX v2): the app stores a small JPEG per version (`Landmark.picture`, a key
+   * per version). Without it the panel shows no pictures. `put` takes a `data:image/jpeg` URL (at most 64 KB).
+   */
+  pictures?: { get(key: string): Promise<string | null>; put(key: string, jpeg: string): Promise<void> };
 }
 
 export interface CartonUiHandle extends CartonUi {
@@ -111,6 +143,12 @@ export interface CartonUiHandle extends CartonUi {
    * id, included). `Conflict.id` is opaque: map a resolved card back with this, never by parsing the id.
    */
   cardFor<C extends ConflictCard = ConflictCard>(conflictId: string): C | undefined;
+  /**
+   * An agent turn holding the timeline started (PLAN 0.7), or ended (null): the host knows (Cardboard's main process
+   * sees an in-app turn start and end). `actors` are the ids its edits are recorded by (a Director turn's
+   * `director/<chat>/<turn>`), so its versions count as its edits; `label` is its prompt.
+   */
+  setWorking(turn: { actor: CoreActor; label: string; since?: number; cut?: string; actors?: readonly string[] } | null): void;
   /** Resolves when the first load finished. */
   readonly ready: Promise<void>;
   /** Resolves when nothing is scheduled or running (refreshes, summaries, checks): for tests and hosts that wait. */
@@ -120,6 +158,22 @@ export interface CartonUiHandle extends CartonUi {
 
 const IDLE_MS = 30_000;
 const PENDING_PREFIX = "pending:";
+
+/**
+ * The change a write made (PLAN 5.3: what a toast's Undo takes back), or undefined when it made none: a commit that
+ * found nothing to change (`empty`), a conflict, a refusal, a fold with nothing new. A shared cut's change waiting to
+ * sync is the person's newest one already (Ctrl+Z takes it back), by its id.
+ */
+function madeBy(r: { status: string; change?: { id: string } | null; empty?: boolean; id?: string } | null | undefined): string | undefined {
+  if (r?.status === "confirmed") return !r.empty && r.change?.id ? r.change.id : undefined;
+  if (r?.status === "pending") return r.id;
+  return undefined;
+}
+/** `made` for an action's answer: the versions it made on `cut`, oldest first; none: nothing to undo. */
+const madeOn = (cut: string, ids: readonly (string | undefined)[], by?: "redo"): { made: { cut: string; changes: string[]; by?: "redo" } } | Record<string, never> => {
+  const changes = ids.filter((x): x is string => typeof x === "string");
+  return changes.length ? { made: { cut, changes, ...(by ? { by } : {}) } } : {};
+};
 
 /** Split a path key back into segments (`~1` → `/`, `~0` → `~`), the inverse of core's pathKey(). */
 export function splitPathKey(key: string): string[] {
@@ -222,10 +276,44 @@ export function cardOps(card: ConflictCard, value: unknown): Op[] {
  * Generic plain words for a card (core's describeCard): the record's label (looked up in `doc` when given), and for each
  * side only what it did differently, with the schema's field labels and times as History words them; never ids.
  */
-export function defaultDescribeCard(card: ConflictCard, schema: Schema, doc?: Doc): { title: string; mine: string; theirs: string; reason?: string } {
+export function defaultDescribeCard(card: ConflictCard, schema: Schema, doc?: Doc): { title: string; mine: string; theirs: string; reason?: string; name?: string } {
   const w = coreDescribeCard(card, schema, doc);
-  return { title: w.title, mine: w.ours, theirs: w.theirs, ...(w.reason ? { reason: w.reason } : {}) };
+  return { title: w.title, mine: w.ours, theirs: w.theirs, ...(w.name ? { name: w.name } : {}), ...(w.reason ? { reason: w.reason } : {}) };
 }
+
+/**
+ * What kind of clip a change row is about (DESIGN §5.1's colours): a title, a caption or a code graphic by what the
+ * host calls it (`nounOf`), else the record's type; anything that isn't a timeline item (a track, media, a project
+ * field) is the project's.
+ */
+export function defaultClipKind(row: ChangeRow, schema: Schema): ClipKind {
+  const tl = schema.timeline;
+  if (!row.coll || !tl || row.coll !== tl.collection) return "project";
+  const noun = row.rec ? schema.collections[row.coll]?.nounOf?.(row.rec) : undefined;
+  if (noun === "title") return "title";
+  if (noun === "caption") return "caption";
+  if (noun && /code|shader|graphic/.test(noun)) return "code";
+  const t = row.rec?.type;
+  if (t === "audio" || t === "image" || t === "video") return t;
+  if (t === "text") return "title";
+  if (t === "caption") return "caption";
+  if (t === "code" || t === "shader") return "code";
+  return "video";
+}
+
+/** What a side of a card did, as a noun for the viewing label ("Claude Code's move of “Interview B”"). */
+export function sideNoun(sentence: string): string {
+  const v = /^(\w+)/.exec(sentence)?.[1]?.toLowerCase();
+  return v === "moved" ? "move" : v === "trimmed" ? "trim" : v === "slipped" ? "slip" : v === "removed" ? "removal" : v === "added" ? "addition" : v === "set" ? "change" : "change";
+}
+
+/** Changes in timeline order: by where they are, the ones with no place last. */
+const byPlace = (a: Change, b: Change) => (a.at ?? Infinity) - (b.at ?? Infinity) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+/** A node id (`cut@seq`) split, or null for any other ref. */
+const nodeOf = (ref: string): { cut: string; seq: number } | null => {
+  const m = /^([^\s~]+)@(\d+)$/.exec(ref);
+  return m ? { cut: m[1]!, seq: Number(m[2]) } : null;
+};
 
 function defaultMeasure(doc: Doc, schema: Schema) {
   const tl = schema.timeline;
@@ -318,7 +406,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // Oldest first, changed in place. The indexes are kept incrementally, so an append costs O(rows after it), not
   // O(History): a burst of confirmations on a 100k History stays cheap.
   const rows: Row[] = [];
-  const named: number[] = [], turns: number[] = [];
+  const named: number[] = [], turns: number[] = [], mine: number[] = [];
   const pos = new Map<string, number>();
   let revision = 0;
   let disposed = false;
@@ -335,11 +423,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     start = Math.max(0, Math.min(start, rows.length));
     while (named.length && named[named.length - 1]! >= start) named.pop();
     while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    while (mine.length && mine[mine.length - 1]! >= start) mine.pop();
     for (let i = start; i < rows.length; i++) {
       const v = rows[i]!.v;
       pos.set(v.id, i);
-      if (v.name) named.push(i);
+      // a person's named versions: an agent turn is named after its prompt (a turn, not a named version)
+      if (v.name && v.kind !== "turn") named.push(i);
       if (v.kind === "turn") turns.push(i);
+      if (v.author.kind === "human" && v.author.isYou) mine.push(i);
     }
     changed(Math.min(changedFrom, rows.length));
   };
@@ -352,7 +443,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   /** A named version ends a run (a turn without an id): the next version by the same agent starts the next turn. */
   const ends = (key: string, c: CoreVersion | null) => key.startsWith("run:") && !!c?.name;
   // Summaries survive object replacement (a turn row growing, a rename).
-  const byId = new Map<string, { summary: string; details?: readonly string[] }>();
+  // A version's own words, and, while it is a turn of several versions, the whole turn's (from `turn.base`): a row that
+  // stops being its turn's (the turn went on) shows its own again.
+  type Words = { summary: string; details?: readonly string[]; changes?: number; leftOut?: number; start?: "created" | "imported" };
+  const byId = new Map<string, Words & { turn?: Words & { base: string } }>();
+  /** A turn row's base when its changes are several versions' (they're then the whole turn's), else undefined. */
+  const turnBase = (v: Pick<Version, "id" | "kind" | "base" | "ref" | "seq">) => {
+    if (v.kind !== "turn" || !v.base) return undefined;
+    const c = rows[pos.get(v.id) ?? -1]?.core;
+    const own = c ? baseOf(c) : `${v.ref.slice(0, v.ref.lastIndexOf("@"))}@${(v.seq ?? 0) - 1}`;
+    return v.base !== own ? v.base : undefined;
+  };
   // "Fold in the rest" (R2-9, R3-5, R4-2, R5-1..3). Per partial fold (its inverse change id):
   // - restInfo: what it set back, read once from history (immutable);
   // - restDecision: whether the head still holds those values (left out), valid until a change on its cut touches
@@ -375,12 +476,35 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const partial = (c: CoreVersion) => c.kind === "partial-revert" || !!c.rejected;
   const offersRest = (c: CoreVersion) => partial(c) && !!c.change && c.ref.branchId === cutId && restDecision.get(c.change) === true && !restDone.has(c.change);
 
-  const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
+  // The ref a version's changes start from: the version before it (a fold-some's: before its fold); a turn's, before its
+  // first version (PLAN 0.1: `changes(base, ref)` is what the row did)
+  // (core says where a version's changes start when it isn't the seq before: a fold-some's, a compacted run's; review
+  // of the UX data #5, #6)
+  const startOf = (c: CoreVersion) => c.startsAt ?? c.ref.seq - (c.rejected ? 2 : 1);
+  const baseOf = (c: CoreVersion, runStart?: CoreVersion): string | undefined => {
+    const first = runStart ?? c;
+    const s = startOf(first);
+    return first.ref.seq > 0 && s >= 0 ? `${first.ref.branchId}@${s}` : undefined;
+  };
+  // An agent turn's versions share a key (PLAN 0.4): its turn and where it started
+  const runOf = (c: CoreVersion, runStart?: CoreVersion): string | undefined => {
+    const k = turnKeyOf(c.author);
+    return k && runStart ? `${k}#${runStart.ref.branchId}@${runStart.ref.seq}` : undefined;
+  };
+  const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number, runStart?: CoreVersion): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
     const prev = byId.get(id);
     const kind = kindOverride ?? kindOf(c);
     // A partial fold's inverse offers "Fold in the rest" once checkRest() found its left-out changes still left out.
     const rest = offersRest(c);
+    // History's start (PLAN 0.4): the cut's root and the project's import are one "Project created" row (an import of a
+    // project that had clips: "History starts here", once described)
+    const start = prev?.start ?? (c.kind === "root" || c.kind === "import" ? "created" : undefined);
+    const base = kind === "turn" ? baseOf(c, runStart) : baseOf(c);
+    const run = runOf(c, runStart);
+    // the whole turn's words while it is a turn of several versions from this base; else its own
+    const tb = kind === "turn" && base && base !== baseOf(c) ? base : undefined;
+    const w = tb ? (prev?.turn?.base === tb ? prev.turn : undefined) : prev;
     return {
       id,
       seq: c.ref.seq,
@@ -388,17 +512,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       at: c.at,
       author: ui(c.author),
       kind,
-      // The import row is where Carton started keeping the project's versions: for a project made in Cardboard as much
-      // as for one brought in, so it never says "Imported" (UI audit P2-18).
-      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Started the project's history" : ""),
-      ...(prev?.details ? { details: prev.details } : {}),
+      // the root is described here; an import (which may be a project brought in) and a new cut's start once read
+      summary: w?.summary ?? prev?.summary ?? (start ? "Project created" : c.kind === "fork" ? "Made this cut" : ""),
+      ...(w?.details ? { details: w.details } : {}),
+      ...(w?.changes !== undefined ? { changes: w.changes } : {}),
+      ...(w?.leftOut ? { leftOut: w.leftOut } : {}),
+      ...(base ? { base } : {}),
+      ...(run ? { run } : {}),
+      ...(start ? { start } : {}),
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
       ...(rest ? { foldRest: true } : {}),
       ...(c.blank ? { empty: true } : {}),
     };
   };
-  const sameShape = (v: Version, kind: VersionKind, edits: number) => v.kind === kind && (kind !== "turn" || v.turn?.edits === edits);
+  const sameShape = (v: Version, kind: VersionKind, edits: number, c?: CoreVersion | null, runStart?: CoreVersion) =>
+    v.kind === kind && (kind !== "turn" || v.turn?.edits === edits) && (!c || (v.run === runOf(c, runStart) && v.base === (kind === "turn" ? baseOf(c, runStart) : baseOf(c))));
 
   /**
    * Group the confirmed rows of the newest turn after an append. Returns the lowest index it changed. Only the newest
@@ -412,13 +541,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     let j = i;
     if (key) while (j > 0 && rows[j - 1]!.turnKey === key && !ends(key, rows[j - 1]!.core)) j--;
     let low = rows.length;
+    const runStart = key ? (rows[j]!.core ?? undefined) : undefined;
     for (let k = j; k <= i; k++) {
       const r = rows[k]!;
       if (!r.core) continue;
       const want: VersionKind = key && k === i ? "turn" : kindOf(r.core);
       const edits = i - j + 1;
-      if (!sameShape(r.v, want, edits)) {
-        r.v = toVersion(r.core, want, edits);
+      if (!sameShape(r.v, want, edits, r.core, runStart)) {
+        r.v = toVersion(r.core, want, edits, runStart);
         low = Math.min(low, k);
       }
     }
@@ -432,13 +562,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const key = turnKeyOf(all[i]!.author);
       let j = i;
       if (key) while (j + 1 < all.length && turnKeyOf(all[j + 1]!.author) === key && !ends(key, all[j]!)) j++;
+      const runStart = key ? all[i]! : undefined;
       for (let k = i; k <= j; k++) {
         const c = all[k]!;
         const kind: VersionKind = key && k === j ? "turn" : kindOf(c);
         const old = reuse.get(c.change ?? `${c.ref.branchId}@${c.ref.seq}`);
         // An unchanged version keeps its object, so a refresh re-renders nothing and the bridge sends nothing.
-        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === offersRest(c)) next.push(old);
-        else next.push({ core: c, turnKey: key, v: toVersion(c, kind, j - i + 1) });
+        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1, c, runStart) && !!old.v.foldRest === offersRest(c)) next.push(old);
+        else next.push({ core: c, turnKey: key, v: toVersion(c, kind, j - i + 1, runStart) });
       }
       i = j + 1;
     }
@@ -494,6 +625,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     pos.clear();
     named.length = 0;
     turns.length = 0;
+    mine.length = 0;
     reindexFrom(0, first);
     hub.notify("history");
   };
@@ -556,7 +688,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const queued = new Set<string>();
   let running = 0;
   const wantSummary = (v: Version) => {
-    if (v.summary || v.provisional || queued.has(v.id) || byId.has(v.id)) return;
+    if (v.provisional || queued.has(v.id)) return;
+    const known = byId.get(v.id);
+    if (known) {
+      // described: unless it has since become a turn of several versions whose words aren't known yet (a turn whose
+      // start moved too: review of the UX data #7)
+      const tb = turnBase(v);
+      if (!tb || known.turn?.base === tb) return;
+    } else if (v.summary) {
+      // an import and a new cut's start have words at once, said better once read (PLAN 0.2: "History starts here",
+      // "Made this cut from Main cut at 12:20 pm")
+      const k = rows[pos.get(v.id) ?? -1]?.core?.kind;
+      if (k !== "import" && k !== "fork") return;
+    }
     queued.add(v.id);
     queue.push(v.id);
     pump();
@@ -577,28 +721,41 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const r = i === undefined ? undefined : rows[i];
     if (!r?.core || disposed) return;
     const seq = r.core.ref.seq;
-    // Core describes the version against the state just before it (log({summary})): no whole-doc diff here. Its
-    // summary sums up a version of several changes and says what a fold or a restore was; its details list every
-    // change (UI audit P1-5). A version log() no longer lists (a fold-some's fold half) gets another's: ignored.
-    let line: string | undefined, details: readonly string[] | undefined;
+    // Core describes the version against the state just before it (log({summary, rows})): no whole-doc diff here. Its
+    // rows are every change it made, in the app's words (PLAN 0.1, 0.2); its title says what a fold, a restore or an
+    // undo of one was. A version log() no longer lists (a fold-some's fold half) gets another's: ignored.
+    let got: CoreVersion | undefined;
     try {
-      const got = seq > 0 ? (await carton.log({ cut: r.core.ref.branchId, before: seq + 1, limit: 1, summary: true }))[0] : undefined;
-      if (got?.ref.seq === seq) ({ summary: line, details } = got);
+      got = seq > 0 ? (await carton.log({ cut: r.core.ref.branchId, before: seq + 1, limit: 1, summary: true, rows: true }))[0] : undefined;
+      if (got?.ref.seq !== seq) got = undefined;
     } catch {
-      line = undefined;
+      got = undefined;
     }
-    const summary = line ?? (r.v.kind === "fold" ? "Folded in" : r.v.kind === "undo" ? "Undid a change" : r.v.kind === "restore" ? "Restored a version" : "No visible change");
-    byId.set(id, { summary, ...(details?.length ? { details } : {}) });
+    const w = await wordsFor(r, got);
+    byId.set(id, w);
     const j = pos.get(id);
     if (j === undefined || disposed) return;
     const row = rows[j]!;
-    row.v = { ...row.v, summary, ...(details?.length ? { details } : {}) };
+    const tb = turnBase(row.v);
+    const { turn, ...own } = w;
+    const shown = tb ? (turn?.base === tb ? turn : null) : own;
+    if (!shown) return; // the row became another turn's meanwhile: it asks again
+    const { base: _b, ...words } = shown as Words & { base?: string };
+    row.v = { ...row.v, ...words };
     changed(j);
     hub.notify("history");
   };
 
-  const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
+  // "Only “clip”" (PLAN 0.8): the versions that touched a clip, from the per-version index (clipVersions)
+  // asked again when versions are added or go, not when a row is described
+  const lastConfirmed = () => {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.core) return rows[i]!.v.id;
+    return undefined;
+  };
+  const items = itemFilter({ ask: (item, o) => handle.clipVersions(item, o), pos: (id) => pos.get(id), structure: () => `${rows.length}|${lastConfirmed() ?? ""}`, newest: lastConfirmed, changed: () => hub.notify("history") });
+  const view = (f: HistoryFilter) => (typeof f === "object" ? items.view(f.item) : f === "named" ? named : f === "turns" ? turns : f === "mine" ? mine : null);
   const history: HistorySource = {
+    status: (f) => (typeof f === "object" ? items.status(f.item) : { loading: false }),
     all: () => rows.map((r) => r.v),
     // The bridge reads only the rows from the first change on (R2-8): an append copies the tail, not History.
     slice: (from) => {
@@ -652,7 +809,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let undo: UndoTurn | null = null;
   const heads = new Map<string, number>();
 
-  const ownerName = (owner: string) => actors.get(owner)?.name ?? owner;
+  // a teammate's cut by their first name ("Leo's Main cut"), never an id (design QA G27, G30)
+  const ownerName = (owner: string) => firstName(actors.get(owner)?.name);
   const refreshCuts = async () => {
     records = await carton.cuts();
     const visible = records.filter((c) => c.kind !== "published");
@@ -676,8 +834,21 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         head: head ? `${c.id}@${head.ref.seq}` : `${c.id}@0`,
         updatedAt: head?.at ?? c.at ?? 0,
         shared: c.sequencer.kind !== "local",
+        // who made its newest version (the cuts menu's "Director · 2 h ago", PLAN 6.1)
+        ...(head?.author ? { updatedBy: ui(head.author) } : {}),
       };
-      out.push(prev && sameCut(prev, next) ? prev : next);
+      out.push(next);
+    }
+    // Every cut but Main its colour dot (PLAN 6.1): your cuts in the order they were made, a teammate's its owner's
+    const colors = cutColors(out, (id) => {
+      const owner = visible.find((c) => c.id === id)?.owner;
+      return owner && !mine.has(owner) ? ui({ kind: "human", id: owner }) : undefined;
+    });
+    for (let i = 0; i < out.length; i++) {
+      const color = colors.get(out[i]!.id);
+      const next = color ? { ...out[i]!, color } : out[i]!;
+      const prev = cuts.find((x) => x.id === next.id);
+      out[i] = prev && sameCut(prev, next) ? prev : next;
     }
     if (out.length !== cuts.length || out.some((c, i) => c !== cuts[i])) {
       cuts = out;
@@ -745,6 +916,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     }
   };
   let preview: Preview | null = null;
+  let viewing: Viewing | null = null;
+  let viewGen = 0;
+  let working: Working | null = null;
+  // the turn behind `working`: the ids its edits are recorded by, and the records it changed so far
+  let workingTurn: { actors: Set<string>; since: number; records: Set<string>; cut?: string } | null = null;
+  // Viewing (PLAN 0.5) and the deprecated preview say the same thing: both topics fire
+  const setViewing = (next: Viewing | null) => {
+    viewing = next;
+    preview = next ? { ref: next.ref, label: next.label, ...(next.blockedEdit ? { blockedEdit: true } : {}) } : null;
+    hub.notify("viewing");
+    hub.notify("preview");
+  };
 
   const publishPeers = () => {
     const next = [...peerMap.values()].map((x) => x.peer);
@@ -785,6 +968,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const segs = splitPathKey(card.path);
     return tl && segs[0] === tl.collection && segs[1] ? { item: segs[1] } : {};
   };
+  // What each side did, as change sentences about the card's clip (DESIGN §8, conflict-words.ts): ConflictSide.text,
+  // .did and .what, and Conflict.clip. `mineIs`: core's side holding the person's edit. `doc`: the cut's head, which
+  // names the clip and its track (without it, a field card's clip is unknown until completeCards reads the head).
+  const sentencesOf = (card: ConflictCard, mineIs: "ours" | "theirs", doc?: Doc): { clip?: string; mine: SideSentence; theirs: SideSentence } => {
+    const s = cardSentences(card, schema, doc, opts.valueWords);
+    return { ...(s.clip ? { clip: s.clip } : {}), mine: s[mineIs], theirs: s[mineIs === "ours" ? "theirs" : "ours"] };
+  };
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
     const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
     const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
@@ -793,6 +983,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (seen.has(key(cut, card))) continue;
       seen.add(key(cut, card));
       const w = describeCard(card, schema);
+      const sw = sentencesOf(card, "theirs");
       const id = `${cut}|${card.path}|${++cardSeq}`;
       cardEntries.set(id, {
         card,
@@ -803,13 +994,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           path: card.path,
           title: w.title,
           // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
-          mine: { author: me, summary: w.theirs },
-          theirs: { author: by ? ui(by) : someone, summary: w.mine },
+          mine: { author: me, summary: w.theirs, ...sw.mine },
+          theirs: { author: by ? ui(by) : someone, summary: w.mine, ...sw.theirs },
           canKeepBoth: !!opts.keepBoth?.(card),
           ...(w.reason ? { reason: w.reason } : {}),
           provisional: "theirs",
           sig: cardSig(card),
           ...itemOf(card),
+          ...((sw.clip ?? w.name) ? { clip: (sw.clip ?? w.name)! } : {}),
         },
       });
       added.push(id);
@@ -835,9 +1027,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       let c = e.conflict;
       if (doc) {
         const w = describeCard(e.card, schema, doc);
+        const sw = sentencesOf(e.card, e.mineSide, doc);
         // describeCard words core's sides; the person's edit is core's theirs here
-        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary)
-          c = { ...c, title: w.title, mine: { ...c.mine, summary: w.theirs }, theirs: { ...c.theirs, summary: w.mine } };
+        const clip = sw.clip ?? w.name;
+        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary || clip !== c.clip || sw.mine.text !== c.mine.text || sw.theirs.text !== c.theirs.text) {
+          const { clip: _clip, ...rest } = c;
+          c = { ...rest, title: w.title, mine: { ...c.mine, summary: w.theirs, ...sw.mine }, theirs: { ...c.theirs, summary: w.mine, ...sw.theirs }, ...(clip ? { clip } : {}) };
+        }
       }
       if (who) c = { ...c, theirs: { ...c.theirs, author: ui(who.actor), ...(who.at != null ? { at: who.at } : {}) } };
       if (c !== e.conflict) {
@@ -857,7 +1053,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         if (e.cards.length) addCards(e.cards, undefined, e.branchId);
         break;
       }
+      // a landmark recorded (an export, a send), or a version that may be one (a name, a turn, a restore's Before)
+      case "landmarks":
+        hub.notify("landmarks");
+        break;
       case "change": {
+        hub.notify("landmarks");
         const c = e.change;
         // Partial-fold decisions follow every cut's changes, not only the current cut's (R5-1).
         const rev = Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : [];
@@ -884,7 +1085,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // "Fold in the rest" (a revert of a partial fold's inverse) is marked as log() marks it (`restOf`)
         const target = c.kind === "revert" && typeof c.reverts === "string" ? pos.get(c.reverts) : undefined;
         const restOf = target !== undefined && rows[target]!.core && partial(rows[target]!.core!) ? (c.reverts as string) : undefined;
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])] } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}) });
+        // an agent working (PLAN 0.7): the records its turn changed so far
+        if (workingTurn && working && e.branchId === (workingTurn.cut ?? cutId) && c.at >= workingTurn.since - 1000 && (workingTurn.actors.has(c.author.id) || workingTurn.actors.has(agentIdOf(c.author)))) {
+          const was = workingTurn.records.size;
+          for (const p of c.paths ?? []) workingTurn.records.add(recordOf(p));
+          if (workingTurn.records.size !== was) {
+            working = { ...working, edits: workingTurn.records.size };
+            hub.notify("working");
+          }
+        }
+        // what an undo undid, and a redo's undo, as log() says them (undoTurnOf skips what is out already)
+        const undoes = c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
+        const redoOf = c.kind === "revert" && typeof c.reverts === "string" && rows[pos.get(c.reverts) ?? -1]?.core?.kind === "undo" ? c.reverts : undefined;
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -1111,14 +1324,308 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.v.ref === ref) return rows[i]!.v;
     return undefined;
   };
-  // A version in words: its name, else what it did; the current cut's head is "Current", another cut's head that
-  // cut's name ("Main cut"); never its ref (an id).
+  // A version in words (PLAN 0.9): the current cut's head is "Your edit", another cut's head that cut's name ("Main
+  // cut"), any other version its one label ("“Sent to client”", "Director's “Add captions…”", "Your edit from 12:41
+  // pm"); never its ref (an id).
+  const labelCtx = () => ({ now: clock(), actor: (k: string) => actors.get(k) });
   const refLabel = (ref: string): string => {
-    const v = versionAt(ref);
-    if (v?.name) return v.name;
     const head = cuts.find((c) => c.head === ref);
-    if (head) return head.current ? "Current" : head.label;
-    return v?.summary || "Earlier version";
+    if (head) return head.current ? "Your edit" : head.label;
+    const v = versionAt(ref);
+    return v ? versionLabel(v, { ...labelCtx(), start: true }) : "An earlier version";
+  };
+
+  /**
+   * A version of another cut in words (Carton UX v2, DESIGN-V2 §1.12: compare across cuts): its cut and its moment
+   * ("“30s Instagram cut” at 12:20 pm"); its head is the cut's name, as `refLabel` says.
+   */
+  const refLabelOf = async (ref: string): Promise<string> => {
+    const n = nodeOf(ref);
+    if (!n || n.cut === cutId || cuts.some((c) => c.head === ref) || versionAt(ref)) return refLabel(ref);
+    const v = (await carton.log({ cut: n.cut, before: n.seq + 1, limit: 1 }).catch(() => []))[0];
+    return v && v.ref.seq === n.seq ? `${cutWords(n.cut)} at ${clockWords(v.at, { now: clock() })}` : refLabel(ref);
+  };
+  // ------------------------------------------------------------ change rows (PLAN 0.1, 0.2)
+  const valueOpt = opts.valueWords ? { value: opts.valueWords } : {};
+  const clipKindOf = (r: ChangeRow): ClipKind => (opts.clipKind ?? defaultClipKind)(r, schema);
+  const tl = schema.timeline;
+  const toChange = (r: ChangeRow, who?: { author: Actor; when: number }): Change => ({
+    key: r.key,
+    text: r.text,
+    kind: r.kind,
+    clip: clipKindOf(r),
+    ...(tl && r.coll === tl.collection && r.id !== undefined ? { itemId: r.id } : {}),
+    ...(r.at !== undefined ? { at: r.at } : {}),
+    ...(r.end !== undefined ? { end: r.end } : {}),
+    ...(who ? { author: who.author, when: who.when } : {}),
+  });
+  // A row of the Fold dialog as a change row (PLAN 6.3): its place in the edit, the kind of clip and what happened. A
+  // row of several sentences (a record's own and its part's) takes the first's place and kind; the text is all of them.
+  const foldRow = (key: string, list: readonly ChangeRow[]): { change?: Change } =>
+    list[0] ? { change: { ...toChange(list[0]), key, text: list.map((x) => x.text).join("; ") } } : {};
+  const notSent = () => new Error("Available once it's sent");
+  // Every change from a to b, as core's change rows (a docDiff: one per change as countChanges counts it). Kept per
+  // pair of versions (refs `cut@seq` name fixed states; a cut id moves with its head, so it isn't kept).
+  const rowsCache = new Map<string, Promise<readonly ChangeRow[]>>();
+  const rowsBetween = (a: string, b: string): Promise<readonly ChangeRow[]> => {
+    const key = `${a}|${b}`;
+    const hit = rowsCache.get(key);
+    if (hit) return hit;
+    const p = (async () => {
+      if (a.startsWith(PENDING_PREFIX) || b.startsWith(PENDING_PREFIX)) throw notSent();
+      const [da, db] = await Promise.all([carton.checkout(a), carton.checkout(b)]);
+      return changeList(docDiff(da, db, schema), da, schema, valueOpt);
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      rowsCache.set(key, p);
+      if (rowsCache.size > 16) rowsCache.delete(rowsCache.keys().next().value!);
+      p.catch(() => rowsCache.delete(key));
+    }
+    return p;
+  };
+  /**
+   * Who last changed each record between a and b (PLAN 0.1: author and when), from the per-version index (`touched`),
+   * never a diff: when both are versions of one cut, a before b. Else nobody is named.
+   */
+  const whoChanged = async (a: string, b: string, keys: readonly string[]): Promise<Map<string, { author: Actor; when: number }>> => {
+    const out = new Map<string, { author: Actor; when: number }>();
+    const na = nodeOf(a), nb = nodeOf(b);
+    if (!na || !nb || na.cut !== nb.cut || na.seq >= nb.seq || typeof carton.touched !== "function" || !keys.length) return out;
+    const want = new Set(keys);
+    const list = await carton.touched({ cut: na.cut, after: na.seq, upTo: nb.seq }).catch(() => []);
+    for (let i = list.length - 1; i >= 0 && want.size; i--) {
+      const t = list[i]!;
+      for (const k of t.records) if (want.delete(k)) out.set(k, { author: ui(t.author), when: t.at });
+    }
+    return out;
+  };
+  const changeCache = new Map<string, Promise<readonly Change[]>>();
+  const changesBetween = (a: string, b: string): Promise<readonly Change[]> => {
+    const key = `${a}|${b}`;
+    const hit = changeCache.get(key);
+    if (hit) return hit;
+    const p = (async () => {
+      const list = await rowsBetween(a, b);
+      const who = await whoChanged(a, b, list.map((r) => r.key));
+      return list.map((r) => toChange(r, who.get(r.key))).sort(byPlace);
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      changeCache.set(key, p);
+      if (changeCache.size > 16) changeCache.delete(changeCache.keys().next().value!);
+      p.catch(() => changeCache.delete(key));
+    }
+    return p;
+  };
+  // ------------------------------------------------------------ Carton UX v2 (N0): two cuts, find, landmarks
+  /** A cut's name in a sentence: Main cut as it is, any other in quotes ("“30s Instagram cut”"). */
+  const cutWords = (id: string): string => {
+    const c = cuts.find((x) => x.id === id), r = records.find((x) => x.id === id);
+    const name = c?.label ?? r?.name ?? "another cut";
+    return c?.kind === "main" || r?.kind === "main" ? name : `“${name}”`;
+  };
+  const cutOfRef = (ref: string): string => nodeOf(ref)?.cut ?? ref;
+  /** Two cuts' differences (DESIGN-V2 §1.12): the same rows as `changes`, said as where a clip is. Cached per pair. */
+  const cutsCache = new Map<string, Promise<readonly Change[]>>();
+  const cutsBetween = (a: string, b: string): Promise<readonly Change[]> => {
+    const key = `${a}|${b}`;
+    const hit = cutsCache.get(key);
+    if (hit) return hit;
+    const p = (async () => {
+      const [list, da, db] = await Promise.all([rowsBetween(a, b), carton.checkout(a), carton.checkout(b)]);
+      const rb = cutOfRef(b);
+      return betweenCuts(list, da, db, schema, { left: cutWords(cutOfRef(a)), right: cutWords(rb), here: rb === cutId }).map((r) => toChange(r)).sort(byPlace);
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      cutsCache.set(key, p);
+      if (cutsCache.size > 16) cutsCache.delete(cutsCache.keys().next().value!);
+      p.catch(() => cutsCache.delete(key));
+    }
+    return p;
+  };
+  /** The clip-by-clip match of two versions (DESIGN-V2 §1.15 `ui.align`), by identity. Cached per pair. */
+  const alignCache = new Map<string, Promise<readonly AlignEntry[]>>();
+  const align = (a: string, b: string): Promise<readonly AlignEntry[]> => {
+    const key = `${a}|${b}`;
+    const hit = alignCache.get(key);
+    if (hit) return hit;
+    const p = (async (): Promise<readonly AlignEntry[]> => {
+      if (!tl) return [];
+      const [da, db] = await Promise.all([carton.checkout(a), carton.checkout(b)]);
+      const k = schema.collections[tl.collection]?.key ?? "id";
+      const out = new Map<string, AlignEntry>();
+      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+      for (const [d, side] of [[da, "a"], [db, "b"]] as const) {
+        for (const r of (d[tl.collection] as Rec[] | undefined) ?? []) {
+          const id = String(r[k]);
+          const was = out.get(id);
+          const name = schema.label?.(tl.collection, r, d);
+          const start = num(r[tl.start]), end = num(r[tl.end]);
+          out.set(id, {
+            ...(was ?? { item: id }),
+            ...(name && !was?.name ? { name } : {}),
+            ...(side === "a" ? { ...(start !== undefined ? { aStart: start } : {}), ...(end !== undefined ? { aEnd: end } : {}) } : { ...(start !== undefined ? { bStart: start } : {}), ...(end !== undefined ? { bEnd: end } : {}) }),
+            ...(typeof r[tl.lane] === "string" && (side === "b" || !was?.track) ? { track: r[tl.lane] as string } : {}),
+          });
+        }
+      }
+      const at = (e: AlignEntry) => e.bStart ?? e.aStart ?? 0;
+      return [...out.values()].sort((x, y) => at(x) - at(y));
+    })();
+    if (nodeOf(a) && nodeOf(b)) {
+      alignCache.set(key, p);
+      if (alignCache.size > 8) alignCache.delete(alignCache.keys().next().value!);
+      p.catch(() => alignCache.delete(key));
+    }
+    return p;
+  };
+  const rowIdOf = (change: string | null, ref: { branchId: string; seq: number }) => change ?? `${ref.branchId}@${ref.seq}`;
+  /** Core's place and ripple (N0b) in the view model's terms: clips by their timeline ids, no paths. */
+  const placeOf = (x: { place?: CoreBroughtPlace; ripple?: CoreBroughtRipple | null }): { place?: BringBackPlace; ripple?: BringBackRipple | null } => ({
+    ...(x.place ? { place: { placed: x.place.placed, ...(x.place.track ? { trackId: x.place.track } : {}), ...(x.place.takenBy ? { takenBy: x.place.takenBy.map((t) => ({ itemId: itemOfRecord(t.record) ?? t.record, name: t.name })) } : {}) } } : {}),
+    ...(x.ripple !== undefined ? { ripple: x.ripple ? { direction: x.ripple.direction, by: x.ripple.by, at: x.ripple.at, moved: x.ripple.moved } : null } : {}),
+  });
+  const itemOfRecord = (record: string | undefined): string | undefined => {
+    if (!record || !tl) return undefined;
+    const [c, id] = splitPathKey(record);
+    return c === tl.collection ? id : undefined;
+  };
+  /** A row's own changes (the version card): a version's, as log() gives them; a turn's, all of it (from before its first version). */
+  const changesInCache = new Map<string, Promise<readonly Change[]>>();
+  const changesIn = (versionId: string): Promise<readonly Change[]> => {
+    const i = pos.get(versionId);
+    const r = i === undefined ? undefined : rows[i];
+    if (!r) return Promise.resolve([]);
+    if (r.v.provisional || !r.core) return Promise.reject(notSent());
+    const key = `${versionId}|${r.v.ref}|${r.v.base ?? ""}`;
+    const hit = changesInCache.get(key);
+    if (hit) return hit;
+    const v = r.v, c = r.core;
+    const p = (async (): Promise<readonly Change[]> => {
+      // a turn of several versions: what the whole turn changed, each change by whoever in it made it last
+      const tb = turnBase(v);
+      if (tb) return changesBetween(tb, v.ref);
+      const got = c.ref.seq > 0 ? (await carton.log({ cut: c.ref.branchId, before: c.ref.seq + 1, limit: 1, summary: true, rows: true }))[0] : undefined;
+      const list = got?.ref.seq === c.ref.seq ? (got.rows ?? []) : [];
+      return list.map((x) => toChange(x, { author: v.author, when: v.at })).sort(byPlace);
+    })();
+    changesInCache.set(key, p);
+    if (changesInCache.size > 32) changesInCache.delete(changesInCache.keys().next().value!);
+    p.catch(() => changesInCache.delete(key));
+    return p;
+  };
+
+  /**
+   * A version in the app's words (PLAN 0.2), from what core gave (log's rows and title): what a fold, a restore, an undo
+   * of either, a turn's undo, a new cut's start and History's start were; else its changes summed up.
+   */
+  const wordsFor = async (r: Row, got?: CoreVersion): Promise<Words & { turn?: Words & { base: string } }> => {
+    const c = r.core!, v = r.v;
+    const list: readonly ChangeRow[] = got?.rows ?? [];
+    const t = got?.title;
+    const at = (x: number) => clockWords(x, { now: clock() });
+    const restored = (of?: string) => {
+      const x = of ? versionAt(of) : undefined;
+      return x?.name ? `“${x.name}”` : x ? `the ${at(x.at)} version` : "an earlier version";
+    };
+    const cutName = (n?: string) => (n ? `“${n}”` : "another copy");
+    let summary: string | undefined, changes = list.length, leftOut: number | undefined, start = v.start;
+    if (c.kind === "root") summary = "Project created";
+    else if (c.kind === "import") {
+      // a project that had clips when Carton started keeping it: its history starts here; a new one was created here
+      start = list.some((x) => x.kind === "add" && !!tl && x.coll === tl.collection) ? "imported" : "created";
+      summary = start === "imported" ? "History starts here" : "Project created";
+    } else if (c.kind === "fork") {
+      const rec = records.find((x) => x.id === c.ref.branchId);
+      const from = rec?.forkOf ? nodeOf(rec.forkOf) : null;
+      const parent = from ? records.find((x) => x.id === from.cut)?.name : undefined;
+      const when = rec?.forkOf ? versionAt(rec.forkOf)?.at : undefined;
+      summary = parent ? `Made this cut from ${parent}${when !== undefined ? ` at ${at(when)}` : ""}` : "Made this cut";
+    } else if (t?.kind === "fold" || t?.kind === "rest") {
+      summary = t.kind === "rest" ? `Folded in the rest of ${cutName(t.cut)}` : `Folded in ${cutName(t.cut)}`;
+      if (t.taken !== undefined) changes = t.taken;
+      if (t.taken !== undefined && t.total !== undefined && t.total > t.taken) leftOut = t.total - t.taken;
+    } else if (t?.kind === "restore") summary = `Restored ${restored(t.of)}`;
+    else if (t?.kind === "bring-back") {
+      // Bring back one clip (DESIGN-V2 §3.2): "Brought back “B-roll pier” from 10:20 am", as its toast says it; a clip
+      // that wasn't there then comes out ("Took out “Drone shot”"). Without this the row read as a plain change ("Added
+      // “B-roll pier”"), and a bring-back couldn't be told from an edit (design QA v2)
+      const x = t.of ? versionAt(t.of) : undefined;
+      const from = x?.name ? `“${x.name}”` : x ? at(x.at) : "an earlier version";
+      const clip = t.name ? `“${t.name}”` : "a clip";
+      summary = list.length > 0 && list.every((r) => r.kind === "remove") ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
+    }
+    else if (t?.kind === "undo-restore" || t?.kind === "redo-restore") summary = `${t.kind === "undo-restore" ? "Undid" : "Redid"} the restore of ${restored(t.of)}`;
+    else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${t.rest ? "the rest of " : ""}${cutName(t.cut)}`;
+    else if (c.kind === "undo" && got?.undoes?.length) {
+      // an agent turn taken out (undoTurnOf, `cb undo --turn`): named as the turn is
+      const turn = turnOfChanges(got.undoes);
+      if (turn) summary = `Took out ${versionLabel(turn, labelCtx())}`;
+    }
+    const fallback = v.kind === "fold" ? "Folded in" : v.kind === "undo" ? "Undid a change" : v.kind === "restore" ? "Restored an earlier version" : "No visible change";
+    const own: Words = { summary: summary ?? (changeSummary(list, schema) || fallback), changes, ...(list.length > 1 ? { details: list.map((x) => x.text) } : {}), ...(leftOut ? { leftOut } : {}), ...(start ? { start } : {}) };
+    // a turn of several versions: what the whole turn changed, from before its first version
+    const tb = turnBase(v);
+    if (!tb) return own;
+    try {
+      const all = await rowsBetween(tb, v.ref);
+      return { ...own, turn: { base: tb, summary: changeSummary(all, schema) || own.summary, changes: all.length, ...(all.length > 1 ? { details: all.map((x) => x.text) } : {}) } };
+    } catch {
+      return own;
+    }
+  };
+  /**
+   * What a view target shows, labelled in one place (PLAN 0.5, DESIGN §8 "Viewing"), so the chip, the frame and the
+   * row never disagree: a version ("Director's “Add captions…”"), how it was before one ("Before …"), a card's side
+   * ("Claude Code's move of “Interview B”"), a teammate's cut ("Leo's Main cut").
+   */
+  const viewingOf = async (target: ViewTarget): Promise<Viewing> => {
+    const failed = () => new Error("Couldn't load this version. Try again.");
+    const ctx = labelCtx();
+    if (target.kind === "cut") {
+      const c = cuts.find((x) => x.id === target.cutId);
+      if (!c) throw failed();
+      const rec = records.find((x) => x.id === c.id);
+      const mine = new Set([opts.me.id, opts.me.name, actorKey(opts.me)].filter(Boolean) as string[]);
+      const label = rec?.owner && !mine.has(rec.owner) && c.readOnly ? `${ownerName(rec.owner)}'s ${c.name}` : c.label;
+      return { ref: c.head, kind: "cut", cutId: c.id, label, short: label };
+    }
+    if (target.kind === "conflict") {
+      const e = cardEntries.get(target.conflictId);
+      const ref = e && handle.conflictRef ? await handle.conflictRef(target.conflictId, target.side) : null;
+      if (!e || !ref) throw failed();
+      // the card's own words for its side (conflict-words.ts): the card, the chip, the frame and the toast say the same
+      // ("Claude Code's move of “Interview B”", "Your earlier change to “Summer launch”", "Director's aspect ratio")
+      const label = conflictWords(e.conflict, (a) => actorLabel(a, (k) => actors.get(k), "You")).label[target.side];
+      return { ref, kind: "conflict", conflictId: target.conflictId, side: target.side, label, short: label };
+    }
+    const r = target.versionId !== undefined ? rows[pos.get(target.versionId) ?? -1] : undefined;
+    const v = r?.v ?? (target.ref !== undefined ? versionAt(target.ref) : undefined);
+    if (v?.provisional) throw notSent();
+    if (target.kind === "before") {
+      const ref = target.ref ?? v?.base;
+      if (!ref) throw failed();
+      const of = v ? versionLabel(v, ctx) : (target.label ?? "this version");
+      return { ref, kind: "before", ...(v ? { versionId: v.id } : {}), label: `Before ${of}`, short: v ? `Before · ${versionShort(v, ctx)}` : `Before ${of}` };
+    }
+    const ref = v?.ref ?? target.ref;
+    if (!ref) throw failed();
+    // (a row given with its own words keeps them: a peek's "Exported 1080p for the client · holding", DESIGN-V2 §2.4)
+    if (v) return { ref, kind: "version", versionId: v.id, label: target.versionId !== undefined && target.label ? target.label : versionLabel(v, { ...ctx, start: true }), short: versionShort(v, ctx) };
+    const label = target.label ?? "An earlier version";
+    return { ref, kind: "version", label, short: label };
+  };
+  const actorLabelOf = (a: Actor) => (a.isYou && a.kind === "human" ? "Your" : actorLabel(a, (k) => actors.get(k), "You"));
+  /** The turn row whose versions these changes are (an undo of a whole turn), or undefined. */
+  const turnOfChanges = (ids: readonly string[]): Version | undefined => {
+    let run: string | undefined;
+    for (const id of ids) {
+      const i = pos.get(id) ?? pos.get(id.endsWith(".inverse") ? id : `${id}.inverse`);
+      const r = i === undefined ? undefined : rows[i];
+      if (!r?.v.run || (run !== undefined && r.v.run !== run)) return undefined;
+      run = r.v.run;
+    }
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.v.run === run && rows[i]!.v.kind === "turn") return rows[i]!.v;
+    return undefined;
   };
   // How many changes from one state to another, counted one way everywhere (core's countChanges: a record each, a split
   // one; laptop re-check P3-11); undefined when it can't be told
@@ -1147,17 +1654,30 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           b: B.map(shot(lb)),
           matches,
           // a version by its name or what it did, never its ref (an id)
-          aLabel: refLabel(a),
-          bLabel: refLabel(b),
+          aLabel: await refLabelOf(a),
+          bLabel: await refLabelOf(b),
           ...(changes === undefined ? {} : { changes }),
         };
       })();
       diffCache.set(key, p);
-      // Keep a few: Compare and Watch the changes ask for the same pair.
+      // Keep a few: Compare and WatchTheChanges ask for the same pair.
       if (diffCache.size > 4) diffCache.delete(diffCache.keys().next().value!);
       p.catch(() => diffCache.delete(key));
     }
     return p;
+  };
+
+  /**
+   * How a fold's two cuts are related, for the dialog's line (PLAN 6.3): one made from the other (its fork point is on
+   * the other's line), when. Read from the cuts as last listed; nothing when neither was made from the other.
+   */
+  const madeOf = (fromId: string, intoId: string): { made?: FoldPlan["made"] } => {
+    const rec = (id: string) => records.find((c) => c.id === id);
+    const forkedFrom = (id: string) => rec(id)?.forkOf?.slice(0, rec(id)!.forkOf!.lastIndexOf("@"));
+    const f = rec(fromId), i = rec(intoId);
+    if (f?.at != null && forkedFrom(fromId) === intoId) return { made: { which: "from", at: f.at } };
+    if (i?.at != null && forkedFrom(intoId) === fromId) return { made: { which: "into", at: i.at } };
+    return {};
   };
 
   // Cards of the last fold plan, by path: the fold's choices and "Keep both" read the real cards, not placeholders.
@@ -1173,24 +1693,28 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const planJoined = new Map<string, string[]>();
   const planKey = (from: string, into: string) => `${from}>${into}`;
   let planFor = "";
+  // Which plan is the newest (planFold): only it writes the plan state above.
+  let planGen = 0;
 
   // A fold card: yours is the cut you fold into, theirs the cut you fold in; each side says which.
   const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string, doc?: Doc): Conflict => {
     const w = describeCard(card, schema, doc);
+    const sw = sentencesOf(card, "ours", doc);
     const where = (id?: string) => (id ? cuts.find((c) => c.id === id)?.label : undefined);
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
       id: card.path,
       path: card.path,
       title: w.title,
-      mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
-      theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
+      mine: { author: me, summary: w.mine, ...sw.mine, ...(mineWhere ? { where: mineWhere } : {}) },
+      theirs: { author: theirs, summary: w.theirs, ...sw.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
       // Core's compare2 applies a {value} choice too (99db79c), so a §13 compare card can Keep both like any other.
       canKeepBoth: !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
       sig: cardSig(card),
       ...itemOf(card),
+      ...((sw.clip ?? w.name) ? { clip: (sw.clip ?? w.name)! } : {}),
     };
   };
 
@@ -1244,7 +1768,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * record, marked with its partial fold (`leftOut`): its rows fold in together. Each row says what folding it in does
    * (described from the partial fold's state) and who made it on `fromId`. Read only while planning a fold.
    */
-  const leftOutRows = async (fromId: string, intoId: string): Promise<FoldChange[]> => {
+  const leftOutRows = async (fromId: string, intoId: string, rests: Map<string, { ids: string[]; ops: Op[]; whole: boolean }>): Promise<FoldChange[]> => {
     const list = (await carton.leftOut?.(fromId, { into: intoId }).catch(() => [])) ?? [];
     const out: FoldChange[] = [];
     if (!list.length) return out;
@@ -1273,9 +1797,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
-        out.push({ id, summary: engine.describe(ops, doc, schema, null, names).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
+        const list = changeList(ops, doc, schema, { names, ...valueOpt });
+        out.push({ id, summary: list.map((x) => x.text).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change, leftOutAt: p.at, ...foldRow(id, list) });
       }
-      if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
+      if (ids.length) rests.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
     return out;
   };
@@ -1293,8 +1818,298 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     undoTurn: () => undo,
     published: () => published,
     preview: () => preview,
+    viewing: () => viewing,
+    working: () => working,
     me: () => me,
     actor: (key) => actors.get(key),
+
+    changes: (a, b, o) => (o?.between === "cuts" ? cutsBetween(a, b) : changesBetween(a, b)),
+    changesIn: (versionId) => changesIn(versionId),
+    async undoTurnOf(versionId) {
+      const i = pos.get(versionId);
+      const r = i === undefined ? undefined : rows[i];
+      if (!r?.core || (r.v.kind !== "turn" && !r.v.run)) return { ok: false, error: "That isn't an agent turn" };
+      if (r.v.provisional) return { ok: false, error: "Available once it's sent" };
+      // the turn's versions, newest first, each inverted onto head: what a later change changed again keeps that newer
+      // value and becomes a card (base: the turn's value, ours: head's, theirs: before the turn), the rest is undone
+      // (core's turn undo, as `cb undo --turn` does it). The whole turn: a turn's id takes its versions however other
+      // edits interleave them (review of the UX data #4); a run with no turn id (an agent that names none) is its run.
+      const key = r.turnKey, run = r.v.run;
+      const inTurn = (x: Row) => !!x.core && (key && !key.startsWith("run:") ? x.turnKey === key : run ? x.v.run === run : x === r);
+      // what an undo since took out (and no redo put back) is out already: never inverted twice, so an edit made since
+      // to the same value stays (review #2)
+      const redone = new Set<string>();
+      for (const x of rows) if (x.core?.redoOf) redone.add(x.core.redoOf);
+      const undone = new Set<string>();
+      for (const x of rows) if (x.core?.kind === "undo" && x.core.change && !redone.has(x.core.change)) for (const id of x.core.undoes ?? []) undone.add(id);
+      const members: Row[] = [];
+      for (let k = rows.length - 1; k >= 0; k--) {
+        const x = rows[k]!;
+        if (inTurn(x) && !(x.core!.change && undone.has(x.core!.change))) members.push(x);
+      }
+      if (!members.length) return { ok: false, error: "This turn is undone already" };
+      // the cut on screen: a turn inherited from the cut this one was made from is taken out here, never there (#1)
+      const onCut = cutId;
+      const head = await carton.head(onCut);
+      let doc: Doc = head.doc;
+      const byPath = new Map<string, ConflictCard>();
+      const ids: string[] = [];
+      for (const m of members) {
+        const c = m.core!;
+        // a fold-some's version is its fold and its partial revert: undone from before the fold, both named
+        const pair = c.rejected && c.change?.endsWith(".inverse") ? [c.change, c.change.slice(0, -".inverse".length)] : c.change ? [c.change] : [];
+        ids.push(...pair);
+        const [before, after] = await Promise.all([carton.checkout(`${c.ref.branchId}@${startOf(c)}`), carton.checkout(`${c.ref.branchId}@${c.ref.seq}`)]);
+        const mg = merge3(after, doc, before, schema, { infer: false });
+        doc = mg.doc;
+        for (const card of mg.conflicts) {
+          const prev = byPath.get(card.path);
+          if (!prev) byPath.set(card.path, card);
+          else {
+            const { hunks: _h, ops: _o, ...kept } = prev as ConflictCard & { hunks?: unknown; ops?: unknown };
+            byPath.set(card.path, { ...kept, theirs: card.theirs } as ConflictCard);
+          }
+        }
+      }
+      // an undo never empties a project its head holds (P2-1; core refuses the same for ⌘Z and cb undo)
+      if (schema.empty?.(doc) && !schema.empty(head.doc)) return { ok: false, error: "Can't undo that: the project would be left empty" };
+      const res = await carton.commit({ cut: onCut, doc, base: head.ref, author: opts.me, undoOf: ids });
+      await refreshUndo();
+      if (res.status === "rejected") return { ok: false, error: res.reason };
+      const cards = [...byPath.values(), ...(res.status === "conflicts" ? res.cards : [])];
+      // the undo's own version, for its toast's Undo (PLAN 5.3); none when it changed nothing. It is an undo change
+      // (`undoOf`), off the undo stack: redo is what puts the turn back
+      const made = madeOn(onCut, [madeBy(res)], "redo");
+      if (!cards.length) return { ok: true, ...made };
+      addCards(cards, undefined, onCut);
+      return { ok: true, conflicts, ...made };
+    },
+    async find(text, o) {
+      if (typeof carton.find !== "function") return { clips: [], hits: [], total: 0, versions: 0 };
+      const r = await carton.find(text, { cut: cutId, ...(o?.limit !== undefined ? { limit: o.limit } : {}), ...(o?.before !== undefined ? { before: o.before } : {}), ...(o?.fields ? { fields: o.fields } : {}), ...(o?.allCuts ? { allCuts: true } : {}), now: clock() });
+      const hits: FindHit[] = r.matches.map((m) => {
+        const itemId = itemOfRecord(m.record);
+        return {
+          versionId: rowIdOf(m.change, m.ref),
+          ref: `${m.ref.branchId}@${m.ref.seq}`,
+          cutId: m.ref.branchId,
+          at: m.at,
+          author: ui(m.author),
+          field: m.field,
+          fields: m.fields,
+          snippet: m.snippet,
+          hits: m.hits,
+          ...(itemId !== undefined ? { itemId } : {}),
+          ...(m.recordName ? { clipName: m.recordName } : {}),
+          ...(m.span ? { span: m.span } : {}),
+          ...(m.landmarks ? { landmarks: m.landmarks } : {}),
+        };
+      });
+      const clips = r.clips.flatMap((c) => {
+        const itemId = itemOfRecord(c.record);
+        return itemId === undefined ? [] : [{ itemId, name: c.name, cutId: c.cut, ...(c.deleted ? { deleted: true } : {}) }];
+      });
+      return { clips, hits, total: r.total, versions: r.versions };
+    },
+    // a person's group of edits in History, said by what it came to, as a turn's row says its turn (one diff, kept per
+    // pair of versions by rowsBetween)
+    async netWords(a, b) {
+      const all = await rowsBetween(a, b);
+      return { summary: changeSummary(all, schema), changes: all.length };
+    },
+    async landmarks(o) {
+      if (typeof carton.landmarks !== "function") return [];
+      const list = await carton.landmarks({ cut: cutId, ...(o?.kinds ? { kinds: o.kinds } : {}), ...(o?.limit !== undefined ? { limit: o.limit } : {}) });
+      return list.map((l): Landmark => ({
+        id: l.id,
+        kind: l.kind,
+        versionId: rowIdOf(l.change ?? null, l.ref),
+        ref: `${l.ref.branchId}@${l.ref.seq}`,
+        at: l.at,
+        by: l.by ? ui(l.by) : null,
+        ...(l.label ? { label: l.label } : {}),
+        ...(l.before ? { before: l.before } : {}),
+        ...(l.after ? { after: l.after } : {}),
+        personal: l.personal,
+        local: l.local,
+        picture: l.picture,
+      }));
+    },
+    async restoreClip(ref, itemId, o) {
+      if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
+      const onCut = carton.cut;
+      const res = await carton.restoreClip(ref, [tl?.collection ?? "items", itemId], { author: opts.me, ...(o?.remove ? { remove: true } : {}), ...(typeof o?.expect === "string" ? { expect: o.expect } : {}) });
+      await refreshUndo();
+      const made = res.brought.how === "same" ? {} : madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
+      return { ...made, how: res.brought.how, clipName: res.brought.name, ...placeOf(res.brought) };
+    },
+    // Another cut's History (N2c), a page at a time: its own log, each version described as History describes its rows
+    // (wordsFor: the app's sentences, a fold's or a restore's title), its landmarks with the first page. Read when the
+    // person picks that cut in Compare with…; nothing kept.
+    async cutHistory(cut, o) {
+      const limit = Math.min(Math.max(Math.floor(o?.limit ?? 100), 1), 500);
+      const got = await carton.log({ cut, limit, ...(o?.before !== undefined ? { before: o.before } : {}), summary: true, rows: true });
+      const versions: Version[] = [];
+      for (const c of got) {
+        const v = toVersion(c);
+        let w: Partial<Version> = {};
+        try {
+          const { turn: _turn, base: _base, ...own } = (await wordsFor({ core: c, turnKey: null, v }, c)) as Words & { turn?: unknown; base?: string };
+          w = own;
+        } catch {
+          w = c.summary ? { summary: c.summary } : {};
+        }
+        versions.push({ ...v, ...w });
+      }
+      const last = got[got.length - 1];
+      const marks = o?.before === undefined && typeof carton.landmarks === "function" ? await carton.landmarks({ cut, limit: 500 }).catch(() => []) : [];
+      return {
+        cutId: cut,
+        versions,
+        ...(got.length === limit && last && last.ref.seq > 0 ? { before: last.ref.seq } : {}),
+        ...(marks.length
+          ? {
+              landmarks: marks.map((l): Landmark => ({
+                id: l.id,
+                kind: l.kind,
+                versionId: l.change ?? `${l.ref.branchId}@${l.ref.seq}`,
+                ref: `${l.ref.branchId}@${l.ref.seq}`,
+                at: l.at,
+                by: l.by ? ui(l.by) : null,
+                ...(l.label ? { label: l.label } : {}),
+                ...(l.before ? { before: l.before } : {}),
+                ...(l.after ? { after: l.after } : {}),
+                personal: l.personal,
+                local: l.local,
+                picture: l.picture,
+              })),
+            }
+          : {}),
+      };
+    },
+    async bringBackChoices(ref) {
+      const r = await carton.bringBackChoices(ref, { cut: cutId });
+      const row = (c: (typeof r.changed)[number]): BringBackChoice => ({
+        itemId: itemOfRecord(c.record) ?? splitPathKey(c.record)[1] ?? c.record,
+        name: c.name,
+        ...(c.noun ? { noun: c.noun } : {}),
+        ...(c.then ? { then: { ...(c.then.start !== undefined ? { start: c.then.start } : {}), ...(c.then.end !== undefined ? { end: c.then.end } : {}), ...(c.then.text !== undefined ? { text: c.then.text } : {}) } } : {}),
+        ...(c.now ? { now: { ...(c.now.start !== undefined ? { start: c.now.start } : {}), ...(c.now.end !== undefined ? { end: c.now.end } : {}), ...(c.now.text !== undefined ? { text: c.now.text } : {}) } } : {}),
+        ...(c.by !== undefined ? { by: c.by ? ui(c.by) : null } : {}),
+        ...(c.at !== undefined ? { at: c.at } : {}),
+        token: c.token,
+        ...placeOf(c),
+      });
+      return { changed: r.changed.map(row), deleted: r.deleted.map(row), added: r.added.map(row), same: r.same };
+    },
+    align,
+    async landmarkPicture(key) {
+      return (await opts.pictures?.get(key)) ?? null;
+    },
+    async saveLandmarkPicture(key, jpeg) {
+      if (!opts.pictures) return;
+      if (typeof jpeg !== "string" || !jpeg.startsWith("data:image/jpeg;base64,") || jpeg.length > 90_000) throw new Error("A landmark's picture is a small JPEG (a data:image/jpeg URL of at most 64 KB)");
+      await opts.pictures.put(key, jpeg);
+    },
+    async clipVersions(itemId, o) {
+      const record = pathKey([tl?.collection ?? "items", itemId]);
+      const out: string[] = [];
+      // only the versions after one the filter already holds (on this cut): the index's tail, never the whole of it
+      const held = o?.after !== undefined ? rows[pos.get(o.after) ?? -1]?.core : undefined;
+      if (held && held.ref.branchId === cutId && typeof carton.touched === "function") {
+        const list = await carton.touched({ cut: cutId, record, after: held.ref.seq });
+        for (let k = list.length - 1; k >= 0; k--) if (pos.has(list[k]!.change)) out.push(list[k]!.change);
+        return { ids: out };
+      }
+      if (typeof carton.touched !== "function") {
+        // no index here: the last day's versions only, read one by one, and the filter says so
+        const since = clock() - 86_400_000;
+        for (let i = rows.length - 1; i >= 0 && rows[i]!.v.at >= since; i--) {
+          const r = rows[i]!;
+          if (!r.core || r.core.ref.seq <= 0) continue;
+          const got = (await carton.log({ cut: r.core.ref.branchId, before: r.core.ref.seq + 1, limit: 1, summary: true, rows: true }))[0];
+          if (got?.rows?.some((x) => x.key === record)) out.push(r.v.id);
+        }
+        return { ids: out, since };
+      }
+      // this cut's versions, then those of the cuts it was made from, up to each fork (as History lists them)
+      const chain: { cut: string; upTo?: number }[] = [{ cut: cutId }];
+      let from = records.find((c) => c.id === cutId)?.forkOf ?? null;
+      for (let d = 0; from && d < 8; d++) {
+        const n = nodeOf(from);
+        if (!n || !records.some((c) => c.id === n.cut)) break;
+        chain.push({ cut: n.cut, upTo: n.seq });
+        from = records.find((c) => c.id === n.cut)?.forkOf ?? null;
+      }
+      for (const { cut, upTo } of chain) {
+        const list = await carton.touched({ cut, record, ...(upTo !== undefined ? { upTo } : {}) });
+        for (let k = list.length - 1; k >= 0; k--) if (pos.has(list[k]!.change)) out.push(list[k]!.change);
+      }
+      const r: ClipVersions = { ids: out };
+      return r;
+    },
+    async view(target: ViewTarget | null) {
+      const gen = ++viewGen;
+      if (!target) {
+        if (viewing || preview) setViewing(null);
+        opts.onPreview?.(null);
+        return;
+      }
+      const next = await viewingOf(target);
+      // load first: the editor stays on your edit until the state is there, and a failure says so (PLAN 4.2)
+      let doc: Readonly<Doc>;
+      try {
+        doc = (await carton.preview(next.ref)).doc;
+      } catch {
+        if (gen === viewGen) throw new Error("Couldn't load this version. Try again.");
+        return;
+      }
+      if (gen !== viewGen || disposed) return;
+      setViewing(next);
+      opts.onPreview?.({ ref: next.ref, label: next.label, doc });
+    },
+    setWorking(turn) {
+      if (!turn) {
+        workingTurn = null;
+        if (working) {
+          working = null;
+          hub.notify("working");
+        }
+        return;
+      }
+      const since = turn.since ?? clock();
+      const actorsNow = new Set(turn.actors?.length ? turn.actors : [turn.actor.id]);
+      const actor = ui(turn.actor);
+      // the same turn again (a panel told twice): what it changed so far stays (review of the UX data #9)
+      const same = !!workingTurn && !!working && working.actor.key === actor.key && workingTurn.since === since && (workingTurn.cut ?? null) === (turn.cut ?? null);
+      const records = same ? workingTurn!.records : new Set<string>();
+      workingTurn = { actors: actorsNow, since, records, ...(turn.cut ? { cut: turn.cut } : {}) };
+      working = { actor, label: turn.label, edits: records.size, since, ...(turn.cut ? { cutId: turn.cut } : {}) };
+      hub.notify("working");
+      if (same) return;
+      // a panel opened during the turn: what it changed before, from the per-version index (the versions since it
+      // began only)
+      const mine = workingTurn;
+      const onCut = turn.cut ?? cutId;
+      let after = rows.length;
+      while (after > 0 && (rows[after - 1]!.v.at >= since - 1000 || !rows[after - 1]!.core)) after--;
+      const fromSeq = after > 0 ? (rows[after - 1]!.core?.ref.branchId === onCut ? rows[after - 1]!.core!.ref.seq : 0) : 0;
+      if (typeof carton.touched !== "function") return;
+      void track(
+        carton.touched({ cut: onCut, after: fromSeq }).then((list) => {
+          if (workingTurn !== mine || !working) return;
+          const was = mine.records.size;
+          for (const t of list) {
+            const id = t.author?.id ?? "";
+            if (t.at >= since - 1000 && (mine.actors.has(id) || mine.actors.has(id.replace(/\/sub-[^/]*$/, "")))) for (const k of t.records) mine.records.add(k);
+          }
+          if (mine.records.size !== was) {
+            working = { ...working, edits: mine.records.size };
+            hub.notify("working");
+          }
+        }, () => {}),
+      );
+    },
 
     async compare(a, b) {
       const [d, da, db] = await Promise.all([shotDiff(a, b), carton.checkout(a), carton.checkout(b)]);
@@ -1308,11 +2123,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // described against a. A describe that fails leaves the card with its summary.
       let changes: string[] | undefined;
       try {
-        changes = engine.describe(docDiff(da, db, schema), da, schema);
+        changes = (await changesBetween(a, b)).map((x) => x.text);
       } catch {
         changes = undefined;
       }
-      // counted as Watch the changes counts them (the same shot diff's count)
+      // counted as WatchTheChanges counts them (the same shot diff's count)
       const changeCount = d.changes ?? countOf(da, db);
       const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d), ...(changes ? { changes } : {}), ...(changeCount === undefined ? {} : { changeCount }) };
       return c;
@@ -1333,66 +2148,89 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     shotDiff,
 
     async planFold(fromId, intoId, o) {
+      // Only the newest plan is the one a fold acts on. Each plan is built apart and written to the plan state at its
+      // end, and only while no newer plan has started: an older one still running (the Fold dialog's From or Into
+      // changed meanwhile) never writes what fold() reads (review of feat/ux-6: a slow plan of cut A, finishing after
+      // B's, made folding B bring in A's left-out change too).
+      const gen = ++planGen;
+      const cards = new Map<string, ConflictCard>();
+      const rests = new Map<string, { ids: string[]; ops: Op[]; whole: boolean }>();
+      const joined = new Map<string, string[]>();
+      let isNew = false, heads = "";
+      const publish = <T>(plan: T): T => {
+        if (gen !== planGen) return plan;
+        planCards.clear();
+        for (const [k, v] of cards) planCards.set(k, v);
+        planRest.clear();
+        for (const [k, v] of rests) planRest.set(k, v);
+        planJoined.clear();
+        for (const [k, v] of joined) planJoined.set(k, v);
+        planNew = isNew;
+        planHeads = heads;
+        planFor = planKey(fromId, intoId);
+        return plan;
+      };
       const from = cuts.find((c) => c.id === fromId) ?? fallbackCut(fromId), into = cuts.find((c) => c.id === intoId) ?? fallbackCut(intoId);
       const r = await carton.fold(fromId, { into: intoId, check: true, ...(o?.allCards ? { missingBase: "all-cards" as const } : {}) });
-      planCards.clear();
-      planRest.clear();
-      planJoined.clear();
-      planNew = false;
-      planFor = planKey(fromId, intoId);
-      const base = { from, into, changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
+      const base = { from, into, ...madeOf(fromId, intoId), changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
       if (r.status === "up-to-date") {
-        const rest = await leftOutRows(fromId, intoId);
-        return rest.length ? { ...base, changes: rest } : base;
+        const rest = await leftOutRows(fromId, intoId, rests);
+        return publish(rest.length ? { ...base, changes: rest } : base);
       }
-      if (r.status === "missing-base") return { ...base, missingBase: r.dialog.text };
-      if (r.status === "rejected") throw new Error(r.reason);
+      if (r.status === "missing-base") return publish({ ...base, missingBase: r.dialog.text });
+      if (r.status === "rejected") throw (publish(null), new Error(r.reason));
       const cardList: ConflictCard[] = r.status === "conflicts" || r.status === "compare" ? r.cards : [];
-      for (const c of cardList) planCards.set(c.path, c);
-      planNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
+      for (const c of cardList) cards.set(c.path, c);
+      isNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
-      planHeads = await headsOf(fromId, intoId);
+      heads = await headsOf(fromId, intoId);
       // the cut folded into names the cards' clips (and every change below): read once
       const intoDoc = cardList.length || r.preview ? (await carton.head(intoId)).doc : undefined;
       const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId, intoDoc));
       // §13 "every difference shown as a card": the cards are the whole plan, there is nothing else to leave out.
-      if (r.status === "compare") return { ...base, conflicts: cardsOut, partial: false };
+      if (r.status === "compare") return publish({ ...base, conflicts: cardsOut, partial: false });
       const preview = r.preview;
-      if (!preview) return { ...base, conflicts: cardsOut, partial: false };
+      if (!preview) return publish({ ...base, conflicts: cardsOut, partial: false });
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
       const groups = byRecord(preview.ops);
       // a split clip is one row, left out whole (fold() adds its parts' keys)
-      const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
+      const creditOf = joinSplits(groups, preview.ops, intoDoc!, joined);
       const changes: FoldChange[] = [];
       // named from all of the fold, made once: a track it adds names the clip moved onto it (regress prod3 P3-B)
       const names = namingDoc(intoDoc!, preview.ops, schema);
       for (const [key, ops] of groups) {
-        const words = engine.describe(ops, intoDoc!, schema, null, names);
+        // the change sentences (PLAN 0.2): a row of the Fold dialog says it as History and the card do
+        const list = changeList(ops, intoDoc!, schema, { names, ...valueOpt });
+        const words = list.map((x) => x.text);
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }) : null;
-        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
+        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock(), ...foldRow(key, list) });
       }
       // A remap (ripple) can't be left out on its own: it moves many records at once.
       const hasRemap = preview.ops.some((op) => op.op === "remap");
-      planNew = true;
+      isNew = true;
       // what earlier partial folds left out comes with them (none when the fold can't be split)
-      if (!hasRemap) changes.push(...(await leftOutRows(fromId, intoId)));
-      return {
+      if (!hasRemap) changes.push(...(await leftOutRows(fromId, intoId, rests)));
+      return publish({
         ...base,
         changes,
         conflicts: cardsOut,
         warnings: preview.warnings.map((w) => String((w as { text?: unknown }).text ?? w.kind)),
         ...(hasRemap ? { partial: false } : {}),
-      };
+      });
     },
 
-    async switchCut(id) {
+    async switchCut(id, o) {
+      // a queued switch (onlyFrom): the cut is the handle's own, so a switch made since, here or by `cb cut switch`, wins
+      if (o?.onlyFrom !== undefined && carton.cut !== o.onlyFrom) return;
       await carton.switchTo(id);
       cutId = id;
       rows.length = 0;
       pos.clear();
       named.length = 0;
       turns.length = 0;
+      mine.length = 0;
+      items.clear();
       reindexFrom(0);
       publishConflicts();
       publishGhosts();
@@ -1472,6 +2310,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // the changes shown (a revert would also take back what was changed on the cut since: a card the plan never
       // showed, review #1). A clash with an edit made since the plan is a card in the stack, as Fold in the rest's.
       let carded = false;
+      // the versions it makes, oldest first (PLAN 5.3: its toast's Undo takes back all of them, and nothing else)
+      const ids = [madeBy(r as Parameters<typeof madeBy>[0])];
       for (const [inverse, x] of rests) {
         const res = x.whole ? await carton.revert(inverse, { author: opts.me, cut: intoId }) : await carton.commit({ cut: intoId, ops: x.ops, author: opts.me });
         if (res.status === "conflicts") {
@@ -1480,15 +2320,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           continue;
         }
         if (res.status === "rejected") return await refresh(), { ok: false, error: res.reason };
+        ids.push(madeBy(res));
         if (x.whole) markRestDone(inverse);
       }
       await refresh();
-      return carded ? { ok: true, conflicts } : { ok: true };
+      const made = madeOn(intoId, ids);
+      return carded ? { ok: true, conflicts, ...made } : { ok: true, ...made };
     },
     async resolve(id, choice) {
       const entry = cardEntries.get(id);
       if (!entry) return;
       // The other side is already on screen (head); only the person's own side needs a commit.
+      let made: string | undefined;
       if (choice !== "theirs") {
         const card = entry.card;
         let value: unknown = choice === "mine" ? card[entry.mineSide] : undefined;
@@ -1500,9 +2343,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const r = await carton.commit({ cut: entry.cut, ops: cardOps(card, value), author: opts.me });
         if (r.status === "rejected") throw new Error(r.reason);
         if (r.status === "conflicts") addCards(r.cards, undefined, entry.cut);
+        made = madeBy(r);
       }
       cardEntries.delete(id);
       publishConflicts();
+      // what the pick made (PLAN 5.3): nothing for the side on screen, so its toast has no Undo (WS7's note: an Undo
+      // there would take back an earlier change)
+      return madeOn(entry.cut, [made]);
     },
     async foldRest(versionId) {
       const i = pos.get(versionId);
@@ -1525,7 +2372,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         markRestDone(r.core.change);
         // its Undo is offered when the call returns, not a debounce later: a page that reads Undo then gets this one
         await refreshUndo();
-        return { ok: true };
+        return { ok: true, ...madeOn(r.core.ref.branchId, [madeBy(res)]) };
       }
       if (res.status === "conflicts") {
         addCards(res.cards, undefined, r.core.ref.branchId);
@@ -1535,10 +2382,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     },
     async restore(ref) {
       if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
-      await carton.restore(ref, { author: opts.me });
+      // (the handle's cut, which a restore with no cut writes)
+      const onCut = carton.cut;
+      const res = await carton.restore(ref, { author: opts.me });
       // Its Undo is offered when the call returns (panel-author: Undo read right after a restore was the version
       // before it's, and the panel then refused it, "Something changed")
       await refreshUndo();
+      // the version it made (PLAN 5.3: its toast's Undo); a restore of what head already is makes one too (allowEmpty)
+      return madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
     },
     async nameVersion(id, name) {
       const i = pos.get(id);
@@ -1571,21 +2422,24 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await carton.publish({ from: src?.head ?? id, name: `${src?.name ?? "Cut"} (published)`, author: opts.me });
       await refreshCuts();
     },
+    // Deprecated alias of view() (PLAN 0.5): as before, it shows at once with its caller's label, and closes if the state
+    // can't be rebuilt; viewing() says the same
     openPreview(ref, label) {
       // A provisional version has no state to rebuild yet (L5): there is nothing to preview.
       if (ref?.startsWith(PENDING_PREFIX)) return;
-      preview = ref ? { ref, label: label ?? ref } : null;
-      hub.notify("preview");
+      const gen = ++viewGen;
+      const v = ref ? versionAt(ref) : undefined;
+      setViewing(ref ? { ref, kind: "version", label: label ?? (v ? versionLabel(v, { ...labelCtx(), start: true }) : ref), short: v ? versionShort(v, labelCtx()) : (label ?? ref), ...(v ? { versionId: v.id } : {}) } : null);
       if (!opts.onPreview) return;
       if (!ref) opts.onPreview(null);
       else
         carton.preview(ref).then(
-          (p) => preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }),
+          // a newer view or preview since (even of the same ref) owns the stage (review of the UX data #10)
+          (p) => gen === viewGen && preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }),
           () => {
             // The state can't be rebuilt (expired pin, unknown ref): close the preview rather than show a wrong one.
-            if (preview?.ref !== ref) return;
-            preview = null;
-            hub.notify("preview");
+            if (gen !== viewGen || preview?.ref !== ref) return;
+            setViewing(null);
             opts.onPreview!(null);
           },
         );
@@ -1602,9 +2456,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       return pin.header;
     },
     blockEdit() {
-      if (!preview || preview.blockedEdit) return;
-      preview = { ...preview, blockedEdit: true };
-      hub.notify("preview");
+      if (!viewing || viewing.blockedEdit) return;
+      setViewing({ ...viewing, blockedEdit: true });
     },
 
     refresh: () => track(refresh()),
@@ -1712,7 +2565,7 @@ function mapSync(status: string, waiting: number): SyncStatus {
 }
 
 function sameCut(a: Cut, b: Cut): boolean {
-  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared;
+  return a.name === b.name && a.label === b.label && a.current === b.current && a.readOnly === b.readOnly && a.kind === b.kind && a.head === b.head && a.updatedAt === b.updatedAt && a.shared === b.shared && a.color === b.color && a.updatedBy?.key === b.updatedBy?.key;
 }
 
 function samePublished(a: Published | null, b: Published | null): boolean {

@@ -72,10 +72,11 @@ test("P1-3: a partial fold is one row, titled as a fold, by you; the change left
     assert.equal(list.length, before + 1, `${how}: one row for the fold`);
     const f = list[0]!;
     assert.equal(f.kind, "fold");
-    assert.equal(f.summary, "Folded 'Alt' into 'Main cut': 2 of 3 changes", how);
+    // DESIGN §6.1: "Folded in “30s cut”" · "2 of 3 changes"
+    assert.deepEqual([f.summary, f.changes, f.leftOut], ["Folded in “Alt”", 2, 1], how);
     assert.equal(f.author.isYou, true, `${how}: credited to whoever folded`);
-    assert.deepEqual(f.details, ["Moved 'A' 0.0 s → 1.0 s", 'Changed \'B\' name "B" → "Opening"'], `${how}: exactly the chosen changes`);
-    for (const r of list) assert.doesNotMatch(`${r.summary} ${(r.details ?? []).join(" ")}`, /'D'|black/, `${how}: ${r.summary}`);
+    assert.deepEqual(f.details, ["Moved “A” 1 s later (now starts at 0:01)", "Renamed “B” to “Opening”"], `${how}: exactly the chosen changes`);
+    for (const r of list) assert.doesNotMatch(`${r.summary} ${(r.details ?? []).join(" ")}`, /“D”|black/, `${how}: ${r.summary}`);
   };
   await check(ui, "live");
   // a fresh panel (History read from the store)
@@ -94,7 +95,7 @@ test("P1-4: after a partial fold, Fold in offers what was left out and folds it 
   const plan = await ui.planFold(v.id, main);
   assert.equal(plan.changes.length, 1, "the change left out is offered, not 'Nothing to fold in'");
   const rest = plan.changes[0]!;
-  assert.match(rest.summary, /'D'.*color.*black/);
+  assert.match(rest.summary, /color of “D”.*black/);
   assert.ok(rest.leftOut, "marked as left out earlier");
   assert.equal(rest.author.name, "Claude Code", "credited to who made it");
   // leaving it out again keeps it for later
@@ -105,7 +106,7 @@ test("P1-4: after a partial fold, Fold in offers what was left out and folds it 
   assert.equal(item((await carton.head(main)).doc, "d").color, "black", "the rest is in Main");
   assert.equal((await ui.planFold(v.id, main)).changes.length, 0, "now nothing is left");
   const top = (await rows(ui))[0]!;
-  assert.equal(top.summary, "Folded the rest of 'Alt' into 'Main cut': 1 change");
+  assert.deepEqual([top.summary, top.changes], ["Folded in the rest of “Alt”", 1]);
   ui.dispose();
 });
 
@@ -131,11 +132,12 @@ test("P1-5: a version of several changes reads as a summary, every change in its
   const { carton, ui } = await open();
   await carton.commit({ ops: [set("a", "startTime", 2), set("a", "endTime", 7), set("b", "name", "B1"), set("c", "name", "C1")], author: alice });
   const top = (await rows(ui))[0]!;
-  assert.equal(top.summary, "Moved 'A', changed 'B' and 'C'");
+  assert.equal(top.summary, "Moved “A”, renamed “B” and “C”");
   assert.equal(top.details?.length, 3);
   await carton.restore(`${carton.cut}@0`, { author: alice });
   const r = (await rows(ui))[0]!;
-  assert.equal(r.summary, "Restored an earlier version");
+  // which version, by its time (DESIGN §8: "Restored the 12:41 pm version")
+  assert.match(r.summary, /^Restored the \d{1,2}:\d{2} [ap]m version$/);
   assert.equal(r.details?.length, 3);
   ui.dispose();
 });
@@ -189,7 +191,7 @@ test("P1-4 (review #1): a left-out change edited on Main since isn't offered, an
   assert.equal((await ui.fold(v.id, main, { leaveOut: ["items/b", "items/d"], choices: {} })).ok, true);
   await carton.commit({ cut: main, ops: [set("b", "name", "Main's own")], author: alice });
   const plan = await ui.planFold(v.id, main);
-  assert.deepEqual(plan.changes.map((c) => c.summary), ["Changed 'D' color \"red\" → \"black\""], "only what is still left out");
+  assert.deepEqual(plan.changes.map((c) => c.summary), ["Changed the color of “D” to “black”"], "only what is still left out");
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: {} });
   assert.deepEqual([r.ok, r.conflicts?.length ?? 0, ui.conflicts().length], [true, 0, 0], "no card for the change Main made since");
   const head = (await carton.head(main)).doc;
@@ -249,10 +251,11 @@ test("baseline P3-12b: the rest of a partial fold is a fold row; its undo an und
   await settle();
   assert.equal((await ui.foldRest((await rows(ui))[0]!.id)).ok, true);
   const rest = (await rows(ui))[0]!;
-  assert.equal(rest.summary, "Folded the rest of 'Alt' into 'Main cut': 1 change");
+  assert.equal(rest.summary, "Folded in the rest of “Alt”");
   assert.equal(rest.kind, "fold");
   assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
   assert.equal((await rows(ui))[0]!.kind, "undo");
+  assert.equal((await rows(ui))[0]!.summary, "Undid the fold of the rest of “Alt”");
   ui.dispose();
 });
 
@@ -262,9 +265,11 @@ test("baseline P3-2: an Undo right after a Restore reads \"Undid the restore\", 
   await carton.commit({ ops: [set("a", "name", "A1"), set("b", "name", "B1")], author: alice });
   await ui.restore(`${carton.cut}@0`);
   await settle();
-  assert.equal((await rows(ui))[0]!.summary, "Restored an earlier version");
+  assert.match((await rows(ui))[0]!.summary, /^Restored the \d{1,2}:\d{2} [ap]m version$/);
   assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
   const u = (await rows(ui))[0]!;
-  assert.deepEqual([u.kind, u.summary, u.details?.length], ["undo", "Undid the restore", 2]);
+  assert.equal(u.kind, "undo");
+  assert.match(u.summary, /^Undid the restore of the \d{1,2}:\d{2} [ap]m version$/);
+  assert.equal(u.details?.length, 2);
   ui.dispose();
 });

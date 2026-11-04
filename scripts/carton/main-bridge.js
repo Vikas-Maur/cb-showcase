@@ -194,11 +194,16 @@ module.exports = String.raw`var __cartonMain = (() => {
     on,
     turnStarted(chat, projectId, bundlePath, turn, provider) {
       if (!on || !provider) return;
-      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
+      const since = Date.now();
+      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since });
       hooked.delete(chat.chatId);
       nextGen(chat.chatId);
       endHolds(chat.chatId);
       live.set(chat.chatId, { chat, turn: turn.id, gen: genOf(chat.chatId) });
+      // UX redesign 0.7: the project's History panels show the agent working while its turn holds the timeline, by the
+      // ids its edits are recorded by (actorsOf); the prompt only goes to the worker, never logged
+      const actors = actorsOf(chat, { provider, turn: turn.id });
+      if (library) library.call("carton.working", { projectId, chat: chat.chatId, provider, actor: actors[0], actors, prompt: turn.text, since }).catch(() => {});
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
@@ -210,6 +215,8 @@ module.exports = String.raw`var __cartonMain = (() => {
       running.delete(chat);
       const actors = actorsOf(chat, t), director = t.provider === "director";
       hooked.delete(chat.chatId);
+      // the working row ends with the turn (0.7)
+      if (library) library.call("carton.working", { projectId: t.projectId, chat: chat.chatId, done: true }).catch(() => {});
       // H8: the turn and its subagents stop holding the shared file, however the turn ended (a stop, an interrupt).
       for (const actor of actors) void agentHook({ project: { bundlePath: t.bundlePath } }, actor, "endTurn");
       // Another provider's turn is told by its actors and its time, from its start to now (review P2: until): the request
@@ -235,6 +242,28 @@ module.exports = String.raw`var __cartonMain = (() => {
       handlers.set(name, fn);
     },
     forward,
+    // The title bar (scripts/carton/strip-buttons.js): the editor page's report (carton:panel, scripts/carton/ui.js
+    // CartonSide), as the strip draws it. Which side panel is open, a shared project's live summary, whether the Share
+    // dialog is open, the cut the person is on ({name, dot}: a colour for any cut but Main) and what they are viewing
+    // ({label}, with loading: true while it is slow to come) or comparing ({label}), each only in the shape the strip draws: text cut to a length, a colour only as #hex. An older page's
+    // report (a bare panel name) is kept as it was.
+    panel(t) {
+      if (t == null || typeof t !== "object") return typeof t === "string" ? t : null;
+      const text = (s, max) => (typeof s === "string" && s.trim() ? s.slice(0, max) : null);
+      const cutName = text(t.cut?.name, 200), view = text(t.viewing?.label, 300), comparing = text(t.comparing?.label, 300);
+      return {
+        panel: t.panel === "history" || t.panel === "comments" || t.panel === "share" ? t.panel : null,
+        live: t.live && typeof t.live === "object" ? t.live : null,
+        share: t.share === true,
+        cut: cutName ? { name: cutName, dot: typeof t.cut.dot === "string" && /^#[0-9a-f]{3,8}$/i.test(t.cut.dot) ? t.cut.dot : null } : null,
+        viewing: view ? (t.viewing.loading === true ? { label: view, loading: true } : { label: view }) : null,
+        // Compare in the editor (UX v2, N1): the chip's "⇆ Comparing … ✕" (only while comparing)
+        ...(comparing ? { comparing: { label: comparing } } : {}),
+      };
+    },
+    // Strip commands that open something taking keys in the editor's page (the cuts menu, the Share dialog): main
+    // focuses that page before it sends them, as a click there would. History's icon and the chip's ✕ leave focus be.
+    takesKeys: (action) => action === "carton-cuts" || action === "carton-share",
     // An agent Cardboard spawns (deps.spawn: in 1.4.0, Codex).
     agentEnv(env, provider, chatId) {
       return on ? { ...env, CARDBOARD_CARTON: "1", CARDBOARD_ACTOR: provider + "/" + chatId } : env;
@@ -276,7 +305,14 @@ module.exports = String.raw`var __cartonMain = (() => {
         " prints it and answers with the file to edit and its status file. Save it as you would " + q("timeline.tsx") + "; each save is applied as your change, and the status file says how it landed: " +
         q("confirmed") + ", " + q("conflicts") + " (someone else changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). " +
         "While your turn runs, " + q("timeline.tsx") + " holds back the person's and teammates' changes, so it doesn't change under you, and shows your own: a " + q("cb") + " write's (" + q("cb source apply") + " and the others) by the time it returns (if it can't yet, its result says so), a view save's by the time its status file says how it landed. The others' changes reach it when your turn ends. " +
-        q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person."];
+        q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.",
+        // Carton UX v2 (N0, DESIGN-V2 §5): finding a version the person means, bringing back one clip, showing a comparison
+        "Every change is a version, so find the one the person means rather than reading the whole history: " + q("cb history " + id + " --find <words>") +
+        " (a clip's name, words from a title or caption, a request, a version's name, a person, a day) and " + q("cb history " + id + " --landmarks") +
+        " (what was exported, sent, named, each agent turn, how it was when they opened it, and before each restore). In place of a " + q("<cut>@<seq>") +
+        " you can write sent, exported, today, now, a version's name or a cut's name. To bring back one clip as it was (\"bring back the old intro\"), " + q("cb restore " + id + " <version> --clip <name>") +
+        ": only that clip changes. " + q("cb restore " + id + " <version>") + " rolls the whole edit back. When the person asks to show or compare something (\"show me what changed since I sent it\", \"compare the Instagram cut with Main\"), run " +
+        q("cb compare " + id + " <left> [right] --show") + ": it opens in their editor; tell them what its first line says. Say names and times to the person, never a " + q("<cut>@<seq>") + "."];
     },
     // H8: the file tools of the transport's agents (the Director, the person's own Claude Code), beside its Bash hook: a
     // Read or Write/Edit of timeline.tsx reaches the worker's Materializer, and a Write/Edit of project.json is refused

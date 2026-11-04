@@ -33,7 +33,36 @@ module.exports = String.raw`window.__carton = (() => {
   // A preview shorter than the playhead moved it to its end: where it was, where the preview put it, and the store
   // subscription that drops it at the person's first move (preview()). "seeking": the bridge's own seek under way.
   let held = null, seeking = false;
+  // Each preview() call's turn: one whose checkout answers after a newer call (back to your edit meanwhile) shows
+  // nothing (review of the UX data #3: the older version came back over "Back to my edit")
+  let previewGen = 0;
   const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
+  // Play and Before (docs/carton-ux PLAN 4.3): holding Before flips the editor between two states at the same moment,
+  // so neither flip may wait on the worker.
+  // - checked: the versions checked out lately, by project and ref (a few; a confirmed version or a pin never changes),
+  //   filled by prefetch() when playing starts (Before's side) and by every preview of such a ref. A preview of one
+  //   then needs no round trip to the worker.
+  // - own: the editor's own timeline as it was when a preview opened (after its saves went). Back to current puts it
+  //   back at once, then reads head as before and adopts it only if it moved meanwhile and nothing of the person's is
+  //   unsaved. A change that came during the preview (stale) skips the first step: head is read and adopted, as before.
+  const checked = new Map(), CHECKED = 4;
+  const fixedRef = (ref) => typeof ref === "string" && /@\d+(?:~|\s|$)/.test(ref);
+  const checkout = (projectId, ref) => {
+    const key = projectId + "\n" + ref, hit = checked.get(key);
+    if (hit) { checked.delete(key); checked.set(key, hit); return hit; }
+    const p = call("checkout", { projectId, ref });
+    if (!fixedRef(ref)) return p;
+    checked.set(key, p);
+    p.catch(() => { if (checked.get(key) === p) checked.delete(key); });
+    while (checked.size > CHECKED) checked.delete(checked.keys().next().value);
+    return p;
+  };
+  let own = null;
+  // Compare collapsed the Library (libraryAside): it opens it again on exit
+  let asideByUs = false;
+  // the editor's own timeline saves, counted: one made after the fast step means head (read after it) is older than
+  // what the person sees, and isn't adopted over it (their save's own events bring head)
+  let saves = 0;
   // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
   // playback clock while playing.
   const playhead = () => {
@@ -48,21 +77,33 @@ module.exports = String.raw`window.__carton = (() => {
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
-  const PREVIEW = "Previewing an earlier version. Return to current to edit.";
+  // Cardboard's refusal of an edit while viewing, in Carton's words (UX redesign 0.3): its own note over the timeline,
+  // only when no Carton part of the page took the attempt (blocked(), below: the edit-attempt toast, PLAN 1.4).
+  const PREVIEW = "You're looking at an earlier version. Go back to your edit (Esc) to change it.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
   // (laptop, final candidate P2-1: a project with no aspect ratio, which an undo right after a recovery made, crashed
   // the tab: the layouts panel splits it. Cardboard's own load gives such a project its default, 16:9; so does this)
   const timelineOf = (p) => ({ tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: typeof p.aspectRatio === "string" && p.aspectRatio ? p.aspectRatio : "16:9" });
   // What the person is told over the stage (scripts/carton/ui.js shows each as a toast); the console has it too.
   const noticeSubs = new Set();
+  // ... and what Ctrl+Z or redo took back or put again, when it was a restore or a fold (ui.js: its toast with Redo)
+  const stepSubs = new Set();
+  // The page's Carton parts (scripts/carton/ui.js): what they show for an edit tried while viewing (blocked), and how
+  // they bring your edit back when the editor asks (back: Export opened while viewing). The newest one answers.
+  const blockedSubs = new Set(), backSubs = new Set();
+  // Export's way back to your edit, while one is under way: every Export asked meanwhile waits for the same one
+  let exportGuard = null;
   const notice = (text) => {
     console.info("[carton] " + text);
     for (const f of noticeSubs) try { f(text); } catch {}
   };
   // Laptop, final candidate P1-1: every save of a project failed in the page ("Invalid time value", before anything
   // reached the worker) and nobody was told. Cardboard logs a failed save and goes on; now the person is told too, at
-  // most every 20 s, and again after a save that landed.
-  const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
+  // most every 20 s, and again after a save that landed. DESIGN §6.7's words, with the next step (QA G8): @carton/react's
+  // words.saveFailed, written out here as this bundle can't import it (renderer-bridge.test.js keeps the two the same).
+  const SAVE_FAILED = "Your last change wasn't saved. Do it again, or reopen the project.";
+  // PLAN 1.6: Export asked while viewing, and your edit didn't come back (a version played again meanwhile, a failure)
+  const EXPORT_BACK_FAILED = "Export didn't open: your edit didn't come back. Press Esc, then try again.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
   // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
@@ -134,6 +175,7 @@ module.exports = String.raw`window.__carton = (() => {
       // version before both, where it clashed with the earlier save at head (a card of the person against themself).
       const after = unanswered && unanswered.id === doc.id && (st.cartonBase == null || unanswered.rev > st.cartonBase) ? unanswered.rev : undefined;
       sent = unanswered = { id: doc.id, rev: doc.stateUpdatedAt };
+      saves++;
       // the person's own edit: there is something to undo now, and nothing to redo (as the editor's own stacks); the
       // save's echo asks the worker again
       store.raw({ cartonCanUndo: true, cartonCanRedo: false });
@@ -216,7 +258,7 @@ module.exports = String.raw`window.__carton = (() => {
       // An undo or redo under way answers with the project it wrote: this event waits for it (replayed after it if
       // the answer didn't hold it), rather than fetching the same project again.
       if (stepping === ev.id) { if (!deferred || (ev.stateUpdatedAt ?? 0) >= (deferred.ev.stateUpdatedAt ?? 0)) deferred = { host, ev }; return { adopted: false, timeline: undefined }; }
-      // A preview stays as it is; "Return to current" takes head.
+      // A preview stays as it is; "Back to my edit" takes head.
       if (st.cartonPreview) { stale = true; return { adopted: false, timeline: undefined }; }
       // The echo of our own save: the editor already shows it, only its base moves.
       if (sent && sent.id === ev.id && sent.rev === ev.stateUpdatedAt) {
@@ -265,16 +307,38 @@ module.exports = String.raw`window.__carton = (() => {
       const st = store.state();
       if (!st.projectId || st.cartonPreview) return false;
       const own = () => { bypass = true; try { store.state()[which](); } finally { bypass = false; } };
-      const id = st.projectId;
-      store.flush().then(() => {
+      // Ctrl+Z of a restore or a fold says so over the stage (UX redesign PLAN 5.3: "Restore undone." with Redo), with
+      // the step the worker made, which its Redo (or Undo) takes back in turn
+      this.run(which, st.projectId, null, own).then((r) => {
+        if (r?.told && r.made) for (const f of stepSubs) try { f({ which, told: r.told, made: r.made }); } catch {}
+      }, () => {});
+      return true;
+    },
+    // A toast's Undo or Redo (UX redesign PLAN 5.3): Ctrl+Z's own path (the editor's undo session, its flush first, the
+    // project the step wrote adopted at once, the buttons' state) for exactly what one action made ("made": its cut and
+    // change ids, as the view model's actions answer). The worker does nothing unless those are still the newest things
+    // Ctrl+Z would take back there ({status: "moved"}). Never Cardboard's own undo. While viewing it still runs: the
+    // editor keeps what it shows, and Back to my edit takes head (stale). Resolves with the worker's answer.
+    undoMade(made) { return this.made("undo", made); },
+    redoMade(made) { return this.made("redo", made); },
+    made(which, made) {
+      if (!on || !store) return Promise.reject(new Error("Carton isn't on for this project"));
+      const id = store.state().projectId;
+      if (!id || !made || typeof made.cut !== "string" || !Array.isArray(made.changes) || !made.changes.length) return Promise.reject(new Error("Nothing to " + which));
+      return this.run(which, id, made, null);
+    },
+    // Ctrl+Z, redo and a toast's Undo or Redo: what the stage says about a step (ui.js), { which, told, made }
+    onStep(f) { stepSubs.add(f); return () => stepSubs.delete(f); },
+    run(which, id, only, own) {
+      return store.flush().then(() => {
         stepping = id;
         const since = store.state().cartonSince;
-        return call(which, { projectId: id, ...(since != null ? { since } : {}) });
+        return call(which, { projectId: id, ...(since != null ? { since } : {}), ...(only ? { only: { cut: only.cut, changes: [...only.changes] } } : {}) });
       }).then((r) => {
-        if (r?.status === "unavailable") return own();
+        if (r?.status === "unavailable") { if (own) own(); return r; }
         if (r?.can) this.setCan(r.can);
         // refused (P2-1: it would leave the project empty): nothing changed, and Cardboard's own undo doesn't run either
-        if (r?.status === "refused") return notice(r.error);
+        if (r?.status === "refused") { notice(r.error); return r; }
         // the project the step wrote, adopted now, unless the person edited meanwhile (their save goes first: the
         // change event's path below then reads head again)
         const now = store.state();
@@ -287,13 +351,18 @@ module.exports = String.raw`window.__carton = (() => {
         }
         // a conflict: the cards are in the conflict stack, each saying why (the worker kept them for the person)
         if (r?.status === "conflicts") console.info("[carton] " + which + " didn't change anything: " + (r.conflicts?.length ?? 0) + " card(s) in the conflict stack");
-      }, (e) => { console.warn("[carton] " + which + " failed:", e?.message ?? e); own(); }).finally(() => {
+        return r;
+      }, (e) => {
+        console.warn("[carton] " + which + " failed:", e?.message ?? e);
+        // Ctrl+Z falls back to Cardboard's own; a toast's Undo says it failed (its caller)
+        if (own) return own();
+        throw e;
+      }).finally(() => {
         if (stepping === id) stepping = null;
         const d = deferred;
         deferred = null;
         if (d) this.receive(d.host, d.ev).catch(() => {});
       });
-      return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
     // A version shorter than the playhead takes it to its end, where Cardboard's own "jump to end" puts it (final
@@ -301,21 +370,39 @@ module.exports = String.raw`window.__carton = (() => {
     // preview, unless the person moved it meanwhile (held: that place and where the preview put it, until a move).
     async preview(projectId, ref) {
       if (!on || !store) return;
+      const gen = ++previewGen;
       if (ref != null) await store.flush();
-      const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
+      // Back to current, at once: the editor's own timeline as the preview found it (see own, above)
+      const st0 = store.state(), mine = ref == null ? own : null;
+      if (ref == null) own = null;
+      const fast = !!mine && mine.project === projectId && st0.projectId === projectId && !!st0.cartonPreview && !stale;
+      if (fast) store.adopt({ ...mine.timeline, cartonBase: mine.base, cartonPreview: null });
+      const saves0 = saves;
+      if (ref != null && !st0.cartonPreview && st0.projectId === projectId)
+        own = { project: projectId, base: st0.cartonBase ?? null, timeline: { tracks: st0.tracks, timelineItems: st0.timelineItems, aspectRatio: st0.aspectRatio, duration: duration(st0.timelineItems ?? []) } };
+      const doc = await (ref == null ? call("head", { projectId, ref }) : checkout(projectId, ref));
+      if (gen !== previewGen) return;
       const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
       // a place held for another project (the editor opened another one meanwhile) isn't this one's
       if (held && held.project !== projectId) release();
       if (ref == null) {
         const h = held;
         release();
-        // Back to current: the project record and the editor take head, with its base.
-        store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
-        store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+        // Back to current: the project record and the editor take head, with its base. After the fast step, only if
+        // head moved and the editor still shows exactly what the fast step put there: its base unchanged (an undo or
+        // redo, or a change from elsewhere, adopted meanwhile moves it: theirs is newer than this read), no save made
+        // since, nothing armed or in flight, no undo or redo stepping, and no preview opened again (review #1).
+        const now = store.state();
+        const moved = !fast || ((project.stateUpdatedAt ?? null) !== mine.base && (now.cartonBase ?? null) === mine.base && now.projectId === projectId && !now.cartonPreview && !store.armed() && !store.inflight?.() && saves === saves0 && stepping !== projectId);
+        if (moved) {
+          store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
+          store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+          unanswered = null;
+        }
         stale = false;
-        unanswered = null;
         // unmoved: told by the store's own moves when it says them, else by where the playhead is
-        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, end));
+        const shown = moved ? end : mine.timeline.duration;
+        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, shown));
       } else {
         store.adopt({ ...t, duration: end, cartonPreview: { ref } });
         const now = playhead();
@@ -324,7 +411,7 @@ module.exports = String.raw`window.__carton = (() => {
           held ??= { at: now, end, off: null, project: projectId };
           held.end = end;
           seekOwn(end);
-          // any other move of the playhead (a click on the ruler, Watch the changes, a comment's timecode, play) is
+          // any other move of the playhead (a click on the ruler, Play in History, a comment's timecode, play) is
           // the person's: their place is the one to keep (review #3: even one that ends where the preview put it)
           held.off ??= store.subscribe?.((st, prev) => {
             if (!seeking && (st.playheadTime !== prev.playheadTime || (st.isPlaying && !prev.isPlaying) || st.projectId !== prev.projectId)) release();
@@ -333,9 +420,156 @@ module.exports = String.raw`window.__carton = (() => {
       }
     },
     get stale() { return stale; },
+    // PLAN 1.4: Cardboard's own refusal of an edit (patch-carton: its xv, which every edit its guard refuses goes
+    // through: a drag, a trim, Delete, Ctrl+Z, the stage's text editor) asks here first while a Carton preview is shown.
+    // True when a Carton part of the page told the person (the edit-attempt toast and the frame's pulse): Cardboard's
+    // note then stays away. Nothing is written either way: the guard refused it before this is asked.
+    blocked() {
+      if (!on || !store?.state().cartonPreview) return false;
+      for (const f of [...blockedSubs].reverse()) {
+        try { if (f() === true) return true; } catch (e) { console.warn("[carton] the edit-attempt toast failed:", e?.message ?? e); }
+      }
+      return false;
+    },
+    onBlocked(f) { blockedSubs.add(f); return () => blockedSubs.delete(f); },
+    // PLAN 1.6 (DESIGN §9): Export never exports what is viewed. patch-carton's Export opens (the person's Export command,
+    // an agent's scripted export) ask here first: null to go on as before (nothing viewed, or Carton off); else a promise
+    // that resolves only once the editor shows your edit, after which Export opens, and rejects when it doesn't (Export
+    // then doesn't open, and the person is told). The page's Carton part goes back its own way (view(null), or a
+    // teammate's cut left for your own: a cut switch, which the editor adopts on its own a moment later) and says so;
+    // then the editor takes head here itself, so neither a switch not yet adopted nor a return superseded by a newer one
+    // (a second Export meanwhile: review of feat/ux-1-viewing #1, #2) counts as being back. One at a time: an Export asked
+    // while one is under way waits for that one.
+    beforeExport() {
+      if (!on || !store) return null;
+      if (exportGuard) return exportGuard;
+      const st = store.state(), projectId = st.projectId;
+      let back = null;
+      for (const f of [...backSubs].reverse()) {
+        try { back = f("export"); } catch { back = null; }
+        if (back) break;
+      }
+      if ((!back && !st.cartonPreview) || !projectId) return null;
+      const guard = (async () => {
+        if (back) await back;
+        // (a save still waiting goes first: taking head must never drop an edit)
+        if (!store.state().cartonPreview && store.armed()) await store.flush();
+        await this.preview(projectId, null);
+        const now = store.state();
+        if (now.cartonPreview || now.projectId !== projectId) throw new Error("still viewing");
+      })();
+      exportGuard = guard;
+      const done = () => { if (exportGuard === guard) exportGuard = null; };
+      guard.then(done, (e) => { done(); notice(EXPORT_BACK_FAILED); console.warn("[carton] Export didn't open: your edit didn't come back:", e?.message ?? e); });
+      return guard;
+    },
+    onBack(f) { backSubs.add(f); return () => backSubs.delete(f); },
+    // Carton UX v2 (N0): an export finished (Cardboard's export_completed, patch-carton): an Exported landmark, its
+    // preset as its words. Never waits, never fails the export.
+    exported(p) {
+      if (!on || !store) return;
+      const projectId = store.state().projectId;
+      if (projectId) call("mark", { projectId, kind: "exported", ...(typeof p?.resolution === "string" ? { label: p.resolution } : {}) }).catch(() => {});
+    },
+    // Play and Before (PLAN 4.3): check a version out now, so a preview of it later doesn't wait on the worker. A
+    // confirmed version or a pin only (they never change); nothing with Carton off.
+    prefetch(projectId, ref) {
+      if (!on || !store || !projectId || !fixedRef(ref)) return;
+      checkout(projectId, ref).catch(() => {});
+    },
+    // Compare in the editor (UX v2, N1). hold(): your edit on the stage as it is, read-only (cartonPreview, so Cardboard's
+    // guard refuses every edit and the edit-attempt toast says why), without a checkout or a new timeline: nothing is
+    // decoded again. It keeps the editor's own timeline (own) as preview() does, so the way back is preview(null)'s fast
+    // step. From a preview of another version: your edit's timeline back at once, still read-only; one whose own is gone
+    // or a change came meanwhile (stale): head, read and adopted read-only. A newer preview() or hold() wins.
+    async hold(projectId) {
+      if (!on || !store) return;
+      const gen = ++previewGen;
+      const st0 = store.state();
+      if (st0.projectId !== projectId) return;
+      const HELD = { ref: null, held: true };
+      if (!st0.cartonPreview) {
+        await store.flush();
+        if (gen !== previewGen) return;
+        const st = store.state();
+        own = { project: projectId, base: st.cartonBase ?? null, timeline: { tracks: st.tracks, timelineItems: st.timelineItems, aspectRatio: st.aspectRatio, duration: duration(st.timelineItems ?? []) } };
+        store.raw({ cartonPreview: HELD });
+        return;
+      }
+      if (own && own.project === projectId && !stale) {
+        store.adopt({ ...own.timeline, cartonBase: own.base, cartonPreview: HELD });
+        return;
+      }
+      const doc = await call("head", { projectId });
+      if (gen !== previewGen) return;
+      const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
+      store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
+      store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: HELD });
+      own = { project: projectId, base: project.stateUpdatedAt ?? null, timeline: { ...t, duration: end } };
+      unanswered = null;
+      stale = false;
+    },
+    // Compare's second player: a version's timeline and the media it plays (the project's, and the version's own entries
+    // the project no longer has: a deleted title's text entry), through the same checkout cache as Before. Your edit
+    // (ref null): the editor's own timeline as hold() kept it, or as it is.
+    async compareDoc(projectId, ref) {
+      if (!on || !store) throw new Error("Carton isn't on for this project");
+      const st = store.state();
+      const projectMedia = store.projects?.getState().projects.find((p) => p.id === projectId)?.media ?? [];
+      if (ref == null) {
+        const t = own && own.project === projectId ? own.timeline : timelineOf(st);
+        return { tracks: t.tracks ?? [], timelineItems: t.timelineItems ?? [], aspectRatio: t.aspectRatio ?? "16:9", media: projectMedia };
+      }
+      // The version's own media entries win (a code graphic's source, a title's text as they were then: review #1),
+      // keeping the project's local file location for a file both have; the project's entries the version lacks after.
+      const project = store.deserialize(await checkout(projectId, ref)), t = timelineOf(project);
+      const now = new Map(projectMedia.map((m) => [m.id, m]));
+      const then = (project.media ?? []).map((m) => {
+        const p = now.get(m.id), src = p?.data?.src;
+        const file = m.data && "src" in m.data && m.data.type !== "code" && m.data.type !== "text";
+        return p && typeof src === "string" && file ? { ...m, data: { ...m.data, src } } : m;
+      });
+      const had = new Set(then.map((m) => m.id));
+      return { ...t, media: [...then, ...projectMedia.filter((m) => !had.has(m.id))] };
+    },
+    // Compare (DESIGN-V2 §1.1): the Library steps aside to give the stage its width, as when the person collapses it,
+    // and comes back on exit, unless the person had it collapsed already (then it stays as they left it)
+    libraryAside(aside) {
+      if (!on || !store) return;
+      const st = store.state();
+      if (aside) {
+        if (asideByUs || st.isLeftPanelCollapsed) return;
+        st.setLeftPanelCollapsed?.(true);
+        asideByUs = true;
+      } else if (asideByUs) {
+        asideByUs = false;
+        st.setLeftPanelCollapsed?.(false);
+      }
+    },
+    // Play both (Compare): the editor's own play and pause (Space's), and whether it plays
+    togglePlay() { if (on && store) store.state().toggleTimelinePlayback?.(); },
+    pause() { if (on && store && store.state().isPlaying) store.state().setIsPlaying?.(false); },
+    get playing() { return !!(on && store && store.state().isPlaying); },
+    // The playhead as the stage shows it (the playback clock while playing), and its moves: Compare's list follows it
+    clock() { return on && store ? playhead() : 0; },
+    // The timeline's scale (Compare's marks sit on Cardboard's own clips): pixels per second, as its zoom sets it, and a
+    // subscription to it (and to the timeline's tracks, which move the rows)
+    timelineScale() { return on && store ? { pps: store.state().pixelsPerSecond ?? null, tracks: store.state().tracks ?? null } : null; },
+    onTimeline(f) {
+      if (!on || !store?.subscribe) return () => {};
+      const off = store.subscribe((st, prev) => { if (st.pixelsPerSecond !== prev.pixelsPerSecond || st.tracks !== prev.tracks || st.playheadTime !== prev.playheadTime || st.isPlaying !== prev.isPlaying) f(st); });
+      return typeof off === "function" ? off : () => {};
+    },
+    // Your edit's length in seconds (the Changes view's "7 changes · 0:38"): the editor's own timeline, also while a
+    // preview shows another one.
+    editLength() {
+      if (!on || !store) return undefined;
+      const st = store.state();
+      return own && own.project === st.projectId ? own.timeline.duration : duration(st.timelineItems ?? []);
+    },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
     // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
-    // with its "Previewing an earlier version. Return to current to edit." over the timeline (store.refuse is its guard,
+    // with its refusal (Cardboard's words: an earlier version is shown, go back to edit) over the timeline (store.refuse is its guard,
     // me()). Baseline P3-9, final re-check N3: the editor opened inside the read-only preview and dropped what was typed.
     // True when refused; never with Carton off or outside a preview.
     refuse() {
@@ -350,19 +584,37 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // The project the editor shows (the stage's Carton layer follows it).
     get projectId() { return store?.state().projectId ?? null; },
+    // Its name, as the editor shows it (the Share dialog's title: Share “Weekend reel”).
+    get projectName() { return store?.state().projectName ?? null; },
     // Comments: a new comment is pinned at the playhead; a timecode clicked moves the playhead there.
     playhead() { return on && store ? store.state().currentTime ?? 0 : 0; },
     seek(t) { if (on && store && Number.isFinite(t)) store.state().setPlaybackPosition?.(t); },
     // The editor's clip selection, as its store holds it (a new array when it changes): Esc clears it in the editor
     // without saying so, and the preview banner's Esc leaves that Esc to it (regress 2026-11-02 #4).
     selection: () => (on && store ? store.state().selectedTimelineItemIds ?? null : null),
-    // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
-    // editor doesn't show it (another project, or the clip isn't in this version).
-    reveal(itemId) {
+    // History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected on the timeline, by id and by
+    // the name the change sentences give it (its own name or text, else its media's file name), or null when none or
+    // several are selected. Read when the filter menu opens, never on a timer.
+    selectedClip() {
+      if (!on || !store) return null;
+      const st = store.state(), ids = st.selectedTimelineItemIds;
+      if (!Array.isArray(ids) || ids.length !== 1) return null;
+      const it = (st.timelineItems ?? []).find((i) => i.id === ids[0]);
+      if (!it) return null;
+      const text = (v) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 60) : null);
+      const media = it.mediaItemId ? store.projects?.getState().projects.find((p) => p.id === st.projectId)?.media?.find((m) => m.id === it.mediaItemId) : null;
+      const name = text(it.name) ?? text(it.textContent) ?? text(it.captionText) ?? text(media?.data?.fileName) ?? text(media?.data?.content) ?? text(it.type) ?? "clip";
+      return { id: it.id, name };
+    },
+    // "On timeline" (a conflict card's): the clip selected and the playhead at its start. A conflict's See it brings
+    // the clip into view without selecting it ({select: false}): a selection would take viewing's first Esc (Cardboard's
+    // own Esc clears it first; PLAN 1.3). False when the editor doesn't show it (another project, or the clip isn't in
+    // this version).
+    reveal(itemId, opts) {
       if (!on || !store || !itemId) return false;
       const st = store.state(), it = (st.timelineItems ?? []).find((i) => i.id === itemId);
       if (!it) return false;
-      st.selectTimelineItem?.(itemId);
+      if (opts?.select !== false) st.selectTimelineItem?.(itemId);
       st.setPlaybackPosition?.(it.startTime);
       return true;
     },
@@ -376,9 +628,10 @@ module.exports = String.raw`window.__carton = (() => {
     // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
     // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
     onCommand: (f) => subscribe("carton:command", f),
-    // live: a shared project's summary for the strip (sync state, who is here), or nothing.
-    reportPanel(panel, live) {
-      if (on && store) Promise.resolve(store.invoke("carton:panel", live ? { panel: panel ?? null, live } : { panel: panel ?? null })).catch(() => {});
+    // live: a shared project's summary for the strip (sync state, who is here), or nothing. chip: the title bar's cut
+    // chip and Share icon (Carton UX redesign PLAN 2.1): {cut, viewing, share}, or nothing.
+    reportPanel(panel, live, chip) {
+      if (on && store) Promise.resolve(store.invoke("carton:panel", { panel: panel ?? null, ...(live ? { live } : {}), ...(chip ?? {}) })).catch(() => {});
     },
   };
 })();

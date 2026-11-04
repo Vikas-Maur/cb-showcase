@@ -51,12 +51,12 @@ for (const order of ["before", "during"] as const)
 
 // N3 (and baseline P3-9): Enter on a History row previewed it, and also reached Cardboard's own Enter (a window listener
 // that opens the selected title's text editor on the stage, and checks only the target's tag, not defaultPrevented): a
-// text editor inside the read-only preview, whose typing was dropped. The keys the list acts on are the list's alone;
-// the others (Space to play, Ctrl+Z, Esc) still reach the editor.
+// text editor inside the read-only preview, whose typing was dropped. The keys the list acts on are the list's alone
+// (Enter opens the row's card now, and Space plays its changes: docs/carton-ux DESIGN §7); the others (Ctrl+Z, Esc with
+// no card open) still reach the editor.
 test(name("final N3: the keys a History row acts on never reach the editor's own window listeners"), async () => {
   const ui = createMockUi({ versions: 10 });
-  const opened: string[] = [];
-  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, onOpen: (v: { id: string }) => opened.push(v.id) })));
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
   const seen: string[] = [];
   const editor = (e: KeyboardEvent) => seen.push(e.key);
@@ -68,42 +68,49 @@ test(name("final N3: the keys a History row acts on never reach the editor's own
   assert.ok($(m.container, ".carton-version[data-active]"), "a version is picked");
   const enter = await press(list, "Enter");
   assert.equal(enter.defaultPrevented, true);
-  assert.equal(opened.length, 1, "Enter opens the picked row");
-  await press(list, " ");
+  await flush();
+  assert.ok($(m.container, ".carton-card-version"), "Enter opens the picked row's card");
+  assert.equal(ui.viewing(), null, "and shows nothing else on the stage");
+  assert.equal((await press(list, " ")).defaultPrevented, true, "Space plays the row's changes");
   await press(list, "z");
   window.removeEventListener("keydown", editor);
-  assert.deepEqual(seen, [" ", "z"], "only the keys the list doesn't act on reach the editor");
+  assert.deepEqual(seen, ["z"], "only the keys the list doesn't act on reach the editor");
   await m.unmount();
 });
 
-// N4: a version of one change, opened, read "Hide the changes".
-test(name("final N4: an opened version of one change offers \"Hide the change\"; of several, \"Hide the changes\""), async () => {
+// N4: a version of one change, opened, read "Hide the changes". Its successor (docs/carton-ux DESIGN §6.1): a version's
+// count reads "1 change" or "N changes", and a person's run of changes lists its versions from its chevron, named for
+// what it does ("Show these 6 changes", then "Hide these 6 changes").
+test(name("final N4: one change reads \"1 change\"; a group's chevron says what it shows and hides"), async () => {
   const ui = createMockUi({ versions: 10 });
-  await act(async () => { ui.addVersion({ summary: "Restored an earlier version", details: ["Removed effect \"sharpen\" on 'clip.mp4'"] } as never); });
-  await act(async () => { ui.addVersion({ summary: "Moved 'a', changed 'b'", details: ["Moved 'a'", "Changed 'b'"] } as never); });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
-  const toggle = (text: string) => $$(m.container, ".carton-version").find((r) => r.textContent?.includes(text))!.querySelector(".carton-version-expand")!;
-  for (const [text, shown, hidden] of [["Restored an earlier version", "Show the change", "Hide the change"], ["Moved 'a', changed 'b'", "Show all 2 changes", "Hide the changes"]]) {
-    assert.equal(toggle(text!).getAttribute("aria-label"), shown);
-    await click(toggle(text!));
-    await flush();
-    assert.equal(toggle(text!).getAttribute("aria-label"), hidden);
-  }
+  const codex = $$(m.container, ".carton-version").find((r) => /Trimmed “Product close-up”/.test(r.textContent ?? ""))!;
+  assert.match($(codex, ".carton-version-meta")!.textContent ?? "", /^Codex1 change$/);
+  const chevron = () => $(m.container, ".carton-version[data-group] .carton-version-group")!;
+  assert.equal(chevron().getAttribute("aria-label"), "Show these 6 changes");
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 0);
+  await click(chevron());
+  await flush();
+  assert.equal(chevron().getAttribute("aria-label"), "Hide these 6 changes");
+  assert.equal(chevron().getAttribute("aria-expanded"), "true");
+  assert.equal($$(m.container, ".carton-version[data-child]").length, 5, "its five older versions, one by one (its newest is its own row: design QA G10)");
+  assert.equal($(m.container, ".carton-card-version"), null, "the chevron lists them; it opens no card");
   await m.unmount();
 });
 
 // Baseline P3-12b: "Folded the rest of 'Client review' into 'Main cut'" showed the ↺ (restore) mark; a fold shows the fold
 // mark, as "Folded 'Client review' into 'Main cut': 1 of 2 changes" does. (fromCarton gives it the fold kind:
-// from-carton.test.ts.)
-test(name("final P3-12b: the rest of a partial fold has the fold mark, an undo the ↺ mark"), async () => {
+// from-carton.test.ts.) An undo has its own mark now, apart from a restore's (AUDIT H7).
+test(name("final P3-12b: the rest of a partial fold has the fold mark; an undo and a restore each their own"), async () => {
   const ui = createMockUi({ versions: 10 });
   await act(async () => { ui.addVersion({ kind: "fold", summary: "Folded the rest of 'Client review' into 'Main cut': 1 change" } as never); });
   await act(async () => { ui.addVersion({ kind: "undo", summary: "Undid the restore" } as never); });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
   await flush();
   const icon = (text: string) => $$(m.container, ".carton-version").find((r) => r.textContent?.includes(text))?.querySelector("[data-icon]")?.getAttribute("data-icon");
-  assert.equal(icon("Folded the rest of"), "fold");
-  assert.equal(icon("Undid the restore"), "restore");
+  assert.equal(icon("Folded the rest of"), "foldIn");
+  assert.equal(icon("Undid the restore"), "undo");
+  assert.equal(icon("Restored the"), "restoreArc");
   await m.unmount();
 });

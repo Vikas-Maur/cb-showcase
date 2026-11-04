@@ -119,8 +119,18 @@ like a save's (step 5 of the loop).
   started).
 - **Restore** brings back an old version as a new version: `cb restore <project> main@12`. It also takes back everyone
   else's edits since then. To undo only your own work, use `undo --turn`.
+- **Find the version the user means** instead of reading the whole history: `cb history <project> --find <words>`
+  matches a clip's name, words from a title or caption, a request, a version's name, a person or a day (every word
+  matches the start of a word); `cb history <project> --landmarks` lists what was exported, sent, named, each agent
+  turn, how it was when they opened it, and just before each restore. In place of `main@12` you can write `sent`,
+  `exported`, `today`, `now`, a version's name or a cut's name ("go back to the version I sent the client" is
+  `cb restore <project> sent`).
+- **Bring back one clip** as it was ("bring back the old intro"): `cb restore <project> <version> --clip Intro`. Only
+  that clip changes; a clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
 - **Compare:** `cb compare <project> main@12 [main@15]` says what changed, in plain words ("Trimmed 'Intro' end 5.0 s
-  → 2.5 s"). `cb activity <project>` groups recent versions by who made them.
+  → 2.5 s"), also between two cuts (`cb compare <project> "30s Instagram cut" main`). When the user asks to **show** or
+  compare something, add `--show`: it opens in their editor, and its first line says whether it did. `cb activity
+  <project>` groups recent versions by who made them. Say names and times to the user, never `main@12`.
 - **Publish** only when the user asks: `cb publish <project> [version] --name "Sent to client"` makes the Published cut
   the share link shows. A Published cut can't be edited: to change it, publish again.
 
@@ -128,7 +138,8 @@ like a save's (step 5 of the loop).
 
 `timeline_history`, `undo_timeline` (`rev` to restore, `turn` to undo a turn), `check_timeline` (a dry run of a save,
 with the cards it would raise), `timeline_cuts` (`action: list | new | switch`), `timeline_fold` (`check`, `keep`,
-`reject`), `timeline_credits` and `timeline_publish`. Results carry the same statuses and late conflicts.
+`reject`), `timeline_credits`, `timeline_publish`, `timeline_find`, `timeline_landmarks`, `timeline_restore_clip` and
+`timeline_compare` (`show`). Results carry the same statuses and late conflicts.
 
 ## Habits
 

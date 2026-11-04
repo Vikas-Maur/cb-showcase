@@ -18,6 +18,19 @@ export function parseInviteLink(link) {
   return m ? { host: u.origin, projectId: m[1], invite: m[2] } : null;
 }
 export const inviteLink = (host, projectId, invite) => `${origin(host)}/#join=${projectId}.${invite}`;
+/**
+ * When an invite stops working (ms since the epoch), as its own token says: Carton's hosts sign them as
+ * `ct1.<base64url(JSON claims)>.<signature>`, `exp` in seconds (server/hmac-auth.ts). Null for any other form: the
+ * Share dialog then makes a new link at its next opening rather than keep one it can't vouch for (review of fix/ux2-b).
+ */
+export function inviteExpiry(invite) {
+  const m = /^ct1\.([A-Za-z0-9_-]+)\./.exec(typeof invite === "string" ? invite : "");
+  if (!m) return null;
+  try {
+    const exp = JSON.parse(Buffer.from(m[1], "base64url").toString("utf8"))?.exp;
+    return Number.isFinite(exp) ? exp * 1000 : null;
+  } catch { return null; }
+}
 export const origin = (host) => new URL(String(host)).origin;
 export const wsUrl = (host, projectId) => `${origin(host).replace(/^http/, "ws")}/api/projects/${encodeURIComponent(projectId)}/ws`;
 

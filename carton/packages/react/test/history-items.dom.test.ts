@@ -40,38 +40,44 @@ test(name("P1-5: a version of several changes shows its summary; expanding it li
   await carton.commit({ ops: [set("a", "startTime", 2), set("a", "endTime", 7), set("b", "name", "B1"), set("c", "name", "C1")] });
   await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 600 })));
-  await waitFor(() => /Moved 'A', changed 'B' and 'C'/.test(m.container.textContent ?? ""), "the summary");
-  const row = $$(m.container, "[role=option]")[0]!;
-  const more = $(row, ".carton-version-expand")!;
-  assert.ok(more, "an expand control on the row");
-  assert.equal(more.getAttribute("aria-expanded"), "false");
-  assert.equal($(row, ".carton-version-details"), null, "collapsed: no list");
-  await click(more);
-  await flush();
-  const open1 = $$(m.container, "[role=option]")[0]!;
-  assert.equal($(open1, ".carton-version-expand")!.getAttribute("aria-expanded"), "true");
-  const items = $$(open1, ".carton-version-details li").map((li) => li.textContent);
-  assert.deepEqual(items, ["Moved 'A' 0.0 s → 2.0 s", 'Changed \'B\' name "B" → "B1"', 'Changed \'C\' name "C" → "C1"']);
-  // the rows below make room: the next row starts below the expanded one
+  await waitFor(() => /Moved “A”, renamed “B” and “C”/.test(m.container.textContent ?? ""), "the summary");
+  // the newest version's row, under Today's header: a click opens its card (docs/carton-ux DESIGN §5.2)
+  const row = $$(m.container, ".carton-version")[0]!;
+  assert.equal(row.getAttribute("aria-expanded"), "false");
+  assert.equal($(m.container, ".carton-card-version"), null, "closed: no card");
+  await click(row);
+  await waitFor(() => $$(m.container, ".carton-card-version .carton-change").length > 0, "the card's changes");
+  assert.equal($$(m.container, ".carton-version")[0]!.getAttribute("aria-expanded"), "true");
+  // every change, one change row each, from the engine (PLAN 0.1: changesIn), in timeline order, with its place
+  const items = $$(m.container, ".carton-card-version .carton-change-words").map((li) => li.textContent);
+  // (a move's "(now starts at 0:02)" is the row's own time again, so it goes: design QA G14)
+  assert.deepEqual(items, ["Moved “A” 2 s later", "Renamed “B” to “B1”", "Renamed “C” to “C1”"]);
+  assert.deepEqual($$(m.container, ".carton-card-version .carton-change-time").map((t) => t.textContent), ["0:02", "0:05", "0:10"]);
+  // the rows below make room: the next row starts below the card
   const vrows = $$(m.container, ".carton-vrow");
   const y = (el: HTMLElement) => Number(/translateY\((\d+)px\)/.exec(el.style.transform)?.[1]);
-  assert.ok(y(vrows[1]!) >= y(vrows[0]!) + Number.parseFloat(vrows[0]!.style.height), "the next row is below the expanded one");
-  assert.ok(Number.parseFloat(vrows[0]!.style.height) > 52, "the expanded row is taller");
-  await click($(open1, ".carton-version-expand"));
+  const at = vrows.findIndex((r) => r.querySelector(".carton-card-version"));
+  assert.ok(at >= 0 && y(vrows[at + 1]!) >= y(vrows[at]!) + Number.parseFloat(vrows[at]!.style.height), "the next row is below the card");
+  assert.ok(Number.parseFloat(vrows[at]!.style.height) > 56, "the opened row is taller");
+  await click($$(m.container, ".carton-version")[0]!);
   await flush();
-  assert.equal($($$(m.container, "[role=option]")[0]!, ".carton-version-details"), null, "collapsed again");
-  // a version of one change has nothing to expand
-  assert.equal($($$(m.container, "[role=option]").at(-1)!, ".carton-version-expand"), null);
+  assert.equal($(m.container, ".carton-card-version"), null, "closed again");
   await m.unmount();
   ui.dispose();
 });
 
 test(name("P1-10: the turns filter reads 'Agent turns'"), async () => {
-  const { ui } = await open();
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "name", "A1")] });
+  await ui.refresh();
   const m = await render(h(CartonProvider, { ui }, h(HistoryPanel, { initialHeight: 400 })));
-  assert.ok(byText(m.container, "[role=radio]", "Agent turns"));
-  await click(byText(m.container, "[role=radio]", "Agent turns"));
-  assert.match(m.container.textContent ?? "", /No agent turns yet/);
+  await waitFor(() => !!$(m.container, ".carton-filter-btn"), "the filter, in the cut bar");
+  // the filter menu (docs/carton-ux DESIGN §6.1), then the empty list's words for what would appear there
+  await click($(m.container, ".carton-filter-btn"));
+  assert.ok(byText(m.container, "[role=menuitemradio]", "Agent turns"));
+  await click(byText(m.container, "[role=menuitemradio]", "Agent turns"));
+  assert.match(m.container.textContent ?? "", /No agent turns yet\. When an agent edits, its turn shows here\./);
+  assert.equal($(m.container, ".carton-filter-chip-text")?.textContent, "Agent turns", "the filter shows as a chip");
   await m.unmount();
   ui.dispose();
 });
@@ -89,7 +95,7 @@ test(name("P1-4: Fold in offers what a partial fold left out, together; leaving 
   await waitFor(() => $$(m.container, ".carton-fold-change").length === 2, "the two changes left out");
   assert.doesNotMatch(m.container.textContent ?? "", /Nothing to fold in/);
   const rows = $$(m.container, ".carton-fold-change");
-  for (const r of rows) assert.match(r.textContent ?? "", /Left out earlier/);
+  for (const r of rows) assert.match(r.textContent ?? "", /Left out on /);
   // they fold in together: unticking one unticks both, and the dialog promises the rest later
   await click($(rows[0]!, "input[type=checkbox]"));
   await flush();
@@ -97,7 +103,7 @@ test(name("P1-4: Fold in offers what a partial fold left out, together; leaving 
   await click($($$(m.container, ".carton-fold-change")[1]!, "input[type=checkbox]"));
   await flush();
   assert.deepEqual($$(m.container, ".carton-fold-change input[type=checkbox]").map((c) => (c as HTMLInputElement).checked), [true, true]);
-  await click(byText(m.container, "button", /^Fold in$/));
+  await click(byText(m.container, "button", /^Fold in the rest$/));
   await waitFor(() => done === 1, "folded");
   const head = (await carton.head(main)).doc;
   assert.deepEqual(["a", "b", "c"].map((id) => (head.items as Rec[]).find((i) => i.id === id)!.name), ["A1", "B1", "C1"]);
