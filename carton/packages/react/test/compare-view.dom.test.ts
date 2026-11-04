@@ -143,19 +143,23 @@ test(name("Wipe: one picture, the left player cut at the line; the line is a sli
   assert.deepEqual(s.calls, [["wipe", 45], ["wipe", 0], ["wipe", 39], ["wipe", 50]]);
 });
 
-test(name("Flip: one picture, its tag says which side; the pill: a press shows the left, a click latches it, the right side back"), async () => {
+test(name("Flip: one picture; under it, which side shows (never over the picture); the pill: a press shows the left, a click latches it, the right side back"), async () => {
   const s = stage({ mode: "flip", flipped: false });
   const m = await render(s.el);
   assert.ok(!$(m.container, "canvas[data-player]"), "no second player in Flip");
-  assert.match($(m.container, ".carton-compare-tag")!.textContent!, /Showing\s*Your edit now/);
+  // laptop P3-9: the tag sat over the picture's top-left corner; it's under the picture now, with the pill
+  assert.equal(!!$(m.container, ".carton-compare-tag"), false, "nothing over the picture");
+  assert.equal(!!$(m.container, ".carton-compare-box [role=status]"), false);
+  assert.match($(m.container, ".carton-compare-flipbar [role=status]")!.textContent!, /^Showing Your edit now/);
+  assert.equal($(m.container, ".carton-compare-showing")!.textContent, "Showing");
   const [l, r] = $$(m.container, ".carton-compare-flipbar button");
   await act(() => void l!.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true })));
   await act(() => void l!.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true })));
   await click(r);
   assert.deepEqual(s.calls, [["flip", "left", false], ["flip", "left", true], ["flip", "right", true]]);
   await m.rerender(stage({ mode: "flip", flipped: true }).el);
-  assert.ok($(m.container, ".carton-compare-tag[data-left]"), "the left side shown: the tag turns blue");
-  assert.match($(m.container, ".carton-compare-tag")!.textContent!, /Sent to client/);
+  assert.ok($(m.container, ".carton-compare-flippill[data-left] button[aria-pressed=true]"), "the left side shown: its half of the pill pressed, blue");
+  assert.match($(m.container, ".carton-compare-flipbar [role=status]")!.textContent!, /^Showing Sent to client/);
 });
 
 const rows: Change[] = [

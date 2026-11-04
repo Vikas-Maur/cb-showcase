@@ -137,6 +137,12 @@ export interface FieldPhrase {
   readonly set: string;
   readonly changed?: string;
   readonly cleared: string;
+  /**
+   * A switch (a boolean, off when absent): the sentence for it turned off (`false`). `set` then says it turned on
+   * ("Muted %s" / "Unmuted %s"), and off where it was absent, or absent where it was off, is no change at all (its
+   * default either way): muting and unmuting again changes nothing, so Compare counts nothing (laptop P3).
+   */
+  readonly off?: string;
 }
 
 /** A collection after `defineSchema`: groups indexed by field and the record spec built. */

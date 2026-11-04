@@ -450,6 +450,20 @@ if (mode === "--cli") {
     // way (min-w-0 shrink), shortens before the row pushes the window's own buttons out of the title bar. Its other
     // parts keep their size, so without Carton's chip nothing in the row changes.
     replace('className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"', 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"');
+    // The tabs keep room for one project tab whole (its ✕) and the New project "+" after it, so the chip gives way
+    // before they do (laptop: at 960 px while comparing, "+" sat on the project tab's ✕, and its click started a new
+    // project). Four parts, inline (the strip's stylesheet has only the classes Cardboard uses):
+    // - the tabs area takes at least what its parts need (min-content), so the controls' row, which may shrink, does;
+    // - the scrolling list of project tabs counts as one tab and the "+" there (8rem + 32 px: contain: inline-size keeps
+    //   its tabs' own widths out of that), and fills the rest as before;
+    // - the tabs never shrink below their 8rem together: past that the list scrolls (its edge fade says so) with "+" at
+    //   its end, where before the tabs ran on under the "+" (Cardboard 1.4.0 does it with many tabs too).
+    replace('n.jsxs("div",{className:"flex min-w-0 flex-1 items-center pr-2 pl-[max(6px,var(--desktop-controls-inset)_+_4px)]",children:[', 'n.jsxs("div",{className:"flex min-w-0 flex-1 items-center pr-2 pl-[max(6px,var(--desktop-controls-inset)_+_4px)]",style:{minWidth:"min-content"},children:[');
+    replace('n.jsxs("div",{ref:l,style:Ue(d),onWheel:Ge,', 'n.jsxs("div",{ref:l,style:{...Ue(d),contain:"inline-size",minWidth:k?"calc(8rem + 32px)":void 0},onWheel:Ge,');
+    replace('n.jsx(nt,{as:"div",axis:"x",values:b,onReorder:x,className:"flex min-w-0 items-center gap-[2px]",', 'n.jsx(nt,{as:"div",axis:"x",values:b,onReorder:x,className:"flex min-w-0 items-center gap-[2px]",style:{minWidth:y.length?`calc(${y.length} * 8rem + ${(y.length-1)*2}px)`:void 0},');
+    // - "+" is the 28 px button its class asks for: the strip's stylesheet puts W's w-full after w-[28px], so it was as
+    //   wide as the tab list, its glyph in the middle of that, and a click anywhere there started a new project
+    replace('className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),children:n.jsx(We,', 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),style:{width:28},children:n.jsx(We,');
     prepend(require("./carton/strip-buttons"));
   });
 } else {

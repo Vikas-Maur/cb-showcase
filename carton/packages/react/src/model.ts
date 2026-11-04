@@ -728,6 +728,11 @@ export interface Shot {
   readonly thumb?: string;
   /** Optional name: the top clip's name. */
   readonly label?: string;
+  /**
+   * The clip this shot is, when the shots are a comparison's clips matched by identity (compare.ts `clipDiff`): its id.
+   * None on a content shot diff, and on a gap.
+   */
+  readonly item?: string;
 }
 
 /** Both edits' shots and the matched pairs (indices into a and b, ascending), from core's shots() + lcs(). */

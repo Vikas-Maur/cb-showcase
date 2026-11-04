@@ -547,8 +547,12 @@ What changes with it on:
   from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. In a narrow window the chip is what gives way, never the
   window's own buttons: the editor controls beside the tabs may shrink now (they kept their full width and could push
   the minimise, maximise and close buttons out at 960 px), the chip's name and label shorten first, and under 1000 px
-  while viewing the cut shows as its dot or scissors alone, its name in the tooltip. With Carton off there is no chip,
-  and nothing else in that row shrinks.
+  while viewing the cut shows as its dot or scissors alone, its name in the tooltip, and while comparing the second part
+  says "⇆ Comparing ✕". With Carton off there is no chip, and nothing else in that row shrinks. The project tabs keep
+  room for one tab whole (its ✕) and the New project "+" after it, so the chip gives way before they do; with more tabs
+  than fit, the tab list scrolls with "+" at its end (Cardboard let the tabs run on under "+", whose click then started
+  a new project where you meant to close a tab: it did at 960 px while comparing). "+" is the 28 px button its class
+  asks for; Cardboard's stylesheet made it as wide as the tab list, so a click anywhere after the tabs made a project.
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. History opens a
   full-height panel beside the agent's chat, in the chat's look (drag its edge to resize), with two tabs, History and
   Comments; the same icon closes it, and shows as pressed while it is open. Share opens a dialog (below). Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
@@ -588,30 +592,40 @@ What changes with it on:
     - Side by side: the other version in a second player on the left, Cardboard's own preview on the right;
     - Wipe: one picture with a line you drag, or move with ← →;
     - Flip: hold B, or press the pill, to see the other side.
-    Play both plays them in step by shot. Side by side needs a stage 682 px wide, and the Library steps aside for it.
+    Play both plays them in step by shot: the two sides' clips are matched by identity, so a trimmed or moved clip is
+    still the same shot (the shorter side waits), a clip only one side has gets a slate on the other, and one moved past
+    others says where it is ("“Drone shot” is later in your edit now"). Which side Flip shows is said under the
+    picture, never over it. Side by side needs a stage 682 px wide, and the Library steps aside for it.
     Narrower than that, Compare shows Flip with Side by side greyed. If closing History would make the room (a laptop
     with History and the chat open), a click on Side by side closes History and shows it; otherwise its tooltip says
     what to close (History, the chat, the Library) or to widen the window. Without a second player it shows only Flip.
     If the second player doesn't start within 2 s, Compare shows Flip and says so once; Side by side and Wipe stay
-    greyed, and picking one tries again. The 2 s count only while the window is on screen, so a minimised window
-    doesn't fall back to Flip.
-  - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost or seam for removed,
-    amber with "←4 s" for moved, and amber for trimmed or changed. Above the tracks is a strip of the other version on
-    its own time.
+    greyed, and picking one tries again. The 2 s count only while the window is on screen and the other side shows a
+    picture, so a minimised window, or a comparison with the start of History (a slate on the left), doesn't fall back
+    to Flip. Under 360 px Compare is Flip only, but Side by side is still offered when closing History alone makes the
+    room. Play both run to its end plays again from 0:00 with one click.
+  - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost where a removed clip
+    left a gap (a seam where the rest moved up), amber with "←4 s" for moved, and amber for trimmed or changed. Above the
+    tracks is a strip of the other version on its own time, its clips in the same colours (a gap left plain).
   - **History** becomes the list of changes ("differences" between two cuts). A click jumps both players and the
     timeline there, and ▶ or Enter plays that spot on both sides. Its footer offers Restore your edit to it… (asked
     first) or, between cuts, Fold in changes from it….
-  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit ✕". Esc, its ✕, Done comparing and
-    ← History all go back to your edit, where the playhead stays at the change.
+  - **The title bar's chip** says "⇆ Comparing “Sent to client” with your edit now ✕"; each side has one name
+    everywhere in Compare. Esc, its ✕, Done comparing and ← History all go back to your edit, where the playhead stays
+    at the change. Esc does so even with a clip selected (clicking one while comparing selects it), and deselects it;
+    the keyboard is then in History, so the next Esc closes it.
   - **History can close while comparing**, for a bigger picture: its icon, Ctrl+Shift+H or the panel's ✕ keep Compare
-    on and give the stage the room. The frame then shows its own label, "⇆ Comparing “Sent to client” with your edit ·
-    7 changes ✕": a click on its words opens History on the list again, and its ✕ ends Compare. The marks, Play both
+    on and give the stage the room. The frame then shows its own label, "⇆ Comparing “Sent to client” with your edit now
+    · 7 changes ✕": a click on its words opens History on the list again, and its ✕ ends Compare. The marks, Play both
     and Flip work as before. History that an agent opened for its comparison closes again when Compare ends, unless you
     closed it yourself.
   - **Nothing can be edited while comparing.** An edit tried gives one line, "You're comparing … [Done comparing] Esc",
     and Export goes back to your edit first.
   - **An agent's request** opens Compare only when you're idle. Mid-edit it waits up to 8 s; while you're viewing,
-    playing or in a dialog it offers a note with Open instead. Either way it tells `cb` which it did.
+    playing or in a dialog it offers a note with Open instead. Either way it tells `cb` which it did. A `cb compare
+    --show` you type in a terminal is yours ("You opened a comparison."). `cb` says "No editor window has this project
+    open" only when no app has it; an app busy for a moment is asked again for up to 4 s (one ask in three said no
+    window on the laptop).
   - **The second player** is Cardboard's own preview engine on a canvas of its own, muted. It exists only while Side
     by side or Wipe shows: Flip and closing Compare free it, and paused it draws nothing between seeks.
   Restore ("Restored your edit from 12:41 pm. Later changes are in History."), Fold in ("Folded 3 changes from “30s

@@ -195,6 +195,14 @@ test("Carton on: the cut chip sits before the aspect ratio, the icons before Rep
   assert.equal(count(plain, 'className:"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center"'), 1, "the row's class, once");
   assert.equal(count(tabs, 'className:"mr-[8px] ml-2 flex min-w-0 shrink items-center gap-[8px] self-center"'), 1, "the row may shrink");
   assert.equal(count(tabs, "flex shrink-0 items-center gap-[8px] self-center"), 0);
+  // laptop P2-3: the tabs keep room for one project tab whole and "+", and never run on under "+" (the list scrolls)
+  assert.equal(count(tabs, 'pl-[max(6px,var(--desktop-controls-inset)_+_4px)]",style:{minWidth:"min-content"},children:['), 1, "the tabs area takes what its parts need");
+  assert.equal(count(tabs, 'n.jsxs("div",{ref:l,style:{...Ue(d),contain:"inline-size",minWidth:k?"calc(8rem + 32px)":void 0},onWheel:Ge,'), 1, "the project tabs' list: one tab and \"+\" at least");
+  assert.equal(count(tabs, 'className:"flex min-w-0 items-center gap-[2px]",style:{minWidth:y.length?`calc(${y.length} * 8rem + ${(y.length-1)*2}px)`:void 0},'), 1, "the tabs never under their 8rem");
+  assert.equal(count(plain, 'n.jsx(fn,{})'), 1, "\"+\" is fn, after the tabs in that list");
+  assert.ok(plain.includes('fn=()=>n.jsx("button",{type:"button","aria-label":"New project"'), "fn is New project");
+  assert.ok(plain.includes('className:"flex max-w-56 min-w-32 flex-1 basis-52 items-center"'), "a tab is 8rem at least (min-w-32)");
+  assert.equal(count(tabs, 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),style:{width:28},children:n.jsx(We,'), 1, "\"+\" 28 px wide, as its class means");
   // Bt is the aspect ratio chip and Ut Report an issue, as the strip names them
   assert.ok(/Bt=\(\{value:e\}\)=>\{[\s\S]{0,1600}"aria-label":"Aspect ratio"/.test(plain) || plain.includes('"data-analytics":"strip-aspect-ratio"'), "Bt is the aspect ratio's");
   assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");

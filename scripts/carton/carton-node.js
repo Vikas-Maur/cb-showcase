@@ -21,7 +21,7 @@ import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
-import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
+import { fromCarton, serveUi, commentsUi, serveComments, toUiActor, actorLabel } from "@carton/react";
 import { Comments } from "@carton/comments";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
@@ -1599,7 +1599,9 @@ export const cardboard14 = {
       if (!pages || view?.view !== "compare") return { opened: 0 };
       const request = `compare-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const cutOf = (r) => String(r).replace(/@\d+$/, "");
-      const name = by?.name ?? { claude: "Claude Code", codex: "Codex" }[by?.provider] ?? (by?.kind === "agent" ? "An agent" : "Someone");
+      // who asked, as every author slot names them (feedback: never "Terminal"): the person's own `cb`, typed in a
+      // terminal, is You; an agent its product name ("Director", "Claude Code"); someone else's agent by its owner
+      const name = await askerName(projectId, by);
       const answer = new Promise((resolve) => {
         const t = setTimeout(() => { compareAsks.delete(request); resolve(null); }, COMPARE_ANSWER_MS);
         t.unref?.();
@@ -1608,6 +1610,18 @@ export const cardboard14 = {
       emit({ kind: "carton", id: projectId, topic: "compare", compare: { from: String(view.from), to: String(view.to), between: cutOf(view.from) === cutOf(view.to) ? "versions" : "cuts", by: { kind: String(by?.kind ?? "agent"), id: String(by?.id ?? ""), ...(by?.name ? { name: by.name } : {}) }, byName: name, at: Date.now(), request } });
       const shown = await answer;
       return { opened: pages, ...(shown ? { shown } : {}) };
+    };
+    // The name of who asked for a Compare (`cb compare --show`), as History names authors (toUiActor): You for the person
+    // at this machine (a terminal's `cb` too), an agent's product name, a teammate's first name.
+    const askerName = async (projectId, by) => {
+      try {
+        const lc = await lcOf(projectId);
+        const me = lc ? meOf(lc) : actorOf("person");
+        const x = by && typeof by.id === "string" && typeof by.kind === "string" ? toUiActor(by, me, localGroup()) : null;
+        const said = x ? actorLabel(x, undefined, "You") : "";
+        if (said) return said;
+      } catch {}
+      return by?.kind === "agent" || by?.kind === "subagent" ? "An agent" : "Someone";
     };
     // A page's History panel: a fromCarton handle on the project's Carton, served to that page (serveUi).
     const servePanel = async (projectId, client) => {

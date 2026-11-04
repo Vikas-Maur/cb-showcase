@@ -52,6 +52,11 @@ const DOCS = {
   left: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [item("intro", "v", 0, 6), item("pier", "v", 6, 9), item("ib", "v", 13, 20)] },
   right: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [item("intro", "v", 0, 5), item("drone", "v", 5, 9), item("ib", "v", 9, 16)] },
 };
+// left: Intro 0–4, B-roll pier 4–7, Outro 7–12; right: Intro 0–4, Outro 4–9 (the pier only on the left)
+const PIER_DOCS = (() => {
+  const v = (id, s, e) => ({ id, trackId: "v", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: 0 });
+  return { left: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("Intro", 0, 4), v("B-roll pier", 4, 7), v("Outro", 7, 12)] }, right: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("Intro", 0, 4), v("Outro", 4, 9)] } };
+})();
 const ROWS = [
   { key: "timelineItems/intro", itemId: "intro", kind: "change", clip: "video", text: "Trimmed “Intro”, now ends at 0:05", at: 0, end: 5 },
   { key: "timelineItems/drone", itemId: "drone", kind: "add", clip: "video", text: "Added “Drone shot”", at: 5, end: 9 },
@@ -81,7 +86,13 @@ async function mount(o = {}) {
   window.__cartonStageMode = (v) => { did.stage = v; };
   // the editor's clock: it advances while playing, as Cardboard's does
   let playing = false, t = 2, since = Date.now();
-  const now = () => (playing ? t + (Date.now() - since) / 1000 : t);
+  // (`stopAt`: the end of the timeline, where Cardboard's player stops by itself)
+  const now = () => {
+    if (!playing) return t;
+    const x = t + Math.max(0, Date.now() - since) / 1000;
+    if (o.stopAt != null && x >= o.stopAt) { t = o.stopAt; playing = false; return t; }
+    return x;
+  };
   const bridge = {
     projectId: PROJECT,
     projectName: "Weekend reel",
@@ -104,18 +115,19 @@ async function mount(o = {}) {
     reportPanel: (panel, live, chip) => did.reports.push({ panel, ...chip }),
     preview: async (_p, ref) => { did.previews.push(ref); },
     hold: async () => { did.holds++; },
-    compareDoc: async (_p, ref) => { did.docs.push(ref); return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? DOCS.right : DOCS.left; },
+    compareDoc: async (_p, ref) => { did.docs.push(ref); if (o.docsDelay) await sleep(o.docsDelay); const docs = o.docs ?? DOCS; return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? docs.right : docs.left; },
     prefetch: () => {},
     libraryAside: (on) => did.aside.push(on),
-    togglePlay: () => { if (playing) { t = now(); playing = false; } else { since = Date.now(); playing = true; } did.plays++; for (const f of [...timeline]) f(); },
+    togglePlay: () => { if (playing) { t = now(); playing = false; } else { since = Date.now() + (o.startLag ?? 0); playing = true; } did.plays++; for (const f of [...timeline]) f(); },
     pause: () => { if (playing) { t = now(); playing = false; for (const f of [...timeline]) f(); } },
-    get playing() { return playing; },
+    get playing() { now(); return playing; },
     clock: () => now(),
     seek: (x) => { did.seeks.push(x); t = x; since = Date.now(); for (const f of [...timeline]) f(); },
     timelineScale: () => ({ pps: 10, tracks: TRACKS }),
     onTimeline: (f) => (timeline.add(f), () => timeline.delete(f)),
     editLength: () => 16,
-    selection: () => null,
+    selection: () => did.selection ?? null,
+    clearSelection: () => { did.cleared = (did.cleared ?? 0) + 1; did.selection = []; },
     selectedClip: () => null,
     onBlocked: (f) => (blocked.add(f), () => blocked.delete(f)),
     blocked: () => { for (const f of [...blocked].reverse()) if (f() === true) return true; return false; },
@@ -184,9 +196,9 @@ test("N1 §1.1: openCompare puts the sides the right way round and names them on
     let c = m.page().comparing();
     assert.equal(c.left.ref, v.ref);
     assert.equal(c.right.you, true);
-    assert.equal(c.right.label, "your edit");
+    assert.equal(c.right.label, "your edit now", "one name everywhere (laptop P3-7)");
     assert.equal(m.did.holds, 1, "your edit held read-only, no checkout");
-    assert.equal(m.compare().getAttribute("aria-label"), `Comparing ${c.left.label} with your edit`);
+    assert.equal(m.compare().getAttribute("aria-label"), `Comparing ${c.left.label} with your edit now`);
     // the cuts menu's Compare: that cut now with the cut you're on now
     await m.open("cut-ig");
     c = m.page().comparing();
@@ -233,8 +245,11 @@ test("N1 §1.3: the modes: Side by side (the hole for the editor's picture, the 
     assert.equal(m.did.previews.at(-1), v.ref, "B held: the editor shows the left side");
     assert.equal(m.did.seeks.at(-1), 14, "at the same moment, in step by shot (right 0:10 is left 0:14)");
     assert.equal(m.did.previews.length, before + 1);
-    assert.match(m.compare().querySelector(".carton-compare-tag").textContent, /Showing/);
-    assert.ok(m.compare().querySelector(".carton-compare-tag[data-left]"), "the tag turns blue on the left side");
+    // which side shows is said under the picture (laptop P3-9: the tag over its top-left corner covered the picture)
+    assert.equal(!!m.compare().querySelector(".carton-compare-tag"), false, "nothing over the picture");
+    assert.equal(!!m.compare().querySelector(".carton-compare-box .carton-compare-showing, .carton-compare-box [role=status]"), false);
+    assert.match(m.compare().querySelector(".carton-compare-flipbar [role=status]").textContent, /^Showing /);
+    assert.ok(m.compare().querySelector(".carton-compare-flippill[data-left] [aria-pressed=true]"), "the pill's left side pressed, blue");
     await m.key("b", "keyup");
     assert.equal(m.did.holds, holds + 1, "released: your edit again");
     assert.equal(m.did.seeks.at(-1), 10, "at its own moment");
@@ -304,7 +319,7 @@ test("ux2 room: closing History keeps Compare on (the title bar's icon, Ctrl+Shi
     await m.cmd("carton-history");
     await m.open(m.older().ref);
     const c = m.page().comparing();
-    const label = `Comparing ${c.left.label} with your edit · ${ROWS.length} changes`;
+    const label = `Comparing ${c.left.label} with your edit now · ${ROWS.length} changes`;
     assert.ok(m.list(), "History is the change list");
     assert.equal(!!m.compare().querySelector(".carton-compare-frame-label"), false, "the list is on screen: no label on the frame");
     const holds = m.did.holds, previews = m.did.previews.length;
@@ -564,7 +579,7 @@ test("N1 §1.8: an edit tried while comparing: one line in Compare's words, Done
     assert.equal(told, true);
     const t = m.toast();
     const c = m.page().comparing();
-    assert.equal(t.querySelector(".carton-toast-text").textContent, `You're comparing ${c.left.label} with your edit.`);
+    assert.equal(t.querySelector(".carton-toast-text").textContent, `You're comparing ${c.left.label} with your edit now.`);
     assert.deepEqual([...t.querySelectorAll("button")].map((b) => b.textContent), ["Done comparing"]);
     assert.equal(m.compare().getAttribute("data-pulse"), "a");
     await m.click(t.querySelector("button"));
@@ -609,7 +624,9 @@ test("N1 §1.6: marks from the diff on the timeline's own rows, the strip and th
     assert.equal(m.list().querySelector(".carton-change-selected")?.getAttribute("data-change-key"), "timelineItems/ib");
     assert.equal(m.did.seeks.at(-1), 9);
     await m.click([...m.list().querySelectorAll(".carton-change")].find((r) => /B-roll pier/.test(r.textContent)));
-    assert.equal(m.did.seeks.at(-1), 6, "a removal: the right side's time whose left time (in step) is where it was, so the left player shows it");
+    assert.equal(m.did.seeks.at(-1), 5, "a removal: where its mark is (the join the drone took), the left player in step on the pier");
+    const seam = marks.find((e) => e.classList.contains("carton-tl-seam"));
+    assert.equal(seam.style.left, "50px", "the pier's seam where the list's jump goes (laptop P2-2)");
     // closed: nothing of Compare's left in Cardboard's timeline
     await m.key("Escape");
     assert.ok(!m.tl.querySelector(".carton-tl-marks, .carton-tl-strip, .carton-tl-legend"));
@@ -640,7 +657,7 @@ test("N1 §1.13: the agent's request opens Compare when the person is idle, with
     await m.settle();
     assert.equal(m.page().comparing(), null, "what the person looks at stays");
     const t = m.toast();
-    assert.match(t.querySelector(".carton-toast-text").textContent, /^Director has a comparison ready: .+ with your edit\.$/);
+    assert.match(t.querySelector(".carton-toast-text").textContent, /^Director has a comparison ready: .+ with your edit now\.$/);
     assert.deepEqual(m.did.answers.at(-1), { projectId: m.bridge.projectId, request: "r2", status: "offered", why: "viewing" });
     await m.click([...t.querySelectorAll("button")].find((b) => b.textContent === "Open"));
     await m.settle(60);
@@ -786,7 +803,7 @@ test("N1 with N2: History's ⇆ Compare menu (another cut), pick mode (Compare w
 test("N1b §1.4: Play both lets a side wait: the right side's editor pauses on its shot's last frame while the left plays on; a shot only one side has shows the slate on the other", opt, async () => {
   // left: Intro 0–4, B-roll pier 4–7, Outro 7–12; right: Intro 0–4, Outro 4–9 (the pier only on the left)
   const diff = { a: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 7, sig: 2, label: "B-roll pier" }, { start: 7, end: 12, sig: 3, label: "Outro" }], b: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 9, sig: 3, label: "Outro" }], matches: [[0, 0], [2, 1]], aLabel: "a", bLabel: "b" };
-  const m = await mount({ diff });
+  const m = await mount({ diff, docs: PIER_DOCS });
   try {
     await m.cmd("carton-history");
     await m.open(m.older().ref);
@@ -929,7 +946,7 @@ test("N1b §1.2, §1.11: a playing card's ⇆ Side by side (still playing), Fold
 
 test("N1b review: Play both paused in a slate resumes where it was; a new comparison resets it; the person's own pause is theirs", opt, async () => {
   const diff = { a: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 7, sig: 2, label: "B-roll pier" }, { start: 7, end: 12, sig: 3, label: "Outro" }], b: [{ start: 0, end: 4, sig: 1, label: "Intro" }, { start: 4, end: 9, sig: 3, label: "Outro" }], matches: [[0, 0], [2, 1]], aLabel: "a", bLabel: "b" };
-  const m = await mount({ diff });
+  const m = await mount({ diff, docs: PIER_DOCS });
   try {
     await m.cmd("carton-history");
     await m.open(m.older().ref);
@@ -974,4 +991,243 @@ test("design QA v2: another cut's older version, by its moment: today at, yester
   // a version this cut's History lists, a cut's head, a cut id: nothing to read, so openCompare doesn't wait
   assert.deepEqual(U.elsewhereRefs(ui, ["main@19", "ig@9", "cut-ig", null]), []);
   assert.deepEqual(U.elsewhereRefs(ui, ["ig@4"]), [{ ref: "ig@4", cutId: "cut-ig", seq: 4 }]);
+});
+
+
+// ---------------------------------------------------------------- laptop (fix/ux2-laptop)
+// A real edit's two timelines: a music bed under the cut, the intro trimmed by a second (the rest moved up), B-roll pier
+// removed leaving its gap. Core's content shot diff matches nothing after the trim (the music's in-point moved under
+// every shot): one changed stretch from 0:00, which Compare went by.
+const LAP = (() => {
+  const v = (id, s, e, o = {}) => ({ id, trackId: "v", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: 0, ...o });
+  const tracks = [{ id: "v" }, { id: "t" }, { id: "m" }];
+  const music = (e) => ({ id: "Tone", trackId: "m", type: "audio", startTime: 0, endTime: e, trimStart: 0, trimEnd: 0 });
+  return {
+    docs: {
+      left: { tracks, aspectRatio: "16:9", media: [], timelineItems: [v("Intro", 0, 5), v("Interview A", 5, 11), v("B-roll pier", 11, 17), v("Interview B", 17, 26), music(26)] },
+      right: { tracks, aspectRatio: "16:9", media: [], timelineItems: [v("Intro", 0, 4), v("Interview A", 4, 10), v("Interview B", 16, 25), music(26)] },
+    },
+    diff: { a: [{ start: 0, end: 26, sig: 1 }], b: [{ start: 0, end: 25, sig: 2 }], matches: [], aLabel: "a", bLabel: "b" },
+    rows: [
+      { key: "timelineItems/Intro", itemId: "Intro", kind: "change", clip: "video", text: "Trimmed “Intro”, now ends at 0:04", at: 0, end: 4 },
+      { key: "timelineItems/B-roll pier", itemId: "B-roll pier", kind: "remove", clip: "video", text: "Removed “B-roll pier”", at: 11, end: 17 },
+    ],
+  };
+})();
+async function mountLaptop(o = {}) {
+  const ui = createMockUi({ versions: 8 });
+  ui.changes = async () => LAP.rows;
+  ui.shotDiff = async () => LAP.diff;
+  return mount({ ui, rows: false, docs: LAP.docs, ...o });
+}
+
+test("laptop P2-1: Play both goes by the clips: the trimmed intro is in step (the right waits its second), the removed pier's gap a slate", opt, async () => {
+  const m = await mountLaptop();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    await act(async () => { m.bridge.seek(3.2); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(1300); });
+    let at = m.page().compareBoth().at;
+    // the intro is one shot on both sides: "same shot", the right side waiting on its last frame for the left's
+    assert.equal(at.stretch.kind, "same", JSON.stringify(at));
+    assert.equal(at.b.hold, true, "the right's intro is over: it waits");
+    assert.match(m.compare().querySelector('[data-side="right"] .carton-compare-tc').textContent, /waiting/);
+    // the pier: the right side has only its gap there, so a slate
+    await act(async () => { m.page().comparePlayBoth({ from: 10.5 }); await sleep(300); });
+    at = m.page().compareBoth().at;
+    assert.equal(at.b.slate, true, JSON.stringify(at));
+    assert.match(m.compare().querySelector('[data-side="right"] .carton-compare-slate').textContent, /^“B-roll pier” isn't in your edit now/);
+  } finally { await m.done(); }
+});
+
+test("laptop P2-2: a removed clip that left a gap is a ghost where it was on the timeline, and its row jumps there", opt, async () => {
+  const m = await mountLaptop();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    assert.equal(!!m.tl.querySelector(".carton-tl-seam"), false, "no seam at the changed stretch's start");
+    const ghost = m.tl.querySelector('.carton-tl-mark[data-kind="removed"]');
+    assert.ok(ghost, "a ghost");
+    assert.deepEqual([ghost.style.left, ghost.style.width], ["100px", "60px"], "where the pier was (after the intro's second): 10–16 s × 10 px/s");
+    await m.click([...m.list().querySelectorAll(".carton-change")].find((r) => /B-roll pier/.test(r.textContent)));
+    assert.equal(m.did.seeks.at(-1), 10, "the list's jump goes where the ghost is");
+  } finally { await m.done(); }
+});
+
+test("laptop P3-8: the left side's strip in the marks' colours: the trimmed intro amber, the removed pier red, gaps neutral", opt, async () => {
+  const m = await mountLaptop();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    const bars = [...m.tl.querySelectorAll(".carton-tl-strip-bar")].map((b) => [b.getAttribute("title"), b.getAttribute("data-kind")]);
+    assert.deepEqual(bars, [["Intro", "changed"], ["Interview A", "same"], ["B-roll pier", "removed"], ["Interview B", "same"]]);
+  } finally { await m.done(); }
+});
+
+test("laptop P3-10: Play both's timecode never goes back at the start, while the editor takes a moment to start playing", opt, async () => {
+  const m = await mountLaptop({ startLag: 350 });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    await act(async () => { m.bridge.seek(4.5); await sleep(10); });
+    const seen = [];
+    await act(async () => {
+      m.page().comparePlayBoth();
+      for (let i = 0; i < 40; i++) { await sleep(25); const b = m.page().compareBoth(); if (b?.at) seen.push([b.T, b.at.b.t, b.at.a.t]); }
+    });
+    assert.ok(seen.length > 20, "sampled");
+    for (let i = 1; i < seen.length; i++) {
+      assert.ok(seen[i][0] >= seen[i - 1][0] - 1e-9, `the story's clock went back: ${seen[i - 1][0]} → ${seen[i][0]}`);
+      assert.ok(seen[i][1] >= seen[i - 1][1] - 1e-9, `the right side's timecode went back: ${seen[i - 1][1]} → ${seen[i][1]}`);
+    }
+  } finally { await m.done(); }
+});
+
+test("laptop P3-6: Esc ends Compare with a clip selected (and clears it); focus then lands in History, so the next Esc closes it", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    // a clip clicked on the timeline while comparing: selected
+    m.did.selection = ["ib"];
+    const clip = m.tl.querySelector("[data-track-id]");
+    await m.key("Escape", "keydown", clip);
+    await m.settle(40);
+    assert.equal(m.page().comparing(), null, "the first Esc ended Compare");
+    assert.equal(m.did.cleared, 1, "and cleared the selection");
+    // the focus went with Compare's list: it's back in History
+    const aside = m.side.querySelector("aside");
+    assert.ok(aside, "History still open");
+    assert.ok(aside.contains(document.activeElement), `focus in History: ${document.activeElement?.tagName}`);
+    await m.key("Escape", "keydown", document.activeElement);
+    await m.settle(40);
+    assert.equal(!!m.side.querySelector("aside"), false, "the second Esc closed History");
+  } finally { await m.done(); }
+});
+
+test("laptop P3-7: one name per side everywhere in Compare: a version named by its time says it once; your edit is “your edit now”", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    const c = m.page().comparing();
+    assert.match(c.left.label, /^your edit from \d{1,2}:\d{2} [ap]m$/);
+    assert.equal(c.left.detail, undefined, "its time is in its name: no second time");
+    const range = m.list().querySelector(".carton-compare-range").textContent;
+    assert.equal(range, `From ${c.left.label}to your edit now`, "the list's head: each side once");
+    assert.equal(!!m.compare().querySelector('[data-side="left"] .carton-compare-when'), false, "the player's label: its name only");
+    assert.equal(m.compare().querySelector('[data-side="right"] b').textContent, "Your edit now");
+    assert.equal(m.chip().comparing.label, `Comparing ${c.left.label} with your edit now`);
+  } finally { await m.done(); }
+});
+
+test("laptop P3-12: cb compare --show from the person's own terminal is theirs: “You”, never “Terminal”", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    const from = m.older().ref;
+    // (the worker names who asked; a page never shows the asker's raw name)
+    await act(async () => { m.bridge.fire({ id: m.bridge.projectId, topic: "compare", compare: { from, to: null, by: { kind: "external", id: "terminal:me@laptop", name: "Terminal" }, request: "r-term", at: Date.now() } }); await sleep(60); });
+    await m.settle(60);
+    const t = m.toast();
+    assert.ok(t, "a toast");
+    assert.doesNotMatch(t.textContent, /Terminal/);
+  } finally { await m.done(); }
+});
+
+
+test("review of fix/ux2-laptop #3: Play both started before the timelines arrived goes on in step by the clips once they do", opt, async () => {
+  const m = await mountLaptop({ docsDelay: 400 });
+  try {
+    await m.cmd("carton-history");
+    // a card's ⇆ Side by side: Compare opens playing, at once (the change list here, the timelines still loading)
+    await m.open(m.older().ref, null, { play: true, at: 3.2 });
+    assert.ok(m.page().compareBoth(), "Play both runs");
+    await act(async () => { await sleep(1300); });
+    await m.settle();
+    const at = m.page().compareBoth().at;
+    assert.equal(at.stretch.kind, "same", "the intro in step by the clips now: " + JSON.stringify(at));
+    assert.equal(at.b.hold, true, "the right side's shorter intro waits");
+  } finally { await m.done(); }
+});
+
+
+// ---------------------------------------------------------------- the real app's re-check of 15a9b352
+test("laptop re-check P2: the second player's 2 s count only while the left side is a picture: a slate there never fails it", opt, async () => {
+  // a new shot at 0:00 on the right (the left has none there: its slate), then the clip both have
+  const v = (id, s0, e) => ({ id, trackId: "v", type: "video", name: id, startTime: s0, endTime: e, trimStart: 0, trimEnd: 0 });
+  const docs = { left: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("A", 0, 5)] }, right: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("N", 0, 3), v("A", 3, 8)] } };
+  const ui = createMockUi({ versions: 8 });
+  ui.changes = async () => [{ key: "timelineItems/N", itemId: "N", kind: "add", clip: "video", text: "Added “N”", at: 0, end: 3 }];
+  ui.shotDiff = async () => ({ a: [{ start: 0, end: 5, sig: 1 }], b: [{ start: 0, end: 3, sig: 2 }, { start: 3, end: 8, sig: 1 }], matches: [[0, 1]], aLabel: "a", bLabel: "b" });
+  const m = await mount({ ui, rows: false, docs });
+  try {
+    await m.cmd("carton-history");
+    await act(async () => { m.bridge.seek(1); await sleep(10); });
+    await m.open(m.older().ref);
+    await m.settle(80);
+    assert.ok(m.compare().querySelector('[data-side="left"] .carton-compare-slate'), "the left side's slate");
+    assert.equal(!!m.stage.querySelector("[data-test-player]"), false, "no second player under it");
+    await act(async () => { await sleep(2600); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "still Side by side: a slate is no failed player");
+    assert.doesNotMatch(m.toast()?.textContent ?? "", /Couldn't show/, "no “Couldn't show … side by side” toast");
+    // the playhead on the shot both have: the second player shows it and says it's ready
+    await act(async () => { m.bridge.seek(4); await sleep(30); });
+    await m.settle(60);
+    assert.ok(m.stage.querySelector("[data-test-player]"), "the second player on the stage");
+    await act(async () => { await sleep(2300); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side");
+  } finally { await m.done(); }
+});
+
+test("laptop re-check P3: a stage under 360 px still offers Side by side greyed, a click making the room, when closing History is enough", opt, async () => {
+  // a ~1060 px window with History open: a 340 px stage; closing History (380) gives it 720
+  const sizes = { ".carton-compare-root": 340, "[data-carton-stage-host]": 340, ".carton-sidebar": 380, '[data-testid="local-agent-panel"]': 0 };
+  const L = layout(sizes);
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await L.relayout(m, {});
+    const side = () => m.compare().querySelector('[role=radio][data-mode="side"]');
+    assert.equal(m.compare().getAttribute("data-mode"), "flip");
+    assert.ok(side(), "Side by side offered");
+    assert.ok(side().hasAttribute("data-off"), "greyed");
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Click to close History and make room.");
+    await m.click(side());
+    assert.equal(!!m.side.querySelector("aside"), false, "History closed");
+    assert.equal(m.page().comparing().mode, "side");
+    await L.relayout(m, { ".carton-compare-root": 720, "[data-carton-stage-host]": 720 });
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "Side by side on the wider stage");
+    // not enough from History alone: Flip only, as before
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    await L.relayout(m, { ".carton-compare-root": 300, "[data-carton-stage-host]": 300, ".carton-sidebar": 300 });
+    assert.equal(!!side(), false, "Flip only");
+  } finally { L.restore(); await m.done(); }
+});
+
+test("laptop re-check P3: Play both run to its end: one click plays it again from 0:00 (the editor stopping at the timeline's end is no pause)", opt, async () => {
+  // your edit ends at 0:25, where Cardboard's player stops by itself
+  const m = await mountLaptop({ stopAt: 25 });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    await act(async () => { m.bridge.seek(23.2); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(2600); });
+    await m.settle();
+    assert.equal(m.page().compareBoth(), null, "ended, not paused near the end: " + JSON.stringify(m.page().compareBoth()));
+    // one click: from 0:00
+    await act(async () => { m.page().comparePlayBoth(); await sleep(400); });
+    const b = m.page().compareBoth();
+    assert.ok(b && !b.paused, "playing again");
+    assert.ok(b.T < 1, `from the start: ${b.T}`);
+  } finally { await m.done(); }
 });

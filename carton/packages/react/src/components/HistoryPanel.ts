@@ -11,7 +11,7 @@
 // A version still waiting for the server says "Not sent yet"; Play and Restore wait for it.
 
 import { createElement as h, Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { clock, clockOfDay, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
+import { clock, clockOfDay, curlyQuotes, exactTime, shortDate, timecode, versionLabel } from "../format.ts";
 import { useAsync, useCartonUi, useCurrentCut, useCurrentCutId, useHistoryCount, useLocale, useNow, useTopic, useTopicSelector, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Actor, CartonUi, FindHit, HistoryFilter, Landmark, Version, Viewing, Working } from "../model.ts";
@@ -140,8 +140,8 @@ function titleOverflows(title: HTMLElement): boolean {
 }
 
 const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
-/** An agent's prompt, when the version is its turn (as versionLabel reads it). */
-const promptOf = (v: Version) => v.turn?.label || (isAgent(v.author) ? v.name : undefined) || undefined;
+/** An agent's prompt, when the version is its turn (as versionLabel reads it), its quotes curly as the panel's own. */
+const promptOf = (v: Version) => { const p = v.turn?.label || (isAgent(v.author) ? v.name : undefined); return p ? curlyQuotes(p) : undefined; };
 const filterKey = (f: HistoryFilter) => (typeof f === "object" ? `item:${f.item}` : f);
 
 // ------------------------------------------------------------------------------------------------- the rows' parts

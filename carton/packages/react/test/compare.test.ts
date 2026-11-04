@@ -3,7 +3,7 @@
 // and the stage's modes by width.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compareMarks, followTime, leadTime, playLength, playSchedule, sidesAt, stepAt, storyAt, stripOf, HOLD_BACK } from "../src/compare.ts";
+import { clipDiff, clipShots, compareMarks, followTime, leadTime, playLength, playSchedule, removedAt, sidesAt, stepAt, stillAt, storyAt, stripOf, HOLD_BACK, type CompareDoc } from "../src/compare.ts";
 import { compareModeShown, compareModesFor } from "../src/components/CompareView.ts";
 import { alignRows } from "../src/shots.ts";
 import { words } from "../src/words.ts";
@@ -88,9 +88,9 @@ test("compareMarks without the timelines or the alignment: the rows' own places 
   assert.deepEqual(marks.map((m) => [m.itemId, m.kind, m.start, m.end]), [["z", "removed", 1, 2], ["x", "added", 3, 5], ["y", "changed", 6, 8]]);
 });
 
-test("stripOf: the left side's shots on its own time, red where the right differs", () => {
+test("stripOf on a content shot diff (no clips known): a stretch that differs reads as changed, never all removed", () => {
   const strip = stripOf(D);
-  assert.deepEqual(strip.map((b) => [b.start, b.end, b.kind]), [[0, 6, "change"], [6, 12, "same"], [12, 15, "change"], [15, 24, "same"]]);
+  assert.deepEqual(strip.map((b) => [b.start, b.end, b.kind]), [[0, 6, "changed"], [6, 12, "same"], [12, 15, "changed"], [15, 24, "same"]]);
 });
 
 test("the stage's modes by width (DESIGN-V2 §1.9) and without a second player (§1.10)", () => {
@@ -160,4 +160,133 @@ test("Play both: a shot only one side has plays there, and the other side shows 
   at = sidesAt(s, 5);
   assert.deepEqual([at.b.t, at.b.slate], [5, false]);
   assert.deepEqual([at.a.t, at.a.slate, at.a.missing], [4, true, "B-roll pier"], "the left side's slate");
+});
+
+
+// ---------------------------------------------------------------- laptop (fix/ux2-laptop): clips matched by identity
+// A real edit: a music bed under the whole cut and a title over the intro. The intro was trimmed by a second (the rest
+// moved up), and B-roll pier was removed, leaving its gap. By content every shot after the trim differs (the music's
+// in-point moved under each), so core's shot diff is one changed stretch from 0:00: that stretch is what Compare lined
+// up on (Play both never in step for the trimmed intro; the removed pier marked as a seam at 0:00).
+const T2 = [{ id: "titles" }, { id: "v" }, { id: "music" }];
+const clip2 = (id: string, trackId: string, startTime: number, endTime: number, o: Record<string, unknown> = {}) => ({ id, trackId, type: "video", name: id, startTime, endTime, trimStart: 0, ...o });
+const LAP_L: CompareDoc = { tracks: T2, timelineItems: [clip2("Intro", "v", 0, 5), clip2("Interview A", "v", 5, 11), clip2("B-roll pier", "v", 11, 17), clip2("Interview B", "v", 17, 26), clip2("Summer", "titles", 1, 4, { type: "text" }), clip2("Tone", "music", 0, 26, { type: "audio" })] };
+const LAP_R: CompareDoc = { tracks: T2, timelineItems: [clip2("Intro", "v", 0, 4), clip2("Interview A", "v", 4, 10), clip2("Interview B", "v", 16, 25), clip2("Summer", "titles", 1, 4, { type: "text" }), clip2("Tone", "music", 0, 26, { type: "audio" })] };
+// core's content shot diff of that edit: nothing matched
+const BY_CONTENT: ShotDiff = { a: [{ start: 0, end: 26, sig: 1 }], b: [{ start: 0, end: 25, sig: 2 }], matches: [], aLabel: "a", bLabel: "b" };
+
+test("clipShots: a side's story is the footage on its lowest picture track; titles, captions and sound don't cut it; a gap is a shot with no clip", () => {
+  const s = clipShots(LAP_R);
+  assert.deepEqual(s.map((x) => [x.start, x.end, x.item ?? null, x.label ?? null]), [[0, 4, "Intro", "Intro"], [4, 10, "Interview A", "Interview A"], [10, 16, null, null], [16, 25, "Interview B", "Interview B"]]);
+  // B-roll over an interview on a track above: the interview is the story
+  const over = clipShots({ tracks: [{ id: "top" }, { id: "v" }], timelineItems: [clip2("ia", "v", 0, 10), clip2("broll", "top", 3, 6)] });
+  assert.deepEqual(over.map((x) => [x.start, x.end, x.item]), [[0, 10, "ia"]]);
+  // Cardboard's own `order` says which track is lower, whatever the list's order (0 is the top)
+  const ordered = clipShots({ tracks: [{ id: "v", order: 1 }, { id: "top", order: 0 }], timelineItems: [clip2("ia", "v", 0, 10), clip2("broll", "top", 3, 6)] });
+  assert.deepEqual(ordered.map((x) => [x.start, x.end, x.item]), [[0, 10, "ia"]]);
+  // a title alone (no footage under it) is a shot of its own
+  const alone = clipShots({ tracks: [{ id: "t" }, { id: "v" }], timelineItems: [clip2("a", "v", 0, 4), clip2("card", "t", 4, 6, { type: "text" }), clip2("b", "v", 6, 9)] });
+  assert.deepEqual(alone.map((x) => x.item), ["a", "card", "b"]);
+});
+
+test("Play both, in step by shot by clip identity (laptop P2-1): the trimmed intro is the same shot on both sides, the shorter waits", () => {
+  const d = clipDiff(LAP_L, LAP_R);
+  const s = playSchedule(d);
+  assert.deepEqual(s.map((x) => [x.kind, x.a0, x.aLen, x.b0, x.bLen, x.aShot ?? null, x.bShot ?? null]), [
+    ["same", 0, 5, 0, 4, "Intro", "Intro"],
+    ["same", 5, 6, 4, 6, "Interview A", "Interview A"],
+    // the pier, removed: its gap on the right is no shot there, so the right side shows a slate naming the pier
+    ["change", 11, 6, 10, 0, "B-roll pier", null],
+    ["same", 17, 9, 16, 9, "Interview B", "Interview B"],
+  ]);
+  let at = sidesAt(s, 4.5);
+  assert.deepEqual([at.stretch?.kind, at.a.hold, at.b.hold], ["same", false, true], "the intro: in step, the right side waits its second");
+  at = sidesAt(s, 12);
+  assert.deepEqual([at.b.slate, at.b.missing, at.b.elsewhere ?? null], [true, "B-roll pier", null]);
+  // by content (the old way), the intro was never in step
+  assert.equal(playSchedule(BY_CONTENT)[0]!.kind, "change");
+  // the right side's playhead inside the pier's gap starts the story in the pier's stretch
+  assert.equal(storyAt(s, "b", 12), s[2]!.start + 2);
+});
+
+test("Play both: a clip moved past another and trimmed (laptop P2-1) is never “isn't in”: its slate says where it is", () => {
+  const L: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("Shot A", "v", 0, 4), clip2("Shot B", "v", 4, 8), clip2("Shot C", "v", 8, 12)] };
+  const R: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("Shot B", "v", 0, 4), clip2("Shot A", "v", 4, 7), clip2("Shot C", "v", 7, 11)] };
+  const s = playSchedule(clipDiff(L, R));
+  const slates = s.flatMap((x) => {
+    const at = sidesAt(s, x.start + 0.1);
+    return [at.a, at.b].filter((y) => y.slate).map((y) => [y.missing, y.elsewhere]);
+  });
+  assert.ok(slates.length >= 2, JSON.stringify(s));
+  for (const [missing, where] of slates) assert.ok(where === "earlier" || where === "later", `the moved shot “${missing}” is on both sides: ${where}`);
+  // only moved in time (its order kept) and trimmed: the same shot, no slate at all
+  const R2: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("Shot A", "v", 1, 4), clip2("Shot B", "v", 6, 10), clip2("Shot C", "v", 10, 14)] };
+  const s2 = playSchedule(clipDiff(L, R2));
+  for (const x of s2) {
+    const at = sidesAt(s2, x.start + 0.1);
+    assert.ok(!at.a.slate && !at.b.slate, `no slate in step: ${JSON.stringify(x)}`);
+  }
+  assert.deepEqual(s2.map((x) => [x.kind, x.aShot, x.aLen, x.bLen]), [["same", "Shot A", 4, 3], ["same", "Shot B", 8, 8]]);
+});
+
+test("clipDiff: a split on one side plays as the whole clip; a clip deleted and added again (same footage) is matched by content", () => {
+  const L: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("a", "v", 0, 6, { mediaItemId: "m1", trimStart: 2 }), clip2("b", "v", 6, 9, { mediaItemId: "m2" })] };
+  // a split at 0:03 (a new clip carrying on a's footage), and b deleted and added again as b2
+  const R: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("a", "v", 0, 3, { mediaItemId: "m1", trimStart: 2 }), clip2("a2", "v", 3, 6, { mediaItemId: "m1", trimStart: 5 }), clip2("b2", "v", 6, 9, { mediaItemId: "m2" })] };
+  const d = clipDiff(L, R);
+  assert.deepEqual(d.b.map((x) => [x.start, x.end, x.item]), [[0, 6, "a"], [6, 9, "b2"]]);
+  assert.deepEqual(d.matches, [[0, 0], [1, 1]]);
+});
+
+test("compareMarks by clip identity (laptop P2-2): a removed clip that left a gap is a ghost where it was, never a seam at the stretch's start", () => {
+  const changes: Change[] = [chg("B-roll pier", "remove", 11, 17, "Removed “B-roll pier”"), chg("Intro", "change", 0, 4, "Trimmed “Intro”")];
+  // by the clips (what Compare goes by now): the ghost where the pier was, after the intro's second
+  let pier = compareMarks(changes, LAP_L, LAP_R).find((m) => m.itemId === "B-roll pier")!;
+  assert.deepEqual([pier.start, pier.end, pier.trackId], [10, 16, "v"]);
+  // the jump goes to the same place (the list said 0:11 and seeked there; the mark was elsewhere)
+  const d = clipDiff(LAP_L, LAP_R);
+  assert.equal(removedAt(d, alignRows(d), 11), pier.start);
+  // given core's content diff (one changed stretch from 0:00) it is still where it was, not a seam at 0:00
+  pier = compareMarks(changes, LAP_L, LAP_R, BY_CONTENT).find((m) => m.itemId === "B-roll pier")!;
+  assert.ok(pier.end - pier.start > 5, `a ghost, not a seam: ${pier.start}–${pier.end}`);
+  assert.ok(pier.start > 9, `where it was, not the stretch's start: ${pier.start}`);
+  // removed and the rest moved up: a seam at the join
+  const ripple: CompareDoc = { tracks: T2, timelineItems: [clip2("Intro", "v", 0, 5), clip2("Interview A", "v", 5, 11), clip2("Interview B", "v", 11, 20)] };
+  const seam = compareMarks([chg("B-roll pier", "remove", 11, 17, "Removed “B-roll pier”")], LAP_L, ripple).find((m) => m.itemId === "B-roll pier")!;
+  assert.deepEqual([seam.start, seam.end], [11, 11]);
+});
+
+test("stripOf by clip identity (laptop P3-8): the left side's clips in the marks' colours, a gap neutral", () => {
+  const L: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("Intro", "v", 0, 5), clip2("Pier", "v", 5, 8), clip2("Moved", "v", 10, 14), clip2("Same", "v", 14, 18)] };
+  const R: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("Intro", "v", 0, 4), clip2("Moved", "v", 9, 13), clip2("Same", "v", 13, 17)] };
+  const d = clipDiff(L, R);
+  const bars = stripOf(d, alignRows(d), { changed: new Set(["Intro", "Moved"]), inRight: new Set(R.timelineItems.map((x) => x.id)) });
+  assert.deepEqual(bars.map((b) => [b.label ?? null, b.kind]), [["Intro", "changed"], ["Pier", "removed"], [null, "gap"], ["Moved", "changed"], ["Same", "same"]]);
+});
+
+test("stillAt (paused): the left side's slate where it has no shot, and where a moved clip is", () => {
+  const d = clipDiff(LAP_R, LAP_L);
+  const rows = alignRows(d);
+  // the left (now LAP_R) has a gap where the right shows the pier
+  const at = stillAt(d, rows, 12);
+  assert.deepEqual([at.kind, at.slate?.shot, at.slate?.elsewhere ?? null], ["change", "B-roll pier", null]);
+  assert.equal(stillAt(d, rows, 7).kind, "same");
+});
+
+
+test("clipDiff (review of fix/ux2-laptop): a clip split twice on one side is one shot; a clip that survives elsewhere is never another's match by content", () => {
+  const L: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("a", "v", 0, 9, { mediaItemId: "m1" })] };
+  // a new shot before it, then the clip in three parts
+  const R: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("n", "v", 0, 2, { mediaItemId: "m9" }), clip2("a", "v", 2, 5, { mediaItemId: "m1" }), clip2("a2", "v", 5, 8, { mediaItemId: "m1", trimStart: 3 }), clip2("a3", "v", 8, 11, { mediaItemId: "m1", trimStart: 6 })] };
+  const d = clipDiff(L, R);
+  assert.deepEqual(d.b.map((x) => [x.start, x.end, x.item]), [[0, 2, "n"], [2, 11, "a"]]);
+  const s = playSchedule(d);
+  assert.deepEqual(s.map((x) => [x.kind, x.aLen, x.bLen]), [["change", 0, 2], ["same", 9, 9]], "the new shot a slate on the left, then the whole clip in step");
+  // X (left first) survives on the right, moved to the end; V on the right is the same footage, in-point and length
+  const X: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("X", "v", 0, 3, { mediaItemId: "m1" }), clip2("U", "v", 3, 6, { mediaItemId: "m2" }), clip2("Y", "v", 6, 9, { mediaItemId: "m3" }), clip2("Z", "v", 9, 12, { mediaItemId: "m4" })] };
+  const V: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("V", "v", 0, 3, { mediaItemId: "m1" }), clip2("Y", "v", 3, 6, { mediaItemId: "m3" }), clip2("Z", "v", 6, 9, { mediaItemId: "m4" }), clip2("X", "v", 9, 12, { mediaItemId: "m1" })] };
+  const e = clipDiff(X, V);
+  const pairs = e.matches.map(([x, y]) => [e.a[x]!.item, e.b[y]!.item]);
+  assert.ok(!pairs.some(([a, b]) => a === "X" && b === "V"), "X isn't V: " + JSON.stringify(pairs));
+  assert.ok(pairs.every(([a, b]) => a === b), JSON.stringify(pairs));
 });

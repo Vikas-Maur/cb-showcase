@@ -265,15 +265,17 @@ export async function compareShowCommand(ctx: CbContext, a: Record<string, any>)
   const w = await ctx.project.write({ kind: "open", view: "compare", from: l.ref, to: rt.ref }, { actor: ctx.actor });
   const shown = (w as { shown?: { status?: string; why?: string } }).shown;
   const opened = Number((w as { opened?: number }).opened ?? 0);
+  // the app holds the project but its holder didn't answer in time (local's `unanswered`): never "no editor window"
+  const unanswered = (w as { unanswered?: boolean }).unanswered === true;
   const pair = `${capital(l.words)} with ${rt.words}`;
   const head: string[] = [];
-  if (!opened) head.push("No editor window has this project open, so nothing opened. Here is the comparison:", `${pair}: ${count}${n ? ":" : "."}`);
+  if (!opened) head.push(unanswered ? "The editor didn't answer in time, so nothing opened. Here is the comparison:" : "No editor window has this project open, so nothing opened. Here is the comparison:", `${pair}: ${count}${n ? ":" : "."}`);
   else if (!shown) head.push(`Sent to the editor (it didn't say whether it opened): ${pair}. ${count}${n ? ":" : "."}`);
   else if (shown.status === "opened") head.push(`Opened in the editor: ${pair}. ${count}${n ? ":" : "."}`);
   else if (shown.status === "offered" && (shown.why === "viewing" || shown.why === "comparing")) head.push(`The user is already looking at another version. They have a note in the editor with Open; nothing was replaced.`, `${pair}: ${count}${n ? ":" : "."}`);
   else if (shown.status === "offered") head.push(`The user is busy ${shown.why === "playing" ? "playing the edit" : "editing"}, so the comparison didn't open. They have a note in the editor with Open.`, `${pair}: ${count}${n ? ":" : "."}`);
   else head.push(`The comparison can't open in the editor: ${shown.why === "not-here" ? "a side hasn't reached this computer yet" : "the editor refused it"}.`, `${pair}: ${count}${n ? ":" : "."}`);
   const tail = opened && shown?.status === "opened" ? ["The user can press Esc to go back to their edit."] : [];
-  return { json: { from: l.ref, to: rt.ref, between, count: n, rows: rows.map((x) => ({ at: x.at, text: x.text, kind: x.kind })), opened, shown: shown ?? null }, text: [...head, ...(n ? list : []), ...tail].join("\n") };
+  return { json: { from: l.ref, to: rt.ref, between, count: n, rows: rows.map((x) => ({ at: x.at, text: x.text, kind: x.kind })), opened, shown: shown ?? null, ...(unanswered ? { unanswered } : {}) }, text: [...head, ...(n ? list : []), ...tail].join("\n") };
 }
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

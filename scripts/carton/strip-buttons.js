@@ -20,7 +20,8 @@
 // null: Compare in the editor). An older report is a bare panel name: no chip then.
 // A narrow window (QA G4): the chip is the one part of the editor's controls that gives way (patch-carton.js lets that
 // row shrink), so the window's own buttons are never pushed out; below 1000 px, while the chip has its second part, the
-// cut shows as its dot or scissors only, its name in the tooltip.
+// cut shows as its dot or scissors only, its name in the tooltip, and Compare's part says "⇆ Comparing ✕" (laptop: the
+// project tab's ✕ went under "+" at 960 px while comparing; patch-carton.js also keeps the tabs their room).
 module.exports = String.raw`
 const __cbCartonStripIcons = {
   // a stack of versions, not the clock the chat's own "chat history" button uses beside it (UI audit P2-14)
@@ -95,7 +96,8 @@ function __cbCartonStrip({ panel }) {
 // more entry here, and its icon in __cbCartonStripIcons.
 const __cbCartonChipParts = [
   // Compare in the editor (UX v2 N1): "⇆ Comparing “Sent to client” with your edit ✕" (its label says "Comparing")
-  { field: "comparing", icon: "compare", said: "", back: "Done comparing (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
+  // (below 1000 px it shortens to "⇆ Comparing ✕", DESIGN-V2 §1.7's narrowest, so the project tabs keep their room)
+  { field: "comparing", icon: "compare", said: "", short: "Comparing", back: "Done comparing (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
   { field: "viewing", icon: "eye", said: "Looking at ", back: "Back to my edit (Esc)", action: "carton-back", tint: "rgba(138,180,255,0.11)", ink: "#d6e4ff" },
 ];
 const __cbCartonChipPart = (p) => {
@@ -137,7 +139,10 @@ function __cbCartonCutChip({ panel }) {
     // no live region here: the editor's page announces viewing once (DESIGN §7), not this page too
     part ? n.jsxs("span", { ["data-carton-" + part.field]: "", "data-loading": part.loading ? "" : void 0, title: part.label, className: "flex h-7 min-w-0 items-center gap-1.5", style: { paddingLeft: 9, paddingRight: 3, background: part.tint, color: part.ink, boxShadow: "inset 1px 0 0 rgba(255,255,255,0.12)" }, children: [
       part.loading ? __cbCartonSvg("spin", "size-3.5 shrink-0 animate-spin") : __cbCartonSvg(part.icon, "size-3.5 shrink-0"),
-      n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [part.loading ? null : n.jsx("span", { className: "sr-only", children: part.said }, "s"), part.label] }, "label"),
+      // (the short form says the rest to screen readers; the whole label is the tooltip)
+      tight && part.short && !part.loading
+        ? n.jsx("span", { className: "text-ui-sm font-medium", style: clip(100), children: [n.jsx("span", { "aria-hidden": !0, children: part.short }, "w"), n.jsx("span", { className: "sr-only", children: part.label }, "s")] }, "label")
+        : n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [part.loading ? null : n.jsx("span", { className: "sr-only", children: part.said }, "s"), part.label] }, "label"),
       n.jsx("button", { type: "button", "aria-label": part.back, title: part.back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: part.action }), className: w(C, "size-[22px] shrink-0 justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
     ] }, part.field) : null,
   ] });
