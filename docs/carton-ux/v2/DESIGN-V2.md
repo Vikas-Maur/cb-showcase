@@ -117,7 +117,9 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
   - Shots are matched by identity (the clip, which cuts share from the cut they were made from), in order: a trimmed
     clip, or one moved in time, is the same shot on both sides. Only where a clip has no partner by identity (deleted
     and added again) is the same footage, in-point and length the same shot.
-  - A clip split on one side only plays as the whole clip on the other.
+  - A clip split on one side only (once or more) plays as the whole clip on the other.
+  - Where Play both starts before the two timelines have loaded, it goes by core's content shot diff, and moves to the
+    clips' alignment, at the same spot, once they have.
   - A gap where a clip was is no shot: that side shows the slate.
   - When a shot is longer on one side, the other side holds its last frame, and its label says "waiting", until the
     longer one ends.
@@ -435,7 +437,8 @@ back. An agent can't open Compare on a version that hasn't reached this computer
   answers `opened`, `offered` or `refused` (§5.3). It is an ask, not a write: the app's lease holder passes it to the
   pages without the `cb`-call freeze of timeline.tsx and without handing the asker's notices away. While the lease
   says the app holds the project but its holder doesn't answer that moment (busy, or a helper holding the lease for a
-  moment), `cb` asks again for up to 4 s, and never says "No editor window" for an editor that has the project open.
+  moment), `cb` asks again for up to 4 s (each ask again bounded by what is left and the page's own 10 s to answer),
+  and never says "No editor window" for an editor that has the project open.
 - Costs and their rules: §6.
 
 ---
