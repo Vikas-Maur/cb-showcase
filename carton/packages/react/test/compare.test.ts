@@ -272,3 +272,21 @@ test("stillAt (paused): the left side's slate where it has no shot, and where a 
   assert.deepEqual([at.kind, at.slate?.shot, at.slate?.elsewhere ?? null], ["change", "B-roll pier", null]);
   assert.equal(stillAt(d, rows, 7).kind, "same");
 });
+
+
+test("clipDiff (review of fix/ux2-laptop): a clip split twice on one side is one shot; a clip that survives elsewhere is never another's match by content", () => {
+  const L: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("a", "v", 0, 9, { mediaItemId: "m1" })] };
+  // a new shot before it, then the clip in three parts
+  const R: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("n", "v", 0, 2, { mediaItemId: "m9" }), clip2("a", "v", 2, 5, { mediaItemId: "m1" }), clip2("a2", "v", 5, 8, { mediaItemId: "m1", trimStart: 3 }), clip2("a3", "v", 8, 11, { mediaItemId: "m1", trimStart: 6 })] };
+  const d = clipDiff(L, R);
+  assert.deepEqual(d.b.map((x) => [x.start, x.end, x.item]), [[0, 2, "n"], [2, 11, "a"]]);
+  const s = playSchedule(d);
+  assert.deepEqual(s.map((x) => [x.kind, x.aLen, x.bLen]), [["change", 0, 2], ["same", 9, 9]], "the new shot a slate on the left, then the whole clip in step");
+  // X (left first) survives on the right, moved to the end; V on the right is the same footage, in-point and length
+  const X: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("X", "v", 0, 3, { mediaItemId: "m1" }), clip2("U", "v", 3, 6, { mediaItemId: "m2" }), clip2("Y", "v", 6, 9, { mediaItemId: "m3" }), clip2("Z", "v", 9, 12, { mediaItemId: "m4" })] };
+  const V: CompareDoc = { tracks: [{ id: "v" }], timelineItems: [clip2("V", "v", 0, 3, { mediaItemId: "m1" }), clip2("Y", "v", 3, 6, { mediaItemId: "m3" }), clip2("Z", "v", 6, 9, { mediaItemId: "m4" }), clip2("X", "v", 9, 12, { mediaItemId: "m1" })] };
+  const e = clipDiff(X, V);
+  const pairs = e.matches.map(([x, y]) => [e.a[x]!.item, e.b[y]!.item]);
+  assert.ok(!pairs.some(([a, b]) => a === "X" && b === "V"), "X isn't V: " + JSON.stringify(pairs));
+  assert.ok(pairs.every(([a, b]) => a === b), JSON.stringify(pairs));
+});

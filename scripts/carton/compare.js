@@ -204,6 +204,8 @@ export function attachCompare(ui, o) {
   const bridge = o.bridge;
   // the right side's stage: your edit held read-only as it is (no checkout), else that version, read-only
   const showRight = (right) => (right.you && typeof bridge.hold === "function" ? (o.unmark?.(), bridge.hold(projectId)) : o.swap(right.ref));
+  // (set below, with Play both's state)
+  let realign = () => {};
   const load = (c) => {
     const key = `${c.left.ref}|${c.right.ref}`;
     if (data?.key === key) return;
@@ -233,6 +235,9 @@ export function attachCompare(ui, o) {
       let steps = null;
       try { steps = l && r ? clipDiff(l, r) : null; } catch (e) { console.warn("[carton] compare: the clips' alignment:", e?.message ?? e); }
       Object.assign(d, { leftDoc: l, rightDoc: r, steps, stepRows: steps ? alignRows(steps) : null });
+      // Play both already running (or paused) on the content diff (a card's ⇆ Side by side plays at once): on the clips'
+      // alignment from here, at the same spot (review of fix/ux2-laptop #3)
+      if (steps) realign(d);
       notify();
     });
   };
@@ -481,6 +486,21 @@ export function attachCompare(ui, o) {
     both.raf = requestAnimationFrame(stepBoth);
   };
   ui.compareBoth = () => (both.on || both.paused ? { T: both.T, length: playLength(both.sched), at: both.at, paused: !both.on } : null);
+  // The alignment changed under Play both (the clips' own arrived after it started on the content diff): its schedule
+  // made again, the story at the same spot of the side the editor shows, a row's end (`until`) the same way
+  realign = (d) => {
+    if ((!both.on && !both.paused) || !both.sched || data !== d || both.key !== d.key) return;
+    const al = alignmentOf(d);
+    if (!al) return;
+    const side = driven(), old = both.sched;
+    const sideAt = (T) => sidesAt(old, T)[side].t;
+    const t = both.at ? both.at[side].t : sideAt(both.T);
+    both.sched = playSchedule(al.diff, al.rows);
+    if (both.until != null) both.until = storyAt(both.sched, side, sideAt(both.until));
+    both.T = storyAt(both.sched, side, t);
+    both.at = both.on ? null : sidesAt(both.sched, both.T);
+    tellBoth();
+  };
   const playWhenReady = (mine) => {
     const go = () => { if (mine === seq && value && !both.on) ui.comparePlayBoth(); };
     if (data?.status === "ready") return go();

@@ -168,30 +168,36 @@ export function clipDiff(from: CompareDoc, to: CompareDoc, labels: { aLabel?: st
   // a split on this side only: a clip this side alone has that carries on the footage of the clip before it joins it
   const joinSplits = (shots: Shot[], byId: Map<string, CompareItem>, other: Set<string>): Shot[] => {
     const out: Shot[] = [];
+    // the last part joined to each shot so far: a clip split twice carries on from its second part, not its first
+    // (review of fix/ux2-laptop #1)
+    let last: CompareItem | undefined;
     for (const s of shots) {
       const prev = out[out.length - 1];
-      const a = prev?.item ? byId.get(prev.item) : undefined, b = s.item ? byId.get(s.item) : undefined;
-      if (prev && a && b && !other.has(b.id) && Math.abs(prev.end - s.start) <= EPS && carriesOn(a, b)) {
+      const b = s.item ? byId.get(s.item) : undefined;
+      if (prev && last && b && !other.has(b.id) && Math.abs(prev.end - s.start) <= EPS && carriesOn(last, b)) {
         out[out.length - 1] = { ...prev, end: s.end };
+        last = b;
         continue;
       }
       out.push(s);
+      last = b;
     }
     return out;
   };
   const A = joinSplits(clipShots(from), byIdA, idsB), B = joinSplits(clipShots(to), byIdB, idsA);
   const key = (s: readonly Shot[], i: number) => s[i]!.item ?? `gap:${i ? (s[i - 1]!.item ?? "") : ""}`;
   const pairs = lcs(A.map((_, i) => key(A, i)), B.map((_, i) => key(B, i)));
-  // the fallback: inside each changed stretch, the same footage, in-point and length
-  const content = (s: Shot, byId: Map<string, CompareItem>) => {
+  // the fallback: inside each changed stretch, the same footage, in-point and length, only for clips the other side
+  // hasn't by identity (one that survives elsewhere there is that clip moved, never another's match: review #2)
+  const content = (s: Shot, byId: Map<string, CompareItem>, other: Set<string>) => {
     const it = s.item ? byId.get(s.item) : undefined;
-    return it?.mediaItemId ? `${it.mediaItemId}|${Math.round((it.trimStart ?? 0) * 20)}|${Math.round((s.end - s.start) * 20)}` : null;
+    return it?.mediaItemId && !other.has(it.id) ? `${it.mediaItemId}|${Math.round((it.trimStart ?? 0) * 20)}|${Math.round((s.end - s.start) * 20)}` : null;
   };
   const matches: [number, number][] = [];
   let i = 0, j = 0;
   for (const [mi, mj] of [...pairs, [A.length, B.length] as [number, number]]) {
     if (mi > i && mj > j) {
-      const ka = A.slice(i, mi).map((s) => content(s, byIdA)), kb = B.slice(j, mj).map((s) => content(s, byIdB));
+      const ka = A.slice(i, mi).map((s) => content(s, byIdA, idsB)), kb = B.slice(j, mj).map((s) => content(s, byIdB, idsA));
       for (const [x, y] of lcs(ka.map((k, n) => k ?? `a${n}`), kb.map((k, n) => k ?? `b${n}`))) matches.push([i + x, j + y]);
     }
     if (mi < A.length) matches.push([mi, mj]);

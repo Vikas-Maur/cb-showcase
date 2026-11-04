@@ -109,7 +109,7 @@ async function mount(o = {}) {
     reportPanel: (panel, live, chip) => did.reports.push({ panel, ...chip }),
     preview: async (_p, ref) => { did.previews.push(ref); },
     hold: async () => { did.holds++; },
-    compareDoc: async (_p, ref) => { did.docs.push(ref); const docs = o.docs ?? DOCS; return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? docs.right : docs.left; },
+    compareDoc: async (_p, ref) => { did.docs.push(ref); if (o.docsDelay) await sleep(o.docsDelay); const docs = o.docs ?? DOCS; return ref == null || ref === ui.cuts().find((c) => c.current)?.head ? docs.right : docs.left; },
     prefetch: () => {},
     libraryAside: (on) => did.aside.push(on),
     togglePlay: () => { if (playing) { t = now(); playing = false; } else { since = Date.now() + (o.startLag ?? 0); playing = true; } did.plays++; for (const f of [...timeline]) f(); },
@@ -1131,5 +1131,21 @@ test("laptop P3-12: cb compare --show from the person's own terminal is theirs: 
     const t = m.toast();
     assert.ok(t, "a toast");
     assert.doesNotMatch(t.textContent, /Terminal/);
+  } finally { await m.done(); }
+});
+
+
+test("review of fix/ux2-laptop #3: Play both started before the timelines arrived goes on in step by the clips once they do", opt, async () => {
+  const m = await mountLaptop({ docsDelay: 400 });
+  try {
+    await m.cmd("carton-history");
+    // a card's ⇆ Side by side: Compare opens playing, at once (the change list here, the timelines still loading)
+    await m.open(m.older().ref, null, { play: true, at: 3.2 });
+    assert.ok(m.page().compareBoth(), "Play both runs");
+    await act(async () => { await sleep(1300); });
+    await m.settle();
+    const at = m.page().compareBoth().at;
+    assert.equal(at.stretch.kind, "same", "the intro in step by the clips now: " + JSON.stringify(at));
+    assert.equal(at.b.hold, true, "the right side's shorter intro waits");
   } finally { await m.done(); }
 });

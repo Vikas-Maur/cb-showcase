@@ -35,6 +35,8 @@ import { nudgeHolder } from "./client.ts";
  * holds it for a moment (open.ts `write`): the app's patient pings, then a lease taken back, fit in it.
  */
 export const SHOW_ASK_MS = 4000;
+/** The page's own time to answer an ask (the worker waits 10 s for it: carton-node.js COMPARE_ANSWER_MS), and a little. */
+export const SHOW_ANSWER_MS = 10_500;
 
 export interface LocalOptions {
   /** The project bundle directory (holds project.json). */
@@ -164,7 +166,8 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       // opening a view in the editor needs the app's holder: never a helper (it has no pages to tell), and with no
       // holder answering, no window has the project open (Carton UX v2, `cb compare --show`)
       const show = op.kind === "open";
-      const send = () => submit("carton.commit", req, {
+      const send = (callTimeoutMs?: number) => submit("carton.commit", req, {
+        ...(callTimeoutMs !== undefined ? { callTimeoutMs } : {}),
         lease,
         // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
         // sharing starts the pusher, so it always runs on a lease holder (a helper when the app is closed)
@@ -189,7 +192,9 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
           busy = r.via !== "holder" && (await appHolds());
           if (!busy && r.via !== "holder") break;
           await new Promise((ok) => setTimeout(ok, 200));
-          r = await send();
+          // each ask again within what is left, plus the page's own time to answer (a holder that takes it and never
+          // answers no longer holds cb past both: review of fix/ux2-laptop #4)
+          r = await send(Math.max(250, end - Date.now()) + SHOW_ANSWER_MS);
         }
         if (r.via !== "holder") return { status: "confirmed", seq: 0, ref: null, notices: [], opened: 0, ...(busy ? { unanswered: true } : {}) };
       }

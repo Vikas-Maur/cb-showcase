@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { Carton } from "@carton/core";
 import type { Actor } from "@carton/core";
 import { createMemoryStore } from "@carton/store-memory";
-import { openLocal } from "../src/open.ts";
+import { openLocal, SHOW_ANSWER_MS, SHOW_ASK_MS } from "../src/open.ts";
 import { Holder, holderSocketPath } from "../src/holder.ts";
 import { actorKey, runWrite } from "../src/writes.ts";
 import type { ViewPrinter } from "../src/writes.ts";
@@ -89,6 +89,32 @@ test("open: no app holds the project: 'no editor window' at once; an app that ne
     assert.deepEqual([silent.opened, silent.unanswered], [0, true]);
     assert.ok(Date.now() - t0 >= 3000, `asked again for a while: ${Date.now() - t0} ms`);
   } finally {
+    await cb.close();
+  }
+});
+
+
+test("open (review of fix/ux2-laptop #4): an ask again that the app's holder takes and never answers holds cb no longer than what was left and the page's time", { timeout: 60_000 }, async () => {
+  const { dir, projectId } = bundle("open-view-hung");
+  const cb = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: terminal });
+  let calls = 0;
+  // the app's holder: the first ask refused (busy), the next taken and never answered
+  const app = new Holder({
+    lease: cb.lease,
+    kind: "worker",
+    socketPath: holderSocketPath(dirname(cb.dbPath), "worker"),
+    engine: { serve: () => (++calls === 1 ? Promise.reject(Object.assign(new Error("busy a moment"), { code: "BUSY" })) : new Promise(() => {})) },
+  });
+  try {
+    assert.equal(await app.start(), true);
+    const t0 = Date.now();
+    const r = (await cb.write(ask, { actor: terminal })) as { opened?: number; unanswered?: boolean };
+    const ms = Date.now() - t0;
+    assert.ok(calls >= 2, `asked again: ${calls}`);
+    assert.deepEqual([r.opened, r.unanswered], [0, true]);
+    assert.ok(ms < SHOW_ASK_MS + SHOW_ANSWER_MS + 2000, `held ${ms} ms (the RPC's own 20 s was the bound before)`);
+  } finally {
+    await app.retire("test over");
     await cb.close();
   }
 });
