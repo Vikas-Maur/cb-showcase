@@ -600,8 +600,10 @@ What changes with it on:
     with History and the chat open), a click on Side by side closes History and shows it; otherwise its tooltip says
     what to close (History, the chat, the Library) or to widen the window. Without a second player it shows only Flip.
     If the second player doesn't start within 2 s, Compare shows Flip and says so once; Side by side and Wipe stay
-    greyed, and picking one tries again. The 2 s count only while the window is on screen, so a minimised window
-    doesn't fall back to Flip.
+    greyed, and picking one tries again. The 2 s count only while the window is on screen and the other side shows a
+    picture, so a minimised window, or a comparison with the start of History (a slate on the left), doesn't fall back
+    to Flip. Under 360 px Compare is Flip only, but Side by side is still offered when closing History alone makes the
+    room. Play both run to its end plays again from 0:00 with one click.
   - **The timeline** shows your edit with marks on its clips: green for added, a red dashed ghost where a removed clip
     left a gap (a seam where the rest moved up), amber with "←4 s" for moved, and amber for trimmed or changed. Above the
     tracks is a strip of the other version on its own time, its clips in the same colours (a gap left plain).
