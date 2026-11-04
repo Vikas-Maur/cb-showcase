@@ -42,11 +42,13 @@ const METHODS = [
   "find", "landmarks", "restoreClip", "landmarkPicture", "saveLandmarkPicture", "bringBackChoices", "align",
   // Carton UX v2 (N2c): another cut's History, for Compare with… on any cut
   "cutHistory",
+  // a person's group of edits, said by what it came to (Windows check of b14f8a4e)
+  "netWords",
 ] as const;
 type Method = (typeof METHODS)[number];
 
 export type ServerMessage =
-  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean; conflictRef?: boolean } }
+  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean; conflictRef?: boolean; netWords?: boolean } }
   | { t: "topic"; topic: SmallTopic; value: unknown; actors?: Actor[] }
   | { t: "history"; length: number; rows: [number, Version][]; actors?: Actor[] }
   | { t: "ret"; id: number; ok: true; value: unknown }
@@ -136,7 +138,7 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
     sentRev = ui.history().revision();
     const actors: Actor[] = [];
     actorsIn([ui.me(), topics, sent], sentActors, actors, ui);
-    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function", conflictRef: typeof ui.conflictRef === "function" } });
+    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function", conflictRef: typeof ui.conflictRef === "function", netWords: typeof ui.netWords === "function" } });
     for (const t of SMALL)
       offs.push(
         ui.subscribe(t, () => {
@@ -363,6 +365,9 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         else delete ui.renameCut;
         if (m.can.conflictRef) ui.conflictRef = (id, side) => call("conflictRef", id, side);
         else delete ui.conflictRef;
+        // (a served side without it, an older worker: a group of edits reads its newest's sentence, as before)
+        if (m.can.netWords) ui.netWords = (a, b) => call("netWords", a, b);
+        else delete ui.netWords;
         for (const t of [...SMALL, "history" as const]) hub.notify(t);
         markReady();
         break;

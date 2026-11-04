@@ -448,5 +448,9 @@ export class ProjectRoom {
   }
 }
 
-/** What of a connection's state the attachment must keep up with (all of it: a wake restores only the attachment). */
-const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.writeLimit ? 1 : 0}|${s.comments ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}|${JSON.stringify(s.identity ?? null)}`;
+/**
+ * What of a connection's state the attachment must keep up with (all of it: a wake restores only the attachment). A
+ * new field of ConnectionState belongs here too (fix/ux2-open: `landmarks`, asked for after the welcome, was lost at the
+ * next wake, and the socket stopped hearing of teammates' landmarks).
+ */
+const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.writeLimit ? 1 : 0}|${s.comments ? 1 : 0}|${s.landmarks ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}|${JSON.stringify(s.identity ?? null)}`;

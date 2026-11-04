@@ -14,7 +14,7 @@
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
 import type { FieldSpec, Schema } from "./schema.ts";
-import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
+import type { KeyframeData, LandmarksReplyMsg, Person, PersonRids, PresenceState, SharedLandmark } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
@@ -22,7 +22,7 @@ import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type F
 import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type TopCheck, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { FIND_FIELDS, FindIndex, dayWords, findWords, hayOf, hitsIn, queryWords, snippetOf, type FindField, type FindMatch, type FindOptions, type FindResult, type Words } from "./find.ts";
-import { LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
+import { LANDMARK_AT, LANDMARK_KINDS, LANDMARK_ORDER, LANDMARK_PREFIX, LANDMARK_TABLE, RECORDED_KINDS, SHARED_KINDS, SHARE_BEFORE, pictureKey, type Landmark, type LandmarkKind, type LandmarkOptions, type LandmarkRow, type MarkOptions, type RecordedLandmarkKind, type BeforeWhat } from "./landmarks.ts";
 import { bringBack, ChangedSince, clipToken, partsDiffer, recordName, type BringBackHistory, type BringBackChoices, type BringBackOptions, type BroughtBack } from "./bring-back.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import { escapeSegment, unescapeSegment } from "./engine/json.ts";
@@ -179,6 +179,10 @@ export interface Credit {
  */
 export const PERSON = "person";
 const withoutOwner = ({ owner: _o, ...a }: Actor): Actor => a;
+/** A landmark's time: a moment a Date can say (the server refuses others; a row from elsewhere is checked again). */
+const landmarkTime = (at: unknown): at is number => typeof at === "number" && Number.isFinite(at) && at >= 0 && at <= 8.64e15;
+/** A recorded Exported or Sent as the sync server keeps it (`LandmarkRow` with its `id`). */
+const sharedMark = (r: LandmarkRow, seq: number): SharedLandmark => ({ id: r.id!, kind: r.kind as SharedLandmark["kind"], seq, at: r.at, by: r.by ?? { kind: "human", id: PERSON }, ...(r.label ? { label: r.label } : {}) });
 /** The recorded author of a project's import (its hash covers it: never changed). `log()` tells it as the person. */
 const IMPORTER: Actor = { kind: "system", id: "import", name: "Import" };
 export type { Person, PersonRids } from "./sync/messages.ts";
@@ -1111,7 +1115,7 @@ class CartonImpl implements Carton {
     };
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
-    for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
+    for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) this.#named(h, nodeId(e.key[0] as string, e.key[1] as number), e.value);
     const pins = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
@@ -1934,18 +1938,21 @@ class CartonImpl implements Carton {
     const log = this.#h.changes(cut);
     const out: Landmark[] = [];
     const ref = (seq: number): StateRef => ({ branchId: cut, seq, pending: [] });
-    const add = (kind: LandmarkKind, seq: number, at: number, by: Actor | null, extra: Partial<Landmark> = {}, recorded = false) => {
+    const add = (kind: LandmarkKind, seq: number, at: number, by: Actor | null, extra: Partial<Landmark> = {}, recorded = false, shared = false) => {
       if (!want.has(kind) || seq >= before || seq < 0 || seq > log.length) return;
       const r = ref(seq);
-      const personal = kind === "start" || kind === "before";
-      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, change: seq > 0 ? log[seq - 1]?.id ?? null : null, at, by, recorded, personal, local: personal || recorded, picture: pictureKey(r), ...extra });
+      const personal = kind === "start" || (kind === "before" && !SHARE_BEFORE);
+      out.push({ id: `${kind}:${cut}@${seq}${recorded ? `:${at}` : ""}`, kind, ref: r, change: seq > 0 ? log[seq - 1]?.id ?? null : null, at, by, recorded, personal, local: personal || (recorded && !shared), picture: pictureKey(r), ...extra });
     };
-    // recorded by the app (mark): this machine's own, from the local ephemeral table
+    // recorded by the app (mark), from the local ephemeral table: this machine's own, and a shared cut's teammates'
+    // Exported and Sent (`shared`), each told by the person behind the replica that marked it (its id's rid)
     if (RECORDED_KINDS.some((k) => want.has(k))) {
       for (const { key, value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] })) {
         const seq = Number(key[2]);
         if (!value || !Number.isInteger(seq) || !RECORDED_KINDS.includes(value.kind)) continue;
-        add(value.kind, seq, value.at, value.by ?? null, value.label ? { label: value.label } : {}, true);
+        if (!landmarkTime(value.at)) continue;
+        // (a teammate's, under its id too: two people can mark one version at the same moment)
+        add(value.kind, seq, value.at, value.id ? this.#who(value.by ?? null, value.id) : value.by ?? null, { ...(value.label ? { label: value.label } : {}), ...(key.length > 5 && value.id ? { id: `${value.kind}:${cut}@${seq}:${value.at}:${value.id}` } : {}) }, true, value.shared !== undefined);
       }
     }
     // read from the history: agent turns (a turn's newest version), named versions, safety points
@@ -1962,11 +1969,14 @@ class CartonImpl implements Carton {
         add("turn", s, c.at, this.#who(c.author, c.id), name ? { label: name } : {});
       } else if (name && !isAgent(c.author) && !(c.kind === "undo" && /^Undo turn /.test(name))) {
         const n = names.get(nodeId(cut, s))!;
-        add("named", s, n.at ?? c.at, n.by ? this.#who(n.by, null) : this.#who(c.author, c.id), { label: name });
+        // when it was named (a name given with its edit: the edit's time), never when this store was loaded
+        add("named", s, this.#nameAt.get(nodeId(cut, s)) ?? c.at, n.by ? this.#who(n.by, null) : this.#who(c.author, c.id), { label: name });
       }
       // a safety point: the version just before a restore, a fold in, an undo of a turn or a bring-back made here
-      const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`);
-      if (!mine) continue;
+      // (this store's replicas, or any the server binds to this person: a shared cut's `cb` restore, whose row the
+      // lease holder confirmed, so `cb`'s replica id was never saved here as this store's)
+      const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`) || (!!this.#me && this.#personOf(c.id)?.id === this.#me.id);
+      if (!mine && !SHARE_BEFORE) continue;
       const pair = s > 1 && completedAt(log, s - 1);
       const why: BeforeWhat | null = c.kind === "restore" ? (c.restoreRecord ? "bring-back" : "restore")
         : c.mergeOf || pair ? "fold"
@@ -2010,10 +2020,13 @@ class CartonImpl implements Carton {
       for (const { value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut, seq] })) if (value?.kind === kind) return null;
     }
     const by = opts.by ?? this.#actor();
-    const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}) };
+    const row: LandmarkRow = { kind, at, by, ...(opts.label ? { label: String(opts.label).slice(0, 120) } : {}), ...(SHARED_KINDS.includes(kind) ? { id: this.#landmarkId() } : {}) };
     await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, seq, kind, at], value: row }]);
     this.#marks++;
     this.#emit({ type: "landmarks", branchId: cut });
+    // a shared cut's teammates see it (Exported, Sent) once the server has it; offline, or on a server that doesn't keep
+    // landmarks, it waits here and goes at the next connection's catch-up (#takeLandmarks)
+    if (row.id) this.#shared.get(cut)?.sendLandmarks({ type: "landmark", branchId: cut, mark: sharedMark(row, seq) });
     const r: StateRef = { branchId: cut, seq, pending: [] };
     return { id: `${kind}:${cut}@${seq}:${at}`, kind, ref: r, at, by: this.#who(by, null), recorded: true, personal: kind === "start", local: true, picture: pictureKey(r), ...(row.label ? { label: row.label } : {}) };
   }
@@ -2046,11 +2059,12 @@ class CartonImpl implements Carton {
       return { doc: p.doc, ...(p.intent ? { intent: p.intent } : {}), extra: { restoreOf: t.of, restoreRecord: p.brought.record, ...(p.brought.name ? { restoreName: p.brought.name } : {}) } };
     };
     if (this.#isShared(cut)) {
-      // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); the server keeps no
-      // restoreOf, so History reads it as a restore there, as it does a shared cut's restore
+      // queued like any change (a teammate's newer edit of it becomes a card as it is rebased); its restoreOf and clip
+      // go with the push, so a teammate's History reads "Brought back “Intro” from …" too (a server that doesn't keep
+      // them drops them: there it reads as a restore, as it always did)
       const r = await this.#planShared(cut, opts.id, (tail) => {
         const p = plan(tail.states.at(-1) ?? this.#h.viewOf(this.#h.head(cut))!);
-        return { doc: p.doc, author, kind: "restore", ...(p.intent ? { intent: p.intent } : {}) };
+        return { doc: p.doc, author, kind: "restore", ...(p.intent ? { intent: p.intent } : {}), extra: p.extra };
       });
       return { ...r, brought: brought ?? (await this.#broughtAgain(ref, coll, id, cut, r)) };
     }
@@ -2354,6 +2368,102 @@ class CartonImpl implements Carton {
     // knowledge, not history: a write that fails is learnt again at the next welcome
     this.#peopleSaved = this.#peopleSaved.then(() => this.store.write(writes)).catch(() => {});
     this.#emit({ type: "people" });
+  }
+  /**
+   * When each version was named, as stored (`T.names`' `at`): History stamps a name with its own clock when the store
+   * is loaded, so after a restart every name read as given then (a Named landmark's time, `cb history --landmarks`).
+   */
+  #nameAt = new Map<NodeId, number>();
+  #named(h: History, node: NodeId, n: { name: string; at?: number; by?: Actor }): void {
+    h.nameVersion(node, n.name, n.by);
+    if (typeof n.at === "number" && Number.isFinite(n.at)) this.#nameAt.set(h.canon(node), n.at);
+  }
+  /** A shared landmark's id (`sync.SharedLandmark.id`): this replica's rid, so a teammate tells it by person. */
+  #landmarkId(): string {
+    return `${this.#rid}.L${Date.now().toString(36)}${randomHex(3)}`;
+  }
+  /** Shared landmarks' store reads and writes, one at a time (the sync client's callbacks don't wait). */
+  #landmarksDone: Promise<void> = Promise.resolve();
+  #landmarkStep(cut: string, fn: () => Promise<void>): Promise<void> {
+    const p = this.#landmarksDone.then(() => (this.#closing || !this.#shared.has(cut) ? undefined : fn()));
+    // knowledge, not history: a step that fails is done again at the next connection's catch-up
+    this.#landmarksDone = p.catch(() => {});
+    return this.#landmarksDone;
+  }
+  /** A connection whose server keeps shared landmarks caught up: ask for the cut's, from where this store read to. */
+  #landmarksReady(cut: string): Promise<void> {
+    return this.#landmarkStep(cut, async () => {
+      const since = (await this.store.get<number>(LANDMARK_TABLE, [LANDMARK_AT, cut])) ?? 0;
+      this.#shared.get(cut)?.sendLandmarks({ type: "landmarks", branchId: cut, since });
+    });
+  }
+  /**
+   * The server's landmarks (a catch-up page, or new ones as they are kept, this computer's too): into the same table as
+   * this computer's (`shared` set), with the read position. Once caught up, this computer's own that the server doesn't
+   * have yet (made offline, before the cut was shared, or before the server kept landmarks) go.
+   */
+  #takeLandmarks(cut: string, m: LandmarksReplyMsg): Promise<void> {
+    return this.#landmarkStep(cut, async () => {
+      const sc = this.#shared.get(cut)!;
+      // where this store read to in the server's stream, and that stream's generation (a number alone: none told yet)
+      const pos = (await this.store.get<number | { n: number; gen?: string }>(LANDMARK_TABLE, [LANDMARK_AT, cut])) ?? 0;
+      const at = typeof pos === "number" ? pos : pos.n, gen = typeof pos === "number" ? undefined : pos.gen;
+      const head = Number.isInteger(m.head) ? m.head : 0;
+      const all = await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] });
+      // this computer's own are under mark()'s 5-part keys; a teammate's under 6, its id last (two people can mark one
+      // version at the same moment: review of fix/ux2-open #6)
+      const mine = (key: StoreKey) => key.length === 5;
+      // the server's landmarks started over (its storage lost or replaced: behind this store, or another generation):
+      // this computer's own go again, with the ids they keep, and the stream is read from its start (review #2)
+      if ((m.reply && head < at) || (gen !== undefined && typeof m.gen === "string" && m.gen !== gen)) {
+        const again: StoreWrite[] = [{ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: 0 }];
+        for (const { key, value } of all)
+          if (value && mine(key) && value.shared !== undefined) {
+            const { shared: _was, ...rest } = value;
+            again.push({ table: LANDMARK_TABLE, key, value: rest });
+          }
+        await this.store.write(again);
+        sc.sendLandmarks({ type: "landmarks", branchId: cut, since: 0 });
+        return;
+      }
+      const byId = new Map<string, { key: StoreKey; value: LandmarkRow }>();
+      for (const e of all) if (e.value?.id) byId.set(e.value.id, e as { key: StoreKey; value: LandmarkRow });
+      const writes: StoreWrite[] = [];
+      let next = at, gap = false;
+      for (const r of Array.isArray(m.rows) ? m.rows : []) {
+        if (!r || !SHARED_KINDS.includes(r.kind) || !Number.isInteger(r.seq) || r.seq < 0 || !landmarkTime(r.at) || typeof r.id !== "string" || !Number.isInteger(r.n) || typeof r.by?.kind !== "string" || typeof r.by.id !== "string") continue;
+        const had = byId.get(r.id);
+        const row: LandmarkRow = had ? { ...had.value, shared: r.n! } : { kind: r.kind, at: r.at, by: r.by, ...(typeof r.label === "string" && r.label ? { label: r.label.slice(0, 120) } : {}), id: r.id, shared: r.n! };
+        writes.push({ table: LANDMARK_TABLE, key: had?.key ?? [LANDMARK_PREFIX, cut, r.seq, r.kind, r.at, r.id], value: row });
+        if (!m.reply && r.n! > next + 1) gap = true; // one told live before one we never got: read the stream again
+        else next = Math.max(next, r.n!);
+      }
+      if (m.reply) next = m.more ? next : Math.max(next, head);
+      const refused = new Set(Array.isArray(m.refused) ? m.refused : []);
+      for (const { key, value } of all) if (value?.id && refused.has(value.id) && mine(key) && value.shared === undefined) writes.push({ table: LANDMARK_TABLE, key, value: { ...value, refused: true } });
+      const nowGen = typeof m.gen === "string" ? m.gen : gen;
+      if (next !== at || nowGen !== gen) writes.push({ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: nowGen !== undefined ? { n: next, gen: nowGen } : next });
+      if (writes.length) await this.store.write(writes);
+      if (writes.some((w) => w.key[0] === LANDMARK_PREFIX)) {
+        this.#marks++;
+        this.#emit({ type: "landmarks", branchId: cut });
+      }
+      if (gap || (m.reply && m.more)) return void sc.sendLandmarks({ type: "landmarks", branchId: cut, since: next });
+      if (!m.reply || m.more) return;
+      // caught up: this computer's own the server doesn't have, each with the id it keeps (made now for a row from
+      // before ids, and stored first, so a retry is the same landmark)
+      const send: SharedLandmark[] = [], ids: StoreWrite[] = [];
+      const got = new Set<string>(m.rows.map((r) => r?.id));
+      for (const { key, value } of all) {
+        const seq = Number(key[2]);
+        if (!value || !mine(key) || !SHARED_KINDS.includes(value.kind) || value.shared !== undefined || value.refused || (value.id !== undefined && got.has(value.id)) || !Number.isInteger(seq)) continue;
+        const row = value.id ? value : { ...value, id: this.#landmarkId() };
+        if (!value.id) ids.push({ table: LANDMARK_TABLE, key, value: row });
+        send.push(sharedMark(row, seq));
+      }
+      if (ids.length) await this.store.write(ids);
+      for (const mark of send) sc.sendLandmarks({ type: "landmark", branchId: cut, mark });
+    });
   }
   /**
    * The change whose author a credit names. A fold credits a record to who last changed it on the cut folded in
@@ -2712,12 +2822,13 @@ class CartonImpl implements Carton {
     await this.#whole();
     const by = this.#actor(opts.author);
     let node!: NodeId;
-    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, by), {
+    const at = this.#opts.clock?.() ?? Date.now();
+    await this.#mutate(undefined, () => this.#named(this.#h, (node = this.#node(ref)), { name, at, by }), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at, by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -2726,17 +2837,23 @@ class CartonImpl implements Carton {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const target = () => (typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref);
-    this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, () => ({ doc: this.#h.restoreTarget(target()), author: this.#actor(opts.author), kind: "restore" }));
-    // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
-    // its head as of now (inside the mutation, after the refresh), never a cached one
     // the restore records which version it brought back (`restoreOf`, a node id; not hashed), so History says which
     // ("Restored the 11:02 am version", UX redesign 0.2); a held state (a pin's header) is none
+    const ofIn = (t: StateRef | string) => (typeof t === "string" ? (/^[^\s~]+@\d+$/.test(t) ? t : null) : t && !t.pending?.length && typeof t.branchId === "string" ? nodeId(t.branchId, t.seq) : null);
+    this.#writable(cut);
+    // a shared cut's goes with the push (Carton UX v2), so a teammate's History says which version too
+    if (this.#isShared(cut))
+      return this.#planShared(cut, opts.id, () => {
+        const t = target(), of = ofIn(t);
+        return { doc: this.#h.restoreTarget(t), author: this.#actor(opts.author), kind: "restore", ...(of ? { extra: { restoreOf: this.#h.canon(of) } } : {}) };
+      });
+    // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
+    // its head as of now (inside the mutation, after the refresh), never a cached one
     return this.#mutate(
       undefined,
       () => {
         const t = target();
-        const of = typeof t === "string" ? (/^[^\s~]+@\d+$/.test(t) ? t : null) : t && !t.pending?.length && typeof t.branchId === "string" ? nodeId(t.branchId, t.seq) : null;
+        const of = ofIn(t);
         if (!of || this.#h.confirmedById(opts.id)) return this.#h.restore(cut, t, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) });
         return this.#h.commit(cut, { doc: this.#h.restoreTarget(t), author: this.#actor(opts.author), kind: "restore", allowEmpty: true, ...(opts.id ? { id: opts.id } : {}), extra: { restoreOf: this.#h.canon(of) } });
       },
@@ -2988,7 +3105,7 @@ class CartonImpl implements Carton {
         }
         this.#h.importFull({ format: "carton-full/1", projectId: meta.projectId, branches: taken });
         for (const b of taken) took.push({ id: b.id, from: 0 });
-        for (const n of names) if (took.some((t) => t.id === n.key[0])) this.#h.nameVersion(nodeId(n.key[0] as string, n.key[1] as number), n.value.name, n.value.by);
+        for (const n of names) if (took.some((t) => t.id === n.key[0])) this.#named(this.#h, nodeId(n.key[0] as string, n.key[1] as number), n.value);
       },
       {
         extra: () => {
@@ -3053,7 +3170,7 @@ class CartonImpl implements Carton {
       url: sync.url,
       token: sync.token,
       schemaVersion: this.#opts.adapter.schemaVersion,
-      client: { adoptPayload: () => this.#adoptPayload(cut), identity: () => this.#me, onPeople: (p) => this.#takePeople(p), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
+      client: { adoptPayload: () => this.#adoptPayload(cut), identity: () => this.#me, onPeople: (p) => this.#takePeople(p), landmarks: { ready: () => void this.#landmarksReady(cut), take: (m) => void this.#takeLandmarks(cut, m) }, ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
     });
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row
@@ -3735,7 +3852,7 @@ class CartonImpl implements Carton {
    * so ⌘Z right after an edit undoes it) and queued as an ordinary change with its intent, kind and `reverts` under a
    * stable id: pending, then confirmed or rebased like any edit, and credited to its author.
    */
-  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra" | "inverse"> & { extra?: Planned["extra"]; inverse?: true } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
+  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra" | "inverse"> & { extra?: Planned["extra"] | HistoryFields; inverse?: true } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
     const id = given ?? `${this.#rid}.${++this.#n}`;
     const { sc, done } = await this.#prepShared(cut, id);
     if (done) return done;

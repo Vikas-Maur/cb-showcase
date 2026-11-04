@@ -829,6 +829,12 @@ export interface CartonUi {
    * shot”", "“Intro” ends at 0:05 here, 0:03 in “30s Instagram cut”"), `a` the left side.
    */
   changes(a: string, b: string, opts?: { between?: "versions" | "cuts" }): Promise<readonly Change[]>;
+  /**
+   * What the changes from `a` to `b` came to, in one line as a version's title says it ("Moved “B2” and trimmed
+   * “Intro”"), and how many: a person's group of edits in History (from before its oldest to its newest), so its title
+   * never states a step the group undid. 0 changes: the group changed nothing in the end. Optional.
+   */
+  netWords?(a: string, b: string): Promise<{ summary: string; changes: number }>;
   /** What one History row did (a turn: all of it), with each change's author and time: the version card's rows. */
   changesIn(versionId: string): Promise<readonly Change[]>;
   /**

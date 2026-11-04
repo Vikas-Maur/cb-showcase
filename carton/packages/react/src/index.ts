@@ -63,7 +63,7 @@ export {
   openCutsMenu,
   type QueuedSwitch,
 } from "./cuts.ts";
-export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";
+export { FoldInDialog, type FoldInDialogProps, type FoldTicks } from "./components/FoldInDialog.ts";
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
 export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
 export { cardSentences, conflictWords, keptText, pickUndoneText, type CardSentences, type CardValueWords, type ConflictCardWords, type SideSentence } from "./conflict-words.ts";

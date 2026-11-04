@@ -3,15 +3,18 @@
 //
 // Two sources, one list:
 // - recorded: what History can't know by itself, kept outside the history bundle in this store's local `ephemeral`
-//   table (key `["landmark", cut, seq, kind, at]`), never exported with history and never synced yet: an export of the
-//   video (`exported`), a version shared, sent for review or published (`sent`), and how it was when the project was
-//   opened or after an hour away (`start`). The app records them (`Carton.mark`), off the save path.
+//   table (key `["landmark", cut, seq, kind, at]`), never exported with history: an export of the video (`exported`), a
+//   version shared, sent for review or published (`sent`), and how it was when the project was opened or after an hour
+//   away (`start`). The app records them (`Carton.mark`), off the save path. On a shared cut, Exported and Sent go to
+//   the sync server (`SHARED_KINDS`, sync `landmark`), which keeps them beside the cut's rows and tells every teammate
+//   (`sync.SharedLandmark`): theirs arrive in the same table, `shared` set. Never an edit: no row, version or undo step.
 // - derived from the history itself, so nothing is written: named versions (`named`), agent turns (`turn`, a turn's
 //   newest version), a Published cut's version (`sent`), and `before`: the version just before a restore, a fold in,
 //   an undo of a turn or a bring-back made on this replica.
 //
 // DESIGN-V2 §2.1: Start and Before are personal (only their person sees them: `personal`); the rest are everyone's.
-// Exported and Sent are recorded on this computer (`local`) until the sync server carries landmarks.
+// Exported and Sent are on this computer only (`local`) until the server has them (a cut not shared, a server that
+// doesn't keep landmarks yet, offline).
 import type { Actor, NodeId, StateRef } from "./types.ts";
 
 export type LandmarkKind = "exported" | "sent" | "named" | "turn" | "start" | "before";
@@ -21,6 +24,14 @@ export const RECORDED_KINDS: readonly RecordedLandmarkKind[] = ["exported", "sen
 export const LANDMARK_KINDS: readonly LandmarkKind[] = ["exported", "sent", "named", "turn", "start", "before"];
 /** Which one a row shows when a version is several (DESIGN-V2 §2.1): Named, Sent, Exported, Before, Start, then a turn. */
 export const LANDMARK_ORDER: readonly LandmarkKind[] = ["named", "sent", "exported", "before", "start", "turn"];
+/** The recorded kinds a shared cut's teammates see (DESIGN-V2 §2.1): sent to the sync server. Start never is. */
+export const SHARED_KINDS: readonly RecordedLandmarkKind[] = ["exported", "sent"];
+/**
+ * Whether teammates see each other's Before landmarks (DESIGN-V2 §7, open question 2): Before is read from the
+ * history, whose restores, folds, undos of a turn and bring-backs reach teammates with their fields, so this one switch
+ * shows a teammate's too (theirs then name them, not "Kept for you"). Default: only the person who did it.
+ */
+export const SHARE_BEFORE = false;
 
 /** What came right after a `before` landmark. */
 export type BeforeWhat = "restore" | "fold" | "undo-turn" | "bring-back";
@@ -100,6 +111,18 @@ export interface LandmarkRow {
   at: number;
   by: Actor | null;
   label?: string;
+  /** A shared kind's id (`sync.SharedLandmark.id`: this replica's rid, so a teammate names its person), made once. */
+  id?: string;
+  /** The server has it: its place in the cut's landmark stream. A teammate's always; this computer's once sent. */
+  shared?: number;
+  /** The server won't keep it (a viewer's, a version it doesn't have): never sent again. */
+  refused?: true;
 }
 export const LANDMARK_TABLE = "ephemeral";
 export const LANDMARK_PREFIX = "landmark";
+/**
+ * A shared cut's read position in the server's landmark stream (key `["landmark-at", cut]`, a number), in the same
+ * table as the landmarks, so a copy that leaves them out (a `.cbproj`'s local tables) leaves it out too and reads them
+ * all again.
+ */
+export const LANDMARK_AT = "landmark-at";

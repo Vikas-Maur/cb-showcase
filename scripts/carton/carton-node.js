@@ -1847,7 +1847,7 @@ export const cardboard14 = {
         return { status: f ? "ok" : "unknown" };
       },
       // A landmark the page saw happen (DESIGN-V2 §2.1): an export finished (`exported`, its preset), a link made or a
-      // video published (`sent`). The person's; kept on this computer.
+      // video published (`sent`). The person's; on a shared cut it reaches teammates through the sync server (core).
       mark: async ({ projectId, kind, label }) => {
         const lc = await lcOf(projectId);
         if (!lc || (kind !== "exported" && kind !== "sent")) return { status: "unavailable" };

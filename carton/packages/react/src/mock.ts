@@ -171,6 +171,11 @@ export interface MockOptions {
   provisional?: boolean;
   /** Carton UX v2's landmarks (Exported, Sent, Named, turns, Start, Before), as `landmarks()` answers. Default: none. */
   landmarks?: boolean;
+  /**
+   * `netWords`: a person's group of edits titled by what it came to (the mock's own words: the first change and how
+   * many more). Default: off, so a group reads its newest's sentence, as older tests and rig states expect.
+   */
+  netWords?: boolean;
 }
 
 /** A CartonUi plus the knobs a gallery, test or benchmark needs. */
@@ -526,6 +531,14 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     async changes(a, b) {
       return between(a, b);
     },
+    ...(opts.netWords
+      ? {
+          async netWords(a: string, b: string) {
+            const list = between(a, b);
+            return { summary: list.length > 1 ? `${list[0]!.text}, and ${list.length - 1} more change${list.length > 2 ? "s" : ""}` : (list[0]?.text ?? ""), changes: list.length };
+          },
+        }
+      : {}),
     async changesIn(versionId) {
       counts.changesIn++;
       const i = pos.get(versionId);

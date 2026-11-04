@@ -612,6 +612,94 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       }
     });
 
+    // Shared landmarks (Carton UX v2: Exported, Sent): their own messages and table, never changes. The welcome says the
+    // host keeps them; a connection asks for a cut's (`landmarks`) and is told new ones from then on.
+    type Mark = sync.SharedLandmark;
+    const lmReply = (c: Client, from: number) => c.wait((m) => c.got.indexOf(m) >= from && m.type === "landmarks" && (m as sync.LandmarksReplyMsg).reply === true, "a landmarks page") as Promise<sync.LandmarksReplyMsg>;
+    const askMarks = async (c: Client, branchId: string, since = 0) => {
+      const from = c.got.length;
+      c.conn.send({ type: "landmarks", branchId, since } as sync.ClientMessage);
+      return lmReply(c, from);
+    };
+    let markN = 0;
+    const markOf = (rid: string, o: Partial<Mark> = {}): Mark => ({ id: `${rid}.L${(++markN).toString(36)}`, kind: "exported", seq: 0, at: Date.now(), by: { kind: "human", id: "suite", name: "Suite" }, label: "1080p", ...o });
+    const keptMark = (id: string) => (m: Msg) => m.type === "landmarks" && !(m as sync.LandmarksReplyMsg).reply && (m as sync.LandmarksReplyMsg).rows.some((r) => r.id === id);
+    const sendMark = (c: Client, branchId: string, mark: Mark) => c.conn.send({ type: "landmark", branchId, mark } as sync.ClientMessage);
+
+    test("landmarks: the welcome says the host keeps them; an editor's reaches every connection that asked, its own too, and no change is made; a viewer's is refused; one that never asked gets none", async () => {
+      const b = newBranch();
+      const [a, bob, v, quiet] = await Promise.all([fx.token("editor"), fx.token("editor"), fx.token("viewer"), fx.token("editor")].map(async (t) => connect(await t)));
+      await share(a, b);
+      for (const c of [a, bob, v, quiet]) assert.equal(((await hello(c, b)) as sync.WelcomeMsg).landmarks, true);
+      for (const c of [a, bob, v]) await askMarks(c, b);
+      const rid = ridOf(), m = markOf(rid);
+      sendMark(a, b, m);
+      for (const c of [a, bob, v]) {
+        const got = (await c.wait(keptMark(m.id), "the landmark, told")) as sync.LandmarksReplyMsg;
+        assert.deepEqual([got.rows[0]!.kind, got.rows[0]!.label, got.rows[0]!.n, got.head], ["exported", "1080p", 1, 1]);
+      }
+      // the viewer is refused, told alone, never as an error
+      const vm = markOf(ridOf());
+      sendMark(v, b, vm);
+      const refused = (await v.wait((m) => m.type === "landmarks" && !!(m as sync.LandmarksReplyMsg).refused, "the refusal")) as sync.LandmarksReplyMsg;
+      assert.deepEqual(refused.refused, [vm.id]);
+      assert.equal(v.got.some((m) => m.type === "error"), false);
+      // no change: the cut's head is still 0
+      const fresh = await connect(await fx.token("editor"));
+      assert.equal(((await hello(fresh, b)) as sync.WelcomeMsg).head, 0);
+      assert.equal(quiet.got.some((m) => m.type === "landmarks"), false, "never asked, never told");
+      assert.deepEqual((await askMarks(bob, b)).rows.map((r) => r.id), [m.id], "the viewer's isn't kept");
+    });
+
+    test("landmarks are kept by the host: after a hibernation a subscription still gets them; after a restart the catch-up still has them", async (t) => {
+      if (!fx.hibernate && !fx.restart) return t.skip("needs hibernate or restart");
+      const b = newBranch();
+      const [a, bob] = await Promise.all([fx.token("editor"), fx.token("editor")].map(async (t) => connect(await t)));
+      await share(a, b);
+      for (const c of [a, bob]) await hello(c, b);
+      await askMarks(bob, b);
+      const first = markOf(ridOf()), second = markOf(ridOf(), { kind: "sent", label: "Shared with Leo" });
+      sendMark(a, b, first);
+      await bob.wait(keptMark(first.id), "the landmark before");
+      if (fx.hibernate) {
+        await fx.hibernate();
+        sendMark(a, b, second);
+        await bob.wait(keptMark(second.id), "a landmark after the wake");
+      }
+      if (fx.restart) {
+        await fx.restart();
+        await bob.waitClose(30_000);
+        const again = await connect(await fx.token("viewer"));
+        await hello(again, b);
+        const ids = (await askMarks(again, b)).rows.map((r) => r.id);
+        assert.ok(ids.includes(first.id), "kept across the restart");
+        if (fx.hibernate) assert.ok(ids.includes(second.id));
+      }
+    });
+
+    test("a landmark costs 1 row written (its row), and asking for them none", async (t) => {
+      if (!fx.rows) return t.skip("the host can't count rows");
+      const b = newBranch();
+      const c = await connect(await fx.token("editor"));
+      await share(c, b);
+      await hello(c, b);
+      await askMarks(c, b);
+      const rid = ridOf();
+      const warm = markOf(rid);
+      sendMark(c, b, warm); // binds the rid (a row of its own, as a first change's does)
+      await c.wait(keptMark(warm.id), "the warm-up");
+      let before = await fx.rows();
+      const m = markOf(rid);
+      sendMark(c, b, m);
+      await c.wait(keptMark(m.id), "the landmark");
+      let after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 1, "a landmark");
+      before = after;
+      await askMarks(c, b);
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 0, "a catch-up");
+    });
+
     test("a duplicate push is acked with the original seq", async () => {
       const b = newBranch();
       const c = await connect(await fx.token("editor"));

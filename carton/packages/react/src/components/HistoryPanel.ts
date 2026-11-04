@@ -167,11 +167,51 @@ function Meta({ v, count, ui }: { v: Version; count?: number; ui: CartonUi }) {
   );
 }
 
+/** How many of the newest day's changes stay rows above its runs, when that day isn't today (DESIGN-V2 §2.5). */
+const NEWEST_KEPT = 3;
 /**
- * A landmark's meta line (DESIGN-V2 §2.1): who ("Named by You"), "Kept for you" on a safety point, "only you see this"
+ * Groups' words per view model (a project), by `<base>|<newest>` (confirmed versions never change): at most 200 each.
+ * A failed ask is never kept: the group reads "Several edits" until one succeeds (the next time its row is shown).
+ */
+const netKept = new WeakMap<CartonUi, Map<string, string>>();
+/**
+ * What a person's group of edits came to, in one line (the view model's `netWords`: the changes from before its oldest
+ * to its newest, said as a turn's are), or "No change in the end"; undefined without a base or the call (its newest's
+ * sentence then). Asked once per group and newest, only for the rows on screen.
+ */
+function useNetWords(from: string | undefined, to: string): string | undefined {
+  const ui = useCartonUi();
+  const words = useWords();
+  const key = from && /@\d+$/.test(from) && /@\d+$/.test(to) && typeof ui.netWords === "function" ? `${from}|${to}` : null;
+  let kept = netKept.get(ui);
+  if (!kept) netKept.set(ui, (kept = new Map()));
+  const [got, setGot] = useState<{ key: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!key || kept.has(key)) return;
+    let live = true;
+    ui.netWords!(from!, to).then(
+      (w) => {
+        const text = w.changes && w.summary ? w.summary : words.groupNoNet;
+        if (kept.size >= 200) kept.delete(kept.keys().next().value!);
+        kept.set(key, text);
+        if (live) setGot({ key, text });
+      },
+      // (never its newest's sentence instead: that is the one step a group may have undone, review of fix/ux2-open #7)
+      () => {},
+    );
+    return () => void (live = false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, kept]);
+  if (!key) return undefined;
+  return kept.get(key) ?? (got?.key === key ? got.text : words.groupLoading);
+}
+
+/**
+ * A landmark's meta line (DESIGN-V2 §2.1): what the version itself changed (its title is the landmark's: "EXPORTED
+ * 480p" over "Moved “B2” to 0:03 · You"), who ("Named by You"), "Kept for you" on a safety point, "only you see this"
  * on the personal ones (a day's start, a safety point), and a second landmark's tag ("also exported").
  */
-function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string | undefined }) {
+function MarkMeta({ mark, v, also, changed }: { mark: Landmark; v: Version; also?: string | undefined; changed?: string | undefined }) {
   const ui = useCartonUi();
   const words = useWords();
   const by = mark.by ?? v.author;
@@ -179,9 +219,13 @@ function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string
   return h(
     Fragment,
     null,
-    mark.kind === "before" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
-    // (Start and Before are yours; Exported and Sent stay on this computer until the server carries them: N0's `local`)
-    mark.personal || mark.local ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
+    // (the change gives way first in a narrow panel: who and the tags stay)
+    changed ? h("span", { className: "carton-landmark-change", title: changed }, changed) : null,
+    // (a teammate's Before, if core's SHARE_BEFORE shows them, names its person: "Kept for you" is for yours)
+    mark.kind === "before" && mark.personal ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
+    // only Start and Before are a person's own: Exported and Sent are everyone's (DESIGN-V2 §2.1), and on a shared cut
+    // reach teammates through the sync server (Windows check of b14f8a4e: Exported read "only you see this")
+    mark.personal ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
     also ? h("span", { className: "carton-version-count" }, words.alsoLandmark(also)) : null,
   );
 }
@@ -227,6 +271,8 @@ interface RowProps {
   /** A person's run of changes (a group row): its versions' total changes, and whether its versions are listed. */
   group?: boolean;
   groupCount?: number;
+  /** A group's base: the version before its oldest (its title says what the group came to from there). */
+  groupBase?: string | undefined;
   groupOpen?: boolean;
   onPick: (key: string, e: MouseEvent) => void;
   onMenu: (key: string, el: HTMLElement) => void;
@@ -276,7 +322,18 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const plain = prompt ? `“${prompt}”` : named ? v.name! : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
   // a landmark reads as one phrase, its tag then its title ("EXPORTED 1080p for the client"); a turn keeps its prompt
   const mark = p.mark && p.mark.kind !== "turn" ? p.mark : undefined;
-  const title = mark ? landmarkTitle(mark, words, plain, p.markAfter) : plain;
+  // a closed group of a person's edits says what they came to (from before its oldest to its newest), never one step
+  // the rest undid ("Removed track “Top”… · 19 changes" with Top there at the end: Windows check of b14f8a4e)
+  const net = useNetWords(p.group && !p.groupOpen && !mark && !prompt && !named ? p.groupBase : undefined, v.ref);
+  const title = mark ? landmarkTitle(mark, words, plain, p.markAfter) : net ?? plain;
+  // what the version itself changed, under a landmark's title: a landmark is its title, never all it says (Windows
+  // check of b14f8a4e: "Moved “B2”…" read only "EXPORTED 480p")
+  const own = prompt ? `“${prompt}”` : v.summary || versionLabel(v, { locale, actor: ui.actor.bind(ui), start: true });
+  const changed = mark && own !== title ? own : undefined;
+  // a landmark's time is when it happened (exported, sent, named, the restore after a safety point), as `cb history
+  // --landmarks` says it; on another day than its version's, that day
+  const at = mark ? mark.at : v.at;
+  const short = mark && dayNumber(mark.at) !== dayNumber(v.at) ? shortDate(mark.at, locale) : clockOfDay(at, locale);
   // a narrow panel: does this landmark's line overflow? (measured by its own font, the same whether it wraps or not)
   const titleRef = useRef<HTMLSpanElement>(null);
   const measures = !!mark && !!p.narrow && !p.naming && !p.child;
@@ -315,9 +372,9 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           h(Icon, { name: "x", size: 11 }),
         ),
       )
-    : p.now
+    : p.now && !mark
       ? h("span", { className: "carton-version-when", "data-now": "" }, words.nowRow)
-      : h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(v.at).toISOString(), short: clockOfDay(v.at, locale), more: exactTime(v.at, locale) });
+      : h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(at).toISOString(), short, more: exactTime(at, locale) });
   return h(
     "div",
     {
@@ -380,7 +437,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
                 "span",
                 { className: "carton-version-meta" },
                 p.pickFrom ? h("span", { className: "carton-pill carton-pick-from", "data-tone": "info" }, h(Icon, { name: "compare", size: 11 }), words.fromPill) : null,
-                p.hit ? h(HitMeta, { hit: p.hit, v }) : mark ? h(MarkMeta, { mark, v, also: p.alsoMark }) : h(Meta, { v, count: p.group ? p.groupCount : undefined, ui }),
+                p.hit ? h(HitMeta, { hit: p.hit, v }) : mark ? h(MarkMeta, { mark, v, also: p.alsoMark, changed }) : h(Meta, { v, count: p.group ? p.groupCount : undefined, ui }),
                 p.group
                   ? h(
                       "button",
@@ -713,9 +770,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
       return groupHistory(versions, (day) => own?.get(day) ?? shut.has(day), { anchor: () => false });
     }
     const marked = marks.ids.size ? marks.ids : null;
-    // a past day, open, reads as its landmarks and one line per run between them (DESIGN-V2 §2.5); never Today or the
-    // newest day, nor a filtered list (it lists what it matches)
-    const story = marked && filter === "all" && !only ? { runs: (day: number, newest: boolean) => !newest && day !== today } : {};
+    // a past day, open, reads as its landmarks and one line per run between them (DESIGN-V2 §2.5); the newest day too
+    // when it isn't today (nothing happened today), below its newest few changes, kept as rows; never Today, nor a
+    // filtered list (it lists what it matches)
+    const story = marked && filter === "all" && !only ? { runs: (day: number) => day !== today, keepNewest: NEWEST_KEPT } : {};
     return groupHistory(versions, (day, newest) => folds.get(day) ?? (long && !newest), { group: true, open: (k) => openGroups.has(k), ...(marked ? { anchor: (v: Version) => !!v.name || marked.has(v.id), alone: (v: Version) => marked.has(v.id), ...story } : {}) });
     // `revision` too: a source's all() is one array it appends to in place (remote.ts, mock.ts)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1233,6 +1291,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       folded: !!dayOf && dayOf[i]! >= 0 && !!(rows![dayOf[i]!] as DayHistoryRow).collapsed,
       group: !!group,
       groupCount: group?.count,
+      groupBase: group ? find(group.ids[group.ids.length - 1]!)?.base : undefined,
       groupOpen: group?.open,
       onPick,
       onMenu,
