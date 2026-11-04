@@ -18,6 +18,12 @@ export const historyV2Css = `
 :where(${S}) :where(.carton-hit){background:color-mix(in srgb, var(--cb-warn) 26%, transparent);color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px}
 :where(${S}) :where(.carton-find-count){margin:2px 14px 2px;font-size:11.5px;line-height:16px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-find-why){flex:none;color:var(--cb-fg-3)}
+/* Back to Fold in…: what of the ticks the plan as it is now couldn't keep (fix/ux2-open) */
+:where(${S}) :where(.carton-fold-reticked){display:flex;align-items:flex-start;gap:8px;margin:0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb, var(--cb-warn) 12%, transparent);font-size:12.5px;line-height:18px;color:var(--cb-fg-1);text-wrap:pretty}
+:where(${S}) :where(.carton-fold-reticked svg){flex:none;margin-top:2px;color:var(--cb-warn)}
+/* a landmark row's own change, before who: it gives way first (who and "only you see this" stay whole) */
+:where(${S}) :where(.carton-landmark-change){flex:0 1000 auto;min-width:24px;overflow:hidden;text-overflow:ellipsis;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-landmark-change + .carton-actor-name, .carton-landmark-change + .carton-more)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}
 :where(${S}) :where(.carton-find-snippet){min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-find-why ~ .carton-find-snippet, .carton-find-why ~ .carton-actor-name, .carton-find-why ~ .carton-more)::before{content:"";display:inline-block;width:3px;height:3px;margin:0 6px 2px 0;border-radius:50%;background:var(--cb-fg-4);vertical-align:middle}
 :where(${S}) :where(.carton-find-clip){display:flex;align-items:center;gap:8px;margin:0 12px 8px;padding:8px 8px 8px 0;border-radius:8px;background:#ffffff08}

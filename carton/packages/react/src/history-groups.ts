@@ -94,6 +94,11 @@ export interface GroupOptions {
    * between two of them; `open(key)` opens a run as it does a group. Default: no day. Needs `alone`.
    */
   readonly runs?: (day: number, newest: boolean) => boolean;
+  /**
+   * With `runs` on the newest day: its newest this many versions stay rows (grouped as any day's are) above its story,
+   * so the latest changes read as they are. Default 0.
+   */
+  readonly keepNewest?: number;
 }
 
 /** A version a group can hold: a person's plain edit, not named, not History's start. */
@@ -228,8 +233,11 @@ export function groupHistory(versions: readonly Version[], collapsed: (day: numb
         if (anchor(v)) rows.push(flag({ kind: "version", key: v.id, id: v.id, index: n - 1 - k }));
         else hidden++;
       }
-    } else if (alone && opts.runs?.(day, newest)) story(i, j);
-    else emit(i, j, rows);
+    } else if (alone && opts.runs?.(day, newest)) {
+      const top = newest && opts.keepNewest ? Math.max(j, i - opts.keepNewest) : i;
+      if (top < i) emit(i, top, rows);
+      story(top, j);
+    } else emit(i, j, rows);
     if (hidden) rows[at] = { ...(rows[at] as Extract<HistoryRow, { kind: "day" }>), hidden };
     i = j;
   }

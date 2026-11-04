@@ -301,8 +301,8 @@ test(name("landmarks: tagged rows with a picture tile; the Landmarks filter list
   const exported = $(m.container, ".carton-version[data-landmark=exported]")!;
   assert.equal($(exported, ".carton-landmark-tag")!.textContent, "Exported");
   assert.match(exported.textContent ?? "", /1080p for the client/);
-  // (an export stays on this computer until the server carries it, N0's `local`: only you see it, and the row says so)
-  assert.match(exported.textContent ?? "", /only you see this/);
+  // (an export is everyone's, DESIGN-V2 §2.1: no "only you see this" on it, fix/ux2-open; Start and Before are yours)
+  assert.doesNotMatch(exported.textContent ?? "", /only you see this/);
   assert.match($(m.container, ".carton-version[data-landmark=before]")!.textContent ?? "", /Kept for you.*only you see this/, "a Before is yours only");
   // its title says which restore, from the row after it (DESIGN-V2 §2.1; design QA v2: it read "an earlier version")
   const restoredRow = $$(m.container, ".carton-version").find((r) => /^Restored the \d{1,2}:\d{2} [ap]m version/.test($(r, ".carton-version-title")?.textContent ?? ""));

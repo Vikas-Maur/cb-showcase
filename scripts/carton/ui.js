@@ -663,7 +663,10 @@ function useFit(ref, preferred) {
 function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const cuts = useCuts();
   const [fold, setFold] = useState(null);
-  const openFold = useCallback((from, into) => setFold({ from: from.id, into: into.id }), []);
+  // what the person chose in Fold in before See them side by side, given back by Back to Fold in… (fix/ux2-open); a
+  // Fold in opened any other way starts fresh
+  const foldTicks = useRef(null);
+  const openFold = useCallback((from, into) => ((foldTicks.current = null), setFold({ from: from.id, into: into.id })), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
   // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus in it, from the list.
@@ -715,18 +718,25 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   // History is its change list
   const comparing = useComparing(ui);
   const onCompare = useCallback((a, b) => void Promise.resolve(ui.openCompare?.(a, b)).catch(() => {}), [ui]);
-  const foldIds = useCallback((from, into) => setFold({ from, into }), []);
+  const foldIds = useCallback((from, into) => ((foldTicks.current = null), setFold({ from, into })), []);
   // Fold in's See them side by side (DESIGN-V2 §1.2): the dialog closes, Compare opens; its Back to Fold in… reopens it
-  // (the dialog closes once Compare has opened; if it can't, the dialog stays: review of feat/ux2-n1b #11)
-  const foldSideBySide = useCallback((from, into) => { void Promise.resolve(ui.openCompare?.(from, into, { back: "fold", fold: { from, into } })).then(() => setFold(null), () => {}); }, [ui]);
-  const backToFold = useCallback((from, into) => { void Promise.resolve(ui.closeCompare?.()).then(() => setFold({ from, into })); }, [ui]);
+  // with the ticks kept (the dialog says what it couldn't keep). The dialog closes once Compare has opened; if it
+  // can't, the dialog stays (review of feat/ux2-n1b #11).
+  const foldSideBySide = useCallback((from, into, ticks) => {
+    void Promise.resolve(ui.openCompare?.(from, into, { back: "fold", fold: { from, into } })).then(() => ((foldTicks.current = ticks ?? null), setFold(null)), () => {});
+  }, [ui]);
+  const backToFold = useCallback((from, into) => {
+    const ticks = foldTicks.current?.from === from && foldTicks.current?.into === into ? foldTicks.current : undefined;
+    foldTicks.current = null;
+    void Promise.resolve(ui.closeCompare?.()).then(() => setFold({ from, into, ...(ticks ? { ticks } : {}) }));
+  }, [ui]);
   return h("div", { ref: box, className: "carton-sidebar-history" },
     comparing ? h(CompareSide, { bridge, onFoldIn: foldIds, onBackToFold: backToFold }) : null,
     // the cuts menu in History's cut bar, and on a teammate's cut what you can do with it under the bar (PLAN 6.2);
     // kept mounted under Compare's list, so the card you came from is still open after it (DESIGN-V2 §1.7)
     h("div", { style: { display: comparing ? "none" : "contents" } },
       h(HistoryPanel, { cuts: cutsMenu, actions: teammateActions, selectedClip, onSeek: play.seek, currentRef: current, play, ...(typeof ui.openCompare === "function" ? { onCompare } : {}) })),
-    fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null), ...(typeof ui.openCompare === "function" ? { onSideBySide: foldSideBySide } : {}) }) : null);
+    fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null), ...(fold.ticks ? { ticks: fold.ticks } : {}), ...(typeof ui.openCompare === "function" ? { onSideBySide: foldSideBySide } : {}) }) : null);
 }
 
 /** The project's timecoded comments (@carton/comments, served by the worker): pinned at the playhead, a timecode seeks. */

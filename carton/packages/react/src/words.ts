@@ -615,6 +615,10 @@ export const words = {
   },
   keptForYou: "Kept for you",
   onlyYouSee: "only you see this",
+  /** A group of edits that came to nothing: what it changed, it changed back. */
+  groupNoNet: "No change in the end",
+  /** A group's title while its words are worked out (a moment, once). */
+  groupLoading: "Several edits",
   alsoLandmark: (tag: string) => `also ${tag.toLowerCase()}`,
   landmarksFilter: "Landmarks",
   landmarksFilterHint: "Exports, sends, names, agent turns, each day's start",
@@ -728,6 +732,21 @@ export const words = {
   // Compare's other ways in (DESIGN-V2 §1.2, §1.11): a playing card, Fold in, a teammate's cut
   sideBySideBtn: "Side by side",
   seeThemSideBySide: "See them side by side",
+  /**
+   * Back to Fold in…, when the changes to fold in changed while the person compared (an agent, a teammate): what of
+   * their ticks and picks couldn't be kept as they were, in one plain sentence; null when everything was kept.
+   */
+  foldTicksLost: (n: { gone: number; changed: number; added: number; repick: number }): string | null => {
+    const parts = [
+      n.gone ? `${plural(n.gone, "change", "changes")} you left out ${n.gone === 1 ? "isn't" : "aren't"} there any more` : "",
+      n.changed ? `${plural(n.changed, "change", "changes")} you left out ${n.changed === 1 ? "is" : "are"} different now (still left out)` : "",
+      n.added ? `${plural(n.added, "new change is", "new changes are")} ticked` : "",
+      n.repick ? `${plural(n.repick, "conflict", "conflicts")} to pick again` : "",
+    ].filter(Boolean);
+    if (!parts.length) return null;
+    const list = parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+    return `Some changes are different since you compared: ${list}. Check the ticks before you fold in.`;
+  },
   backToFoldIn: "Back to Fold in…",
   compareWithCut: (cut: string) => `Compare with ${cut}`,
   compareNow: "Now",

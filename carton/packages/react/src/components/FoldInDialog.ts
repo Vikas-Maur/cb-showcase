@@ -25,6 +25,23 @@ import { Button, Dialog, MenuButton, MenuLabel, radioKeys } from "./ui.ts";
 
 /** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
 const sigOf = (c: Conflict) => c.sig ?? `${c.title}|${c.mine.summary}|${c.mine.where ?? ""}|${c.theirs.summary}|${c.theirs.where ?? ""}`;
+/** A change's fingerprint: what its row says (the sentence, who, when, whether it can be left out). */
+const changeSig = (c: FoldChange) => `${c.summary}|${c.author.key}|${c.at}|${c.locked ? 1 : 0}|${c.leftOut ?? ""}`;
+
+/**
+ * What the person chose in the dialog, handed to its host when it closes for See them side by side, and back when
+ * Back to Fold in… reopens it (DESIGN-V2 §1.2: "reopens the dialog with the ticks kept"): what was left out, the picks,
+ * the every-difference mode, and what each change and card said then, to tell what changed while they compared.
+ */
+export interface FoldTicks {
+  readonly from: string;
+  readonly into: string;
+  readonly left: readonly string[];
+  readonly picks: Readonly<Record<string, { choice: ConflictChoice; sig: string }>>;
+  readonly allCards: boolean;
+  /** Each change's fingerprint as the dialog showed it, by id. */
+  readonly seen: Readonly<Record<string, string>>;
+}
 
 export interface FoldInDialogProps {
   /** The cut folded in, to begin with (the From picker changes it). */
@@ -36,8 +53,13 @@ export interface FoldInDialogProps {
   onDone?: (r: FoldResult) => void;
   /** Use this plan instead of asking the view model (gallery). */
   plan?: FoldPlan;
-  /** See them side by side (DESIGN-V2 §1.2): Compare in the editor, the from-cut now with the into-cut now. Absent: none. */
-  onSideBySide?: (fromCutId: string, intoCutId: string) => void;
+  /**
+   * See them side by side (DESIGN-V2 §1.2): Compare in the editor, the from-cut now with the into-cut now, with what
+   * the person chose here (`ticks`), for Back to Fold in… to give back. Absent: none.
+   */
+  onSideBySide?: (fromCutId: string, intoCutId: string, ticks: FoldTicks) => void;
+  /** Back to Fold in…: what the person chose before they went to compare, for the same two cuts. */
+  ticks?: FoldTicks;
 }
 
 // What both sides did, as a verb for "Both cuts moved “Interview B”": the sides' own noun when they agree
@@ -59,16 +81,21 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const cuts = useShownCuts();
   // The two cuts: preset by whoever opened it, either one changeable here (F3)
   const [pair, setPair] = useState({ from: p.fromCutId, into: p.intoCutId });
+  // the choices made before See them side by side, when they are this pair's (Back to Fold in…)
+  const kept = p.ticks && p.ticks.from === p.fromCutId && p.ticks.into === p.intoCutId ? p.ticks : undefined;
   // §13: after "bring it in with every difference shown as a card", the plan and the fold use the 2-way compare.
-  const [allCards, setAllCards] = useState(false);
+  const [allCards, setAllCards] = useState(!!kept?.allCards);
   const loaded = useAsync(
     () => (p.plan ? Promise.resolve(p.plan) : ui.planFold(pair.from, pair.into, allCards ? { allCards } : undefined)),
     [ui, pair.from, pair.into, p.plan, allCards],
   );
-  const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
+  const [left, setLeft] = useState<ReadonlySet<string>>(() => new Set(kept?.left ?? []));
   // Each pick remembers the card it was made on (its fingerprint). A card whose values changed since (a racing edit,
   // seen when the plan reloads) is a different card: its old pick no longer counts (R3-1, R4-1).
-  const [picks, setPicks] = useState<Readonly<Record<string, { choice: ConflictChoice; sig: string }>>>({});
+  const [picks, setPicks] = useState<Readonly<Record<string, { choice: ConflictChoice; sig: string }>>>(() => kept?.picks ?? {});
+  // Back to Fold in…: what of the person's choices the plan as it is now couldn't keep, said once it loads (null: all kept)
+  const [reticked, setReticked] = useState<string | null>(null);
+  const checked = useRef(!kept);
   const [result, setResult] = useState<FoldResult | null>(null);
   // Another pair of cuts is another plan: nothing picked or left out carries over
   const pairKey = `${pair.from}>${pair.into}`;
@@ -80,6 +107,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
     setPicks({});
     setResult(null);
     setAllCards(false);
+    setReticked(null);
   }, [pairKey]);
   const [fold, busy] = useAction(async () => {
     // `count`: what the button said it folds in, which its confirmation repeats (PLAN 5.3: "Folded 3 changes from …")
@@ -98,6 +126,21 @@ export function FoldInDialog(p: FoldInDialogProps) {
   });
 
   const plan = loaded.status === "ready" ? loaded.value : null;
+  // The choices brought back, against the plan as it is now (someone may have edited either cut meanwhile): a change
+  // left out that is gone is dropped, one that reads differently stays left out, a new one comes ticked, a pick on a
+  // card that changed is to make again. Any of these is said in the dialog; the ticks are never silently different.
+  useEffect(() => {
+    if (checked.current || !plan || !kept) return;
+    checked.current = true;
+    const ids = new Map(plan.changes.map((c) => [c.id, c]));
+    const gone = kept.left.filter((id) => !ids.has(id));
+    const changed = kept.left.filter((id) => ids.has(id) && kept.seen[id] !== undefined && kept.seen[id] !== changeSig(ids.get(id)!));
+    const added = plan.changes.filter((c) => kept.seen[c.id] === undefined).length;
+    const repick = Object.entries(kept.picks).filter(([id, pk]) => !plan.conflicts.some((c) => c.id === id && sigOf(c) === pk.sig)).length;
+    if (gone.length) setLeft((s) => new Set([...s].filter((id) => ids.has(id))));
+    const parts = words.foldTicksLost({ gone: gone.length, changed: changed.length, added, repick });
+    setReticked(parts);
+  }, [plan, kept, words]);
   const total = plan?.changes.length ?? 0;
   const taking = total - left.size;
   const planRef = useRef(plan);
@@ -259,6 +302,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
   else if (plan)
     content = [
       lead ? h("p", { key: "lead", className: "carton-fold-lead" }, lead) : null,
+      reticked ? h("p", { key: "kept", className: "carton-fold-reticked", role: "status" }, h(Icon, { name: "warning", size: 14 }), reticked) : null,
       h(
         "div",
         { key: "changes", className: "carton-fold-changes", role: "group", "aria-label": words.foldChanges(listed) },
@@ -326,7 +370,9 @@ export function FoldInDialog(p: FoldInDialogProps) {
       ? [h("span", { key: "sp" }), h(Button, { key: "close", onClick: p.onClose }, words.close)]
       : [
           h("span", { key: "line", className: "carton-fold-later", "data-tone": unpicked.length ? "warning" : undefined }, footLine),
-          p.onSideBySide ? h(Button, { key: "side", variant: "ghost", icon: "compare", onClick: () => p.onSideBySide!(pair.from, pair.into) }, words.seeThemSideBySide) : null,
+          p.onSideBySide
+            ? h(Button, { key: "side", variant: "ghost", icon: "compare", onClick: () => p.onSideBySide!(pair.from, pair.into, { from: pair.from, into: pair.into, left: [...left], picks, allCards, seen: Object.fromEntries((plan?.changes ?? []).map((c) => [c.id, changeSig(c)])) }) }, words.seeThemSideBySide)
+            : null,
           h(Button, { key: "c", onClick: p.onClose }, words.cancel),
           h(
             Button,

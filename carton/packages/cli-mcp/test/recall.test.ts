@@ -55,6 +55,34 @@ test("cb history --find and --landmarks: why each matched, newest first, refs at
   }
 });
 
+test("cb history --landmarks: a teammate's Exported and Sent say whose (fix/ux2-open); yours don't, and a Start is yours only", async () => {
+  const { local } = await realProject("ux2-open-by", human);
+  try {
+    await local.write({ kind: "commit", ops: [set("c0", "endTime", 4)] });
+    const cut = local.carton.cut, seq = (await local.carton.head()).ref.seq, at = Date.now();
+    await local.carton.mark("exported", { label: "1080p for the client" });
+    await local.carton.mark("start", { once: "version" });
+    // Leo's, as the sync server tells it (a teammate's landmark arrives in the same table, `shared` set)
+    const leo = { kind: "human", id: "leo", name: "Leo" };
+    await local.carton.store.write([
+      { table: "ephemeral", key: ["landmark", cut, seq, "exported", at - 5], value: { kind: "exported", at: at - 5, by: leo, label: "4K master", id: "ffffffffffffffffffffffff.Lab1", shared: 1 } },
+      { table: "ephemeral", key: ["landmark", cut, seq, "sent", at - 4], value: { kind: "sent", at: at - 4, by: leo, label: "Shared with the client", id: "ffffffffffffffffffffffff.Lab2", shared: 2 } },
+    ]);
+    const l = await cb(local, ["history", "--landmarks"]);
+    assert.equal(l.code, 0, l.err);
+    assert.match(l.out, /Exported\s+4K master · \d+:\d\d · by Leo\s+main@\d+/);
+    assert.match(l.out, /Sent\s+Shared with the client · by Leo\s+main@\d+/);
+    assert.match(l.out, /Exported\s+1080p for the client · \d+:\d\d\s+main@\d+/, "yours says no name");
+    assert.doesNotMatch(l.out, /1080p for the client[^\n]*by /);
+    assert.match(l.out, /Start\s+How it was when you opened it \(only you see this\)/);
+    const j = await cb(local, ["history", "--landmarks", "--json"]);
+    const theirs = j.json().landmarks.find((x: { label?: string }) => x.label === "4K master");
+    assert.deepEqual([theirs.by.name, theirs.local, theirs.personal], ["Leo", false, false]);
+  } finally {
+    await local.close();
+  }
+});
+
 test("cb restore <version> --clip: brought back, nothing else; not there then says how to take it out; two clips match", async () => {
   const { local } = await realProject("n0-clip", human);
   try {

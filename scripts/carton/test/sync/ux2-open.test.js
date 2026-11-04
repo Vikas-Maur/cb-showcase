@@ -100,9 +100,7 @@ test("Alice's Exported and Sent reach Bob's cb and History panel as hers, and ar
   }, 20_000, "Alice's export and sends at Bob's");
   for (const l of landmarks) assert.deepEqual([l.by?.name, l.local, l.personal], ["Alice", false, false], JSON.stringify(l));
   for (const w of labels.slice(0, 2)) assert.equal(landmarks.find((x) => x.label === w).version, head, w + ": on the version she exported");
-  const words = bob.cb(["history", "Demo", "--landmarks"]).out;
-  assert.match(words, /1080p for the client · \d+:\d{2} · by Alice/, words);
-  assert.match(words, /Shared with Leo · by Alice/, words);
+  // (cb's words for them, "· by Alice", are cli-mcp's recall.test.ts: these computers' cb always answers in JSON)
   const all = cbJson(bob, ["history", "Demo", "--landmarks"]).landmarks;
   assert.ok(!all.some((x) => x.kind === "start" && x.by?.name === "Alice"), "her Start stays hers: " + JSON.stringify(all.filter((x) => x.kind === "start")));
   // no edit: Bob's History has no new version

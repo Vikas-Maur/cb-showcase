@@ -1113,7 +1113,7 @@ class CartonImpl implements Carton {
     };
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
-    for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
+    for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) this.#named(h, nodeId(e.key[0] as string, e.key[1] as number), e.value);
     const pins = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
@@ -1965,10 +1965,13 @@ class CartonImpl implements Carton {
         add("turn", s, c.at, this.#who(c.author, c.id), name ? { label: name } : {});
       } else if (name && !isAgent(c.author) && !(c.kind === "undo" && /^Undo turn /.test(name))) {
         const n = names.get(nodeId(cut, s))!;
-        add("named", s, n.at ?? c.at, n.by ? this.#who(n.by, null) : this.#who(c.author, c.id), { label: name });
+        // when it was named (a name given with its edit: the edit's time), never when this store was loaded
+        add("named", s, this.#nameAt.get(nodeId(cut, s)) ?? c.at, n.by ? this.#who(n.by, null) : this.#who(c.author, c.id), { label: name });
       }
       // a safety point: the version just before a restore, a fold in, an undo of a turn or a bring-back made here
-      const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`);
+      // (this store's replicas, or any the server binds to this person: a shared cut's `cb` restore, whose row the
+      // lease holder confirmed, so `cb`'s replica id was never saved here as this store's)
+      const mine = this.#ownRids.has(c.id.slice(0, c.id.lastIndexOf("."))) || c.id.startsWith(`${this.#rid}.`) || (!!this.#me && this.#personOf(c.id)?.id === this.#me.id);
       if (!mine && !SHARE_BEFORE) continue;
       const pair = s > 1 && completedAt(log, s - 1);
       const why: BeforeWhat | null = c.kind === "restore" ? (c.restoreRecord ? "bring-back" : "restore")
@@ -2361,6 +2364,15 @@ class CartonImpl implements Carton {
     // knowledge, not history: a write that fails is learnt again at the next welcome
     this.#peopleSaved = this.#peopleSaved.then(() => this.store.write(writes)).catch(() => {});
     this.#emit({ type: "people" });
+  }
+  /**
+   * When each version was named, as stored (`T.names`' `at`): History stamps a name with its own clock when the store
+   * is loaded, so after a restart every name read as given then (a Named landmark's time, `cb history --landmarks`).
+   */
+  #nameAt = new Map<NodeId, number>();
+  #named(h: History, node: NodeId, n: { name: string; at?: number; by?: Actor }): void {
+    h.nameVersion(node, n.name, n.by);
+    if (typeof n.at === "number" && Number.isFinite(n.at)) this.#nameAt.set(h.canon(node), n.at);
   }
   /** A shared landmark's id (`sync.SharedLandmark.id`): this replica's rid, so a teammate tells it by person. */
   #landmarkId(): string {
@@ -2790,12 +2802,13 @@ class CartonImpl implements Carton {
     await this.#whole();
     const by = this.#actor(opts.author);
     let node!: NodeId;
-    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, by), {
+    const at = this.#opts.clock?.() ?? Date.now();
+    await this.#mutate(undefined, () => this.#named(this.#h, (node = this.#node(ref)), { name, at, by }), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at, by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -3072,7 +3085,7 @@ class CartonImpl implements Carton {
         }
         this.#h.importFull({ format: "carton-full/1", projectId: meta.projectId, branches: taken });
         for (const b of taken) took.push({ id: b.id, from: 0 });
-        for (const n of names) if (took.some((t) => t.id === n.key[0])) this.#h.nameVersion(nodeId(n.key[0] as string, n.key[1] as number), n.value.name, n.value.by);
+        for (const n of names) if (took.some((t) => t.id === n.key[0])) this.#named(this.#h, nodeId(n.key[0] as string, n.key[1] as number), n.value);
       },
       {
         extra: () => {

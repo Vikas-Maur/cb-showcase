@@ -1911,6 +1911,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       });
       return { clips, hits, total: r.total, versions: r.versions };
     },
+    // a person's group of edits in History, said by what it came to, as a turn's row says its turn (one diff, kept per
+    // pair of versions by rowsBetween)
+    async netWords(a, b) {
+      const all = await rowsBetween(a, b);
+      return { summary: changeSummary(all, schema), changes: all.length };
+    },
     async landmarks(o) {
       if (typeof carton.landmarks !== "function") return [];
       const list = await carton.landmarks({ cut: cutId, ...(o?.kinds ? { kinds: o.kinds } : {}), ...(o?.limit !== undefined ? { limit: o.limit } : {}) });
