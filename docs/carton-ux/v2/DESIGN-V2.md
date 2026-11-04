@@ -182,9 +182,13 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
   - the chip's ✕ ("Done comparing (Esc)");
   - **Done comparing** on the compare bar;
   - **← History** at the top of the panel;
-  - closing History;
+  - the ✕ of the frame's own label, while History is closed (§1.9);
   - switching project tab;
   - opening Export, which says "Back to your edit to export it.", as with viewing.
+- **Closing History isn't a way out.** Its title bar icon, Ctrl+Shift+H and the panel's ✕ close the panel and keep
+  Compare on, for more room to look: the stage takes the panel's width, Side by side and Wipe grow to it, and the frame
+  shows its own label (§1.9). The marks, Play both, Flip and the chip work as before. Comments in History's place does
+  end Compare: its See it as it was is viewing, and viewing and comparing never stack (§1.11).
 - **Where you land:** your edit, on the cut you were on.
   - If the right side was your edit, the playhead **stays where it is**, at the change you were looking at, so you
     can fix it right there.
@@ -222,19 +226,22 @@ marks update within a second, and the selected row stays selected if it still ex
 | Width | Compare |
 |---|---|
 | Stage ≥ 682 px | All three modes; Side by side is the default |
-| Stage < 682 px (e.g. a 1100 px window with History and the chat open) | **Flip** is the default. Side by side is greyed, with its tooltip "Side by side needs a wider stage. Close the chat or widen the window." |
+| Stage < 682 px (e.g. a 1100 px window with History and the chat open; a 1444 px laptop window with History, the chat and Compare open gives 629 px) | **Flip** is the default. Side by side is greyed. When closing History would give the stage 682 px, a click on it closes History (Compare stays on) and shows Side by side; its tooltip: "Side by side needs a wider stage. Click to close History and make room." Otherwise its tooltip names the fewest to close, from what is open, or says to widen the window: "Side by side needs a wider stage. Close the chat or widen the window.", "… Close History and the chat, or widen the window.", "… Widen the window." |
 | Stage < 600 px | The modes keep their icons and drop their words, except Flip; their tooltips keep the words. The count goes (the list has it). **Done comparing** becomes **Done** |
 | Stage < 360 px | Flip only |
 | Window < 1180 px | The chip shortens (§1.7); the panel is 300 px |
-| **History in the drawer, drawer hidden** | The list isn't on screen, so the frame's own label shows (DESIGN §4.2): `⇆ Comparing “Sent to client” with your edit · 7 changes ✕`. A click on its words opens the drawer; ✕ ends Compare. Closing the drawer does **not** end Compare: the label stays |
+| **History closed, or in the drawer with the drawer hidden** | The list isn't on screen, so the frame's own label shows (DESIGN §4.2): `⇆ Comparing “Sent to client” with your edit · 7 changes ✕`. A click on its words opens History (or the drawer) on the change list; ✕ ends Compare. Closing History or the drawer does **not** end Compare: the label stays |
 
 ![narrow](after/compare-narrow.png) ![drawer hidden](after/compare-drawer-hidden.png)
 
 ### 1.10 When a second player isn't possible: Flip only
 
-The second player can fail: it doesn't start within 2 s, the computer's graphics memory is short, the project is too
+The second player can fail: it doesn't start within 2 s (counted while the window is on screen: a minimised window
+stops the frames its start is checked on), the computer's graphics memory is short, the project is too
 large, or a later Cardboard breaks the hook. Then:
-- the mode switch shows **Flip** alone;
+- the mode switch shows **Flip**, with Side by side and Wipe greyed ("Couldn't show both sides here. Click to try
+  again."): picking one tries the second player again, once per pick. Without a second player at all (a Cardboard
+  that breaks the hook), Flip alone;
 - if the person had picked Side by side or Wipe, one toast, once per session: "Couldn't show “Sent to client” side by
   side here. Showing it as a flip.";
 - everything else works as usual: the list, the marks, the strip, the jumps, Play both (in Flip), and Bring back;
@@ -331,7 +338,8 @@ cut switch`. Without `--show`, `cb compare` prints words, as today (§5).
 
 **When it opens:**
 - the chip as usual;
-- the History panel opens to the change list if it was closed, and closes again on exit if the agent opened it;
+- the History panel opens to the change list if it was closed, and closes again on exit if the agent opened it, unless
+  the person closed it meanwhile (then a History they open again is theirs, and stays);
 - one toast, for 6 s: **"⇆ Director opened a comparison. Esc to go back ✕"**. The ✕ hides only the toast; the chip,
   Done comparing and Esc end Compare;
 - screen readers hear "Director opened a comparison: “Sent to client” with your edit. 7 changes. Esc to go back."
@@ -348,7 +356,7 @@ back. An agent can't open Compare on a version that hasn't reached this computer
 | Anywhere while comparing | **Esc** | Done comparing (after a menu, a latched flip or a drag) |
 | | **Space** | Play both / pause |
 | | **B** (hold) | Flip mode: show the left side. Carton takes B only while comparing, when edits are refused anyway |
-| | **Ctrl+Shift+H** | Close History, which ends Compare |
+| | **Ctrl+Shift+H** | Close or open History. Compare stays on; with History closed the frame shows its own label |
 | Change list | **↑ ↓ Home End** | Move between changes; both players and the timeline follow |
 | | **Enter** | Play that change on both sides |
 | | **→** / **←** | Open / close the row's detail; Tab reaches its Bring back |
@@ -374,12 +382,12 @@ back. An agent can't open Compare on a version that hasn't reached this computer
 | Place | Words |
 |---|---|
 | Chip | "Comparing “Sent to client” with your edit" · "Comparing “30s Instagram cut” with Main cut" · "Comparing Leo's Main cut with yours" · "Comparing your edit from 12:41 pm with Director's “Add captions…”" · ✕ "Done comparing (Esc)" |
-| Compare bar | "Side by side" · "Wipe" · "Flip" · "7 changes" / "7 differences" · "Done comparing" / "Done" · greyed: "Side by side needs a wider stage. Close the chat or widen the window." |
+| Compare bar | "Side by side" · "Wipe" · "Flip" · "7 changes" / "7 differences" · "Done comparing" / "Done" · greyed: "Side by side needs a wider stage. Close the chat or widen the window." · "… Click to close History and make room." · "… Close History and the chat, or widen the window." · "… Widen the window." · after a failed start: "Couldn't show both sides here. Click to try again." |
 | Players | "Sent to client · yesterday at 4:10 pm" · "Your edit now" · "same shot" · "waiting" · slate: "“Drone shot” isn't in “Sent to client”" + "Its shot plays on the other side" · "Play this side alone" · "Listen to this side" |
 | Wipe / Flip | "Drag the line, or ← →, to wipe between them" · "Showing Sent to client" · "Hold B to flip, or click" |
 | Transport | "Play both" / "Pause" · "In step by shot" + "Both sides play the same shot together. A shot that's longer on one side waits for the other." |
 | Timeline | legend "added · removed · changed or moved" · seam "Removed “B-roll pier” here (3 s)" · tags "+", "←4 s", "2 s→", "new track", "•", "3" |
-| Panel | "← History" · "From “Sent to client” · yesterday at 4:10 pm / to your edit now" · "7 changes · 0:36" · "Then" / "Now" · "Restore your edit to “Sent to client”…" · "Back to Fold in…" · across cuts: "Only in Main cut: …", "Only in the 30s cut: …", "… is 6 s shorter in the 30s cut", "… ends at 0:05 here, 0:03 in the 30s cut", "Use the 30s cut's “Interview B” here", "Fold in changes from “30s Instagram cut”…" |
+| Panel | "← History" · "From “Sent to client” · yesterday at 4:10 pm / to your edit now" · "7 changes · 0:36" · "Then" / "Now" · "Restore your edit to “Sent to client”…" · "Back to Fold in…" · across cuts: "Only in Main cut: …", "Only in the 30s cut: …", "… is 6 s shorter in the 30s cut", "… ends at 0:05 here, 0:03 in the 30s cut", "Use the 30s cut's “Interview B” here", "Fold in changes from “30s Instagram cut”…" · History closed: the frame's own label "Comparing “Sent to client” with your edit · 7 changes", its words' tooltip "Show the changes in History" |
 | History | "Compare" (cut bar, cuts menu rows) · its menu: "Compare your edit with…", "The version you sent", "The last export", "How it was this morning", "Another cut", "Pick a version…" · "⇆ Side by side" (card while playing) · "See them side by side" (Fold in) · "Compare with Main cut" (a teammate's cut) |
 | Toasts | "You're comparing “Sent to client” with your edit." + "Done comparing" · "You're comparing two earlier versions." + "Back to my edit" · "Director opened a comparison." + "Esc to go back" · "Claude Code has a comparison ready: “30s Instagram cut” with Main cut." + "Open" · "Couldn't show “Sent to client” side by side here. Showing it as a flip." · "Back to your edit to export it." |
 | *Removed* | the in-panel Changes view's change map · "Changes since 12:20 pm" as a panel title (the range line replaces it) |
