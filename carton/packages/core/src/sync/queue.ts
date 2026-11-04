@@ -56,8 +56,11 @@ export interface QueueVersion {
  * History a change carries besides its ops (fold-ins, undo, partial accept, names): kept through rebases and sent with
  * every push, so the merge DAG and undo survive on shared cuts (review finding 13).
  */
-export type HistoryFields = Partial<Pick<Change, "kind" | "mergeOf" | "mergeEdges" | "mergeBase" | "reverts" | "rejected" | "lastAuthors" | "name">>;
-const HISTORY_KEYS = ["kind", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name"] as const;
+export type HistoryFields = Partial<Pick<Change, "kind" | "mergeOf" | "mergeEdges" | "mergeBase" | "reverts" | "rejected" | "lastAuthors" | "name" | "restoreOf" | "restoreRecord" | "restoreName">>;
+// A restore's version and a bring-back's clip (`restoreOf`, `restoreRecord`, `restoreName`: Carton UX v2) go with the
+// push too, so a teammate's History reads "Brought back “Intro” from …" (a server that doesn't keep them drops them, and
+// the row reads as a restore, as it always did).
+const HISTORY_KEYS = ["kind", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "restoreOf", "restoreRecord", "restoreName"] as const;
 /** An empty change that must still be recorded: a fold-in (a DAG node) or an undo (it marks its change undone). */
 export const keepsWhenEmpty = (h: HistoryFields | undefined): boolean => !!h && (h.mergeOf !== undefined || h.reverts !== undefined);
 

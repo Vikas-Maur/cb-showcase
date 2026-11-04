@@ -236,8 +236,42 @@ export interface IdentityMsg {
   branchId: string;
   identity: Person;
 }
+/**
+ * A landmark everyone sees (Carton UX v2, DESIGN-V2 §2.1: Exported, Sent): a version a person marked, never an edit. It
+ * adds no row, no version and no undo step; the server keeps it beside the cut's rows (so archiving them never touches
+ * it) and tells it to every connection that asked (`LandmarksMsg`). Start and Before are personal: never sent.
+ */
+export interface SharedLandmark {
+  /** `<rid>.L<…>`, made once by the replica that marked it (a retry sends the same id): its rid names the person, as a change id's does. */
+  id: string;
+  kind: "exported" | "sent";
+  /** The version: the cut's confirmed seq when it was marked. */
+  seq: number;
+  at: number;
+  by: Actor;
+  /** An export's preset or file, whom it was sent to: as the app gave it, at most 120 characters. */
+  label?: string;
+  /** Its place in the cut's landmark stream (1, 2, …), the server's. */
+  n?: number;
+}
+/**
+ * Ask for a cut's shared landmarks after `since` (a stream position, 0 for all), and keep this connection told of new
+ * ones. Sent only to a server whose welcome had `landmarks` (an older one never gets it).
+ */
+export interface LandmarksMsg {
+  type: "landmarks";
+  branchId: string;
+  since: number;
+}
+/** Keep this landmark for the cut (sent only to a server whose welcome had `landmarks`). */
+export interface LandmarkMsg {
+  type: "landmark";
+  branchId: string;
+  mark: SharedLandmark;
+}
+
 /** Any message over 1 MiB, either way, travels as an envelope (`envelope.ts`). */
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | IdentityMsg | EnvelopeMsg;
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | IdentityMsg | LandmarksMsg | LandmarkMsg | EnvelopeMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -274,6 +308,8 @@ export interface WelcomeMsg {
    * when the server keeps people: the client may then send `identity` on this connection.
    */
   people?: PersonRids[];
+  /** The server keeps shared landmarks: the client may send `landmarks` and `landmark` on this connection. */
+  landmarks?: true;
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
@@ -435,9 +471,26 @@ export interface PeopleMsg {
   people: PersonRids[];
 }
 
+/**
+ * A cut's shared landmarks, oldest first: the answer to `landmarks` (`reply`; `more`: ask again after `head`), or new
+ * ones as they are kept, to every connection that asked (the writer's too). `head`: the stream's newest position.
+ * `refused`: ids of the writer's own that the server won't keep (its role, a version it doesn't have), told to it
+ * alone, so it stops sending them.
+ */
+export interface LandmarksReplyMsg {
+  type: "landmarks";
+  branchId: string;
+  rows: SharedLandmark[];
+  head: number;
+  reply?: true;
+  more?: true;
+  refused?: string[];
+}
+
 export type ServerMessage =
   | WelcomeMsg
   | PeopleMsg
+  | LandmarksReplyMsg
   | HistoryReplyMsg
   | ChangesMsg
   | AckMsg

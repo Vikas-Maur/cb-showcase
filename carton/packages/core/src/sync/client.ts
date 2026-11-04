@@ -21,7 +21,7 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { apply, fork, hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, Person, PersonRids, PresenceMsg, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, LandmarkMsg, LandmarksMsg, LandmarksReplyMsg, PendingClaim, Person, PersonRids, PresenceMsg, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
 import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
@@ -113,6 +113,11 @@ export interface SyncClientOptions {
   identity?: () => Person | null;
   /** People the server sent (its welcome's list, and each change to it), before the rows they come with. */
   onPeople?: (people: PersonRids[]) => void;
+  /**
+   * Shared landmarks (Carton UX v2): `ready` once a connection whose server keeps them (its welcome had `landmarks`) has
+   * caught up, to ask for them (`sendLandmarks`); `take`, each `landmarks` message on it. Never called for an older server.
+   */
+  landmarks?: { ready: () => void; take: (m: LandmarksReplyMsg) => void };
 }
 
 /** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
@@ -169,6 +174,8 @@ export class SyncClient {
   caughtUp = false;
   /** This connection's server keeps people (its welcome had `people`): `identity` may be sent alone. */
   private peopleKept = false;
+  /** This connection's server keeps shared landmarks (its welcome had `landmarks`). */
+  private landmarksKept = false;
   private quiesced = false;
   private retry: unknown = null;
   private presenceAt = -Infinity;
@@ -331,6 +338,7 @@ export class SyncClient {
         this.confirmedSoFar = [];
         this.noKeyframe = false;
         this.peopleKept = false;
+        this.landmarksKept = false;
         this.stats.reconnects++;
         const id = this.connId;
         const conn = c;
@@ -450,6 +458,12 @@ export class SyncClient {
     if (who) m.identity = who;
     return m;
   }
+  /** A landmark message on this connection, if its server keeps them (else nothing is sent: false). */
+  sendLandmarks(m: LandmarksMsg | LandmarkMsg): boolean {
+    if (!this.landmarksKept || !this.conn?.open || this.stopped) return false;
+    this.send(m);
+    return true;
+  }
   /** Send this replica's person now, on a connection whose server keeps people (one that never would says so in error). */
   identify(): void {
     const who = this.o.identity?.();
@@ -505,6 +519,9 @@ export class SyncClient {
       case "people":
         if (m.branchId === b) this.o.onPeople?.(m.people);
         return;
+      case "landmarks":
+        if (m.branchId === b) this.o.landmarks?.take(m);
+        return;
       case "hello":
       case "changes":
         if (m.type === "hello" && m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
@@ -513,6 +530,7 @@ export class SyncClient {
           this.peopleKept = true;
           this.o.onPeople?.(m.people);
         }
+        if (m.type === "hello" && m.landmarks === true && m.branchId === b) this.landmarksKept = true;
         this.fenced(() => {
           if (m.branchId !== b) return;
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
@@ -561,6 +579,7 @@ export class SyncClient {
             // waiting is the latest (review SF4-8); a leave isn't repeated
             const p = this.presenceLast;
             if (p?.state) this.sendPresence(p.actor, p.state);
+            if (this.landmarksKept) this.o.landmarks?.ready();
           }
           this.pump();
         });

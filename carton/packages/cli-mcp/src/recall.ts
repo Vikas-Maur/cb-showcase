@@ -124,7 +124,7 @@ export async function landmarksCommand(ctx: CbContext, a: Record<string, any>): 
   const list = await carton.landmarks({ cut: cut.id, limit: Math.max(1, Math.min(Number(a.limit ?? 20), 1000)) });
   const cuts = await cutMap(carton);
   const rows: string[][] = [];
-  for (const l of list) rows.push([when(l.at, now), l.kind === "turn" ? l.by?.name ?? "Agent turn" : LANDMARK_WORD[l.kind]!, await landmarkWords(carton, l, now), refOf(cuts, l.ref)]);
+  for (const l of list) rows.push([when(l.at, now), l.kind === "turn" ? l.by?.name ?? "Agent turn" : LANDMARK_WORD[l.kind]!, await landmarkWords(carton, l, now, ctx.actor), refOf(cuts, l.ref)]);
   const where = cut.kind === "main" ? "Main cut" : quote(cut.name);
   const text = list.length
     ? [`Landmarks on ${where} (newest first):`, ...table(rows).split("\n").map((x) => `  ${x}`), "Words that work in place of a reference: sent, exported, today, now, a version's name, a cut's name."].join("\n")
@@ -132,8 +132,11 @@ export async function landmarksCommand(ctx: CbContext, a: Record<string, any>): 
   return { json: { cut: { id: cut.id, name: cut.name }, landmarks: list.map((l) => ({ ...l, version: refOf(cuts, l.ref) })) }, text };
 }
 
-async function landmarkWords(carton: Carton, l: Landmark, now: number): Promise<string> {
+async function landmarkWords(carton: Carton, l: Landmark, now: number, me: Actor): Promise<string> {
   const mine = l.personal ? " (only you see this)" : "";
+  // a teammate's Exported or Sent (a shared cut's, through the sync server) says whose: "· by Leo"
+  const self = carton.identity()?.id;
+  const by = l.by && person(l.by, me) !== "the user" && !(l.by.kind === "human" && l.by.id === self) ? ` · by ${person(l.by, me)}` : "";
   switch (l.kind) {
     case "start": return `How it was when you opened it${mine}`;
     case "before": {
@@ -147,9 +150,9 @@ async function landmarkWords(carton: Carton, l: Landmark, now: number): Promise<
     }
     case "exported": {
       const len = await carton.checkout(l.ref).then((d) => duration(carton, d)).catch(() => null);
-      return `${l.label ?? "The edit"}${len !== null ? ` · ${timecode(len)}` : ""}`;
+      return `${l.label ?? "The edit"}${len !== null ? ` · ${timecode(len)}` : ""}${by}`;
     }
-    case "sent": return l.label ?? "Sent";
+    case "sent": return `${l.label ?? "Sent"}${by}`;
     case "named": return quote(l.label ?? "");
     case "turn": return (await versionLine(carton, l.ref)).what || quote(l.label ?? "");
   }

@@ -16,6 +16,9 @@
 // - `adopt` / `branchStatus` are the idempotent hand-off (§5.3); `fork` makes a server-side variant (O(1)).
 // - `keyframe` stores a state a replica uploaded when an ack asked for one (`keyframeWanted`).
 // - `presence` is relayed to the branch's other subscribers and never stored (§12).
+// - `landmarks` / `landmark` (Carton UX v2): a cut's shared landmarks (Exported, Sent), kept in their own table beside
+//   the rows (`landmarks.ts`), never changes; told to every connection that asked. A welcome says `landmarks` so a
+//   client knows it may send them (an older server never says so, and never gets them).
 // - Any message over 1 MiB either way travels as an envelope through the blob store (`sync/envelope.ts`): a client's is
 //   opened (and its blob deleted) before the message is handled; the server's go to connections whose hello said
 //   `envelopes`, one upload per message however many connections it goes to, in order with the rest.
@@ -25,6 +28,7 @@ import type { Change, CutRecord, Doc, Op, Rec, TimelineConfig } from "@carton/co
 import { sequencer as rules, sha256Hex, sync } from "@carton/core";
 import { Tables, type Row, type StoredBranch, FLAG_STRUCTURAL, FLAG_WITHDRAWN } from "./tables.ts";
 import { createCommentRoom, type CommentPeer } from "@carton/comments/server";
+import { landmarkProblem, landmarkStore } from "./landmarks.ts";
 import type { CommentPatchMsg, CommentsRequest } from "@carton/comments";
 
 type ClientMessage = sync.ClientMessage;
@@ -71,6 +75,11 @@ export interface ConnectionState {
    * from then on. Kept here, so a socket restored after hibernation still gets them.
    */
   comments?: true;
+  /**
+   * The connection asked for shared landmarks (`landmarks`, Carton UX v2): new ones on the cuts it subscribed to are
+   * sent to it from then on. Kept here, so a socket restored after hibernation still gets them.
+   */
+  landmarks?: true;
   /**
    * The client waits out a host's write limit (its hello said `writeLimit`): a push the blob store refused for a while
    * drops the rest of its epoch, and the client sends it again after the limit's time.
@@ -287,6 +296,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   function* commentSubscribers(): Iterable<CommentPeer> {
     for (const o of conns.values()) if (stateOf(o).comments) yield peerOf(o);
   }
+  // Shared landmarks (Carton UX v2): their own table in the same storage, made on first use; never changes.
+  const marks = landmarkStore(opts.storage);
 
   // ---------------------------------------------------------------- connections and fan-out
   const conns = new Map<string, HostConnection>();
@@ -652,6 +663,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       seq,
     };
     for (const k of HISTORY_FIELDS) if (ch[k] !== undefined) (row as unknown as Record<string, unknown>)[k] = ch[k];
+    for (const k of RESTORE_FIELDS) if (typeof ch[k] === "string" && ch[k].length <= 1024) row[k] = ch[k];
     return row;
   }
 
@@ -874,6 +886,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     // taken after the rows' read, so no change to them can fall between this list and the subscription below
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed, people: seesPeople(c) ? tables.people() : [] };
+    // this server keeps shared landmarks: the client may ask (a watch link is never told any: see onLandmarks)
+    if (seesPeople(c)) msg.landmarks = true;
     if (keyframe) msg.keyframe = keyframe;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
@@ -1369,9 +1383,44 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onPresence(c, msg);
       case "history":
         return onHistory(c, msg);
+      case "landmarks":
+        return onLandmarks(c, msg);
+      case "landmark":
+        return onLandmark(c, msg);
       default:
         return send(c, { type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
     }
+  }
+
+  /**
+   * `landmarks` (Carton UX v2): a page of the cut's shared landmarks after `since`, and this connection told of new ones
+   * from then on. A reader who doesn't see the team (a watch link: `seesPeople`) gets none: a landmark says who made
+   * it and whom a version was sent to.
+   */
+  function onLandmarks(c: HostConnection, m: sync.LandmarksMsg): void {
+    if (!seesPeople(c) || !tables.branch(m.branchId)) return send(c, { type: "landmarks", branchId: m.branchId, rows: [], head: 0, reply: true });
+    stateOf(c).landmarks = true;
+    const page = marks.after(m.branchId, Number(m.since) || 0);
+    send(c, { type: "landmarks", branchId: m.branchId, rows: page.rows, head: marks.head(m.branchId), reply: true, ...(page.more ? { more: true } : {}) });
+  }
+  /**
+   * `landmark`: an editor's Exported or Sent, kept once (a retry under its id is answered with the one kept, to the
+   * writer alone) and sent to every connection that asked for the cut's (the writer's too). One the server won't keep
+   * (a viewer's, another device's replica id, a version the cut doesn't have) is told to the writer as `refused`, never
+   * as an error: it isn't a sync problem, and the client stops sending it.
+   */
+  function onLandmark(c: HostConnection, m: sync.LandmarkMsg): void {
+    const b = m.branchId, mark = m.mark;
+    const id = typeof mark?.id === "string" ? mark.id.slice(0, 100) : null;
+    if (writable(c, b) || !seesPeople(c) || landmarkProblem(mark, tables.head(b)) || !ridOk(c, id!)) {
+      if (id !== null) send(c, { type: "landmarks", branchId: b, rows: [], head: tables.branch(b) ? marks.head(b) : 0, refused: [id] });
+      return;
+    }
+    const { row, fresh } = marks.keep(b, mark);
+    const msg: sync.LandmarksReplyMsg = { type: "landmarks", branchId: b, rows: [row], head: row.n! };
+    const told = (o: HostConnection) => !!stateOf(o).landmarks && stateOf(o).subs.includes(b);
+    if (fresh) for (const o of conns.values()) if (o !== c && told(o)) send(o, msg);
+    send(c, msg);
   }
 
   /** Every send so far delivered (envelope uploads done): a host may hibernate once a message's handling resolves. */
@@ -1423,6 +1472,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
+      marks.drop(branchId);
     },
     createBranch: (rec, init) => {
       // without a blob store this is synchronous, so a host (or a simulation) can set a branch up before any message
@@ -1502,6 +1552,12 @@ const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "h
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;
+/**
+ * A restore's version and a bring-back's clip (Carton UX v2): strings, kept in the body as the fields above are, so a
+ * teammate's History reads "Restored the 11:02 am version", "Brought back “Intro” from …" (an older server dropped
+ * them, and an older client never reads them). Not hashed.
+ */
+const RESTORE_FIELDS = ["restoreOf", "restoreRecord", "restoreName"] as const;
 
 /** As `Tables.rowSizes`, for a row of an archived segment (its columns are strings, `body` its inline body's bytes). */
 function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8Array | null, branchId: string): number {

@@ -179,8 +179,9 @@ function MarkMeta({ mark, v, also }: { mark: Landmark; v: Version; also?: string
   return h(
     Fragment,
     null,
-    mark.kind === "before" ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
-    // (Start and Before are yours; Exported and Sent stay on this computer until the server carries them: N0's `local`)
+    // (a teammate's Before, if core's SHARE_BEFORE shows them, names its person: "Kept for you" is for yours)
+    mark.kind === "before" && mark.personal ? h("span", { className: "carton-actor-name" }, words.keptForYou) : mark.kind === "named" ? h("span", { className: "carton-actor-name" }, words.namedBy(who)) : by.kind === "system" ? null : h(ActorName, { actor: by }),
+    // (Start and Before are yours; Exported and Sent stay on this computer until the sync server has them: `local`)
     mark.personal || mark.local ? h("span", { className: "carton-version-count" }, words.onlyYouSee) : null,
     also ? h("span", { className: "carton-version-count" }, words.alsoLandmark(also)) : null,
   );
