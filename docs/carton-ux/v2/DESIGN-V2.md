@@ -108,7 +108,8 @@ DESIGN §5.
 *At 0:13 your edit plays the added “Drone shot”. “Sent to client” has no such shot, so its side holds a slate. The
 white playhead is your edit; the dotted one on the strip is “Sent to client”.*
 
-- **Space** or **Play both** plays both sides from the selected spot.
+- **Space** or **Play both** plays both sides from the selected spot. After it has played to the end, one click plays it
+  again from 0:00 (the editor's own stop at the end of the timeline is not a pause).
 - **In step by shot.** The two sides are matched clip by clip; the comparison knows which clip is which. Each shot
   starts on both sides together.
   - A side's shots are the clips its picture is built on: the footage on its lowest picture track, else the lowest
@@ -251,7 +252,7 @@ marks update within a second, and the selected row stays selected if it still ex
 | Stage ≥ 682 px | All three modes; Side by side is the default |
 | Stage < 682 px (e.g. a 1100 px window with History and the chat open; a 1444 px laptop window with History, the chat and Compare open gives 629 px) | **Flip** is the default. Side by side is greyed. When closing History would give the stage 682 px, a click on it closes History (Compare stays on) and shows Side by side; its tooltip: "Side by side needs a wider stage. Click to close History and make room." Otherwise its tooltip names the fewest to close, from what is open, or says to widen the window: "Side by side needs a wider stage. Close the chat or widen the window.", "… Close History and the chat, or widen the window.", "… Widen the window." |
 | Stage < 600 px | The modes keep their icons and drop their words, except Flip; their tooltips keep the words. The count goes (the list has it). **Done comparing** becomes **Done** |
-| Stage < 360 px | Flip only |
+| Stage < 360 px | Flip only; when closing History alone would give the stage 682 px, Side by side is still offered greyed, and its click closes History and shows it |
 | Window < 1180 px | The chip shortens (§1.7); the panel is 300 px |
 | **History closed, or in the drawer with the drawer hidden** | The list isn't on screen, so the frame's own label shows (DESIGN §4.2): `⇆ Comparing “Sent to client” with your edit now · 7 changes ✕`. A click on its words opens History (or the drawer) on the change list; ✕ ends Compare. Closing History or the drawer does **not** end Compare: the label stays |
 
@@ -260,7 +261,8 @@ marks update within a second, and the selected row stays selected if it still ex
 ### 1.10 When a second player isn't possible: Flip only
 
 The second player can fail: it doesn't start within 2 s (counted while the window is on screen: a minimised window
-stops the frames its start is checked on), the computer's graphics memory is short, the project is too
+stops the frames its start is checked on; and only while the left side shows a picture: under a slate, a shot it
+hasn't or an empty version such as the start of History, there is no player to start, so a slate never fails it), the computer's graphics memory is short, the project is too
 large, or a later Cardboard breaks the hook. Then:
 - the mode switch shows **Flip**, with Side by side and Wipe greyed ("Couldn't show both sides here. Click to try
   again."): picking one tries the second player again, once per pick. Without a second player at all (a Cardboard
