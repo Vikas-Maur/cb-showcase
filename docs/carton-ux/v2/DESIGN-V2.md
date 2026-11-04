@@ -49,7 +49,7 @@ While comparing, these change:
 
 | Region | While comparing |
 |---|---|
-| **Title bar chip** | Second part: `⇆ Comparing “Sent to client” with your edit ✕` (§1.7) |
+| **Title bar chip** | Second part: `⇆ Comparing “Sent to client” with your edit now ✕` (§1.7) |
 | **Stage** | The **compare bar** at its top: the modes, the count ("7 changes") and **Done comparing**. Below it, two players (or a wipe, or a flip), each labelled under its picture, then **Play both** and its progress. Nothing sits over the picture |
 | **Library** | Steps aside to give the stage its width, as when the person collapses it. It comes back on exit. The rail of icons stays |
 | **Timeline** | Cardboard's own, showing the **right side**. Its clips carry the marks (§1.6); a 26 px strip on top shows the left side. Muted, framed, not editable |
@@ -92,7 +92,7 @@ DESIGN §5.
 |---|---|---|
 | **Side by side** (default) | Two players in the project's aspect, left and right, the same size. Each has a label under it (**name** · when · its timecode, and "same shot" while in step) | Seeing what's different at a glance, and playing both |
 | **Wipe** | One picture. Left of the line is the left side, right of it the right side. Drag the line, or ← → (Shift for fine). Double-click puts it back in the middle. Labels sit in the top corners | A look, a colour, a title's style: things in the same place on both sides |
-| **Flip** | One picture, full size, showing the right side. **Hold B** (or hold the pill under the picture) to show the left; release to come back. A click latches it. The tag at top-left says which side is shown, and turns blue while it's the left | Small windows, and spotting a change by flicking between the two |
+| **Flip** | One picture, full size, showing the right side. **Hold B** (or hold the pill under the picture) to show the left; release to come back. A click latches it. Under the picture, "Showing" and the pill say which side is shown: its half is pressed, and turns blue while it's the left. Nothing sits over the picture (laptop: a tag at its top-left covered it) | Small windows, and spotting a change by flicking between the two |
 
 ![wipe](after/compare-wipe.png) ![flip](after/compare-flip.png)
 
@@ -111,11 +111,22 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
 - **Space** or **Play both** plays both sides from the selected spot.
 - **In step by shot.** The two sides are matched clip by clip; the comparison knows which clip is which. Each shot
   starts on both sides together.
+  - A side's shots are the clips its picture is built on: the footage on its lowest picture track, else the lowest
+    title or graphic. Titles, captions, B-roll over an interview and sound don't cut it, so a music bed under the whole
+    edit or a title over a shot never puts the two sides out of step.
+  - Shots are matched by identity (the clip, which cuts share from the cut they were made from), in order: a trimmed
+    clip, or one moved in time, is the same shot on both sides. Only where a clip has no partner by identity (deleted
+    and added again) is the same footage, in-point and length the same shot.
+  - A clip split on one side only plays as the whole clip on the other.
+  - A gap where a clip was is no shot: that side shows the slate.
   - When a shot is longer on one side, the other side holds its last frame, and its label says "waiting", until the
     longer one ends.
   - A shot that only one side has plays on that side. The other side shows a slate: **“Drone shot” isn't in “Sent to
     client”** · "Its shot plays on the other side."
+  - A clip moved past others is on both sides, in another order: where it plays on one side, the other's slate says
+    where it is instead, **“Drone shot” is later in your edit now** (or "earlier"), never "isn't in".
   - So drift never builds up, and the two pictures always show the same moment of the story.
+  - The timecodes never step back: when the editor's player takes a moment to start a shot, the story waits for it.
   - "In step by shot" has an ⓘ: "Both sides play the same shot together. A shot that's longer on one side waits for
     the other."
 - **Sound** comes from the right side. In Flip it comes from the side shown. Each label has a speaker on hover to
@@ -132,8 +143,8 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
   or was, on the left; the right side to where it is on the right.
   - The timeline scrolls the clip into view and rings it in white.
   - The row opens its detail: **Then** / **Now** in words, and the one-clip action (§3.2).
-  - A removed clip: the left player shows it, the right shows the moment where it was. A clip only on the right: the
-    left shows the slate.
+  - A removed clip: the left player shows it, the right shows the moment where it was, where its mark is (§1.6): the
+    list's jump and the timeline always agree. A clip only on the right: the left shows the slate.
 - **Enter, or ▶ on the row:** plays that spot on both sides, with one second either side, in step.
 - **On the timeline:** clicking a marked clip, a ghost or a seam selects its row in the list and scrolls the list to
   it. Clicking an unmarked clip only moves the playhead. Nothing can be dragged (§1.8).
@@ -146,8 +157,8 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
 | What happened (right side compared with left) | Mark on the clip |
 |---|---|
 | **Added** (only on the right) | Green 2 px outline inside the clip, and a **+** tag |
-| **Removed, a gap left** | A **ghost** of its size where it was: red dashed outline, faint hatching, its name in red-tinted text. Drawn behind the real clips |
-| **Removed, the rest moved up** | A **seam**: a red dashed line at the join, with a **−** knob on top. Its tooltip: "Removed “B-roll pier” here (3 s)" |
+| **Removed, a gap left** | A **ghost** of its size where it was: red dashed outline, faint hatching, its name in red-tinted text. Drawn behind the real clips. "Where it was" is its old place carried through the clips' alignment (§1.4), so an earlier trim that moved the rest up moves the ghost with them. A gap was left when nothing on its track now covers most of that place |
+| **Removed, the rest moved up** | A **seam**: a red dashed line at the join, with a **−** knob on top. Its tooltip: "Removed “B-roll pier” here (3 s)". Also where something else took its place |
 | **Moved** | Amber outline and a tag with the direction and amount: **←4 s**, **2 s→**, or **new track**. On hover, its old place shows as a dotted amber outline |
 | **Trimmed** | Amber outline. The old edge shows as a dotted amber extension when it was longer, or a short amber notch inside when it was shorter |
 | **Changed** (text, look, volume, speed, effects) | Amber outline and a **•** tag. Its tooltip is the change's sentence |
@@ -156,9 +167,11 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
 | **Unchanged** | Muted, as while viewing, so the marked clips stand out |
 
 - **The strip** is a 26 px row above the tracks, labelled with the left side's name. It shows the left side's main
-  video track on its own time, at the timeline's zoom and scroll. A clip that's gone on the right has a red outline;
-  the dotted playhead is the left player. It shows at a glance that the two edits differ in length and where things
-  went.
+  video track on its own time, at the timeline's zoom and scroll. Each of its clips is drawn in the legend's colours
+  for what happened to it on the right: unchanged as a plain bar, changed, trimmed or moved with an amber outline, gone
+  with a red dashed outline; a gap is a faint neutral outline (laptop: every changed stretch was red, so the old
+  version read as "everything removed"). The dotted playhead is the left player. It shows at a glance that the two
+  edits differ in length and where things went.
 - **The legend** ("added · removed · changed or moved") sits at the right of the timeline's toolbar, beside the
   optional cut label. It hides when the timeline is narrower than 900 px; the list carries the same.
 - **Colour is never the only signal.** Every mark also has a shape: outline, dashed ghost, seam knob or tag.
@@ -169,16 +182,23 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
 
 ### 1.7 The chip, and the ways out
 
-- **The chip's second part:** `⇆ Comparing “Sent to client” with your edit ✕`. Other examples:
+- **The chip's second part:** `⇆ Comparing “Sent to client” with your edit now ✕`. Other examples:
   - `⇆ Comparing your edit from 12:41 pm with Director's “Add captions…”` (two older versions)
   - `⇆ Comparing “30s Instagram cut” with Main cut`
   - `⇆ Comparing Leo's Main cut with yours`
   - `⇆ Comparing “30s Instagram cut” at 12:20 pm with Main cut now`
 - The label is built in one place, with the panel's range line, so the two never disagree.
-- **Narrow:** it shortens first to `⇆ Comparing “Sent to client”…`, then `⇆ Comparing`. The ⇆ and the ✕ always stay;
-  the whole label is in the tooltip.
+- **One name per side, everywhere in Compare** (the chip, the frame's label, the list's head, the players' labels): your
+  edit is "your edit now"; a version is its name or its time, said once ("your edit from 9:31 am", never "your edit
+  from 9:31 am · 9:31 am"); a named or prompted version adds its time after its name ("Sent to client · yesterday at
+  4:10 pm").
+- **Narrow:** it shortens first to `⇆ Comparing “Sent to client”…`, then `⇆ Comparing` (below 1000 px). The ⇆ and the ✕
+  always stay; the whole label is in the tooltip. The title bar's tabs keep room for one project tab whole (its ✕) and
+  the New project "+" after it: the chip gives way first, and with more tabs than fit, the tab list scrolls with "+" at
+  its end, never under it (laptop: at 960 px "+" sat on the project tab's ✕).
 - **Ways out**, all to the same place:
-  - Esc, unless a menu, a latched flip or a drag takes it first;
+  - Esc, unless a menu, a latched flip or a drag takes it first. A clip clicked on the timeline while comparing doesn't
+    take it: Esc ends Compare and clears the selection with it;
   - the chip's ✕ ("Done comparing (Esc)");
   - **Done comparing** on the compare bar;
   - **← History** at the top of the panel;
@@ -193,7 +213,8 @@ white playhead is your edit; the dotted one on the strip is “Sent to client”
   - If the right side was your edit, the playhead **stays where it is**, at the change you were looking at, so you
     can fix it right there.
   - Otherwise it goes back to where it was before you compared.
-  - History shows its list again, with the card you came from still open.
+  - History shows its list again, with the card you came from still open, and the keyboard in it when nothing else
+    had it, so the next Esc closes History.
 - Screen readers hear "Back to your edit."
 
 ### 1.8 An edit tried while comparing
@@ -230,7 +251,7 @@ marks update within a second, and the selected row stays selected if it still ex
 | Stage < 600 px | The modes keep their icons and drop their words, except Flip; their tooltips keep the words. The count goes (the list has it). **Done comparing** becomes **Done** |
 | Stage < 360 px | Flip only |
 | Window < 1180 px | The chip shortens (§1.7); the panel is 300 px |
-| **History closed, or in the drawer with the drawer hidden** | The list isn't on screen, so the frame's own label shows (DESIGN §4.2): `⇆ Comparing “Sent to client” with your edit · 7 changes ✕`. A click on its words opens History (or the drawer) on the change list; ✕ ends Compare. Closing History or the drawer does **not** end Compare: the label stays |
+| **History closed, or in the drawer with the drawer hidden** | The list isn't on screen, so the frame's own label shows (DESIGN §4.2): `⇆ Comparing “Sent to client” with your edit now · 7 changes ✕`. A click on its words opens History (or the drawer) on the change list; ✕ ends Compare. Closing History or the drawer does **not** end Compare: the label stays |
 
 ![narrow](after/compare-narrow.png) ![drawer hidden](after/compare-drawer-hidden.png)
 
@@ -341,7 +362,8 @@ cut switch`. Without `--show`, `cb compare` prints words, as today (§5).
 - the History panel opens to the change list if it was closed, and closes again on exit if the agent opened it, unless
   the person closed it meanwhile (then a History they open again is theirs, and stays);
 - one toast, for 6 s: **"⇆ Director opened a comparison. Esc to go back ✕"**. The ✕ hides only the toast; the chip,
-  Done comparing and Esc end Compare;
+  Done comparing and Esc end Compare. Who asked is named as History names authors: the person's own `cb`, typed in a
+  terminal, is "You" ("You opened a comparison.", "You have a comparison ready: …"), never "Terminal";
 - screen readers hear "Director opened a comparison: “Sent to client” with your edit. 7 changes. Esc to go back."
 
 **Never:** during a drag, over a dialog, while the person is typing in the editor, or without the chip and Esc to go
@@ -353,7 +375,7 @@ back. An agent can't open Compare on a version that hasn't reached this computer
 
 | Where | Key | Does |
 |---|---|---|
-| Anywhere while comparing | **Esc** | Done comparing (after a menu, a latched flip or a drag) |
+| Anywhere while comparing | **Esc** | Done comparing (after a menu, a latched flip or a drag; a selected clip doesn't take it, and is deselected) |
 | | **Space** | Play both / pause |
 | | **B** (hold) | Flip mode: show the left side. Carton takes B only while comparing, when edits are refused anyway |
 | | **Ctrl+Shift+H** | Close or open History. Compare stays on; with History closed the frame shows its own label |
@@ -375,28 +397,32 @@ back. An agent can't open Compare on a version that hasn't reached this computer
   - on leaving: "Back to your edit."
   - Playback announces nothing.
 - The marks and the strip are `aria-hidden`; the list carries the same.
+- Quotes are curly everywhere in Compare and History, also in what someone typed: a prompt `Make the title say
+  "Summer launch"` reads Director's “Make the title say ‘Summer launch’”.
 - Reduced motion: no pulse, no ring animation; jumps are instant.
 
 **Words (new):**
 
 | Place | Words |
 |---|---|
-| Chip | "Comparing “Sent to client” with your edit" · "Comparing “30s Instagram cut” with Main cut" · "Comparing Leo's Main cut with yours" · "Comparing your edit from 12:41 pm with Director's “Add captions…”" · ✕ "Done comparing (Esc)" |
+| Chip | "Comparing “Sent to client” with your edit now" · "Comparing “30s Instagram cut” with Main cut" · "Comparing Leo's Main cut with yours" · "Comparing your edit from 12:41 pm with Director's “Add captions…”" · below 1000 px "Comparing" · ✕ "Done comparing (Esc)" |
 | Compare bar | "Side by side" · "Wipe" · "Flip" · "7 changes" / "7 differences" · "Done comparing" / "Done" · greyed: "Side by side needs a wider stage. Close the chat or widen the window." · "… Click to close History and make room." · "… Close History and the chat, or widen the window." · "… Widen the window." · after a failed start: "Couldn't show both sides here. Click to try again." |
-| Players | "Sent to client · yesterday at 4:10 pm" · "Your edit now" · "same shot" · "waiting" · slate: "“Drone shot” isn't in “Sent to client”" + "Its shot plays on the other side" · "Play this side alone" · "Listen to this side" |
-| Wipe / Flip | "Drag the line, or ← →, to wipe between them" · "Showing Sent to client" · "Hold B to flip, or click" |
+| Players | "Sent to client · yesterday at 4:10 pm" · "Your edit now" · "same shot" · "waiting" · slate: "“Drone shot” isn't in “Sent to client”" + "Its shot plays on the other side" · a moved clip's slate: "“Drone shot” is later in your edit now" / "… is earlier in …" · "Play this side alone" · "Listen to this side" |
+| Wipe / Flip | "Drag the line, or ← →, to wipe between them" · under the picture: "Showing" [Sent to client \| Your edit now] · "Hold B to flip, or click" |
 | Transport | "Play both" / "Pause" · "In step by shot" + "Both sides play the same shot together. A shot that's longer on one side waits for the other." |
 | Timeline | legend "added · removed · changed or moved" · seam "Removed “B-roll pier” here (3 s)" · tags "+", "←4 s", "2 s→", "new track", "•", "3" |
-| Panel | "← History" · "From “Sent to client” · yesterday at 4:10 pm / to your edit now" · "7 changes · 0:36" · "Then" / "Now" · "Restore your edit to “Sent to client”…" · "Back to Fold in…" · across cuts: "Only in Main cut: …", "Only in the 30s cut: …", "… is 6 s shorter in the 30s cut", "… ends at 0:05 here, 0:03 in the 30s cut", "Use the 30s cut's “Interview B” here", "Fold in changes from “30s Instagram cut”…" · History closed: the frame's own label "Comparing “Sent to client” with your edit · 7 changes", its words' tooltip "Show the changes in History" |
+| Panel | "← History" · "From “Sent to client” · yesterday at 4:10 pm / to your edit now" · "From your edit from 9:31 am / to your edit now" (its time once) · a mute: "Muted “Intro”" / "Unmuted “Intro”" (a mute undone by an unmute is no change: not listed, not counted) · "7 changes · 0:36" · "Then" / "Now" · "Restore your edit to “Sent to client”…" · "Back to Fold in…" · across cuts: "Only in Main cut: …", "Only in the 30s cut: …", "… is 6 s shorter in the 30s cut", "… ends at 0:05 here, 0:03 in the 30s cut", "Use the 30s cut's “Interview B” here", "Fold in changes from “30s Instagram cut”…" · History closed: the frame's own label "Comparing “Sent to client” with your edit · 7 changes", its words' tooltip "Show the changes in History" |
 | History | "Compare" (cut bar, cuts menu rows) · its menu: "Compare your edit with…", "The version you sent", "The last export", "How it was this morning", "Another cut", "Pick a version…" · "⇆ Side by side" (card while playing) · "See them side by side" (Fold in) · "Compare with Main cut" (a teammate's cut) |
-| Toasts | "You're comparing “Sent to client” with your edit." + "Done comparing" · "You're comparing two earlier versions." + "Back to my edit" · "Director opened a comparison." + "Esc to go back" · "Claude Code has a comparison ready: “30s Instagram cut” with Main cut." + "Open" · "Couldn't show “Sent to client” side by side here. Showing it as a flip." · "Back to your edit to export it." |
+| Toasts | "You're comparing “Sent to client” with your edit now." + "Done comparing" · "You're comparing two earlier versions." + "Back to my edit" · "Director opened a comparison." + "Esc to go back" · "Claude Code has a comparison ready: “30s Instagram cut” with Main cut." + "Open" · the person's own: "You opened a comparison." / "You have a comparison ready: …" · "Couldn't show “Sent to client” side by side here. Showing it as a flip." · "Back to your edit to export it." |
 | *Removed* | the in-panel Changes view's change map · "Changes since 12:20 pm" as a panel title (the range line replaces it) |
 
 ### 1.15 What Compare needs underneath (for N0 and N1)
 
 - **`ui.align(a, b)`:** the clip-by-clip match between two versions, in one cut or across cuts. Each entry is
   `{ item, aStart?, aEnd?, bStart?, bEnd?, track }`. It drives in step by shot, the strip, the jumps and the cut
-  sentences. It is cached per (a, b), like `ui.changes`.
+  sentences. It is cached per (a, b), like `ui.changes`. The page lines Play both, the jumps, the marks and the strip
+  up from the two timelines it already loads for the players (`clipDiff`: each side's spine of clips matched by
+  identity, §1.4); core's content shot diff is the fallback while they aren't known.
 - **`ui.changes(a, b)` across cuts,** with a `between: "versions" | "cuts"` flag, so `describe` picks "Added …" or
   "Only in …".
 - **The second player:** it renders the left side from its own copy of the version, at its display size, never
@@ -406,7 +432,10 @@ back. An agent can't open Compare on a version that hasn't reached this computer
   the frame and toasts use).
 - **The timeline overlay** for marks and the strip, on the viewing frame's hook (DESIGN §11.2).
 - **`cb compare … --show`** sends `{ left, right }` to the editor over the same path as `cb cut switch`. The editor
-  answers `opened`, `offered` or `refused` (§5.3).
+  answers `opened`, `offered` or `refused` (§5.3). It is an ask, not a write: the app's lease holder passes it to the
+  pages without the `cb`-call freeze of timeline.tsx and without handing the asker's notices away. While the lease
+  says the app holds the project but its holder doesn't answer that moment (busy, or a helper holding the lease for a
+  moment), `cb` asks again for up to 4 s, and never says "No editor window" for an editor that has the project open.
 - Costs and their rules: §6.
 
 ---
@@ -446,7 +475,10 @@ leaving your edit.
 
 - **What:** the frame at the landmark's first change, or at 0:01 if it has none. A 44 × 25 px tile with the clip's
   look; rounded like Cardboard's media tiles.
-- **When:** made the first time the row comes into view, then kept (§6). Never during playback or export.
+- **When:** made the first time the row comes into view, then kept (§6). Never during playback or export. Made
+  from the stage while it shows the landmark's version; when the stage has no picture to give yet (black while a
+  project opens, a dropped canvas, two pictures while comparing), it is tried again while History is open (after 2 s,
+  5 s, 15 s, then every 30 s, and as soon as Compare ends), never while History is closed.
 - **Fallback:** the landmark's own icon on a dark tile (export arrow, send, bookmark, sun, shield), shown at once,
   and kept when the picture can't be made (footage offline, a version still arriving). Never a spinner, never a
   black tile.
@@ -720,8 +752,16 @@ $ cb compare sent now --show
 The user is already comparing two versions. They have a note in the editor with Open; nothing was replaced.
 ```
 
-`--show` exits 0 in all three cases (opened, offered, already busy). The first line says which, so the agent tells the
-person the truth ("I've put it on your screen" or "There's a note with Open in the editor").
+```
+$ cb compare sent now --show
+The editor didn't answer in time, so nothing opened. Here is the comparison:
+“Sent to client” (yesterday at 4:10 pm) with the user's edit now: 7 changes:
+  …
+```
+
+`--show` exits 0 in all these cases (opened, offered, already busy, no answer). The first line says which, so the
+agent tells the person the truth ("I've put it on your screen" or "There's a note with Open in the editor"). "No
+editor window has this project open" is said only when no app holds the project.
 
 ---
 
