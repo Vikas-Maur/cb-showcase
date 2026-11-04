@@ -17,7 +17,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
-import { cardboardAdapter, materializeProject } from "@carton/cardboard";
+import { cardboardAdapter, materializeProject, projectProblems } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
@@ -110,7 +110,7 @@ async function startLive(api, bundlePath, lc) {
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);
-    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
+    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.
@@ -243,7 +243,8 @@ async function commitShared(lc, { doc, base, author, intent }) {
     let resolved = [];
     const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
     if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
-    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status };
+    // the change's id in every answer that queued one (the facade holds a merged GUI save's document on it: ui-words)
+    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status, ...((r.id ?? r.change?.id) ? { id: r.id ?? r.change.id } : {}) };
     // Offline (pending), the holder's head is its optimistic state: what it merged this edit onto included.
     if (r.status === "pending") return { ...r, rebased: rebasedFrom((await lc.carton.head()).doc) };
     return r;
@@ -261,9 +262,11 @@ async function commitShared(lc, { doc, base, author, intent }) {
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
   const head = w.head?.doc ? w.head : await lc.carton.head();
   // the holder's write kept the cards as a notice for the author already (local's cardsWrite, or core's late conflict)
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
+  // its change's id (the holder's answer names it): the facade holds a merged GUI save's document on it (ui-words)
+  const id = typeof w.id === "string" ? { id: w.id } : {};
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...id, ...(w.head?.doc ? { head } : {}) };
   const pending = w.status === "pending";
-  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };
+  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...id, ...(w.head?.doc ? { head } : {}) };
 }
 
 /**
@@ -365,7 +368,9 @@ async function uploadDescriptor(bundlePath, projectId, lc, rec, project) {
   const cfg = store.readConfig(bundlePath, projectId);
   const token = await store.sessionFor(bundlePath, projectId).token();
   const doc0 = await lc.carton.checkout(`${rec.id}@0`);
-  const d = host.descriptor({ projectId, name: project?.name ?? path.basename(bundlePath, ".cardboard"), cut: rec, doc0, rootHash: hashDoc(doc0, lc.carton.schema), media: mediaRecords(project) });
+  // a fork's maker goes with it, beside its record (core keeps it so): a joiner's "Made this cut" names them too
+  const by = rec.forkOf ? await lc.carton.maker(rec.id) : null;
+  const d = host.descriptor({ projectId, name: project?.name ?? path.basename(bundlePath, ".cardboard"), cut: rec, doc0, rootHash: hashDoc(doc0, lc.carton.schema), media: mediaRecords(project), by });
   await host.putBlob({ host: cfg.host, projectId, token, key: host.DESCRIPTOR_KEY, bytes: new TextEncoder().encode(JSON.stringify(d)), contentType: "application/json" });
 }
 
@@ -499,10 +504,13 @@ extend({
           // The file starts at the cut's root, with the clips' full records from the descriptor: head (once caught up)
           // goes over it with those records kept by id, as the facade materializes any project.
           const project = { id: d.projectId, name: d.name, createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), ...materializeProject(d.doc0, null), media, stateUpdatedAt: now };
+          // never a project Cardboard can't read (laptop, build 915eb36): share data without a name is damaged
+          const problems = projectProblems({ format: "cardboard-project", version: 1, project, media: [] });
+          if (problems.length) throw new Error(`The host's share data for this project is damaged (${problems.join("; ")}): ask its owner to share it again`);
           fs.writeFileSync(path.join(staging, "project.json"), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }, null, 2));
           // The shared cut, from its root; its rows come from the host once the worker connects.
           const { store: st } = await openProjectStore({ bundleDir: staging, projectId: d.projectId });
-          const c = await Carton.open({ adapter: cardboardAdapter, store: st, hasher: nodeHasher, init: { join: { projectId: d.projectId, cut: d.cut, doc0: d.doc0, rootHash: d.rootHash } }, sync: { transport, url: "carton-sync:" + d.projectId, token: s.token, autoConnect: false } });
+          const c = await Carton.open({ adapter: cardboardAdapter, store: st, hasher: nodeHasher, init: { join: { projectId: d.projectId, cut: d.cut, doc0: d.doc0, rootHash: d.rootHash, ...(d.by ? { by: d.by } : {}) } }, sync: { transport, url: "carton-sync:" + d.projectId, token: s.token, autoConnect: false } });
           // That file is Carton's own (the root's state), not an outside save: its rev goes into the facade's rev map
           // (carton.db's local `views` table, ["rev", ms] → ref and ["ref", cut, seq] → ms). Without it the worker
           // would import the file as a foreign write the moment it reads it: a change taking the timeline back to the
@@ -542,6 +550,41 @@ extend({
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
         const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
+      },
+      /**
+       * Opening a shared project (UI audit P1-9): of the clips Cardboard's loader found no file for, which are a
+       * teammate's and which are this computer's. A teammate's clip never had an original here (the bundle's
+       * project.json lists no path for it): "playable" when its shared preview (or original) is on the host, so it
+       * plays from there, else "waiting" (not sent yet). "local": its original was here and is gone (moved, a drive
+       * unplugged), where Cardboard's own "Missing Media Files" stays right. Null for a project that isn't shared.
+       * Never waits long on the network: a record not known within 2 s counts as waiting.
+       */
+      async liveMediaHere({ projectId, mediaIds }) {
+        const bundlePath = api.bundleOf(projectId);
+        const cfg = bundlePath && store.readConfig(bundlePath, projectId);
+        if (!cfg) return null;
+        // Which clips' originals were on this computer: the bundle's project.json (a path for each), and the clips this
+        // computer shared itself (media-shared.json). A project.json that can't be read (Windows: another reader, a
+        // save mid-rename) is read again; still unreadable, this says it can't tell (an error), never "a teammate's"
+        // (review finding 2: the person's own moved original would have lost Cardboard's dialog).
+        let envelope = null;
+        for (let i = 0; ; i++) {
+          try { envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")); break; } catch (e) {
+            if (i >= 10) throw new Error("This project's files couldn't be read to check its footage: " + (e?.code ?? e?.message ?? e));
+            await sleep(50);
+          }
+        }
+        const here = new Set([...(envelope?.media ?? []).filter((m) => m?.nativePath).map((m) => m.mediaId), ...Object.keys(readShared(bundlePath, projectId))]);
+        const lc = await api.open(bundlePath).catch(() => null);
+        const clips = {};
+        const theirs = (mediaIds ?? []).filter((id) => { if (here.has(id)) clips[id] = "local"; return !here.has(id); });
+        for (const id of theirs) clips[id] = "waiting";
+        const deadline = sleep(2000);
+        await Promise.race([deadline, Promise.all(theirs.map(async (id) => {
+          const rec = await recordIn(lc, bundlePath, projectId, id).catch(() => null);
+          if (media.playable(rec)) clips[id] = "playable";
+        }))]);
+        return { role: cfg.role ?? null, clips: { ...clips } };
       },
       /**
        * A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null: a file by range,

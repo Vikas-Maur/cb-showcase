@@ -61,13 +61,14 @@ with a plain rename. It says so once in the log. The tests check that `cb` then 
 **The on/off switch.**
 - **Build time.** `node scripts/build-windows.js --no-carton` leaves out every Carton step, so the output is the build
   as it was before Carton. `--baseline`, the media benchmarks' baseline, implies `--no-carton`.
-- **Run time.** `CARDBOARD_CARTON=1` turns Carton on and `0` turns it off. Main reads it once at start. The library
-  worker inherits it, and so does every agent main starts, so their `cb` calls agree. A build's default stays **off**
-  until gates G1 and G2 pass on Windows.
+- **Run time.** Carton is **on** by default. `CARDBOARD_CARTON=0` (or `false`, `off`, `no`) turns it off; unset, empty
+  or anything else leaves it on. Main reads it once at start. The library worker inherits it, and so does every agent
+  main starts, so their `cb` calls agree; a terminal `cb` reads the same variable with the same rule (cli-bridge.js,
+  main-bridge.js and store-bridge.js share it). The default flipped to on once gates G1 and G2 had passed on Windows.
 - **Carton off.** Each hooked method runs Cardboard's original code at once, and nothing of Carton is loaded. The cost
   is one extra property read per hook.
 - **Mixed states are safe by construction.** Some writers don't run Carton: an old `cb`, a text editor, a terminal `cb`
-  without the variable. Each of those is a *foreign writer*. Carton displaces its save and imports it as an attributed
+  with `CARDBOARD_CARTON=0`. Each of those is a *foreign writer*. Carton displaces its save and imports it as an attributed
   change. It never overwrites it (§6.4).
 - **Always on.** H11's `.cbproj` exclusions apply even with Carton off. A project that was ever tracked must not ship
   its `.carton/` database, which holds local paths and device pins.
@@ -120,13 +121,13 @@ behind the hook, not counting the packages.
 | H1 | **Project store mutations and writes.** `chain` serializes a project's mutations. `applyMutation(id, mutate)` applies one to `latest()`. `latest()` re-reads disk when the stamp `ino:size:mtimeNs` changed and nothing is unsaved. `enqueue` coalesces writes. `writeNow` renames `.project.json.<uuid>.tmp` over `project.json`. `updateScoped(doc, scope)` overlays `scope.ownedFields` (the GUI sends whole `tracks`/`timelineItems`) | CLI and Worker: `applyMutation`, `updateScoped`, the rename in `writeNow` (and, proved by itself, the envelope it stringifies), `read`'s `seenOnDisk.set`, the store's construction (`onWritten`). Main: `project:patch` forwards the save's `carton` field into the scope (11) | **Each mutation becomes one change**, committed against the exact document it was applied to (CAS in `.carton/carton.db`). A stale base is rebased with merge3, and the store adopts the merged head. Versioned fields become ops. Ephemeral fields go to the `ephemeral` table in the same transaction. A GUI save's arrays are diffed through the GUI projection against the renderer's own base (B3), not against the worker's latest. The rename becomes **displace-then-install**, given the envelope written: after a GUI save the worker's Materializer takes it with the installed file's stamp instead of reading `project.json` again (H8). A document Carton never wrote is imported as a foreign write | ~80 per copy |
 | H1b | **Other writers of `project.json`.** CLI cloud pull writes it with the atomic helper `Ee`. Open Project (`.cbproj` and bundle import) writes it into a staging folder, then renames the folder into the library | CLI: cloud pull, Open Project. Worker: Open Project (3) | Cloud pull goes through the materializer (H13 replaces it with sync). An opened project's document becomes its first version, `main@1` | ~20 each |
 | H2 | **Revisions and undo.** `recordRevision` keeps the newest 20 `.revs/<rev>.json` slices. `listRevisions` and `readRevision` read them. `history(id)` lists them. `undo(id, rev?)` writes an older slice as a new revision. These back `cb history`, `cb undo`, MCP `timeline_history` and `undo_timeline` | CLI and Worker: `listRevisions`, `readRevision`, recordRevision's own reads, `history`, `undo`'s write. cb: the history table, the `undo` command, `undo_timeline` (20) | `listRevisions` and `readRevision` read **Carton's history first** (every version, its `rev` = `stateUpdatedAt`), then any older `.revs`. So `history`, `undo <rev>`, the apply base and MCP edits at a `rev` all work on unlimited history through Cardboard's own code (B6). `recordRevision` keeps writing `.revs`, so switching Carton off loses nothing. `history` adds WHO and the cut. `undo --turn <id>` (and `undo_timeline {turn}`) reverts one agent turn as one inverse change at head (C10) | ~40 |
-| H3 | **Timeline apply.** `apply(id, source, {prefer, dryRun})` parses `timeline.tsx` (literals only) and ingests new paths. The base is the `.revs` slice at or before the file's `// cardboard:rev` header, **falling back to the current document** when that slice was pruned (B2). It 3-way merges with `rn(base, current, file)`, with item-level conflicts and the whole nested value replaced (B4). It writes through `writeTimeline` → `updateScoped`. `applyEdits` does the same for MCP's `{oldText,newText}` edits at a `rev`. `writeMirror` rewrites `timeline.tsx` in place | CLI and Worker: the parse's rev, the base lookup, the `rn` call, the apply's and `writeTimeline`'s scope, `writeMirror`'s write (14) | The base is the exact version the header names, in either form: 1.4.0's `// cardboard:rev <ms>` (through the rev map) or Carton's `// cardboard:rev <cut>@<seq>~<hash8> b:<cut8> p:<nonce> by <who>`, which the Materializer prints (only the first rev line counts). A header `rev` that Carton and `.revs` can't reconstruct is an **error**, never a 2-way merge (principle 9). A file with no header keeps 1.4.0's meaning: edits on top of head. merge3 replaces `rn`: field-level, field groups decided as units (B13), remaps applied as intents, conflict cards kept as data. Its result keeps `rn`'s shape (`ops`, `conflicts`), so `cb`'s printer and MCP results don't change. The apply's result adds `carton: {status: confirmed\|pending\|conflicts, ref}`. `timeline.tsx` is written with displace-then-install | ~60 per copy |
+| H3 | **Timeline apply.** `apply(id, source, {prefer, dryRun})` parses `timeline.tsx` (literals only) and ingests new paths. The base is the `.revs` slice at or before the file's `// cardboard:rev` header, **falling back to the current document** when that slice was pruned (B2). It 3-way merges with `rn(base, current, file)`, with item-level conflicts and the whole nested value replaced (B4). It writes through `writeTimeline` → `updateScoped`. `applyEdits` does the same for MCP's `{oldText,newText}` edits at a `rev`. `writeMirror` rewrites `timeline.tsx` in place | CLI and Worker: the parse's rev, the base lookup (and `revisionAtOrBefore` itself), the `rn` call, the apply's and `writeTimeline`'s scope, the mirror's `print`, `writeMirror`'s write (18) | The base is the exact version the header names, in either form: 1.4.0's `// cardboard:rev <ms>` (through the rev map; `.revs` only for a rev older than Carton's history, never the first version "at or before" it, as several writers' revs aren't in save order: laptop #2) or Carton's `// cardboard:rev <cut>@<seq>~<hash8> b:<cut8> p:<nonce> by <who>`, which the Materializer prints (only the first rev line counts). With Carton on every print (`cb source print`, MCP's `print_timeline`, the mirror's `timeline.tsx`) carries Carton's header, its records that version's as Carton has it, so `cb source check` of an unchanged print finds nothing. A header `rev` that Carton and `.revs` can't reconstruct is an **error**, never a 2-way merge (principle 9). A file with no header keeps 1.4.0's meaning: edits on top of head. merge3 replaces `rn`: field-level, field groups decided as units (B13), remaps applied as intents, conflict cards kept as data. Its result keeps `rn`'s shape (`ops`, `conflicts`), so `cb`'s printer and MCP results don't change. The apply's result adds `carton: {status: confirmed\|pending\|conflicts, ref}`. `timeline.tsx` is written with displace-then-install | ~60 per copy |
 | H4 | **GUI save.** `de()` arms a 300 ms timer. The timer copies the editor timeline into the project record and calls `updateProjectScoped(project, {ownedFields:["tracks","timelineItems"]})`. That serializes with `fm` (a field whitelist), rounds times to 0.1 s (`sv`), and sends `project:patch {document, scope}` (`Ss.updateScoped`, the only sender). The editor store's gated setter (`tN`) drops writes while `isWriteBlocked` (`Tm`) is true, and calls `onAcceptedDocumentWrite` (`rN`) on every accepted timeline write | S: the `project:patch` send, `de()`, `Tm`, the lock message (2), `initializeEditor`'s load, the gate's installation. Main: `project:patch` (7) | The save carries `carton: {base, actor:"person", intents, group}`. `base` is a new editor-store field, `cartonBase`. It is set at load and in the same store step as every adopt, and moves to the saved version when that save's own change event comes back. The renderer has no usable base today: `stateUpdatedAt` is overwritten by every local edit. **Preview is read-only:** `cartonPreview` joins `Tm`, so every edit path is refused with "Previewing an earlier version. Return to current to edit." `de()` doesn't save a preview | ~40 |
 | H5 | **Adopt.** On `project:changed`, the renderer re-reads the project, replaces its record, and (`eV`) calls `cancelPendingSave()`, `pushHistory("Timeline updated from disk")` and `adopt(timeline)`, a raw store merge. A clock gate drops an event older than the local record's `stateUpdatedAt`, which **silently ignores a CLI write whenever the user edited after it but before the event arrived**. The next GUI save then overwrites it. Toast: "Some of your edits were replaced" | I: the per-event handler. Main: the change broadcast (2) | With Carton, main marks the event `carton`. If a save is armed it goes first, with its base: the worker rebases the person's edits on head (head wins a clash, the edit becomes a card). The editor then adopts head **once**, with `cartonBase` in the same raw store step. No `pushHistory`, no `cancelPendingSave`. That is what keeps a change from elsewhere from being saved again under the person's name (G1). The clock-gate race goes away | ~60 |
-| H6 | **Undo.** `pushTimelineHistory(label)` pushes a whole-timeline snapshot (50 kept, `Qx`). `undo`/`redo` swap snapshots and restore code-graphic sources. Ctrl+Z, the toolbar and Edit > Undo all end at the store's `undo`/`redo` | S: `undo`, `redo` (2) | ⌘Z undoes **your actor group** as an inverse change at head: your edits, agent turns you started, and windowless local `cb` agents (§8). It arrives back through H5 with no undo entry. The pending save goes first. If Carton has no history for the project, Cardboard's snapshot undo runs. The snapshot push stays, because caption editing detects a push by `historyPast` identity | ~30 |
+| H6 | **Undo.** `pushTimelineHistory(label)` pushes a whole-timeline snapshot (50 kept, `Qx`). `undo`/`redo` swap snapshots and restore code-graphic sources. Ctrl+Z, the toolbar and Edit > Undo all end at the store's `undo`/`redo` | S: `undo`, `redo` (2) | Ctrl+Z undoes **what you did in the app this session** as an inverse change at head: your edits and the agent turns you started in the app (`Actor.app`), never a terminal's `cb`, never past the session's start (`cartonSince`, set when the editor opens the project); redo reverts the newest undo until a newer edit. The answer carries the project, adopted at once, and what is left to undo and redo, which the buttons show (`cartonCanUndo`/`cartonCanRedo`). A clash leaves everything as it was and puts its cards in the conflict stack, saying why. The pending save goes first. If Carton has no history for the project, Cardboard's snapshot undo runs. The snapshot push stays, because caption editing detects a push by `historyPast` identity | ~30 |
 | H7 | **Ripple, split, remove silences, ripple trim.** Store actions wrap pure ops (`rippleDeleteGap`, `rippleDeleteAllGaps`, `removeSilencesFromClips`, `splitTimelineItem`) between the history push and the state write. The editor's ripple trim shifts later clips by `plan.rippleDelta` | S: four actions (4); E's ripple trim later | Each records its intent: a remap `{tracks, at, delta}` (piecewise for all gaps), or lineage for a split or a silence cut (new ids). The next save carries it, so a concurrent edit is remapped as an intent, not inferred (§6.1) | ~30 |
 | H8 | **Bundle watcher and worker RPC.** The worker `fs.watch`es the library folder and each bundle (non-recursive, 150 ms debounce). A `project.json` it didn't write is re-read and announced as `changed`. A `timeline.tsx` it didn't write goes through `mirror.apply` and is announced as `timeline-applied` or `timeline-rejected`. The worker's RPC table is built from the namespaces `projects, media, cache, …` | Worker: the RPC namespace list, the worker's start, the watcher's apply (3) | Adds a `carton` RPC namespace (head, checkout, undo, redo, notices, the History panel's `ui`) that main's `carton:call` forwards to. A `timeline.tsx` the watcher applies is `external:timeline.tsx`. A commit that merged someone else's change is announced as `changed`, so the pages adopt it. Per-agent views and the shared file's freeze (`sync/views.js`): the adapter's Materializer for each project the worker opens from its library, the project's one lease holder, a watcher on `.scratch/views`; the watcher's apply of `timeline.tsx` hands the change to the Materializer there, and the facade drops Cardboard's own print of it. Next: the engine thread | ~40 |
-| H9 | **Agents and the control socket.** Host agents are spawned per chat, with `cwd` = the bundle and the environment `o.environment`. Host Claude Code runs as `claude -p … --permission-mode bypassPermissions --append-system-prompt <prompt>`. The Director runs in-process with its own `env`, and has a `PreToolUse` Bash hook: the credit gate, which may rewrite the command. The prompt says to edit `timeline.tsx` or use `cb source apply`. The control socket (`cardboard.sock`, JSON-RPC) has a zod schema table and a handler table. It reads and drives the app, but has no edit method. Worker change events reach the tabs through `onChange` | Main: spawn env, Director env, the Director's hooks (2), the host Claude Code args, `carton:call` (6) | Every agent process gets `CARDBOARD_ACTOR`: `director/<chat>`, `claude/<chat>`, `codex/<chat>`, and so on. The Director's hook adds the turn. Inside a subagent it adds `/sub-<agent_type>-<agent_id>`, since Claude Code puts both in the hook input. It composes with the credit gate's rewrite. `Stop` and `SubagentStop` hooks block once per conflict set, with the conflict text (§6.2). Host Claude Code gets the same hooks through `--settings`. A `carton:call` IPC channel forwards to the worker, and `{kind:"carton"}` events go to the tabs as `carton:event`. `cb` finds Carton's lease holder through `carton.db`'s lease row, so the control socket needs no Carton method. H8: the Director's Read/Write/Edit hooks, an allowed stop and its turn's end reach the worker's Materializer (`carton.agentHook`); its Stop runs @carton/local's late-conflict hook in the worker (`carton.stopHook`); host Claude Code's `--settings` adds a `Read\|Write\|Edit\|MultiEdit` matcher, and `cb carton-hook` sends those events to the lease holder. Every agent's appended prompt (`ju`) and `AGENTS.md` describe the per-agent view, Carton on only | ~60 |
+| H9 | **Agents and the control socket.** Host agents are spawned per chat, with `cwd` = the bundle and the environment `o.environment`. Host Claude Code runs as `claude -p … --permission-mode bypassPermissions --append-system-prompt <prompt>`. (Correction, laptop #8: no. 1.4.0 runs host Claude Code, provider `claude`, through its Agent SDK transport, `v_e` → `oH`, the Director's too; `claude -p` is only its args builder, which that path never calls. So it gets the Director's in-process hooks, never `agentEnv` or `--settings`, and main-bridge's `hookActor` names it `claude-code/<session>`.) The Director runs in-process with its own `env`, and has a `PreToolUse` Bash hook: the credit gate, which may rewrite the command. The prompt says to edit `timeline.tsx` or use `cb source apply`. The control socket (`cardboard.sock`, JSON-RPC) has a zod schema table and a handler table. It reads and drives the app, but has no edit method. Worker change events reach the tabs through `onChange` | Main: spawn env, Director env, the Director's hooks (2), the host Claude Code args, `carton:call` (6) | Every agent process gets `CARDBOARD_ACTOR`: `director/<chat>`, `claude/<chat>`, `codex/<chat>`, and so on. The Director's hook adds the turn. Inside a subagent it adds `/sub-<agent_type>-<agent_id>`, since Claude Code puts both in the hook input. It composes with the credit gate's rewrite. `Stop` and `SubagentStop` hooks block once per conflict set, with the conflict text (§6.2). Host Claude Code gets the same hooks through `--settings`. A `carton:call` IPC channel forwards to the worker, and `{kind:"carton"}` events go to the tabs as `carton:event`. `cb` finds Carton's lease holder through `carton.db`'s lease row, so the control socket needs no Carton method. H8: the Director's Read/Write/Edit hooks, an allowed stop and its turn's end reach the worker's Materializer (`carton.agentHook`; review P2: a hook answered after its turn ended sends nothing, since the transport outlives turns and `claude-code/<session>` is the same in each, and a non-Director turn's name request is bounded by the turn's start and end); its Stop runs @carton/local's late-conflict hook in the worker (`carton.stopHook`); host Claude Code's `--settings` adds a `Read\|Write\|Edit\|MultiEdit` matcher, and `cb carton-hook` sends those events to the lease holder. Every agent's appended prompt (`ju`) and `AGENTS.md` describe the per-agent view, Carton on only | ~60 |
 | H10 | **Media.** Ingest copies or references a file and gives it a random id (`Rt` in the CLI, `Ua` in the worker). Main serves `cardboard-media://` with range support (`oGt`) | CLI, Worker: ingest. Main: the media protocol (3) | Lazy SHA-256 manifests (1 MiB leaves) for shared projects, the range cache, and the loopback range server (phase 4, `@carton/media`). Nothing changes for solo local projects | ~60 |
 | H11 | **`.cbproj`.** Save As writes a stored zip of the bundle minus the top-level names in a set (`cache`, `converted`, `proxies`, `.revs`). The walk compares only top-level names. Open Project refuses a project id already in the library ("This project ID already exists in your library", C9) | CLI and Worker: the set, the walk, the id check (6) | `.carton` joins the top-level exclusions. Carton's own view files in `.scratch/views/` (a print under Carton's rev line, its `.status` sidecar) are skipped by a nested check in the walk (R6-02); anything else there goes in. Both apply on or off, and Open Project removes the same from a staged bundle. The shallow export (or the opt-in `VACUUM INTO` copy) is written as its own entry. For a known project id with shared lineage, "Bring in their changes" (a DAG merge with cards) replaces the error. Imported view files are never applied | ~40 |
 | H12 | **Web `DocumentSyncService`** (dormant on desktop). An IndexedDB outbox commits whole documents: `POST /api/sync/document {projectUid, mutationId, expectedVersion, document}`. On conflict it preserves a local copy named "… (recovered conflict)" and takes the server's (B9) | S: commit, POST, recover, stage. `DocumentSyncStartup`: the copy's name (5) | Kit only: push changes with a base instead of whole documents, and rebase instead of preserving a copy | ~100 |
@@ -189,6 +190,75 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    it (the panel shows those once) and no other.
 6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
+7. **Never a project Cardboard can't read** (laptop, build 915eb36: Restore of "Started the cut", the empty root an
+   imported project's history starts from, wrote a `project.json` with no name and empty tracks and media; 1.4.0's
+   loader (`ti`: `qW`, `zW`) refuses a file without a name, so the project left the library and `cb` found nothing).
+   Core refuses to restore an empty version or make a cut from one (`EmptyVersion`), and History and `cb` don't offer
+   it. Every `project.json` a Carton-on process writes is checked first (`@carton/cardboard`'s `projectProblems`: what
+   that reader needs in the fields Carton writes, and a name a project had is never removed): the commit of a store
+   mutation (no version is made of it), head going into the file (`headProject`), and the install itself, both copies.
+   The Materializer, which also serves other hosts' files, refuses a write that turns a file Cardboard reads into one it
+   can't (`breaks`). History never starts from a file Cardboard can't read (a bundle without `carton.db`, or one whose
+   `carton.db` came from another machine). A refused write keeps the old file, and the refusal goes to the console and
+   to the bundle's `.carton/refused.log` (when, which writer, what was wrong; never the project's text). When head itself
+   is refused after a History action or a `cb` write, the panel and `cb` say the file wasn't changed (the write is in
+   history). A code graphic's size, which the reader requires and Carton doesn't version (only its source), comes from
+   the clip that shows it when the file being replaced lacks the graphic (`materializeProject`). A head that has no name (a
+   teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
+   until a good version is restored.
+8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through
+   Carton when the project has a history (in the bundle, or in app data for a synced, network or FAT folder) that is
+   this project's and was made on this computer, both read from the database before anything opens it (another
+   project's history would put its versions into this one; another computer's would be set aside on open): the file
+   with the name the project last had in its history (else its folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
+   History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
+   reads costs nothing more (the hook runs only after its parse failed). `cb` reads every project of the library
+   before each command, so it says a project can't be read only when its command line names that project (id, name,
+   folder or path); the library worker says it once, in the app's log.
+9. **Media details across a restore or fold** (laptop, merge/prod-2 P2-1, P2-2). A media entry's details (what
+   Cardboard's import and derive give it and Carton doesn't version: `src`, `format`, `size`, the probe's `duration`,
+   `width`, `height`, `frameRate`, `hasAudio`, `codec`, the thumbnail, waveform and album-art ids and statuses,
+   `createdAt`, `addedAt`) lived only in `project.json`. Restore of `main@1` dropped `clip.mp4`'s entry, and Restore of
+   the newest version brought back `{id, data: {type, fileName}}`: no duration, size or thumbnail, and, with no `src`,
+   a clip the editor played black until a restart (the editor's load fills `src` in; its adopt of a change doesn't).
+   - A write that drops entries keeps their details first, in the bundle's `.carton/media.json`
+     (`@carton/cardboard/node`'s `MediaDetails`, under the install lock): a store mutation (the facade's `commit`: the
+     document it was applied to against the one it made) and every materialization (`projectFor`: the file it replaces
+     against what it writes). A write that drops nothing does no I/O for it.
+   - Every materialization (`headAt`, a merged GUI save, the page's `checkout`) carries an entry's details over from
+     the file it replaces, else as last kept for that media (`materializeProject`'s `known`: the same id, kind and,
+     where both say, content id); a file's entry the replaced file holds without them (`lacksDetails`: no `src`, `size`
+     or duration) has what it lacks filled in from them, its own fields first.
+   - An entry still without them (a project an earlier build's restore, or the root-restore bug, left so), playing from
+     a file of this library: the worker's `materializeIn` and cb's `after` ask Cardboard as its import does
+     (`reprobeMedia`): the file its library has for the id, else the one its loader's recovery of unlisted media (`eH`)
+     finds (`media/<id>.<ext>`), registered with the library as that recovery does, so main's `cardboard-media://` map
+     has it at once; Cardboard's probe of the file as it is now (`inspect.probePath`, not the probe cached for the id,
+     which may be of a file since replaced); the fields the import's `j4` sets from it, where the entry lacks them. A
+     file not there is looked for again at the next materialization (the `media/` listing cached until the folder
+     changes); a failed probe once the file changes. After the worker's write, Cardboard's derive
+     (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
+     waveform, and the worker announces the change; the worker runs one derive per project at a time (main's waits
+     for it), and cb runs none (two processes deriving one file's artefacts at once break Cardboard's cache write:
+     an ENOENT nothing catches ended cb in cbproj.test.js).
+   - Laptop, final candidate (`0cc587f1`) P1-1: every entry a materialization writes is complete for the editor
+     (`materializeProject`'s `completeEntry`). Its `createdAt` and `addedAt`, which the editor reads into Dates at load
+     (installErrorTelemetry `P2`) and writes back at every save (`p9`: `.toISOString()`, which throws on an Invalid
+     Date), come from the file's entry, else the details kept for it, else the project's own `createdAt` (then its
+     `updatedAt`, then the epoch, as library-worker.js `sw` reads a date it can't); `addedAt` defaults to `createdAt`
+     (`sw` again). A title gets `format: "text"`, `size: 0`, `presetId: "custom"`, as library-worker.js `ZZ` makes one.
+     Before, a project recovered from the root-restore bug came back with seven entries of `{id, data}` only, and no
+     GUI save ever landed. A file already on disk like that is completed as the bundle loader reads it (both copies'
+     `Ti`, after the recover hook: the store bridge's `loaded`, which loads the facade only for a project that needs
+     it), so the editor loads dates and its next save writes them. `projectProblems` doesn't flag a date-less entry
+     (Cardboard's reader takes it, and flagging it would lift the write guard from such projects through `breaks`,
+     refuse their history and their recovery); `undatedMedia` finds them.
+   - P3-1: before head goes into `project.json` (the worker's `materializeIn`, cb's `after`), a file entry the library
+     can't place (`media.resolvePath`) whose file is `media/<id>.<ext>` is registered (`placeMedia`), so the store's
+     `buildManifest` lists it: a cb restore round trip left the manifest empty (the entry came back whole from
+     `.carton/media.json`, so `reprobeMedia`, which registers what it probes, had nothing to do), and every cb command
+     after it recovered the file as unlisted.
+   - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
 
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`
@@ -269,13 +339,41 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - A save sent before the previous one's echo holds that save too, while `cartonBase` still names the version before
   both. It also carries `after`: the previous save's `rev` (ui-words #3). The worker makes it on that save's state: the
   version it was recorded as when it landed as sent, or, when it was merged with another change, the person's
-  document held in memory as core's `HeldBase` (that save in its causal past). Unknown there (a shared cut, a
-  restart), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
+  document held in memory as core's `HeldBase` (that save in its causal past), on a local cut or a shared one (its
+  queued edit's id; a non-holder hands the `HeldBase` to the lease holder with the commit). Unknown there (a restart, or
+  a shared cut's base this handle can't read), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
   conflict card of the person against themself.
 - A GUI save is written under its own `rev` (so its echo only moves the base) only when head is the person's document.
   Core confirms a save without a rebase when the changes since its base touched other records; the worker counts
   them from seqs (`passedOthers`) and writes head under a new `rev` then, which the editor adopts. Before, the echo
   moved the base past a change the editor never showed, and the person's next save undid it.
+
+**One editor action, one save (H4; laptop, merge/prod-2 N-1).**
+- One undo step of the editor (`pushTimelineHistory`) can save twice. Deleting a title or code graphic
+  (`removeTimelineItem(s)`) arms the timeline save (`de()`, 300 ms) and drops the item's own media entry ("Text: W6")
+  through `Kx` → `removeMediaFromProject`, which saves `{removedMediaIds}` once the entry's cached files are gone
+  (`cr.remove`): before the debounce or after it. Adding a title (EditorRoute's `iu`) adds its entry and saves
+  `{ownedMediaIds}` on its own, next to the debounced timeline save. Stock has no versions; its undo takes back both
+  (`Xx` puts the entry back). Carton made a version of each save, and one Ctrl+Z took back only the newer one: the
+  title stayed gone (media saved last), or came back with no entry (media saved first).
+- Now the action notes the entry (`ride`, at `Kx` and `iu`, only while that action's timeline save is armed), the
+  timeline save's scope takes it at its two call sites (`board`: the debounce and its flush `cN`, before `Jt`'s `Kj`
+  cuts the document down to the scope, so an owned entry is in it), and the entry's own save, through the patched
+  `updateScoped` (`send`), is answered by the save that carried it instead of being sent. If the entry's save comes
+  while the timeline save still waits, that save goes now, carrying it. One save is one mutation, one version and one
+  undo step (redo, `cb undo` and a shared cut alike). No timer: the boundary is the editor's own save. Anything not
+  carried (no timeline save armed, a save that failed before it was sent) goes on its own, as before. Each noting is
+  its own entry, and an entry's save takes the oldest: the same title deleted again after an undo, while the first
+  delete's entry save still waited, is answered by its own delete's save, never by the first's. Carried entries whose
+  own save never came are dropped past 1024, oldest first; never a waiting one, nor the save just sent's.
+- A library file's media (an import, a sound from the panel) stays a save of its own: stock's undo never takes it back
+  either. Two actions inside one 300 ms debounce were one save before this and still are (stock: two undo steps).
+- History reads it as one change: describe, `countChanges` and the Fold dialog's rows take a record that is part of
+  another (`nounOf` null, `partOf` its holder: an item's `mediaItemId`) added or deleted with its one holder (or edited
+  with it) as that holder's (`heldBy`), as a split's parts are the split's: "Deleted title 'W6'". An entry two titles share (a
+  duplicate) is told, and folded, on its own.
+- Histories saved before this keep their two versions, and Ctrl+Z never reaches them (it stays in the editor's
+  session). `cb undo` and History's Undo take them a version at a time, as History lists them.
 
 **Read-only preview (H4).**
 - Compare and the A/B toggle load an earlier version into the editor with the raw setter and set `cartonPreview`.
@@ -303,8 +401,32 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   project's lease; before, local's write path reached the same holder through its control socket. Elsewhere (another
   process holds the lease, no View runs) it still goes through local's write path. `save-cost.test.js` counts it.
   Either way it is a `gui` write (local-cli `3962f27`): the person's own action starts no `timeline.tsx` freeze, as a GUI
-  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds).
+  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds). Served by
+  another process's holder, its row is another connection's write: the worker's follower knows it by its request id
+  (`LocalCarton.write` notes every `gui` request, `noteGuiWrite`) and tells the head move with no one busy (windows-sync
+  review round 4 #1; before, it froze the file as for a `cb` call).
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
+- Laptop, final candidate P2-1: an undo, redo or revert whose result the schema takes for empty (`Schema.empty`:
+  Cardboard's name with no aspect ratio, tracks, clips or media), made from a head that isn't, is refused by core before
+  anything is written (`EmptyVersion`, "Can't undo that: the project would be left empty"; `planUndo`, `planRevert`,
+  and local's `undoTurn`; a shared cut's queued undo made empty by a teammate's edit is refused at the push). The
+  worker answers the page `{status: "refused", error}` (the code survives the control socket when another process
+  holds the lease), and the page shows the words over the stage and does not fall back to Cardboard's snapshot undo.
+- The displaced-file review no longer imports a `project.json` that is exactly a version history holds (its rev
+  recorded, its versioned content that version's: `isKnownState`). Such a file is Carton's own whose `seen.json` entry
+  was lost (two processes writing the file at once can lose one); imported against head as an outside edit, it put
+  that version back over everything since, an undo made meanwhile included ("external:project.json"). A file under a
+  known rev with other content is still imported. Before, Ctrl+Z right after recovering a project
+  undid the Restore into the state the root-restore bug left, and the tab crashed in the layouts panel, which splits
+  the aspect ratio: every state the page adopts (an undo's answer, a change from elsewhere) now gets Cardboard's own
+  default, 16:9, as its load gives a project without one.
+
+**Telling the person (final candidate P1-1).**
+- `Jt`, the editor store's scoped save, logs a failure and rethrows; its catch also calls the bridge's `saveFailed`,
+  which shows "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." over the stage
+  (at most every 20 s, again once a save has landed), with the warning look of Carton's other failures (N-3: it showed
+  a confirmation's ✓), as does an undo refused. Such a failure happens in the page, before anything reaches the
+  worker, so only the page can tell: a recovered project's date-less media made every save throw there, unseen.
 
 **Remaps (H7).**
 - Ripple delete records `{kind:"remap", tracks:[t], at:end, delta:start-end}`.
@@ -353,6 +475,13 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   - shared lineage offers "Bring in their changes": a DAG merge into the current cut, with cards;
   - no shared lineage forks a new id;
   - a missing common state gives the explicit dialog (§13), never an older base.
+- **A project this library hasn't.** Its history starts from the file's shallow export, on a cut of its own forked
+  from the sender's head. The staged `timeline.tsx` names the sender's version on their cut (Carton's header), which
+  this library holds only as a read-only shallow cut. The facade resolves such a header (its cut not one of this
+  library's) to the version of the current cut with that state, as core checks it by its hash: the fork's start. So
+  Cardboard's prepare applies it as unchanged; before, it was "no longer available" and the Open Project failed
+  (laptop #5, `cb project open` and a double-click alike). Their read-only cuts that would share a name with one of
+  this copy's show as "<name> (their copy)", after an Open Project and after a bring-in.
 
 ## 5. The bridge contract
 
@@ -375,7 +504,7 @@ onto the packages' APIs, so a package API change touches only the facade.
 | `worker(library, emit)` | H8 | `worker({library, emit})`: the `carton` RPC namespace | `local`, `react` (`fromCarton`) |
 | `__cartonCli.commands`, `mcp`, `carton-hook` | CLI, H9 | `run(argv, io)`, `mcpTools()`, `hook({event, input, env})` | `cli-mcp` (`runCb`, `mcpTools`), `local` (hooks) |
 | `__cartonMain.*` | H9 | (main only) actor env, Director hook wrap, Stop/SubagentStop, `carton:call` | `local` (notices) |
-| `window.__carton.*` | H4–H7, UI | (pages) `saveMeta`, `receive`, `undo`/`redo`, `intent`, `preview`, `call`, `onEvent` over `carton:call` | `react` |
+| `window.__carton.*` | H4–H7, UI | (pages) `saveMeta`, `ride`/`board`/`send` (one action, one save), `receive`, `undo`/`redo`, `intent`, `preview`, `call`, `onEvent` over `carton:call` (one IPC listener per channel, however many views subscribe) | `react` |
 
 ## 6. State on 2026-10-31
 
@@ -414,7 +543,22 @@ onto the packages' APIs, so a package API change touches only the facade.
     Views are polled (a stat every 250 ms, only the views Carton printed): no watch handle inside the bundle, which on
     Windows can block Cardboard's rename or trash of it. An agent's own `cb` commit during a freeze shows in the frozen
     file at once (the Materializer's `foldAgentChanges`, cardboard-adapter `151a38e`); the person's and remote changes
-    stay out until the freeze ends. (The app's earlier stopgap reprinted the shared file from head when the newest
+    stay out until the freeze ends. **Read-your-writes (apply-ryw):** a `cb` write answers only once `timeline.tsx` shows
+    it. `cb source apply` and MCP's `apply_timeline` (the apply's `status`, now awaited: `...await __carton.status(t)`)
+    and the Carton writes (commit, fold, restore, revert, undo, redo, undo --turn) ask the worker's lease holder
+    (`carton.shown`, local's `showOnHolder`): it looks at carton.db at once (its follower, as a nudge), the Materializer
+    makes the rewrite its 20 ms timer was holding (`showChange`), and the answer comes with the print that holds the
+    change (its confirmed seq is at or below the print's, or the print holds it past that seq), at most 2 s. The result
+    says how: `carton.timeline` in the apply's JSON (`timeline` in a Carton write's), `shown`, `held` (the freeze holds
+    it back: not a local agent's, a terminal caller's or a save's), `elsewhere` (another cut) or `later`, and anything
+    but `shown` with a sentence the text prints too (Cardboard's apply text, the cli's `resultText`). On the laptop
+    (`12826273`) an agent read the file right after its apply, before the Materializer had even heard of the commit
+    (another process's commit was found by the follower's 250 ms poll), and told the user the file showed its turn's
+    start. A terminal's `cb` (local's fallback actor) holds the file as a windowless agent does and now reads its own
+    writes in it (`onCb(caller)`); the person's GUI saves and outside programs' imports stay held. With the app closed
+    `cb` prints the file itself before it answers, as Cardboard does; a worker that is gone (it quit or crashed without
+    letting go of the lease, whose row stays live up to 6 s) no longer takes the file from `cb`: its socket refuses the
+    ping, and `cb` prints it (`timelineWorker`). (The app's earlier stopgap reprinted the shared file from head when the newest
     change was an agent's, which on Windows CI showed the person's edit during a turn: an in-process view save was the
     newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
     A view save on a shared cut is committed with the View's lease as a store condition (`fence(nonce)` in core's
@@ -461,7 +605,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (109)
+### A.1 The anchors patch-carton.js replaces (115)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
@@ -482,12 +626,15 @@ ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1265976   36B  "d=JSON.stringify(o);this.lastWritten"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
 ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
+ok  Worker 1 @1255296   66B  "let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
 ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
 ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
 ok  Worker 1 @1425091   59B  "let l=await this.listRevisions(r);for(let u of l.slice(20))"
 ok  Worker 1 @1424032   23B  "async listRevisions(t){"
 ok  Worker 1 @1424213   24B  "async readRevision(t,r){"
+ok  Worker 1 @1424442   30B  "async revisionAtOrBefore(t,r){"
+ok  Worker 1 @1417418   77B  "async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"
 ok  Worker 1 @1421085   17B  "async history(t){"
 ok  Worker 1 @1421828   55B  "return await this.writeTimeline(i,s.doc,s.added),o.rev}"
 ok  Worker 1 @1418249   15B  "h=OC(r)?li(r):r"
@@ -552,12 +699,15 @@ ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
 ok  CLI    1 @160751    36B  "u=JSON.stringify(a);this.lastWritten"
 ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
 ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
+ok  CLI    1 @150320    66B  "let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
 ok  CLI    1 @344422    38B  "n.onWritten((h,y)=>f.afterWrite(h,y));"
 ok  CLI    1 @305827    82B  "let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);"
 ok  CLI    1 @306180    59B  "let d=await this.listRevisions(r);for(let m of d.slice(20))"
 ok  CLI    1 @305183    23B  "async listRevisions(t){"
 ok  CLI    1 @305353    24B  "async readRevision(t,r){"
+ok  CLI    1 @305561    30B  "async revisionAtOrBefore(t,r){"
+ok  CLI    1 @298723    77B  "async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"
 ok  CLI    1 @302326    17B  "async history(t){"
 ok  CLI    1 @303069    55B  "return await this.writeTimeline(o,c.doc,c.added),a.rev}"
 ok  CLI    1 @299554    15B  "g=Nh(r)?rt(r):r"

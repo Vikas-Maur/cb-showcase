@@ -15,11 +15,20 @@
 //
 // Which stream is a source's proxy: the pointer px/<sourceHash>/<profile> (keys.ts), claimed with ifAbsent at the start
 // of an upload, so a teammate finds the stream from its first segment on and two owners don't encode it twice.
+//
+// Through a Carton host (cf-proxy-path) the same layout goes up and comes down in batches, one request each: the
+// writer queues parts and sends what is queued while the encoder goes on (`StreamAppender`, POST /streams/<id>/append:
+// ten requests per segment before, one after another), and the reader asks for the init and first segment, then for
+// up to READ_BATCH_BYTES at a time, the host holding the answer at the live edge (`StreamBatchReader`, GET
+// /streams/<id>/read: six requests per segment before). Bytes that come in a batch are verified against the manifest
+// that came with them (MediaReader.adopt) and read the usual way when they don't verify. A store without these (any
+// BlobStore, a host from before them) gets the part-by-part path, which reads and writes the same stream.
 
 import { isMediaHash, toHex } from "./bytes.ts";
+import { decodeManifest, type Manifest } from "./manifest.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
 import { bytesSource, hashSource } from "./hash.ts";
-import { mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+import { mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamLeaseKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 import type { MediaStat, RangeSource } from "./range-source.ts";
 import type { LeafCache } from "./cache.ts";
 import { isDamaged, reportDamage } from "./damage.ts";
@@ -47,6 +56,12 @@ export interface StreamEnd {
    * ends written before it was added.
    */
   parts?: string[];
+  /**
+   * The parts' sizes (in `parts`' order) and the segments' durations: with `parts`, every entry a reader needs, so a
+   * finished stream's layout is this one entry instead of one per segment (cf-proxy-path). Absent in older ends.
+   */
+  sizes?: number[];
+  durations?: number[];
 }
 
 /**
@@ -109,15 +124,45 @@ function asSegment(v: Record<string, unknown> | null, index: number): StreamSegm
   return p && v && v.index === index && isSeconds(v.durationSec) && isCount(v.at) ? { ...p, index, durationSec: v.durationSec, at: v.at } : null;
 }
 function asEnd(v: Record<string, unknown> | null): StreamEnd | null {
-  return v && isCount(v.segments) && isSeconds(v.durationSec) && isCount(v.size) && isCount(v.at)
-    ? {
-        segments: v.segments,
-        durationSec: v.durationSec,
-        size: v.size,
-        at: v.at,
-        ...(Array.isArray(v.parts) && v.parts.length === v.segments + 1 && v.parts.every(isMediaHash) ? { parts: v.parts as string[] } : {}),
-      }
-    : null;
+  if (!(v && isCount(v.segments) && isSeconds(v.durationSec) && isCount(v.size) && isCount(v.at))) return null;
+  const parts = Array.isArray(v.parts) && v.parts.length === v.segments + 1 && v.parts.every(isMediaHash) ? (v.parts as string[]) : undefined;
+  const end: StreamEnd = { segments: v.segments, durationSec: v.durationSec, size: v.size, at: v.at, ...(parts ? { parts } : {}) };
+  // sizes and durations only beside the parts they describe, and only when they add up
+  if (parts && Array.isArray(v.sizes) && v.sizes.length === parts.length && v.sizes.every(isCount) && (v.sizes as number[]).reduce((a, b) => a + b, 0) === end.size) end.sizes = v.sizes as number[];
+  if (end.sizes && Array.isArray(v.durations) && v.durations.length === v.segments && v.durations.every(isSeconds)) end.durations = v.durations as number[];
+  if (!end.durations) delete end.sizes; // one without the other describes no entry
+  return end;
+}
+
+/** A stream's init entry (`{hash, size}`) from its parsed JSON, or null when it isn't one. */
+export const streamPartOf = (v: unknown): StreamPart | null => asPart(isObject(v) ? v : null);
+/** Segment entry `index` from its parsed JSON, or null when it isn't that entry. */
+export const streamSegmentOf = (v: unknown, index: number): StreamSegment | null => asSegment(isObject(v) ? v : null, index);
+/** A stream's end entry from its parsed JSON, or null when it isn't one. */
+export const streamEndOf = (v: unknown): StreamEnd | null => asEnd(isObject(v) ? v : null);
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** The encoded manifest an entry carries (`manifest`, base64; entries from before it have none), or null. */
+export function entryManifest(v: unknown): Uint8Array | null {
+  const m = isObject(v) ? v.manifest : undefined;
+  if (typeof m !== "string" || m.length > 64 * 1024) return null;
+  return fromBase64(m);
+}
+
+export function toBase64(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]!);
+  return btoa(s);
+}
+export function fromBase64(s: string): Uint8Array | null {
+  try {
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 /** A finished stream lists a segment whose entry can't be read: it will never play past it. */
@@ -139,9 +184,120 @@ export interface ProxyStreamWriterOptions {
   id?: string;
   /** Passed to each segment's upload (state store, link rate, retries, signal). */
   upload?: Partial<Pick<UploadOptions, "state" | "bytesPerSecond" | "retries" | "retryDelayMs" | "signal">>;
+  /**
+   * Publishing through a store that appends a stream in one request (`StreamAppender`: a Carton host's
+   * POST /streams/<id>/append): parts are queued and sent in batches, one request each, while the next ones encode.
+   * `false` publishes part by part as through any store. Limits per request, and how much may wait in memory before
+   * `segment()` waits for the uploads (the encoder's back-pressure).
+   */
+  batch?: false | { maxParts?: number; maxBytes?: number; maxQueuedBytes?: number; inFlight?: number };
+  /**
+   * The store refused a write for a while (a host's daily write limit: an error with `retryAt`, BlobStore's contract):
+   * the batch waits until then, kept in memory with what queues behind it (the encoder waits past the queue's limit), and
+   * goes again as it was; called with the time, for the app to say so. Up to `writeLimitJitterMs` (default a minute) is
+   * added, so writers refused together don't all come back at once.
+   */
+  onWriteLimit?: (retryAt: number) => void;
+  writeLimitJitterMs?: number;
+  /**
+   * A lease on the stream, renewed while the writer is open, so a share that finds the stream unfinished can tell a
+   * publisher at work from a dead one in seconds instead of STALE_MS (claimProxyStream's `leaseEveryMs`; the pointer
+   * declares it). Renewals ride on appends; with none for `everyMs`, one goes on its own. Off unless given.
+   */
+  lease?: { everyMs: number };
 }
 
-/** Appends a stream: the init segment, then media segments in order, then the end. One writer per stream. */
+/**
+ * A store that publishes a stream's parts in one request: bytes, manifest and entry of each, and the end (a Carton
+ * host's POST /streams/<id>/append, `@carton/host-http/client`). Not part of BlobStore: looked for, as `heads` is.
+ */
+export interface StreamAppender {
+  /** Resolves with what the host asks of later batches, when it says (an older host doesn't). */
+  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<void | StreamAppendAnswer>;
+}
+export interface StreamAppendAnswer {
+  /** The host's limits for one append: at most `parts` parts and `bytes` bytes (a Worker's CPU per request). */
+  limits?: { parts: number; bytes: number };
+}
+/** A publisher's lease renewal (`ps/<stream>/lease`): its count, when (its clock), and how often it renews. */
+export interface StreamLease {
+  n: number;
+  at: number;
+  every: number;
+}
+export interface StreamAppendBatch {
+  /** In order: the init segment first (once), then consecutive segments. */
+  parts: StreamAppendPart[];
+  /** Written once every part of this batch is in. */
+  end?: StreamEnd;
+  /** A lease renewal, written beside the entries. */
+  lease?: StreamLease;
+}
+export interface StreamAppendPart {
+  kind: "init" | "segment";
+  hash: string;
+  size: number;
+  /** The encoded manifest (`hash` is its digest). */
+  manifest: Uint8Array;
+  /** The bytes; null when the store holds them already (the host checks, else StreamPartMissingError). */
+  bytes: Uint8Array | null;
+  /** Sent again with its bytes after StreamPartMissingError: the host answers the part's open damage report. */
+  repair?: boolean;
+  index?: number;
+  durationSec?: number;
+  at?: number;
+}
+export const isStreamAppender = (s: BlobStore): s is BlobStore & StreamAppender => typeof (s as Partial<StreamAppender>).appendStream === "function";
+
+/** The host has no stream routes (one from before them): use the part-by-part path, as through any store. */
+export class StreamRouteMissingError extends Error {
+  override name = "StreamRouteMissingError";
+}
+/** A part sent without its bytes (they were in the store) is gone, or reported damaged: send it again with them. */
+export class StreamPartMissingError extends Error {
+  override name = "StreamPartMissingError";
+}
+
+type Queued = { part: StreamAppendPart } | { end: StreamEnd };
+
+/** Stores whose host answered that it has no stream routes: part by part from then on. */
+const noAppend = new WeakSet<BlobStore>();
+
+// A batch's parts and bytes. A Worker spends about 2.5 ms of CPU per part on an append, and the Free plan allows 10 ms a
+// request: on carton-lab-proxy, appends of up to 8 parts (4 MiB) averaged 10-13 ms, at most 35 (cf-proxy-path, 6 runs).
+const BATCH_PARTS = 4;
+const BATCH_BYTES = 2 << 20;
+const QUEUED_BYTES = 12 << 20;
+/**
+ * Batches under way at once (see ProxyStreamWriter.#kick): more when batches are small, since a small append waits on its
+ * round trips (a Worker's write-cap counter, the bytes, the entries), not on its bytes. A host that asks for 1 part per
+ * append (a Worker on the Free plan) gets 4; 2 parts, 3; else 2.
+ */
+const inFlightFor = (parts: number): number => (parts <= 1 ? 4 : parts <= 2 ? 3 : 2);
+
+/** When a write refused for a while may go again (an error with `retryAt`, BlobStore's contract), else null. */
+function retryAtOf(e: unknown): number | null {
+  const at = (e as { retryAt?: unknown } | null)?.retryAt;
+  return typeof at === "number" && Number.isFinite(at) ? at : null;
+}
+
+/** Errors a retry can't fix: a cancel, the host's refusal (4xx but a timeout or a rate limit), or a route to switch. */
+function final(e: unknown): boolean {
+  const name = (e as Error)?.name;
+  if (name === "AbortError" || e instanceof StreamRouteMissingError || e instanceof StreamPartMissingError) return true;
+  const status = (e as { status?: unknown })?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * Appends a stream: the init segment, then media segments in order, then the end. One writer per stream.
+ *
+ * Through a `StreamAppender` (a Carton host) the parts are queued and go up in batches, one request each: `init` and
+ * `segment` return once the part is queued (and the queue isn't over its limit), so the encoder goes on while the
+ * previous batch uploads, and whatever queued meanwhile goes in the next request. A failed batch fails the next call
+ * (`segment`, `end`). `segments` counts the segments the store holds. Through any other store each part goes up as its
+ * own upload and entry, and each call returns once its entry is written.
+ */
 export class ProxyStreamWriter {
   readonly id: string;
   readonly #o: ProxyStreamWriterOptions;
@@ -151,31 +307,147 @@ export class ProxyStreamWriter {
   #hasInit = false;
   #ended = false;
   readonly #parts: string[] = [];
+  readonly #sizes: number[] = [];
+  readonly #durations: number[] = [];
+  // batched publishing (a StreamAppender)
+  #appender: StreamAppender | null;
+  readonly #queue: Queued[] = [];
+  #queuedBytes = 0;
+  #inflight = 0;
+  #ceiling: number;
+  #maxParts: number;
+  #failure: { error: unknown } | null = null;
+  #published = 0;
+  /**
+   * Look for parts already in the store before sending a batch: from the first one after the first frame's (that one
+   * waits for nothing), and on while it finds some.
+   */
+  #probe = true;
+  #holdInit = true;
+  #waiters: (() => void)[] = [];
+  /** The host's batch limits, once an append's answer said them. */
+  #hostLimits: { parts: number; bytes: number } | null = null;
+  // the lease (options.lease)
+  #leaseN = 0;
+  #leaseAt = -Infinity;
+  #leaseTimer: ReturnType<typeof setInterval> | null = null;
+  #renewing: Promise<void> | null = null;
+  #closed = false;
 
   constructor(o: ProxyStreamWriterOptions) {
     this.#o = o;
     this.id = o.id ?? newStreamId();
+    this.#appender = o.batch !== false && isStreamAppender(o.store) && !noAppend.has(o.store) ? o.store : null;
+    this.#ceiling = this.#maxParts = this.#partsLimit();
+    if (o.lease) {
+      const every = Math.max(1, o.lease.everyMs);
+      // checked a few times a period: a renewal goes on its own when no append carried one for a period
+      this.#leaseTimer = setInterval(() => void this.#renewAlone(), Math.max(1, Math.floor(every / 3)));
+      (this.#leaseTimer as { unref?: () => void }).unref?.();
+      o.upload?.signal?.addEventListener("abort", () => this.close(), { once: true });
+      void this.#renewAlone();
+    }
   }
 
+  /** Parts per append: the host's limit when it said one (and the caller's own, if smaller), else the caller's or ours. */
+  #partsLimit(): number {
+    const own = this.#o.batch ? this.#o.batch.maxParts : undefined;
+    const host = this.#hostLimits?.parts;
+    return Math.max(1, host !== undefined ? Math.min(host, own ?? Infinity) : (own ?? BATCH_PARTS));
+  }
+  #bytesLimit(): number {
+    const own = this.#o.batch ? this.#o.batch.maxBytes : undefined;
+    const host = this.#hostLimits?.bytes;
+    return Math.max(1, host !== undefined ? Math.min(host, own ?? Infinity) : (own ?? BATCH_BYTES));
+  }
+  #learnLimits(a: void | StreamAppendAnswer): void {
+    const l = a && a.limits;
+    if (!l || !(l.parts >= 1) || !(l.bytes >= 1)) return;
+    this.#hostLimits = { parts: Math.floor(l.parts), bytes: Math.floor(l.bytes) };
+    const limit = this.#partsLimit();
+    this.#ceiling = Math.min(this.#ceiling, limit);
+    this.#maxParts = Math.min(this.#maxParts, this.#ceiling);
+  }
+
+  /** A renewal for the next append to carry, when one is due (half a period since the last). */
+  #leaseDue(): StreamLease | undefined {
+    const every = this.#o.lease?.everyMs;
+    if (!every || this.#closed || Date.now() - this.#leaseAt < every / 2) return undefined;
+    return { n: ++this.#leaseN, at: Date.now(), every };
+  }
+
+  /** A renewal on its own, when no append carried one for a whole period. Best effort: the next tick tries again. */
+  async #renewAlone(): Promise<void> {
+    const every = this.#o.lease?.everyMs;
+    if (!every || this.#closed || this.#renewing || Date.now() - this.#leaseAt < every) return;
+    const lease = { n: ++this.#leaseN, at: Date.now(), every };
+    this.#renewing = (async () => {
+      try {
+        if (this.#appender) this.#learnLimits(await this.#appender.appendStream(this.id, { parts: [], lease }, this.#o.upload?.signal));
+        else await this.#o.store.put(streamLeaseKey(this.id), utf8.encode(JSON.stringify(lease)), { contentType: "application/json" });
+        this.#leaseAt = lease.at;
+      } catch (e) {
+        if (e instanceof StreamRouteMissingError) {
+          noAppend.add(this.#o.store);
+          this.#appender = null;
+        }
+      } finally {
+        this.#renewing = null;
+      }
+    })();
+    await this.#renewing;
+  }
+
+  /**
+   * Stops the lease's renewals (a share that gives up on this writer, or is done with it): the stream reads as
+   * abandoned once its lease lapses. `end()` and a failure stop them too.
+   */
+  close(): void {
+    this.#closed = true;
+    if (this.#leaseTimer) clearInterval(this.#leaseTimer);
+    this.#leaseTimer = null;
+  }
+
+  /** Segments the store holds entries for. */
   get segments(): number {
-    return this.#next;
+    return this.#published;
   }
 
-  async #upload(bytes: Uint8Array): Promise<StreamPart> {
+  async #manifest(bytes: Uint8Array): Promise<Manifest> {
+    return hashSource(bytesSource(bytes), this.#o.hasher);
+  }
+
+  async #uploadLegacy(bytes: Uint8Array, manifest: Manifest): Promise<void> {
     const { store, hasher } = this.#o;
-    const manifest = await hashSource(bytesSource(bytes), hasher);
     await uploadMedia({ store, hasher, source: bytesSource(bytes), manifest, contentType: "video/mp4", ...this.#o.upload });
-    return { hash: manifest.hash, size: manifest.size };
   }
 
   async init(bytes: Uint8Array): Promise<StreamPart> {
     if (this.#hasInit) throw new Error("the stream already has its init segment");
-    const part = await this.#upload(bytes);
-    await putOnce(this.#o.store, streamInitKey(this.id), part);
+    this.#throwIfFailed();
+    const manifest = await this.#manifest(bytes);
+    const part: StreamPart = { hash: manifest.hash, size: manifest.size };
+    if (this.#appender) {
+      this.#hasInit = true;
+      this.#record(part);
+      await this.#enqueue({ part: { kind: "init", ...part, manifest: manifest.bytes, bytes } });
+      return part;
+    }
+    await this.#uploadLegacy(bytes, manifest);
+    await putOnce(this.#o.store, streamInitKey(this.id), { ...part, manifest: toBase64(manifest.bytes) });
     this.#hasInit = true;
+    this.#record(part);
+    return part;
+  }
+
+  #record(part: StreamPart, durationSec?: number): void {
     this.#size += part.size;
     this.#parts.push(part.hash);
-    return part;
+    this.#sizes.push(part.size);
+    if (durationSec !== undefined) {
+      this.#durationSec += durationSec;
+      this.#durations.push(durationSec);
+    }
   }
 
   /** The next media segment. Its entry is written only after its bytes are in the store. */
@@ -183,25 +455,283 @@ export class ProxyStreamWriter {
     if (!this.#hasInit) throw new Error("the init segment comes first");
     if (this.#ended) throw new Error("the stream has ended");
     if (!isSeconds(durationSec)) throw new RangeError(`bad segment duration ${durationSec}`);
+    this.#throwIfFailed();
     const index = this.#next;
-    const part = await this.#upload(bytes);
-    const seg: StreamSegment = { ...part, index, durationSec, at: Date.now() };
-    await putOnce(this.#o.store, streamSegmentKey(this.id, index), seg);
+    const manifest = await this.#manifest(bytes);
+    const seg: StreamSegment = { hash: manifest.hash, size: manifest.size, index, durationSec, at: Date.now() };
+    if (this.#appender) {
+      this.#next++;
+      this.#record(seg, durationSec);
+      await this.#enqueue({ part: { kind: "segment", hash: seg.hash, size: seg.size, manifest: manifest.bytes, bytes, index, durationSec, at: seg.at } });
+      return seg;
+    }
+    await this.#uploadLegacy(bytes, manifest);
+    await putOnce(this.#o.store, streamSegmentKey(this.id, index), { ...seg, manifest: toBase64(manifest.bytes) });
     this.#next++;
-    this.#durationSec += durationSec;
-    this.#size += part.size;
-    this.#parts.push(part.hash);
+    this.#published++;
+    this.#record(seg, durationSec);
     return seg;
   }
 
   async end(): Promise<StreamEnd> {
     if (!this.#hasInit) throw new Error("a stream needs its init segment");
-    const end: StreamEnd = { segments: this.#next, durationSec: this.#durationSec, size: this.#size, at: Date.now(), parts: this.#parts.slice() };
-    await putOnce(this.#o.store, streamEndKey(this.id), end);
-    this.#ended = true;
-    return end;
+    this.#throwIfFailed();
+    const end: StreamEnd = {
+      segments: this.#next,
+      durationSec: this.#durationSec,
+      size: this.#size,
+      at: Date.now(),
+      parts: this.#parts.slice(),
+      sizes: this.#sizes.slice(),
+      durations: this.#durations.slice(),
+    };
+    try {
+      if (this.#appender || this.#queue.length || this.#inflight) {
+        this.#ended = true;
+        this.#queue.push({ end });
+        this.#kick();
+        await this.flush();
+        return end;
+      }
+      await putOnce(this.#o.store, streamEndKey(this.id), end);
+      this.#ended = true;
+      return end;
+    } finally {
+      this.close(); // ended (finished streams need no lease) or failed
+    }
+  }
+
+  /** Waits until everything queued is in the store (or throws the failure that stopped it). */
+  async flush(): Promise<void> {
+    this.#holdInit = false;
+    this.#kick();
+    while ((this.#queue.length || this.#inflight) && !this.#failure) await this.#changed();
+    this.#throwIfFailed();
+  }
+
+  #throwIfFailed(): void {
+    if (this.#failure) throw this.#failure.error;
+  }
+
+  #changed(): Promise<void> {
+    return new Promise((r) => this.#waiters.push(r));
+  }
+
+  #notify(): void {
+    const w = this.#waiters;
+    this.#waiters = [];
+    for (const r of w) r();
+  }
+
+  async #enqueue(item: Queued): Promise<void> {
+    this.#queue.push(item);
+    if ("part" in item) this.#queuedBytes += item.part.size;
+    this.#kick();
+    // The encoder's back-pressure: past the limit, wait for the uploads (ffmpeg keeps its output on disk meanwhile).
+    const max = (this.#o.batch && this.#o.batch.maxQueuedBytes) || QUEUED_BYTES;
+    while (this.#queuedBytes > max && !this.#failure) await this.#changed();
+    this.#throwIfFailed();
+  }
+
+  /**
+   * Starts batches while fewer than `inFlight` are under way (inFlightFor: two, more for small batches), so the next uploads while the host
+   * writes the last one to storage (round trips the link would otherwise sit idle through), and a lossy link carries two
+   * TCP streams (one stream on the 4G profile, 0.5% loss and an 80 ms round trip, tops out near the proxy's own rate).
+   * Entries of two batches may land in either order: a reader waits at the gap a moment, as within one batch. The end
+   * goes last, alone or with the last parts, once nothing else is under way.
+   */
+  #kick(): void {
+    const limits = this.#o.batch || {};
+    const inFlight = Math.max(1, limits.inFlight ?? inFlightFor(this.#partsLimit()));
+    while (!this.#failure && this.#inflight < inFlight && this.#queue.length) {
+      // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the
+      // first segment, so both go in one request, unless the writer flushes or ends first.
+      if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
+      const maxBytes = this.#bytesLimit();
+      const parts: StreamAppendPart[] = [];
+      let bytes = 0, taken = 0, end: StreamEnd | undefined;
+      for (const q of this.#queue) {
+        if ("end" in q) {
+          // The end lands after every entry (readers take an end with an entry before it missing for damage): it is
+          // taken only once nothing else is under way, alone or with the parts just before it. The parts queued before
+          // it keep every slot until then (cf-verify3: holding them all behind the end made a fast encode's last ~12
+          // MiB go one append at a time).
+          if (this.#inflight === 0) {
+            end = q.end;
+            taken++;
+          }
+          break;
+        }
+        if (parts.length && (parts.length >= this.#maxParts || bytes + q.part.size > maxBytes)) break;
+        parts.push(q.part);
+        bytes += q.part.size;
+        taken++;
+      }
+      if (!parts.length && !end) return; // only the end is left, and something is under way: it goes when that lands
+      this.#queue.splice(0, taken);
+      this.#inflight++;
+      void this.#sendBatch(parts, end, 0)
+        .then(
+          () => {
+            this.#queuedBytes -= bytes;
+            this.#published += parts.filter((p) => p.kind === "segment").length;
+          },
+          (e: unknown) => {
+            this.#failure ??= { error: e };
+            this.close();
+          },
+        )
+        .finally(() => {
+          this.#inflight--;
+          this.#notify();
+          this.#kick();
+        });
+    }
+  }
+
+  /**
+   * A batch, again on a failure a retry may fix: in two halves, each retried the same way, down to one part. Parts per
+   * request are halved after a failure and never again as many as failed (a request the host gives up on, as a Worker
+   * over its CPU does, fails again at that size); one more after each success, up to that ceiling.
+   */
+  async #sendBatch(parts: StreamAppendPart[], end: StreamEnd | undefined, attempt: number): Promise<void> {
+    const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
+    for (;;) {
+      try {
+        await this.#send(parts, end);
+        this.#maxParts = Math.min(this.#ceiling, this.#maxParts + 1);
+        return;
+      } catch (e) {
+        const until = retryAtOf(e);
+        if (until === null || signal?.aborted) {
+          if (final(e) || signal?.aborted || attempt >= retries) throw e;
+          break;
+        }
+        // A write limit (the host's daily cap): nothing of this batch is lost, and nothing is dropped. It waits the
+        // limit out and goes again as it was: not an attempt, not a reason to shrink.
+        this.#o.onWriteLimit?.(until);
+        await sleep(Math.max(0, until - Date.now()) + Math.random() * (this.#o.writeLimitJitterMs ?? 60_000), signal);
+      }
+    }
+    if (parts.length > 1) this.#ceiling = Math.min(this.#ceiling, parts.length - 1);
+    this.#maxParts = Math.max(1, Math.floor(parts.length / 2));
+    const base = (this.#o.upload?.retryDelayMs ?? 250) * 2 ** attempt;
+    await sleep(base / 2 + Math.random() * base, signal);
+    if (parts.length < 2) return this.#sendBatch(parts, end, attempt + 1);
+    const half = Math.ceil(parts.length / 2);
+    await this.#sendBatch(parts.slice(0, half), undefined, attempt + 1);
+    await this.#sendBatch(parts.slice(half), end, attempt + 1);
+  }
+
+  /** One batch, one attempt (the caller retries); a host without the route: part by part from here on. */
+  async #send(parts: StreamAppendPart[], end?: StreamEnd): Promise<void> {
+    const signal = this.#o.upload?.signal;
+    if (this.#appender) {
+      const batch = parts.map((p) => ({ ...p }));
+      if (this.#probe && batch.some((p) => p.kind === "segment") && !batch.some((p) => p.kind === "init")) await this.#skipStored(batch);
+      const lease = end ? undefined : this.#leaseDue();
+      try {
+        this.#learnLimits(await this.#appender.appendStream(this.id, { parts: batch, ...(end ? { end } : {}), ...(lease ? { lease } : {}) }, signal));
+        if (lease) this.#leaseAt = lease.at;
+        return;
+      } catch (e) {
+        if (e instanceof StreamPartMissingError) {
+          // a part it found stored went away since (or a reader reported it): send every byte, and the host answers
+          // the report for the ones sent without them (repair)
+          this.#probe = false;
+          const again = parts.map((p, n) => (batch[n]!.bytes === null ? { ...p, repair: true } : p));
+          this.#learnLimits(await this.#appender.appendStream(this.id, { parts: again, ...(end ? { end } : {}), ...(lease ? { lease } : {}) }, signal));
+          if (lease) this.#leaseAt = lease.at;
+          return;
+        }
+        if (!(e instanceof StreamRouteMissingError)) throw e;
+        // a host from before the route: part by part, as through any store
+        noAppend.add(this.#o.store);
+        this.#appender = null;
+      }
+    }
+    for (const p of parts) {
+      const manifest = await decodeManifest(p.manifest, this.#o.hasher, p.hash);
+      await this.#uploadLegacy(p.bytes!, manifest);
+      if (p.kind === "init") await putOnce(this.#o.store, streamInitKey(this.id), { hash: p.hash, size: p.size, manifest: toBase64(p.manifest) });
+      else await putOnce(this.#o.store, streamSegmentKey(this.id, p.index!), { hash: p.hash, size: p.size, index: p.index, durationSec: p.durationSec, at: p.at, manifest: toBase64(p.manifest) });
+    }
+    if (end) await putOnce(this.#o.store, streamEndKey(this.id), end);
+  }
+
+  /**
+   * Dedup, as an upload's head does: parts the store already holds (a takeover re-encoding the same source makes the
+   * same segments) go without their bytes, the host checking they are there. One `heads` request for the batch, and
+   * only while it keeps finding segments, so a new stream pays it once.
+   */
+  async #skipStored(batch: StreamAppendPart[]): Promise<void> {
+    const many = this.#o.store as BlobStore & ManyHeads;
+    if (typeof many.heads !== "function") {
+      this.#probe = false;
+      return;
+    }
+    let got: ({ size: number } | null)[];
+    try {
+      got = await many.heads(batch.map((p) => mediaKey(p.hash)));
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") throw e;
+      this.#probe = false; // the bytes go, as they would have anyway
+      return;
+    }
+    let found = false;
+    batch.forEach((p, i) => {
+      if (got[i]?.size !== p.size) return;
+      p.bytes = null;
+      if (p.kind === "segment") found = true;
+    });
+    if (!found) this.#probe = false;
   }
 }
+
+/**
+ * A store that reads a stream in batches: entries, manifests and bytes of several parts in one request, and, at the
+ * live edge, an answer held until the next part is up (a Carton host's GET /streams/<id>/read,
+ * `@carton/host-http/client`). Not part of BlobStore: looked for.
+ */
+export interface StreamBatchReader {
+  readStream(stream: string, o: StreamReadOptions): AsyncGenerator<StreamReadItem>;
+}
+export interface StreamReadOptions {
+  /** The first segment wanted. */
+  from: number;
+  /** The init segment too, first. */
+  init?: boolean;
+  /** Bytes to send at most (at least one part's, when there is one); 0: entries only. */
+  maxBytes?: number;
+  /** Entries to list at most (the host may list fewer). */
+  maxParts?: number;
+  /** How long the host may hold the answer while the first part asked for isn't up yet, ms. */
+  waitMs?: number;
+  signal?: AbortSignal;
+}
+/**
+ * The parts in order, each with its manifest (null: none came) and bytes (null: not sent; read them the usual way),
+ * then one `status`: the end entry if the host looked (it does when it reached a part that isn't up), and whether the
+ * init segment asked for is missing (the stream is only claimed).
+ */
+export type StreamReadItem =
+  /** First, as soon as the answer's header is in: how many segments it carries (so the next read can start at once). */
+  | { kind: "listed"; segments: number }
+  | { kind: "init"; part: StreamPart; manifest: Uint8Array | null; bytes: Uint8Array | null }
+  | { kind: "segment"; segment: StreamSegment; manifest: Uint8Array | null; bytes: Uint8Array | null }
+  | { kind: "status"; end?: StreamEnd | null; initMissing?: boolean };
+export const isStreamBatchReader = (s: BlobStore): s is BlobStore & StreamBatchReader => typeof (s as Partial<StreamBatchReader>).readStream === "function";
+
+/** Stores whose host has no stream routes: entry by entry from then on. */
+const noBatchRead = new WeakSet<BlobStore>();
+
+/**
+ * The first batch is one segment (the first frame waits for nothing more); later ones up to this many bytes. Reads of up
+ * to 4 MiB took a Worker 6-12 ms of CPU, at most 18 (the Free plan allows 10): 2 MiB halves the work a request does.
+ */
+const READ_BATCH_BYTES = 2 << 20;
+/** How long a live reader's request may wait at the edge for the next segment. */
+const READ_WAIT_MS = 20_000;
 
 export interface ProxyStreamReaderOptions {
   store: BlobStore;
@@ -218,6 +748,15 @@ export interface ProxyStreamReaderOptions {
    * the store unreachable (e2e S5-6). Entries are written once, so a kept one is never stale. Default: `media`'s cache.
    */
   cache?: LeafCache;
+  /**
+   * Retries of an entry read that failed on the network, with exponential backoff, as MediaReader retries the bytes
+   * (default 3, from 200 ms). Without them one dropped request for a small JSON entry ended a teammate's playback
+   * while every segment's bytes would have been fetched again (cf-lab, 2026-11-02). An entry that isn't up yet is not
+   * a failure: it reads as absent and the reader polls for it. A cancelled read (the caller's signal) asks the store
+   * nothing more, ends its wait between attempts at once, and ends with the cancellation, not the network's error.
+   */
+  retries?: number;
+  retryDelayMs?: number;
 }
 
 export type PlayedPart = { part: "init"; bytes: Uint8Array } | { part: "segment"; segment: StreamSegment; bytes: Uint8Array };
@@ -237,6 +776,21 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** `p`, or the signal's reason as soon as it aborts (p's own outcome is then ignored). */
+function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) {
+    p.catch(() => {}); // dropped: its failure is no one's
+    return Promise.reject(signal.reason);
+  }
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([p, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
 /** Reads a stream, from its first segment on, waiting for the segments that aren't up yet. */
 export class ProxyStreamReader {
   readonly id: string;
@@ -244,6 +798,12 @@ export class ProxyStreamReader {
   #init: StreamPart | null = null;
   readonly #segments: StreamSegment[] = []; // entries are immutable: 0..n-1 known so far
   #end: StreamEnd | null = null;
+  /**
+   * How many times a batch read has looked for the end (and found `#end`, or none). A caller that just filled entries
+   * (waitFor, playlist) takes its own fill's look instead of asking again; `end()` itself always asks while the end
+   * isn't known, so whoever knows the stream ended (a record with its size) is never told otherwise.
+   */
+  #endLooks = 0;
   // Entries are fetched one caller at a time: two overlapping fetches would both append the same entry.
   #filling: Promise<unknown> = Promise.resolve();
 
@@ -261,13 +821,30 @@ export class ProxyStreamReader {
    * An entry, as `as` reads it: from the cache, else from the store (and then kept). Only entries that read as valid
    * are kept, and a kept one that doesn't is read from the store again; absent ones aren't kept: they may yet appear.
    */
-  async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
+  async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null, signal?: AbortSignal): Promise<T | null> {
     const kept = await this.#kept(key, as);
     if (kept) return kept;
-    const b = await this.#o.store.get(key);
+    const b = await this.#retry(() => this.#o.store.get(key), signal);
     const v = b && as(parseJson(b));
     if (v) await this.#cache?.putEntry?.(key, b).catch(() => {});
     return v || null;
+  }
+
+  // The caller's signal is checked before each attempt and after a failure, and ends the wait between attempts and an
+  // attempt in flight (whose answer is then dropped): a cancelled play asks the store nothing more, and ends with the
+  // cancellation rather than the network error that came before it.
+  async #retry<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const retries = this.#o.retries ?? 3;
+    for (let a = 0; ; a++) {
+      signal?.throwIfAborted();
+      try {
+        return await abortable(fn(), signal);
+      } catch (e) {
+        signal?.throwIfAborted();
+        if ((e as Error)?.name === "AbortError" || a >= retries) throw e;
+        await sleep((this.#o.retryDelayMs ?? 200) * 2 ** a, signal);
+      }
+    }
   }
 
   async #kept<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
@@ -275,32 +852,99 @@ export class ProxyStreamReader {
     return b ? as(parseJson(b)) : null;
   }
 
-  async initPart(): Promise<StreamPart | null> {
-    this.#init ??= await this.#entry(streamInitKey(this.id), asPart);
+  // `signal` cancels this caller's read only: entry reads are never shared between callers.
+  async initPart(signal?: AbortSignal): Promise<StreamPart | null> {
+    this.#init ??= await this.#entry(streamInitKey(this.id), asPart, signal);
     return this.#init;
   }
 
-  async end(): Promise<StreamEnd | null> {
-    this.#end ??= await this.#entry(streamEndKey(this.id), asEnd);
+  async end(signal?: AbortSignal): Promise<StreamEnd | null> {
+    this.#end ??= await this.#entry(streamEndKey(this.id), asEnd, signal);
+    this.#fromEnd();
     return this.#end;
   }
 
-  /** Entry `index` if it is up, else null. */
-  async segment(index: number): Promise<StreamSegment | null> {
-    if (index < this.#segments.length) return this.#segments[index];
-    const fill = this.#filling.then(() => this.#fill(index));
-    this.#filling = fill.catch(() => {});
-    return fill;
+  /** The end as a fill that ran since `looks` saw it (no second request), else as `end()` finds it now. */
+  #endSince(looks: number, signal?: AbortSignal): Promise<StreamEnd | null> {
+    return this.#endLooks > looks ? Promise.resolve(this.#end) : this.end(signal);
   }
 
-  async #fill(index: number): Promise<StreamSegment | null> {
+  /** The batch reader to use, if the store is one whose host has the route. */
+  #batch(): StreamBatchReader | null {
+    const s = this.#o.store;
+    return isStreamBatchReader(s) && !noBatchRead.has(s) ? s : null;
+  }
+
+  /**
+   * An end that lists its parts with their sizes and durations holds every entry: the init and the segments not known
+   * yet come from it, with no request per entry.
+   */
+  #fromEnd(): void {
+    const e = this.#end;
+    if (!e?.parts || !e.sizes || !e.durations) return;
+    this.#init ??= { hash: e.parts[0]!, size: e.sizes[0]! };
+    for (let i = this.#segments.length; i < e.segments; i++) this.#segments.push({ hash: e.parts[i + 1]!, size: e.sizes[i + 1]!, index: i, durationSec: e.durations[i]!, at: e.at });
+  }
+
+  /** Takes in an entry a batch read brought: kept (so it replays offline), and known if it extends the prefix. */
+  async #learn(seg: StreamSegment, manifest: Uint8Array | null): Promise<void> {
+    if (seg.index === this.#segments.length) this.#segments.push(seg);
+    const json = { ...seg, ...(manifest ? { manifest: toBase64(manifest) } : {}) };
+    await this.#cache?.putEntry?.(streamSegmentKey(this.id, seg.index), utf8.encode(JSON.stringify(json))).catch(() => {});
+  }
+
+  async #learnEnd(end: StreamEnd | null | undefined): Promise<void> {
+    if (end === undefined) return;
+    this.#endLooks++;
+    if (!end || this.#end) return;
+    this.#end = end;
+    // kept only whole: a host may send a long stream's end without its lists (to fit its answer), and a kept end is
+    // never read from the store again
+    if (end.parts) await this.#cache?.putEntry?.(streamEndKey(this.id), utf8.encode(JSON.stringify(end))).catch(() => {});
+    this.#fromEnd();
+  }
+
+  /**
+   * Entry `index` if it is up, else null. Fills run one at a time, each under its own caller's signal: a caller that
+   * cancels ends its own fill and its wait for the one before it, never another caller's.
+   */
+  async segment(index: number, signal?: AbortSignal): Promise<StreamSegment | null> {
+    if (index < this.#segments.length) return this.#segments[index];
+    const fill = this.#filling.then(() => this.#fill(index, signal));
+    this.#filling = fill.catch(() => {});
+    return abortable(fill, signal);
+  }
+
+  async #fill(index: number, signal?: AbortSignal): Promise<StreamSegment | null> {
+    signal?.throwIfAborted();
     // A kept end says where the stream stops, without asking the store (which may be unreachable) for one more entry.
     this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
+    this.#fromEnd();
+    if (index < this.#segments.length) return this.#segments[index];
+    if (this.#end && index >= this.#end.segments) return null;
+    const batch = this.#batch();
+    if (batch) {
+      // Entries only, as many as the host lists in one request, from the first one not known.
+      try {
+        for (;;) {
+          const before = this.#segments.length;
+          for await (const it of batch.readStream(this.id, { from: before, maxBytes: 0, maxParts: Math.max(1000, index + 1 - before), ...(signal ? { signal } : {}) })) {
+            if (it.kind === "segment") await this.#learn(it.segment, it.manifest);
+            else if (it.kind === "status") await this.#learnEnd(it.end);
+          }
+          // up to it, or nothing more is up: done; else the host listed fewer than were there, so ask on
+          if (index < this.#segments.length || this.#segments.length === before) return this.#segments[index] ?? null;
+        }
+      } catch (e) {
+        if (!(e instanceof StreamRouteMissingError)) throw e;
+        noBatchRead.add(this.#o.store);
+      }
+    }
     // Entries land in order, so fetch the ones before it first: the cache stays a prefix.
     while (this.#segments.length <= index) {
       const i = this.#segments.length;
       if (this.#end && i >= this.#end.segments) return null;
-      const seg = await this.#entry(streamSegmentKey(this.id, i), (v) => asSegment(v, i));
+      const seg = await this.#entry(streamSegmentKey(this.id, i), (v) => asSegment(v, i), signal);
       if (!seg) return null;
       this.#segments.push(seg);
     }
@@ -308,8 +952,8 @@ export class ProxyStreamReader {
   }
 
   /** Every segment that is up now, in order. */
-  async known(): Promise<StreamSegment[]> {
-    while (await this.segment(this.#segments.length));
+  async known(signal?: AbortSignal): Promise<StreamSegment[]> {
+    while (await this.segment(this.#segments.length, signal));
     return this.#segments.slice();
   }
 
@@ -318,12 +962,14 @@ export class ProxyStreamReader {
     let wait = this.#o.pollMs ?? 500;
     for (;;) {
       signal?.throwIfAborted();
-      const seg = await this.segment(index);
+      const looks = this.#endLooks;
+      const seg = await this.segment(index, signal);
       if (seg) return seg;
-      const end = await this.end();
+      // a batch fill that found no entry looked for the end too: its answer is this moment's, no second request
+      const end = await this.#endSince(looks, signal);
       if (end && end.segments <= index) return null;
       // The writer puts the end after every entry, so an entry missed just before the end was read may be up now.
-      if (end && (await this.segment(index))) return this.#segments[index];
+      if (end && (await this.segment(index, signal))) return this.#segments[index];
       if (end) {
         // The stream ended with this segment in it, yet an entry up to it can't be read: it will never appear.
         await this.#reportDamage({ entry: this.#segments.length });
@@ -378,20 +1024,176 @@ export class ProxyStreamReader {
    * uploaded, until the stream ends. What a player appends to its source buffer.
    */
   async *play(opts: { from?: number; signal?: AbortSignal } = {}): AsyncGenerator<PlayedPart> {
-    const { signal } = opts;
-    let init = await this.initPart();
-    let wait = this.#o.pollMs ?? 500;
-    while (!init) {
-      // The writer puts the init segment first; until then the stream is only claimed.
-      await sleep(wait, signal);
-      wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
-      init = await this.initPart();
+    const batch = this.#batch();
+    if (batch) yield* this.#playBatched(batch, opts.from ?? 0, opts.signal);
+    else yield* this.#playEach(opts.from ?? 0, false, opts.signal);
+  }
+
+  /** Part by part: each entry, then its manifest and bytes through the media reader. */
+  async *#playEach(from: number, initDone: boolean, signal?: AbortSignal): AsyncGenerator<PlayedPart> {
+    if (!initDone) {
+      let init = await this.initPart(signal);
+      let wait = this.#o.pollMs ?? 500;
+      while (!init) {
+        // The writer puts the init segment first; until then the stream is only claimed.
+        await sleep(wait, signal);
+        wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
+        init = await this.initPart(signal);
+      }
+      yield { part: "init", bytes: await this.#bytes(init, signal) };
     }
-    yield { part: "init", bytes: await this.#bytes(init, signal) };
-    for (let i = opts.from ?? 0; ; i++) {
+    for (let i = from; ; i++) {
       const seg = await this.waitFor(i, signal);
       if (!seg) return;
       yield { part: "segment", segment: seg, bytes: await this.#bytes(seg, signal) };
+    }
+  }
+
+  /** A part's bytes from the cache alone (every leaf kept, as a played stream's are), else null. */
+  async #cachedBytes(part: StreamPart): Promise<Uint8Array | null> {
+    const b = await this.#o.media.cached(part.hash).catch(() => null);
+    return b && b.length === part.size ? b : null;
+  }
+
+  /** A part a batch brought: its bytes if they verify against its manifest (and kept), else read the usual way. */
+  async #accept(part: StreamPart, manifest: Uint8Array | null, bytes: Uint8Array | null, signal?: AbortSignal): Promise<Uint8Array> {
+    if (manifest && bytes && (await this.#o.media.adopt(part.hash, manifest, bytes))) return bytes;
+    return this.#bytes(part, signal); // repairs, and reports what never verifies
+  }
+
+  /**
+   * Batch by batch (a StreamBatchReader): what this process has kept first, then one request for the init segment and
+   * the first segment (the first frame waits for nothing more), then requests of up to READ_BATCH_BYTES, each held by
+   * the host at the live edge until the next segment is up. A host without the route: part by part from there on.
+   */
+  async *#playBatched(batch: StreamBatchReader, from: number, signal?: AbortSignal): AsyncGenerator<PlayedPart> {
+    let i = from;
+    let initDone = false;
+    const keptInit = this.#init ?? (await this.#kept(streamInitKey(this.id), asPart));
+    const initBytes = keptInit && (await this.#cachedBytes(keptInit));
+    if (initBytes) {
+      this.#init ??= keptInit;
+      yield { part: "init", bytes: initBytes };
+      initDone = true;
+    }
+    let first = true;
+    let failures = 0;
+    let missingAt = -1;
+    let wait = this.#o.pollMs ?? 500;
+    // A read, started: its own abort (tied to the play's), its answer, and its first item asked for (that starts it).
+    type Read = { from: number; ac: AbortController; gen: AsyncGenerator<StreamReadItem>; first: Promise<IteratorResult<StreamReadItem>> };
+    const open = (from: number, init: boolean, maxBytes: number): Read => {
+      const ac = new AbortController();
+      if (signal) {
+        if (signal.aborted) ac.abort(signal.reason);
+        else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
+      }
+      const gen = batch.readStream(this.id, { from, init, maxBytes, waitMs: READ_WAIT_MS, signal: ac.signal });
+      const first = gen.next();
+      first.catch(() => {});
+      return { from, ac, gen, first };
+    };
+    // a read no longer wanted: its request ends (an error from it is nobody's)
+    const drop = (r: Read | null): void => {
+      if (!r) return;
+      r.ac.abort();
+      void r.first.then(() => r.gen.return(undefined), () => {}).catch(() => {});
+    };
+    let ahead: Read | null = null;
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        if (initDone) {
+          // kept segments play without a request (offline too)
+          for (;;) {
+            const seg = this.#segments[i] ?? (await this.#kept(streamSegmentKey(this.id, i), (v) => asSegment(v, i)));
+            const bytes = seg && (await this.#cachedBytes(seg));
+            if (!bytes) break;
+            if (seg.index === this.#segments.length) this.#segments.push(seg);
+            yield { part: "segment", segment: seg, bytes };
+            i++;
+          }
+          this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
+          this.#fromEnd();
+          if (this.#end && i >= this.#end.segments) return;
+        }
+        let got = 0, initMissing = false, sawEnd: StreamEnd | null | undefined;
+        const t0 = Date.now();
+        // the read started ahead for exactly this position, else a new one
+        const read = ahead && ahead.from === i && initDone ? ahead : (drop(ahead), open(i, !initDone, first ? 1 : READ_BATCH_BYTES));
+        ahead = null;
+        try {
+          for (let r = await read.first; !r.done; r = await read.gen.next()) {
+            const it = r.value;
+            if (it.kind === "listed") {
+              // Two reads under way: the next starts as soon as this one's header says where it stops, while its bytes
+              // arrive (one segment a read at a Worker's 1 MiB, and one read at a time, played a 4G stream at about
+              // real time: cf-verify3). Not past a known end.
+              const next = read.from + it.segments;
+              if (it.segments > 0 && !(this.#end && next >= this.#end.segments)) ahead = open(next, false, READ_BATCH_BYTES);
+            } else if (it.kind === "init") {
+              if (initDone) continue;
+              this.#init ??= it.part;
+              await this.#cache?.putEntry?.(streamInitKey(this.id), utf8.encode(JSON.stringify(it.part))).catch(() => {});
+              yield { part: "init", bytes: await this.#accept(it.part, it.manifest, it.bytes, signal) };
+              initDone = true;
+            } else if (it.kind === "segment") {
+              if (it.segment.index !== i) throw new Error(`stream ${this.id.slice(0, 12)}: the host answered segment ${it.segment.index} for ${i}`);
+              await this.#learn(it.segment, it.manifest);
+              yield { part: "segment", segment: it.segment, bytes: await this.#accept(it.segment, it.manifest, it.bytes, signal) };
+              i++;
+              got++;
+            } else {
+              initMissing = !!it.initMissing;
+              sawEnd = it.end;
+              await this.#learnEnd(it.end);
+            }
+          }
+          failures = 0;
+        } catch (e) {
+          drop(ahead);
+          ahead = null;
+          if (e instanceof StreamRouteMissingError) {
+            noBatchRead.add(this.#o.store);
+            yield* this.#playEach(i, initDone, signal);
+            return;
+          }
+          if (signal?.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.name === "LeafMismatchError" || (e as Error)?.name === "MediaMissingError") throw e;
+          // a dropped request: again, with the media reader's backoff
+          const { retries, delayMs } = this.#o.media.retryPolicy;
+          if (++failures > retries) throw e;
+          await sleep(delayMs * 2 ** (failures - 1), signal);
+          continue;
+        }
+        first = false;
+        if (this.#end && i >= this.#end.segments) return;
+        if (sawEnd && got === 0 && !initMissing) {
+          // The stream ended with this segment in it, yet its entry wasn't there. The end may describe it (its lists):
+          // then its bytes are read the usual way, as an entry-by-entry reader would.
+          const known = this.#segments[i];
+          if (known && known.index === i) {
+            yield { part: "segment", segment: known, bytes: await this.#bytes(known, signal) };
+            i++;
+            continue;
+          }
+          // Else the host read the entry before the end, and the writer puts the end after every entry, so it may have
+          // landed in between: ask once more first.
+          if (missingAt === i) {
+            await this.#reportDamage({ entry: i });
+            throw new StreamDamagedError(this.id, i);
+          }
+          missingAt = i;
+          continue;
+        }
+        if (got > 0) wait = this.#o.pollMs ?? 500;
+        else if (Date.now() - t0 < READ_WAIT_MS / 2) {
+          // nothing new, and the host didn't hold the answer: don't spin
+          await sleep(wait, signal);
+          wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
+        }
+      }
+    } finally {
+      drop(ahead);
     }
   }
 
@@ -403,8 +1205,9 @@ export class ProxyStreamReader {
   async playlist(urlFor: (hash: string) => string): Promise<string | null> {
     const init = await this.initPart();
     if (!init) return null;
+    const looks = this.#endLooks;
     const segs = await this.known();
-    const end = await this.end();
+    const end = await this.#endSince(looks);
     if (end && segs.length < end.segments) {
       // Finished, yet an entry can't be read: a live-looking playlist would keep the tool waiting for good.
       if (!(await this.segment(segs.length))) {
@@ -435,11 +1238,11 @@ export class ProxyStreamReader {
  * has no size, so it reads as unknown here (use `play` or `playlist` meanwhile).
  */
 export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamReader | null; media: RangeSource }): RangeSource {
-  const layout = async (r: ProxyStreamReader): Promise<{ parts: StreamPart[]; size: number } | null> => {
-    const end = await r.end();
-    const init = await r.initPart();
+  const layout = async (r: ProxyStreamReader, signal?: AbortSignal): Promise<{ parts: StreamPart[]; size: number } | null> => {
+    const end = await r.end(signal);
+    const init = await r.initPart(signal);
     if (!end || !init) return null;
-    const segs = await r.known();
+    const segs = await r.known(signal);
     if (segs.length < end.segments) return null; // the end entry is up but an earlier entry isn't readable
     return { parts: [init, ...segs.slice(0, end.segments)], size: end.size };
   };
@@ -447,7 +1250,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
     async stat(id, signal): Promise<MediaStat | null> {
       const r = opts.streams(id);
       if (!r) return opts.media.stat(id, signal);
-      const l = await layout(r);
+      const l = await layout(r, signal);
       return l ? { size: l.size, contentType: "video/mp4" } : null;
     },
     async *read(id, offset, length, signal) {
@@ -456,7 +1259,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
         yield* opts.media.read(id, offset, length, signal);
         return;
       }
-      const l = await layout(r);
+      const l = await layout(r, signal);
       if (!l) throw new Error(`stream ${id.slice(0, 12)} is not complete`);
       const end = Math.min(l.size, offset + length);
       let at = 0;
@@ -485,7 +1288,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
 export async function findProxy(store: BlobStore, sourceHash: string, profileId: string): Promise<ProxyPointer | null> {
   const v = await getJson(store, proxyPointerKey(sourceHash, profileId));
   if (!v || typeof v.encoder !== "string") return null;
-  if (isMediaHash(v.stream) && isCount(v.at)) return { stream: v.stream, encoder: v.encoder, at: v.at };
+  if (isMediaHash(v.stream) && isCount(v.at)) return { stream: v.stream, encoder: v.encoder, at: v.at, ...(isCount(v.leaseEveryMs) && v.leaseEveryMs > 0 ? { leaseEveryMs: v.leaseEveryMs } : {}) };
   if (isMediaHash(v.hash) && isCount(v.size)) return { hash: v.hash, size: v.size, encoder: v.encoder };
   return null;
 }
@@ -520,7 +1323,7 @@ async function check(
   let there = await findProxy(store, sourceHash, profileId);
   for (let round = 0; ; round++) {
     if (!there) return { there, usable: false };
-    if (await replaceable(store, there, staleMs, now())) return { there, usable: false };
+    if (await replaceable(store, there, staleMs, now(), now)) return { there, usable: false };
     const again = await findProxy(store, sourceHash, profileId);
     if (samePointer(again, there)) return { there, usable: true };
     // Still changing after a few rounds: don't vouch for any of them (the caller makes or claims one anew).
@@ -550,11 +1353,12 @@ export async function claimProxyStream(
   sourceHash: string,
   profileId: string,
   encoder: string,
-  opts: { staleMs?: number; now?: () => number; id?: string } = {},
+  opts: { staleMs?: number; now?: () => number; id?: string; leaseEveryMs?: number } = {},
 ): Promise<ClaimResult> {
   const now = opts.now ?? Date.now;
   const key = proxyPointerKey(sourceHash, profileId);
-  const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now() };
+  // `leaseEveryMs`: the claimer's writer renews a lease that often (ProxyStreamWriter's `lease`), and says so here
+  const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now(), ...(opts.leaseEveryMs ? { leaseEveryMs: opts.leaseEveryMs } : {}) };
   const body = utf8.encode(JSON.stringify(mine));
   const isMine = (p: ProxyPointer | null) => p !== null && "stream" in p && p.stream === (mine as { stream: string }).stream;
   await store.put(key, body, { contentType: "application/json", ifAbsent: true });
@@ -579,7 +1383,7 @@ export async function claimProxyStream(
   return { claimed: true, pointer: mine };
 }
 
-async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, now: number): Promise<boolean> {
+async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, nowMs: number, now: () => number = () => nowMs): Promise<boolean> {
   if ("hash" in p) {
     if (await isDamaged(store, p.hash)) return true;
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
@@ -592,19 +1396,21 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     // Finished. A report covers damage someone read; a part that is gone is caught here, whoever removed it (a host
     // that found it damaged removes it, and a reader that then saw it missing may not have reported it): one HEAD per
     // part, so the check still needs no listing. What's wrong is reported, so later checks stop at the report.
-    const wrong = await finishedWrong(store, p.stream, endBytes, now);
+    const wrong = await finishedWrong(store, p.stream, endBytes, nowMs);
     if (wrong === null) return false;
     await reportDamage(store, p.stream, wrong);
     return true;
   }
-  // Live if anything happened lately: the newest entry, or the claim itself.
+  // A publisher that keeps a lease: live while it renews it (judged on this machine's clock alone), dead once it hasn't
+  // for three periods. Older publishers: live if anything happened lately (the newest entry, or the claim itself).
+  if (p.leaseEveryMs) return !(await leaseAlive(store, p.stream, p.leaseEveryMs, p.at, now));
   const newest = await newestEntry(store, p.stream);
   let latest = p.at;
   if (newest !== null) {
     const v = await getJson(store, streamSegmentKey(p.stream, newest));
     if (v && isCount(v.at)) latest = Math.max(latest, v.at);
   }
-  return now - latest > staleMs;
+  return nowMs - latest > staleMs;
 }
 
 /**
@@ -737,6 +1543,53 @@ async function inBatches<T, R>(items: readonly T[], f: (item: T) => Promise<R>):
   };
   await Promise.all(Array.from({ length: Math.min(16, items.length) }, worker));
   return out;
+}
+
+/** A lease renewal as written (StreamLease), or null. */
+function asLease(v: Record<string, unknown> | null): StreamLease | null {
+  return v && isCount(v.n) && isCount(v.at) && isCount(v.every) && v.every > 0 ? { n: v.n, at: v.at, every: v.every } : null;
+}
+
+/**
+ * What this process has seen of each stream's lease, per store object: the renewal count, when it was first seen at
+ * that count, and when a renewal was last seen happen. Bounded: the oldest go first.
+ */
+const leaseSeen = new WeakMap<BlobStore, Map<string, { n: number; seen: number; renewed?: number }>>();
+const LEASE_SEEN_MAX = 1000;
+/** A lease last renewed this long ago by its writer's own clock is dead without watching it (no clock is that far off). */
+const LEASE_FORGOTTEN_MS = 10 * 60_000;
+
+/**
+ * Whether a stream's publisher is alive, by its lease (`every`: how often it renews). Only this machine's clock decides:
+ * alive once a renewal is seen (the count changes) or was seen within a period; dead once the count stays the same for
+ * three periods from when it was first seen (or the lease, by its own clock, is far past any skew). So a check of a
+ * publisher that died a moment ago waits up to three periods, and one of a live publisher at most about one. No lease
+ * yet counts as count -1 (a publisher that died before its first renewal).
+ */
+async function leaseAlive(store: BlobStore, stream: string, every: number, claimedAt: number, now: () => number): Promise<boolean> {
+  let seen = leaseSeen.get(store);
+  if (!seen) leaseSeen.set(store, (seen = new Map()));
+  const lapse = 3 * every;
+  for (;;) {
+    const lease = asLease(await getJson(store, streamLeaseKey(stream)));
+    const n = lease ? lease.n : -1;
+    const t = now();
+    const was = seen.get(stream);
+    if (was && was.n !== n) {
+      seen.delete(stream);
+      seen.set(stream, { n, seen: t, renewed: t });
+      return true; // renewed since this process last looked
+    }
+    if (was?.renewed !== undefined && t - was.renewed < every) return true;
+    if (!was) {
+      seen.set(stream, { n, seen: t });
+      if (seen.size > LEASE_SEEN_MAX) seen.delete(seen.keys().next().value!);
+    }
+    const first = seen.get(stream)!.seen;
+    if (t - first >= lapse) return false;
+    if (t - (lease ? lease.at : claimedAt) > LEASE_FORGOTTEN_MS) return false;
+    await sleep(Math.max(1, Math.min(every, first + lapse - t)));
+  }
 }
 
 /**

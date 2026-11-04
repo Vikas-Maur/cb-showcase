@@ -46,3 +46,8 @@ PRESENCE_TIMEOUT_MS = "120000"
 # the most keys one POST /blobs/heads checks (default 200, at most 1000): each is one to four R2 calls, and a Worker
 # request's subrequests are limited per plan; the client asks again for the rest
 # BLOB_HEADS_PER_REQUEST = "200"
+# The daily write cap (src/write-cap.ts), across every project: bytes stored and blob write calls per UTC day. Over
+# either, writes answer 429 (code DailyWriteCap, Retry-After until 00:00 UTC); reads and deletes go on. Off unless set.
+# Each write then costs one more Durable Object request (the day's counter).
+# WRITE_CAP_BYTES_PER_DAY = "2147483648"
+# WRITE_CAP_OPS_PER_DAY = "20000"

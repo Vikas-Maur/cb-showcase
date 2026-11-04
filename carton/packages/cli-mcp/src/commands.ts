@@ -3,8 +3,8 @@
 // carton.db; writes go through `project.write`, which hands them to the sync-lease holder (§6.2) and answers with the
 // cb result contract: confirmed@seq, pending, or conflicts, with the actor's late-conflict notices first.
 import { join } from "node:path";
-import { pathKey } from "@carton/core";
-import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, Version } from "@carton/core";
+import { isBlank, pathKey } from "@carton/core";
+import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, StateRef, Version } from "@carton/core";
 import type { CbResult, WriteOp } from "@carton/local";
 import { ago, cardLine, exitCodeOf, noticeLines, resultText, shellWord, table, who } from "./format.ts";
 import { resolveCut, resolveVersion, UsageError, versionName } from "./refs.ts";
@@ -73,6 +73,28 @@ async function cutNames(carton: Carton): Promise<Map<string, CutRecord>> {
 
 const versionOf = (v: Version, cuts: Map<string, CutRecord>) => versionName(cuts.get(v.ref.branchId) ?? v.ref.branchId.slice(0, 8), v.ref.seq);
 
+/**
+ * Laptop, build 915eb36: `cb restore main@0` emptied the project. A cut's start that holds nothing (core's
+ * `Version.blank`: the root an imported project's history starts from) is refused before anything is written, saying
+ * which version holds the project. (Core refuses it too; this says it in the words of `cb history`.)
+ */
+async function refuseEmpty(carton: Carton, v: StateRef | string, what: string): Promise<void> {
+  if (typeof v === "string") return;
+  if (v.seq !== 0) {
+    // a later version that holds nothing of the project (core's isBlank with the schema's own rule: what an earlier
+    // build's bug left, laptop, final candidate P3-2), said as what it is: not where the history starts
+    const doc = await carton.checkout(v).catch(() => null);
+    if (!doc || !isBlank(doc, carton.schema)) return;
+    const cut = (await carton.cuts()).find((c) => c.id === v.branchId) ?? v.branchId.slice(0, 8);
+    throw Object.assign(new Error(`${versionName(cut, v.seq)} holds nothing of the project: there is nothing in it to ${what}. Pick another version (see \`cb history\`).`), { code: "EMPTY_VERSION" });
+  }
+  const [start, next] = [(await carton.log({ cut: v.branchId, before: 1, limit: 1 }))[0], (await carton.log({ cut: v.branchId, before: 2, limit: 1 }))[0]];
+  if (!start?.blank) return;
+  const cut = (await carton.cuts()).find((c) => c.id === v.branchId) ?? v.branchId.slice(0, 8);
+  const first = next && next.ref.seq === 1 && next.kind === "import" ? ` The project as it was first saved is ${versionName(cut, 1)}.` : " Pick a later version (see `cb history`).";
+  throw Object.assign(new Error(`${versionName(cut, 0)} is where the history starts, before the project was added: there is nothing in it to ${what}.${first}`), { code: "EMPTY_VERSION" });
+}
+
 /** A clip by id or by its label (name), on the timeline collection. */
 function findRecord(carton: Carton, doc: Doc, text: string): { coll: string; id: string } {
   const tl = carton.schema.timeline;
@@ -129,13 +151,18 @@ const history: CommandSpec = {
     const now = ctx.now?.() ?? Date.now();
     const rows = [];
     for (const v of versions) {
-      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.kind, name: v.name ?? null, change: v.change };
+      // "Fold in the rest" (a revert of a partial fold's inverse, `restOf`) is the fold it finishes: a merge (regress
+      // prod3: it read `revert`); a redo (a revert of an undo, `redoOf`) is a `redo`, as an undo is an `undo` (laptop)
+      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.restOf ? "merge" : v.redoOf ? "redo" : v.kind, name: v.name ?? null, change: v.change, ...(v.restOf ? { rest: true } : {}), ...(v.blank ? { empty: true } : {}) };
+      // a partial fold is one version, a merge, with what it left out (UI audit P1-3; `cb fold` again folds in the rest)
+      // (`leftOut` its paths; `leftOutChanges` how many changes, counted as History and the Fold dialog count them)
+      if (v.rejected) Object.assign(row, { leftOut: v.rejected, leftOutChanges: v.leftOutChanges ?? v.rejected.length });
       if (a.stats) Object.assign(row, stats(carton, await carton.checkout(v.ref)));
       rows.push(row);
     }
     const head = ["VERSION", "SAVED", "BY", "WHAT", ...(a.stats ? ["TRACKS", "ITEMS", "DURATION"] : [])];
     const text = rows.length
-      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? r.kind, ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
+      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? (r.empty ? `${r.kind} (empty)` : r.rest ? `${r.kind} (the rest)` : r.leftOut ? `${r.kind} (${r.leftOutChanges} left out)` : r.kind), ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
       : "No versions yet";
     return out({ cut: { id: cut.id, name: cut.name }, versions: rows }, text);
   },
@@ -169,6 +196,7 @@ const cutNew: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const from = a.from ? await resolveVersion(ctx.project.carton, a.from) : undefined;
+    if (from !== undefined) await refuseEmpty(ctx.project.carton, from, "make a cut from");
     const r = await ctx.project.write({ kind: "fork", name: String(a.name), from: typeof from === "string" ? from : from ? `${from.branchId}@${from.seq}` : undefined }, { actor: ctx.actor });
     const cut = (r as any).cut as CutRecord | undefined;
     return { json: r, text: r.status === "error" ? resultText(r) : `New cut "${cut?.name ?? a.name}" (${cut?.id.slice(0, 8) ?? "?"})`, exitCode: exitCodeOf(r) };
@@ -303,6 +331,7 @@ const restore: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const v = await resolveVersion(ctx.project.carton, String(a.version));
+    await refuseEmpty(ctx.project.carton, v, "restore");
     const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` }, { actor: ctx.actor });
     return writeOut(r, `Restored ${a.version}`);
   },
@@ -320,7 +349,9 @@ const undo: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     const cut = a.cut ? (await resolveCut(carton, a.cut)).id : undefined;
-    if (a.version) return restore.run(ctx, { version: a.version });
+    // Any version given is one to restore, refused if it can't be: 1.4.0's `[rev]` hands it over as a number, and 0
+    // read as no version undid the newest change instead (laptop, merge/prod-2 P3)
+    if (a.version !== undefined && a.version !== null) return restore.run(ctx, { version: String(a.version) });
     if (a.turn !== undefined) {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");
@@ -368,6 +399,7 @@ const publish: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     const v = a.version ? await resolveVersion(carton, String(a.version)) : (await carton.head()).ref;
+    await refuseEmpty(carton, v, "publish");
     const from = typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
     const label = a.name ? String(a.name) : `Published ${new Date(ctx.now?.() ?? Date.now()).toISOString().slice(0, 10)}`;
     const r = await ctx.project.write({ kind: "fork", name: label, from, cutKind: "published" }, { actor: ctx.actor });

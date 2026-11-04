@@ -13,12 +13,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
+import { DatabaseSync } from "node:sqlite";
+import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
+import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
+import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
+import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
-import { fromCarton, serveUi } from "@carton/react";
+import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
+import { Comments } from "@carton/comments";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
 const warned = new Set();
@@ -28,6 +32,30 @@ const warnOnce = (key, msg) => {
   console.warn("[carton] " + msg);
 };
 const errText = (e) => (e && e.message) || String(e);
+
+// ---------------------------------------------------------------- never a project Cardboard can't read
+// Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name and empty tracks and media, and
+// the project left Cardboard's library. Every project.json this process writes is checked first (@carton/cardboard's
+// projectProblems: what Cardboard 1.4.0's reader needs, and a name): one that fails is not written, the old file stays,
+// and the refusal is logged, in the console (at most once every 10 s per project) and in the bundle's
+// .carton/refused.log (one JSON line each: when, which writer, what was wrong; never the project's own text).
+const REFUSED_LOG = "refused.log", REFUSED_LOG_MAX = 256 * 1024;
+const refusedSaid = new Map();
+function refuseProject(bundlePath, projectId, problems, where) {
+  const at = Date.now(), key = (bundlePath ?? projectId) + "\0" + where;
+  if (!(at - (refusedSaid.get(key) ?? 0) < 10_000)) {
+    refusedSaid.set(key, at);
+    console.warn(`[carton] kept project.json of project ${projectId ?? "?"}: the ${where} would have written one Cardboard can't read (${problems.join("; ")})`);
+  }
+  if (!bundlePath) return;
+  try {
+    const dir = path.join(bundlePath, ".carton");
+    if (!fs.existsSync(dir)) return;
+    const file = path.join(dir, REFUSED_LOG);
+    if ((fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > REFUSED_LOG_MAX) fs.rmSync(file, { force: true });
+    fs.appendFileSync(file, JSON.stringify({ at, where, projectId: projectId ?? null, problems }) + "\n");
+  } catch {}
+}
 
 // Cardboard's own GUI save projection, cut out of the editor bundle at build time (scripts/carton/fmsv.js).
 let gui = null;
@@ -64,15 +92,19 @@ function remembered(p) {
 
 // ---------------------------------------------------------------- one Carton per bundle
 const opened = new Map(); // bundlePath → Promise<LocalCarton | null>
+const startable = (project) => !projectProblems({ format: "cardboard-project", project }).length;
 function open(bundlePath, { projectId, doc } = {}) {
   if (!bundlePath) return Promise.resolve(null);
   let p = opened.get(bundlePath);
   if (!p) {
     p = (async () => {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
-      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
-      // A project without history yet starts from its document on disk (§16, main@1).
+      // (in the bundle, or in app data where a synced, network or FAT folder keeps it: L15)
+      const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db")) || (!!id && existingCartonDbs({ projectDir: bundlePath, projectId: id }).length > 0);
+      // A project without history yet starts from its document on disk (§16, main@1), never from one Cardboard can't
+      // read (laptop, build 915eb36: its first version would be a project with no name).
       let first = exists ? null : doc ?? readProject(bundlePath);
+      if (first && !startable(first)) throw new Error("its project.json can't be read by Cardboard, so its history doesn't start from it");
       // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
       // person's actor and the replica's name; cb gets the helper that syncs headlessly).
       const more = await extOpenOptions({ bundlePath, projectId: id });
@@ -85,7 +117,7 @@ function open(bundlePath, { projectId, doc } = {}) {
         // project without one does; without this its history stayed off for good ("holds no project").
         if (first || !/holds no project/.test(errText(e))) throw e;
         first = doc ?? readProject(bundlePath);
-        if (!first) throw e;
+        if (!first || !startable(first)) throw e;
         lc = await openWith(first);
       }
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);
@@ -101,6 +133,37 @@ function open(bundlePath, { projectId, doc } = {}) {
   return p;
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
+// recover(): bundlePath → {text, out} for the damaged file last read through its history
+const recovered = new Map();
+// Whose a carton.db is, read without opening it as a history (nothing is moved, set aside or written): its project id
+// and whether this computer made it. null: it can't be read.
+async function historyOwner(dbPath) {
+  let machine;
+  try {
+    const raw = new DatabaseSync(dbPath, { readOnly: true, timeout: 2000 });
+    try { machine = JSON.parse(raw.prepare(`SELECT v FROM "_carton" WHERE k = ?`).get("machine")?.v ?? "null") ?? undefined; } catch { machine = undefined; } finally { raw.close(); }
+  } catch { return null; }
+  let store;
+  try { store = await openSqliteStore(dbPath, { readOnly: true }); } catch { return null; }
+  try { return { projectId: (await store.get("meta", ["project"]))?.projectId ?? null, mine: isThisMachine(machine) }; }
+  catch { return null; }
+  finally { await store.close().catch(() => {}); }
+}
+// The name a project last had in its history: the newest version that has one, on the current cut, then the others
+// (at most 256 versions looked at). null: none.
+async function lastName(lc) {
+  const c = lc.carton;
+  const cuts = [c.cut, ...(await c.cuts()).filter((x) => x.id !== c.cut && !x.shallow).map((x) => x.id)];
+  let looked = 0;
+  for (const cut of cuts) {
+    for (const v of await c.log({ cut, limit: 64 }).catch(() => [])) {
+      if (++looked > 256) return null;
+      const doc = await c.checkout(v.ref).catch(() => null);
+      if (typeof doc?.name === "string" && doc.name.trim()) return doc.name;
+    }
+  }
+  return null;
+}
 
 // A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
 // project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
@@ -115,6 +178,7 @@ const under = (dir, p) => {
 async function release(dir) {
   const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
   for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
+  for (const [key, d] of mediaMemory) if (inside(d.bundle)) mediaMemory.delete(key);
   for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
   // The extensions let go first: what they run on a handle (a View's Materializer and holder) stops while it is open.
   for (const e of extensions) {
@@ -178,6 +242,8 @@ export function extend(ext) { extensions.push(ext); }
 // so; in any other process (cb), the worker holding the project's lease means one runs there (it prints the file from
 // head once cb's change lands, and keeps it frozen while an agent works).
 let inWorker = false;
+// The library worker's channel to main and the pages (worker()): a change made after the call that caused it returned.
+let workerEmit = null;
 function timelineOwned(bundlePath) {
   for (const e of extensions) {
     if (typeof e.ownsTimeline !== "function") continue;
@@ -199,13 +265,74 @@ export const LEASE_PRINTS = ["leasePrints"];
 // is late or failed leaves the file to the worker, as before r2, so cb never writes over a frozen timeline.tsx; only
 // a View-less worker, already a degraded state, can then go without the file's update.
 async function workerWritesTimeline(lc) {
-  if (inWorker) return false;
+  return !!(await timelineWorker(lc));
+}
+// The worker's lease row when the worker prints this bundle's timeline.tsx (workerWritesTimeline), else null. A worker
+// that is gone (the app quit or crashed without letting go of the lease: its row stays live until it expires, up to 6 s)
+// prints nothing: its socket refuses at once, and then cb prints the file itself, as with the app closed. Before
+// (apply-ryw), a cb write in those seconds left timeline.tsx to nobody until a later write. A worker that is only slow
+// to answer the ping still prints it. One ping per cb process and bundle, kept for a second.
+const pings = new Map(); // bundlePath → {nonce, at, gone}
+async function timelineWorker(lc) {
+  if (inWorker) return null;
   try {
     const row = await lc.lease.read();
-    if (row?.kind !== "worker" || !(row.expires > Date.now())) return false;
+    if (row?.kind !== "worker" || !(row.expires > Date.now())) return null;
     const r = await lc.store.get("views", LEASE_PRINTS);
-    return !(r && r.prints === false && r.nonce === row.nonce);
-  } catch { return false; }
+    if (r && r.prints === false && r.nonce === row.nonce) return null;
+    let p = pings.get(lc.projectDir);
+    if (!p || p.nonce !== row.nonce || Date.now() - p.at > 1000) {
+      p = { nonce: row.nonce, at: Date.now(), gone: "gone" in (await pingWhy(row.socketPath)) };
+      pings.set(lc.projectDir, p);
+    }
+    return p.gone ? null : row;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------- read-your-writes (apply-ryw)
+// A `cb` write answers once timeline.tsx shows it. With the app open, the worker's Materializer prints the file, and it
+// heard of a write cb committed in its own process only at its next poll of carton.db (250 ms), then rewrote the file
+// 20 ms later, after cb had answered: on the laptop an agent read timeline.tsx right after its `cb source apply`, saw
+// the old value, and told the user the file showed its turn's start. Now cb asks the worker's lease holder
+// (`carton.shown`), which looks at carton.db at once, makes its rewrite, and answers with the print that shows the
+// write: no poll, at most SHOW_MS. The result says how it went: `timeline` ("shown", "held": the file is frozen for
+// someone else's work and holds this change back, "elsewhere": another cut than the file's, "later": not within the
+// wait), and anything but "shown" with a sentence for the agent (`timelineNote`). With the app closed cb prints the file
+// itself before it answers, as Cardboard does, so there is nothing to wait for.
+const SHOW_MS = 2000;
+const TIMELINE_NOTES = {
+  held: "timeline.tsx doesn't show this change yet: it is held while an agent works on the project, and holds back everyone else's changes until that work ends. The change is saved (`cb history` lists it).",
+  elsewhere: "timeline.tsx shows the current cut, not the one this change was made on.",
+  later: "timeline.tsx will show this in a moment: the app hasn't rewritten it yet. The change is saved.",
+};
+// The writes this process committed through the store bridge (commit()), by the result it handed back: what to show.
+const toShow = new WeakMap();
+/** The write a commit's result made, as `carton.shown` names it: its change, cut, seq once confirmed, and author. */
+function showTarget(r, author) {
+  if (!r || !(r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") || r.empty) return null;
+  const id = r.change?.id ?? (typeof r.id === "string" ? r.id : null);
+  if (!id) return null;
+  const cut = r.head?.ref?.branchId ?? r.ref?.branchId;
+  const seq = r.status === "pending" || (r.status === "conflicts" && r.landed === "pending") ? undefined : r.change?.seq ?? r.seq;
+  return { id, ...(typeof cut === "string" ? { cut } : {}), ...(typeof seq === "number" ? { seq } : {}), ...(author ? { author } : {}) };
+}
+/**
+ * Waits (at most SHOW_MS) for the app's timeline.tsx to show a write this cb process made; null when there is nothing to
+ * wait for (no change, the worker doesn't print the file here: cb printed it itself). `{timeline, timelineNote?}`.
+ */
+async function showWrite(lc, target) {
+  if (inWorker || !target) return null;
+  const row = await timelineWorker(lc);
+  if (!row) return null;
+  const timeline = (await showOnHolder(row.socketPath, target, SHOW_MS)) ?? "later";
+  return timeline === "shown" ? { timeline } : { timeline, timelineNote: TIMELINE_NOTES[timeline] ?? TIMELINE_NOTES.later };
+}
+/** The store bridge's apply result (`status`): how its write shows in timeline.tsx, once (an MCP server asks again). */
+async function showCommitted(bundlePath, r) {
+  const t = toShow.get(r);
+  if (!t || !bundlePath) return null;
+  if (!t.answer) t.answer = (async () => { const lc = await open(bundlePath); return lc ? showWrite(lc, t.target) : null; })().catch(() => null);
+  return t.answer;
 }
 // Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
 // install() makes before it drops Cardboard's print of the file, made before the print, so the print isn't made at all.
@@ -260,23 +387,110 @@ const refOf = async (lc, rev) => {
   if (typeof rev === "number") return lc.store.get(REVS, ["rev", rev]);
   const ref = typeof rev === "string" ? rev.trim() : "";
   if (!ref) return undefined;
-  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return undefined; throw e; }
+  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return sameState(lc, ref); throw e; }
   return ref;
 };
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
+// Laptop #5: a header that names another library's cut (a .cbproj's timeline.tsx, printed where it was saved: here
+// only a shallow cut of theirs, never rebuilt) names a state by its hash. The version of this project's current cut
+// with that state (an Open Project's history starts from the sender's head: the same state, on a cut of its own) is
+// exactly what was printed; its header here, else undefined. Only for a cut that isn't this library's own: on one of
+// ours an unknown version stays unknown ("print it again").
+const HEADER = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:\S+)?(?: by .*)?$/;
+async function sameState(lc, header) {
+  const m = HEADER.exec(header);
+  if (!m) return undefined;
+  const cuts = await lc.carton.cuts();
+  if (cuts.some((c) => !c.shallow && branchToken(c.id) === m[4])) return undefined;
+  const cut = cuts.find((c) => c.id === lc.carton.cut);
+  if (!cut) return undefined;
+  // core says whether a version has that state: a header with its seq and the printed hash resolves only then (the
+  // newest first; a file from another library is opened, or brought in, near where its history began here)
+  for (const v of (await lc.carton.log({ limit: SAME_STATE_SCAN })).map((x) => x.ref.seq).concat(0)) {
+    const here = `${cut.name}@${v}~${m[3]} b:${branchToken(cut.id)}`;
+    if (await lc.carton.resolve(here).then(() => true, () => false)) return here;
+  }
+  return undefined;
+}
+const SAME_STATE_SCAN = 256;
+// A rev map entry for a version that holds changes still pending in the lease holder, with no state hash to check it by:
+// core would resolve it as the confirmed state it was built on (review P1).
+const pendingRef = (ref) => !!ref && typeof ref === "object" && !!ref.pending?.length && !ref.hash;
+// Review P1: a print of a version still pending in a shared cut's lease holder (offline): this process holds only the
+// confirmed rows, so the document project.json shows (the holder's state) is pinned here as a held state on the
+// confirmed seq it was built on, with the pending changes it holds. The print carries that pin's header: the apply's
+// preview and the holder's commit both resolve exactly the printed document (core reloads pins another process writes).
+// null (1.4.0's print, which no apply takes as exact) if it can't be pinned.
+const PRINT_OWNER = "cb-print", PRINT_PIN_MS = 7 * 24 * 3600_000;
+// `project` (the document project.json shows) pinned as a held state on `ref`'s confirmed seq with its pending changes:
+// {header, doc}, or null if it can't be pinned or read back here.
+async function pinHeld(lc, ref, project) {
+  const c = lc.carton;
+  const at = await c.resolve({ branchId: ref.branchId, seq: ref.seq }).catch(() => null);
+  if (!at) return null;
+  const p = await c.pin({ owner: PRINT_OWNER, cut: ref.branchId, seq: ref.seq, causal: [...(ref.pending ?? [])], doc: fromHost(project, at.doc), ttlMs: PRINT_PIN_MS }).catch((e) => (warnOnce("pin:" + ref.branchId, "an edit still waiting to sync can't be named exactly: " + errText(e)), null));
+  const held = p?.header ? await c.resolve(p.header).catch(() => null) : null;
+  return held ? { header: p.header, doc: held.doc } : null;
+}
+async function pendingPrint(lc, ref, project) {
+  const held = await pinHeld(lc, ref, project);
+  return held ? { project: forCardboard({ ...materializeProject(held.doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: held.header } : null;
+}
+// The header a print carries for a version (core's ref token: "<cut name>@<seq>~<hash8> b:<cut8>"), which the apply
+// resolves back to exactly that version; null if its cut is unknown here.
+async function headerOf(lc, ref) {
+  if (!ref || typeof ref !== "object" || typeof ref.seq !== "number" || !(ref.hash8 ?? ref.hash)) return null;
+  const cut = (await lc.carton.cuts()).find((x) => x.id === ref.branchId);
+  return cut ? `${cut.name}@${ref.seq}~${(ref.hash8 ?? ref.hash).slice(0, 8)} b:${branchToken(ref.branchId)}` : null;
+}
 
-// Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
-// agents (§8). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it is comes
-// from @carton/local's identity chain, as for Carton's own cb (Claude Code, Codex, Gemini from their environment, a
-// declared agent, else the person at this terminal), never an agent called "cli" (ui-words #4).
-const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : id === "cli" ? identify() : parseActorId(id) ?? identify({ declared: id }));
+// Who an actor id is (CARDBOARD_ACTOR's form). Every local actor is in the machine's undo group (§8: `cb undo`, History's
+// Undo). The person at the app and an agent the app started (main names it in CARDBOARD_ACTOR, which the store bridge
+// passes as the id) are the app's own (`app`): the app's Ctrl+Z sees only those, in the editor's session (laptop
+// report 90c4127, bug 3). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it
+// is comes from @carton/local's identity chain, as for Carton's own cb (Claude Code, Codex, Gemini from their
+// environment, a declared agent, else the person at this terminal), never an agent called "cli" (ui-words #4), and
+// never the app's. Nor are the worker's own bookkeeping ("app") and a save Carton didn't write ("external:…").
+const appNamed = (id) => id !== "app" && !id.startsWith("external:");
+const actorOf = (id) => {
+  if (id === "person") return { id: "person", kind: "human", group: localGroup(), app: true };
+  if (id === "cli") return identify();
+  const a = parseActorId(id, appNamed(id) ? { app: true } : {});
+  return a ?? identify({ declared: id });
+};
 // "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
 // session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
 // recorded as. GUI saves stay recorded as "person" either way.
 const meOf = (lc) => {
   const who = lc.carton.identity?.();
-  return who ? { kind: "human", id: who.id, name: who.name, group: localGroup() } : actorOf("person");
+  return who ? { kind: "human", id: who.id, name: who.name, group: localGroup(), app: true } : actorOf("person");
 };
+
+// The app's Ctrl+Z and redo (H6): the person's undo group in the editor's session (`since`, the bridge's), only what was
+// made from the app (`app`). An undo whose inverse clashes with a later change of the same thing changes nothing
+// (core): its cards are kept for the person and shown in the open History panels' conflict stack, each saying why in
+// plain words (laptop report 90c4127, bug 6), so the person can keep the newer value or take theirs back. An undo or
+// redo records only the inverse of what its change recorded (core never infers a ripple for it), so the undo of a drag
+// isn't a "closed gap" that the undo of the split before it clashes with (laptop report #2, bug 6:
+// test/sync/undo-split.test.js).
+const STEP_REASON = {
+  undo: "Not undone: this changed after your edit. Keep yours to undo it here anyway.",
+  redo: "Not redone: this changed after your undo. Keep yours to redo it here anyway.",
+};
+const cardKey = (c) => `${c.path}|${canon(c.ours)}|${canon(c.theirs)}`;
+async function keepStepCards(lc, bundlePath, author, which, cards) {
+  const worded = cards.map((c) => ({ ...c, reason: STEP_REASON[which] }));
+  // pressed again with nothing changed: the same cards, kept once
+  const kept = new Set((await lc.carton.notices(author)).flatMap((n) => n.cards ?? []).map(cardKey));
+  const fresh = worded.filter((c) => !kept.has(cardKey(c)));
+  if (fresh.length) {
+    const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
+    const n = fresh.length, text = `${which === "undo" ? "Your undo" : "Your redo"} didn't change anything: ${n === 1 ? "something it changes was" : `${n} things it changes were`} changed since. Choose in History or with cb conflicts / cb resolve.`;
+    await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards: fresh, at } }]);
+  }
+  for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(worded);
+  return worded;
+}
 
 // The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
 // once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
@@ -366,7 +580,28 @@ async function afterSave(lc, bundlePath, after) {
 }
 
 async function commit({ bundlePath, base, doc, actor, meta }) {
-  if (meta?.materialize) return { doc, status: "materialized" };
+  // P2-1: a media entry this mutation removes keeps its details for a later restore or fold that brings it back
+  await keepDropped(bundlePath, base, doc);
+  if (meta?.materialize) {
+    // materializeIn's: head checked again here, in the store's chain, where GUI saves are serialized. One that went
+    // first moved head, and this document (made from the head before it) would put the older timeline over that save:
+    // "stale", so nothing is written and the store keeps the document it had; materializeIn makes it again.
+    if (meta.head && bundlePath) {
+      const lc = await open(bundlePath, { projectId: doc.id });
+      if (lc && !sameRef((await lc.carton.head()).ref, meta.head)) {
+        staleMaterializations.add(meta.token);
+        return { doc: base, status: "stale" };
+      }
+    }
+    return { doc, status: "materialized" };
+  }
+  // A save Cardboard couldn't read back (no name: laptop, build 915eb36) is never a version either: history keeps no
+  // such state, so the next saves still land. The store's write of it is refused at the install; the old file stays.
+  const problems = projectProblems({ format: "cardboard-project", project: doc }, () => base);
+  if (problems.length) {
+    refuseProject(bundlePath, doc?.id, problems, "change");
+    return { doc, status: "rejected", reason: "the project would have " + problems.join("; ") };
+  }
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
   if (!lc) return { doc, status: "off" };
   const c = lc.carton;
@@ -386,6 +621,15 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
   if (chained) baseRef = chained.base;
+  // Review P1: a cb write's base still pending in the lease holder resolves here (and in the holder, from a ref without
+  // its hash) as the confirmed state it was built on, where an edit back to that state's value reads as no change. Its
+  // document is what the store's base shows when that is its rev: pinned, the commit merges against exactly it; else
+  // refused ("print it again"). (A GUI save's base is the editor's: its path is unchanged.)
+  if (meta?.base === undefined && pendingRef(baseRef)) {
+    const held = base && base.stateUpdatedAt === rev ? await pinHeld(lc, baseRef, base) : null;
+    if (!held) throw new Error(`the version ${rev} the edit was made on is no longer available`);
+    baseRef = held.header;
+  }
   const baseDoc = chained?.doc ?? imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
   const gui = meta?.base !== undefined && !!baseRef;
   const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
@@ -396,6 +640,12 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   try {
     const out = await committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui });
     landing?.expect(out.doc);
+    // apply-ryw: a cb write (`cb source apply`, MCP's apply_timeline) answers once the app's timeline.tsx shows it (the
+    // store bridge's status asks, after the write and its project.json have landed)
+    if (!inWorker && !gui) {
+      const target = showTarget(out, actorOf(actor));
+      if (target) toShow.set(out, { target });
+    }
     return out;
   } catch (e) {
     landing?.settle();
@@ -406,13 +656,17 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   const c = lc.carton;
   const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
-  // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased: the writer's
-  // document is older than head in other fields, so the file gets head, below.)
-  if (r.status === "confirmed" && r.empty && !gui && !r.rebased) return { ...r, doc, merged: false };
+  // Past changes its base didn't hold (they touched other records, so core took it without a rebase): head has them
+  // and the writer's document doesn't, so the file gets head, below (laptop #2: a cb writer's document went into
+  // project.json under head's rev, the next print showed the older values as that version, and its apply put them back)
+  const passed = passedOthers(r, await knownOf(lc, baseRef));
+  // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased, or past others:
+  // the writer's document is older than head in other fields, so the file gets head, below.)
+  if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) return { ...r, doc, merged: false };
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
   // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
   const head = r.head?.doc ? r.head : await c.head();
-  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased && !(gui && passedOthers(r, baseRef))) {
+  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased && !passed) {
     // Nothing else was merged in. An agent's or the CLI's document is head as it stands. A GUI save is not: the
     // editor rounds times and drops fields it can't show, which Carton kept (B10), so the file gets head, under the
     // editor's own rev (its save's echo then only moves its base).
@@ -420,7 +674,7 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
       await setRev(lc, doc.stateUpdatedAt, r.ref);
       return { ...r, doc, merged: false };
     }
-    const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: doc.stateUpdatedAt };
+    const out = { ...(await projectFor(bundlePath, head.doc, doc)), stateUpdatedAt: doc.stateUpdatedAt };
     await setRev(lc, out.stateUpdatedAt, head.ref);
     return { ...r, doc: out, merged: false };
   }
@@ -433,29 +687,52 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
     if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(r.cards);
   }
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
-  const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
+  const out = { ...(await projectFor(bundlePath, head.doc, doc)), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
-  // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it.
-  // Only on a cut this handle commits to itself (the change is known); a shared cut's next save uses its base.
-  if (gui && typeof doc.stateUpdatedAt === "number" && r.change?.id && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind === "local") {
+  // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it. Its
+  // change: a local cut's (`change`), or a shared cut's queued edit (`id`, pending or confirmed: the lease holder's
+  // answer, this worker's or another process's). Before, a shared cut's was never held, and a quick second save after a
+  // merged one went back to its base and clashed with the first at head ("You vs You"; ui-words follow-up). A base this
+  // handle can't read (a shared cut's edit still pending in another process's holder) holds nothing: as before.
+  const own = r.change?.id ?? (typeof r.id === "string" ? r.id : null);
+  if (gui && typeof doc.stateUpdatedAt === "number" && own) {
     const on = baseRef && typeof baseRef === "object" && "baseDoc" in baseRef ? { seq: baseRef.baseSeq, causal: baseRef.causal ?? [] } : await lc.carton.resolve(baseRef).catch(() => null);
-    if (on) holdSave(bundlePath, doc.stateUpdatedAt, { baseDoc: mine, baseSeq: on.seq, causal: [...on.causal, r.change.id] });
+    if (on) holdSave(bundlePath, doc.stateUpdatedAt, { baseDoc: mine, baseSeq: on.seq, causal: [...on.causal, own] });
   }
   return { ...r, doc: out, merged: true };
 }
 
 /**
  * A change confirmed past others its base didn't hold. They touched other records, so core confirmed it without a
- * rebase (`rebased` 0), but they are in head and not in the writer's document: for a GUI save, head is then not what
- * the editor shows, and must be written with a new rev the editor adopts (else its echo moved only the base, and the
- * person's next save, made on head, undid the other change: ui-words #3). Counted from seqs: no document is hashed.
- * Wrong only towards "passed" (an extra adopt in the editor), never towards losing the other change.
+ * rebase (`rebased` 0), but they are in head and not in the writer's document: head is then not what the writer's
+ * document shows, and must be written with a new rev. For a GUI save the editor then adopts it (else its echo moved
+ * only the base, and the person's next save, made on head, undid the other change: ui-words #3); for cb's, the next
+ * print shows head (laptop #2). Counted from seqs: no document is hashed. Wrong only towards "passed" (an extra write
+ * of head), never towards losing the other change. `known`: how many changes the base holds (knownOf).
  */
-function passedOthers(r, base) {
-  if (r.status !== "confirmed" || typeof r.seq !== "number" || !base || typeof base !== "object") return false;
-  const known = "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
-  if (known === null) return false;
+function passedOthers(r, known) {
+  if (r.status !== "confirmed" || typeof r.seq !== "number" || known === null) return false;
   return (r.empty ? r.seq : r.seq - 1) > known;
+}
+// The changes a commit's base holds, as a seq on its cut: a held state's, a rev's StateRef, or a Carton header's (cb's
+// apply of a print). null when there is no base (the commit was made on head) or it can't be read.
+async function knownOf(lc, base) {
+  if (!base) return null;
+  if (typeof base === "object") return "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
+  const on = await lc.carton.resolve(base).catch(() => null);
+  return on ? on.seq + (on.causal?.length ?? 0) : null;
+}
+
+/**
+ * The machine's current cut, as another process stored it (cb cut switch): adopted by this handle when it differs and is
+ * a cut this handle knows. True when it moved.
+ */
+async function followCurrent(lc) {
+  const stored = await lc.store.get("meta", ["current"]);
+  if (typeof stored !== "string" || stored === lc.carton.cut) return false;
+  if (!(await lc.carton.cuts()).some((c) => c.id === stored)) return false;
+  await lc.carton.switchTo(stored, { persist: false });
+  return true;
 }
 
 // What Cardboard's own code gets from a Carton state: a copy. Core's records are frozen, and Cardboard edits the
@@ -467,16 +744,33 @@ const forCardboard = (project) => structuredClone(project);
 // project.json already shows head. (Through Cardboard's store: materializeIn, cb's `after`, sync's bring-in and pull.)
 // `given`: the state a write just made when this handle can't read it (a write still pending on a shared cut, which the
 // holder answered with its head: WriteOp `head`); the file never shows it yet.
+// The bundles whose head was last refused for project.json (headProject), with what was wrong: the History panel and cb
+// say so after a write, which otherwise looks done (Review of fix/restore-root, finding 3).
+const headRefusals = new Map();
+const HEAD_REFUSED = "This is saved in History, but the project file wasn't changed: Cardboard couldn't have opened it that way. Restore another version.";
 async function headProject(bundlePath, current, given) {
+  return (await headAt(bundlePath, current, given))?.project ?? null;
+}
+// headProject, with the version it was made from (`ref`).
+async function headAt(bundlePath, current, given) {
+  headRefusals.delete(bundlePath);
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
   const head = given?.doc ? given : await lc.carton.head();
   const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
-  const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
+  // A Carton write is an edit like any other: the library's "Updated" time moves with it (laptop, merge/prod-2 P3: a
+  // restore left it as it was). Cardboard's scoped merge keeps the newer of the store's and this one.
+  const at = Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1);
+  const out = forCardboard({ ...(await projectFor(bundlePath, head.doc, current)), stateUpdatedAt: at, updatedAt: new Date(at).toISOString() });
+  // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
+  const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
+  if (problems.length) return headRefusals.set(bundlePath, problems), refuseProject(bundlePath, current?.id, problems, "head"), null;
   await setRev(lc, out.stateUpdatedAt, head.ref);
-  return out;
+  return { project: out, ref: head.ref };
 }
+// The same version: a cut, a seq and the pending changes on it.
+const sameRef = (a, b) => !!a && !!b && a.branchId === b.branchId && a.seq === b.seq && (a.pending ?? []).join() === (b.pending ?? []).join();
 
 // ---------------------------------------------------------------- a GUI save's project.json, for the Materializer
 // The worker's Materializer prints timeline.tsx from head and project.json's unversioned fields. After a GUI save the
@@ -519,6 +813,194 @@ function hostWrite(bundlePath) {
   return l;
 }
 
+// ---------------------------------------------------------------- media details (laptop, merge/prod-2 P2-1, P2-2)
+// What Cardboard knows about a media file and Carton doesn't version (its size, duration and dimensions, where it plays
+// from, thumbnail and waveform ids, when it was added) lived only in project.json. A restore to a version without a clip
+// (main@1) dropped its entry, and restoring the clip's version brought back only what history holds (its id, kind and
+// file name): no duration, size or thumbnail (`cb media list` showed "-"), and with no `src` the editor played it black
+// until a restart, whose load fills `src` in. Now:
+// 1. A write that drops a media entry from project.json keeps the entry's details first, in the bundle's
+//    .carton/media.json (@carton/cardboard/node's MediaDetails): a store mutation (commit: the document it was applied
+//    to against the one it made) and a materialization (the file it replaces against what it writes). A write that
+//    drops nothing does no I/O for this.
+// 2. A materialization carries each entry's details over: from the file it replaces, else as last kept for its id.
+// 3. What neither has (a project an earlier build's restore, or the root-restore bug, left without them) Cardboard finds
+//    again as its import does (reprobeMedia: its own probe of the file), and in the app its derive fills in thumbnails
+//    and waveforms (deriveMedia; cb leaves that to the app, so two processes never derive one file at once). Nothing is
+//    guessed: a detail none of these gives stays unset.
+const mediaMemory = new Map(); // landingKey(bundle) → MediaDetails (with its bundle)
+function detailsOf(bundle) {
+  const key = landingKey(bundle);
+  let d = mediaMemory.get(key);
+  if (!d) mediaMemory.set(key, (d = Object.assign(new MediaDetails(bundle, BUSY), { bundle })));
+  return d;
+}
+// The details of the media entries `before` has and `after` doesn't, kept before a write of `after` replaces `before`:
+// under the bundle's install lock (every writer of media.json holds it). A failure never stops the write.
+async function keepDropped(bundle, before, after) {
+  if (!bundle) return;
+  const gone = droppedMedia(before, after);
+  if (!gone.length) return;
+  try {
+    const d = detailsOf(bundle), ch = d.changes(gone);
+    if (ch && (await withInstallLock(bundle, () => d.save(ch))) === LOCK_BUSY) warnOnce("media-details-busy:" + bundle, "a media entry's details weren't kept: another process held " + path.basename(bundle) + "'s install lock");
+  } catch (e) {
+    warnOnce("media-details:" + bundle, "a media entry's details couldn't be kept: " + errText(e));
+  }
+}
+// materializeProject for a bundle: each media entry's details from `current`, else as last kept for its id (media.json
+// read only when `current` lacks an entry). `keep` (a project that is written): what it drops from `current` is kept
+// first.
+async function projectFor(bundle, doc, current, { keep = true } = {}) {
+  if (!bundle) return materializeProject(doc, current);
+  let look;
+  const known = (id, versioned) => {
+    try { return (look ??= detailsOf(bundle).known())(id, versioned); } catch (e) {
+      look = () => undefined;
+      warnOnce("media-details:" + bundle, "the media details kept for " + path.basename(bundle) + " couldn't be read: " + errText(e));
+    }
+  };
+  const out = materializeProject(doc, current, known);
+  if (keep) await keepDropped(bundle, current, out);
+  return out;
+}
+
+// Cardboard 1.4.0's import gives a file's media entry (library-worker.js `j4`; the CLI's copy is the same): where it
+// plays from, its format (the file name's extension), its size on disk, the probe's facts, and "metadata complete".
+// Its thumbnails, waveform and album art come from the derive steps, which ensureDerived runs (deriveMedia).
+const mediaUrl = (id) => "cardboard-media://media/" + encodeURIComponent(id);
+const extOf = (name) => {
+  const t = name.lastIndexOf("."), r = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+  return t <= r + 1 ? "" : name.slice(t + 1).toLowerCase();
+};
+function importFacts(id, fileName, size, p) {
+  const o = { src: mediaUrl(id), format: extOf(fileName), size, metadataStatus: "complete" };
+  if (p.kind !== "image" || p.isAnimated) o.duration = p.duration;
+  if (p.width !== undefined) o.width = p.width;
+  if (p.height !== undefined) o.height = p.height;
+  if (p.kind === "video") {
+    o.hasAudio = p.hasAudio;
+    if (p.codec) o.codec = p.codec;
+    if (p.frameRate !== undefined) o.frameRate = p.frameRate;
+  }
+  if (p.kind === "audio" && p.codecName) o.codec = p.codecName;
+  if (p.kind === "image" && p.isAnimated) o.isAnimated = true;
+  return o;
+}
+// The file media entries of `project` that lack what Cardboard's import gives (`lacksDetails`: where it plays from, its
+// size, its duration), and that play from a file of this library (no `src` yet, or Cardboard's own URL for the id: not a
+// cloud project's signed URL).
+const lackingDetails = (project) => (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && lacksDetails(m) && (m.data.src === undefined || m.data.src === mediaUrl(m.id)));
+// The bundle's media/ folder as last listed, until it changes (Cardboard's recovery of unlisted media looks there).
+const mediaDirs = new Map(); // landingKey(bundle) → {stamp, names}
+async function mediaNames(bundlePath) {
+  const dir = path.join(bundlePath, "media"), st = await fs.promises.stat(dir).catch(() => null);
+  if (!st) return [];
+  const key = landingKey(bundlePath), stamp = `${st.mtimeMs}:${st.ino}`, hit = mediaDirs.get(key);
+  if (hit?.stamp === stamp) return hit.names;
+  const names = await fs.promises.readdir(dir).catch(() => []);
+  mediaDirs.set(key, { stamp, names });
+  return names;
+}
+// A file whose probe failed, with its stamp then: not probed again until it changes (every Ctrl+Z materializes).
+const failedProbes = new Map(); // `${bundle}|${id}` → "<size>:<mtime>"
+const PROBES_AT_ONCE = 4;
+/**
+ * Cardboard's own probe of each file whose entry in `project` lacks what its import gives: {project, ids}, the project
+ * with those entries filled in as the import fills them (only the fields they don't have), or null when none lacks them
+ * or none could be found. The file is the one Cardboard's library has for the id, else the one its loader's recovery of
+ * unlisted media finds (the bundle's media/<id>.<ext>), registered with the library as that recovery does, so the app
+ * serves it at once. The probe is of the file as it is now (`inspect.probePath`, as the import probes; review of
+ * fix/media-meta #2: the probe Cardboard cached for the id may be of a file since replaced). A file not there now is
+ * looked for again next time; one whose probe failed, or isn't of the entry's kind, once it changes (review #4).
+ */
+async function reprobeMedia(lib, bundlePath, project) {
+  const want = lackingDetails(project);
+  if (!want.length || typeof lib?.inspect?.probePath !== "function" || !lib.media) return null;
+  const key = (id) => landingKey(bundlePath ?? "") + "|" + id;
+  const filled = new Map();
+  let names = null; // the media/ folder, listed (or its cached list checked) once per call
+  const one = async (m) => {
+    try {
+      let file = lib.media.resolvePath?.(m.id) ?? null, found = false;
+      if (!file && bundlePath && typeof lib.media.register === "function") {
+        const name = (await (names ??= mediaNames(bundlePath))).find((n) => path.basename(n, path.extname(n)) === m.id);
+        if (name) file = path.join(bundlePath, "media", name), (found = true);
+      }
+      const st = file ? await fs.promises.stat(file).catch(() => null) : null;
+      if (!st?.isFile()) return;
+      const stamp = `${st.size}:${st.mtimeMs}`;
+      if (failedProbes.get(key(m.id)) === stamp) return;
+      if (found) lib.media.register([{ mediaId: m.id, nativePath: file, ownedByBundle: true }]);
+      let probe = null;
+      try { probe = await lib.inspect.probePath(file); } catch (e) { warnOnce("reprobe:" + bundlePath, "a media file couldn't be probed again: " + errText(e)); }
+      if (!probe || probe.kind !== m.data.type) return void failedProbes.set(key(m.id), stamp);
+      failedProbes.delete(key(m.id));
+      filled.set(m.id, importFacts(m.id, m.data.fileName ?? path.basename(file), st.size, probe));
+    } catch (e) {
+      warnOnce("reprobe:" + bundlePath, "a media file's details couldn't be read again: " + errText(e));
+    }
+  };
+  for (let i = 0; i < want.length; i += PROBES_AT_ONCE) await Promise.all(want.slice(i, i + PROBES_AT_ONCE).map(one));
+  if (!filled.size) return null;
+  const media = project.media.map((m) => {
+    const f = filled.get(m?.id);
+    if (!f) return m;
+    const data = { ...m.data };
+    for (const [k, v] of Object.entries(f)) if (data[k] === undefined) data[k] = v;
+    return { ...m, data };
+  });
+  return { project: { ...project, media }, ids: [...filled.keys()] };
+}
+// Cardboard's derive for a project (ensureDerived: thumbnails, waveforms, album art, from its cache or made again), after
+// reprobeMedia's entries are in project.json. True when it changed the project.
+async function deriveMedia(lib, projectId) {
+  if (typeof lib?.ensureDerived !== "function") return false;
+  try { return !!(await lib.ensureDerived(projectId))?.documentUpdated; } catch (e) {
+    warnOnce("derive:" + projectId, "a media file's thumbnails couldn't be made again: " + errText(e));
+    return false;
+  }
+}
+
+// Laptop, final candidate P3-1: after `cb restore main@1` then `cb restore main@3`, project.json's manifest of where each
+// media file is (the envelope's `media`) stayed empty, so every cb command said "[library] Recovered 1 unlisted media
+// path(s)" until the project's next real save, through restarts. Cardboard's store lists a file only when its library
+// knows where it is (its registry, `buildManifest`), and a cb process knows a file only from the manifest it read: main@1
+// dropped the entry (and its file from the manifest); main@3 brought the entry back whole (its details kept, so
+// reprobeMedia, which registers a file it finds, had nothing to do), and nothing told the library where its file was.
+// So before head goes into project.json, a file entry the library can't place whose file is in the bundle's media/
+// folder is registered as Cardboard's own recovery of unlisted media finds it (by its id), and the manifest lists it.
+async function placeMedia(lib, bundlePath, project) {
+  if (!bundlePath || typeof lib?.media?.register !== "function" || typeof lib.media.resolvePath !== "function") return 0;
+  const want = (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && FILE_KINDS.has(m.data?.type) && !lib.media.resolvePath(m.id));
+  if (!want.length) return 0;
+  const names = await mediaNames(bundlePath), found = [];
+  for (const m of want) {
+    const name = names.find((n) => path.basename(n, path.extname(n)) === m.id);
+    if (name) found.push({ mediaId: m.id, nativePath: path.join(bundlePath, "media", name), ownedByBundle: true });
+  }
+  if (!found.length) return 0;
+  try { lib.media.register(found); } catch (e) { warnOnce("place:" + bundlePath, "a media file couldn't be listed again: " + errText(e)); return 0; }
+  return found.length;
+}
+const FILE_KINDS = new Set(["video", "audio", "image"]);
+
+// Laptop, final candidate P1-1: a project.json whose media entries lack createdAt or addedAt (one an earlier build's
+// restore or recovery wrote) opens and plays, but Cardboard's editor throws "Invalid time value" at every save. The
+// project loaders (the store bridge's `loaded`, both copies of the store) give such entries their dates as they read the
+// file (@carton/cardboard's completeMedia: the project's own date when nothing kept theirs), so the editor's next save
+// writes them, and says so once per bundle. Nothing is written here.
+function completeLoaded(project, bundlePath) {
+  // (the dates kept for that media first: a date filled in here reads as the file's own to every later write)
+  let look;
+  const known = bundlePath ? (id, versioned) => {
+    try { return (look ??= detailsOf(bundlePath).known())(id, versioned); } catch { return (look = () => undefined), undefined; }
+  } : undefined;
+  const n = undatedMedia(project).length, out = completeMedia(project, known);
+  if (n) warnOnce("undated:" + (bundlePath ?? project?.id), `project ${project?.id ?? "?"} had ${n} media ${n === 1 ? "entry" : "entries"} without the date ${n === 1 ? "it was" : "they were"} added (an earlier restore wrote them so): ${n === 1 ? "it takes" : "they take"} the project's own date, so its edits save again`);
+  return out;
+}
+
 // ---------------------------------------------------------------- files: displace, then install
 const installs = new Map(); // target path → { files: DisplacedFiles, own, noLinks, timer }
 const SEEN_KEEP = 256;
@@ -552,8 +1034,9 @@ const markSeen = async (file, hash, held) => {
 // install (its commit is in history; the next install brings the file to head).
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOCK_BUSY = Symbol("busy");
-// Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does.
-const testHooks = { between: null, installed: null, lockWaitMs: null };
+// Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does;
+// `materialize` runs in materializeIn once it has made the project from head, before the store has it.
+const testHooks = { between: null, installed: null, lockWaitMs: null, materialize: null };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 function takeOverIfAbandoned(dir) {
   const owner = path.join(dir, "owner");
@@ -567,6 +1050,9 @@ function takeOverIfAbandoned(dir) {
 async function withInstallLock(bundle, fn) {
   const dir = path.join(bundle, ".carton", "install.lock"), owner = path.join(dir, "owner"), t0 = Date.now();
   const me = process.pid + "." + Math.random().toString(16).slice(2);
+  // A bundle whose history is kept in app data (a synced, network or FAT folder: L15) may have no .carton/ yet: without
+  // it no project could be made there with Carton on (cb project create failed: ENOENT on the lock).
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
   for (;;) {
     try { fs.mkdirSync(dir); fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, me })); break; } catch (e) {
       if (e.code !== "EEXIST") throw e;
@@ -598,17 +1084,33 @@ const revIn = (file, bytes) => {
 async function install(tmp, file, seenStamp, rev, envelope) {
   const due = path.basename(file) === "project.json" ? (landings.get(landingKey(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
   let out = false;
-  try { return (out = await installFile(tmp, file, seenStamp, rev)); } finally {
+  try { return (out = await installFile(tmp, file, seenStamp, rev, envelope)); } finally {
     if (due.length) {
       const stamp = out === true && envelope ? installs.get(file)?.own?.stamp : null;
       for (const l of due) l.settle(stamp ? { project: { envelope, stamp } } : undefined);
     }
   }
 }
-async function installFile(tmp, file, seenStamp, rev) {
+async function installFile(tmp, file, seenStamp, rev, envelope) {
   const bundle = path.dirname(file);
+  // A project.json Cardboard couldn't read back is never installed, whoever wrote it: the old file stays (false: the store
+  // reads the disk again). The envelope writeNow stringified is checked as it is (no parse); a file without one is read.
+  if (path.basename(file) === "project.json") {
+    let env = envelope;
+    if (env === undefined) try { env = JSON.parse(fs.readFileSync(tmp, "utf8")); } catch { env = null; }
+    const problems = projectProblems(env, () => readProject(bundle));
+    if (problems.length) {
+      refuseProject(bundle, env?.project?.id, problems, "save");
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+  }
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
-  const lc = await open(bundle);
+  // (A new project's first write: project.json isn't there yet, so its id and first state come from what the store is
+  // writing, and history starts with it. Laptop #9: opened without them, cb's `project create` said history was off
+  // because "project.json has none", though the next call started it.)
+  const first = path.basename(file) === "project.json" && envelope?.project?.id ? { projectId: envelope.project.id, doc: envelope.project } : {};
+  const lc = await open(bundle, first);
   if (!lc) return fs.promises.rename(tmp, file);
   // H8: Cardboard's print of timeline.tsx isn't installed where the worker's Materializer writes it.
   if (path.basename(file) === "timeline.tsx" && (timelineOwned(bundle) || (await workerWritesTimeline(lc)))) return fs.rmSync(tmp, { force: true }), true;
@@ -761,6 +1263,15 @@ async function sweep(file, s, journal, held) {
 // A displaced file Carton didn't write is someone's save: a project.json is imported as an outside change, a
 // timeline.tsx is applied through Cardboard's own mirror (as its watcher would have), and only then is it deleted.
 // One that can't be applied yet stays in .carton/displaced/ and is reported: never lost, never silently dropped.
+// Whether a project.json's project is exactly a version history holds: its rev recorded against that version (the rev
+// map), and its versioned content that version's. A file under a known rev with other content is still an edit.
+async function isKnownState(lc, project) {
+  const ref = await refOf(lc, project?.stateUpdatedAt).catch(() => undefined);
+  if (!ref || pendingRef(ref)) return false;
+  const doc = await lc.carton.checkout(ref).catch(() => null);
+  if (!doc) return false;
+  try { return hashDoc(fromHost(project, doc), lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch { return false; }
+}
 async function review(file, s) {
   const bundle = path.dirname(file), isProject = path.basename(file) === "project.json";
   const parse = (b) => { try { return JSON.parse(b.toString("utf8")); } catch { return null; } };
@@ -770,7 +1281,11 @@ async function review(file, s) {
       if (isProject) {
         const lc = await open(bundle);
         if (!lc) throw new Error("no history for the project");
-        await importForeign(lc, parse(f.bytes).project);
+        const p = parse(f.bytes).project;
+        // a late copy of a version history already holds is no outside edit (it lost its seen.json entry to a race):
+        // imported against head it put that version back over everything since, an undo made meanwhile included, as
+        // "external:project.json" (laptop, final candidate P2-1; review of fix/recover-save)
+        if (!(await isKnownState(lc, p))) await importForeign(lc, p);
       } else {
         const h = hostOf(bundle), id = h?.store.idForBundlePath?.(path.resolve(bundle));
         if (!id) throw new Error("no mirror for the project in this process");
@@ -786,6 +1301,25 @@ async function review(file, s) {
 }
 
 // ---------------------------------------------------------------- what the bridges call
+// A project.json Cardboard can't read, said once per process. cb reads every project of the library before each command,
+// so it came with every cb command while any project was damaged (laptop, merge/prod-2 P3): cb says it only when its
+// command line names that project (its id, its name, its folder or its path). The library worker says it once, in the
+// app's log.
+function warnDamaged(key, { bundlePath, id, name }, msg) {
+  if (!inWorker && !namedOnCommandLine({ bundlePath, id, name })) return;
+  warnOnce(key, msg);
+}
+function namedOnCommandLine({ bundlePath, id, name }) {
+  const folder = path.basename(bundlePath ?? "");
+  const lower = (x) => (typeof x === "string" ? x.trim().toLowerCase() : null);
+  const names = new Set([lower(name), lower(folder), lower(folder.replace(/\.cardboard$/i, ""))].filter(Boolean));
+  return process.argv.slice(2).some((a) => {
+    const t = a.trim();
+    if (!t) return false;
+    if (t === id || names.has(t.toLowerCase())) return true;
+    try { return !!bundlePath && landingKey(t) === landingKey(bundlePath); } catch { return false; }
+  });
+}
 // The stores and mirrors of this process (one per library), for applying a foreign timeline.tsx Carton displaced.
 const hosts = [];
 const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowerCase().startsWith(path.resolve(h.root).toLowerCase()));
@@ -801,10 +1335,58 @@ export const cardboard14 = {
   timelineOwned,
   timelineEvent,
   mirrorOwned,
+  // apply-ryw: how a cb apply's write shows in the app's timeline.tsx, once it does (the store bridge's status)
+  showCommitted,
   // H11: which files in .scratch/views/ are Carton's (the store bridge's Save As walk and Open Project scrub)
   cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
+  // cb's `after` (cli-bridge.js): Cardboard's own probe of a media file whose entry head brought back without details,
+  // before head goes into project.json (P2-1). cb doesn't derive (thumbnails, waveforms): the app does, one at a time.
+  reprobeMedia,
+  // P3-1: a restored entry's file listed again in the manifest (cb's `after`; the worker's materializeIn).
+  placeMedia,
+  // P1-1: the store bridge's `loaded`: a project read from disk with media entries Cardboard's editor can't save.
+  completeMedia: (project, bundlePath) => completeLoaded(project, bundlePath),
+  // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
+  headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
+  // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
+  // refuses, so the project left the library and cb found nothing. When the reader refuses a bundle's project.json and
+  // the bundle's history is in .carton/carton.db, the reader gets the file with the name the project last had in that
+  // history (else its folder's): the library lists it again, cb finds it (history, cut list, restore), and the editor
+  // opens it with its History, where Restore of a good version brings the rest back. Nothing is written here, and
+  // history never starts from such a file (an existing carton.db only). Only a JSON file with the project's id; any other
+  // damage stays as it was. The answer is kept per bundle while the file is the same.
+  async recover({ bundlePath, text }) {
+    if (!bundlePath || typeof text !== "string") return null;
+    const hit = recovered.get(bundlePath);
+    if (hit?.text === text) return hit.out;
+    let env;
+    try { env = JSON.parse(text); } catch { return null; }
+    const p = env?.project;
+    if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id) return null;
+    // The history, wherever it is kept (the bundle, or app data for a synced, network or FAT folder), read before
+    // anything opens it: every carton.db there must be this project's and made on this computer. Another project's
+    // (a stale or copied .carton) would put its versions into this one; another computer's would be set aside on open,
+    // and a new history started.
+    const dbs = existingCartonDbs({ projectDir: bundlePath, projectId: p.id });
+    if (!dbs.length) return null;
+    for (const db of dbs) {
+      const owner = await historyOwner(db);
+      if (owner?.projectId === p.id && owner.mine) continue;
+      return warnDamaged("recover-owner:" + bundlePath, { bundlePath, id: p.id, name: p.name }, `project ${p.id}'s project.json can't be read by Cardboard, and its history there is ${owner ? (owner.mine ? "another project's" : "another computer's") : "unreadable"}: not used`), null;
+    }
+    const lc = await open(bundlePath, { projectId: p.id });
+    if (!lc || lc.carton.projectId !== p.id) return null;
+    const name = (typeof p.name === "string" && p.name.trim()) ? p.name : (await lastName(lc)) ?? (path.basename(bundlePath, ".cardboard").trim() || "Untitled Project");
+    const out = { ...env, format: "cardboard-project", project: { ...p, name, ...(typeof p.updatedAt === "string" ? {} : { updatedAt: new Date(typeof p.stateUpdatedAt === "number" ? p.stateUpdatedAt : Date.now()).toISOString() }) }, media: Array.isArray(env.media) ? env.media : [] };
+    const left = projectProblems(out);
+    if (left.length) return warnDamaged("recover:" + bundlePath, { bundlePath, id: p.id, name }, `project ${p.id}'s project.json can't be read, even through its history (${left.join("; ")})`), null;
+    warnDamaged("recovered:" + bundlePath, { bundlePath, id: p.id, name }, `project ${p.id}'s project.json can't be read by Cardboard (${projectProblems(env).join("; ")}); it is listed through its history: restore a version in History to bring it back`);
+    const json = JSON.stringify(out);
+    recovered.set(bundlePath, { text, out: json });
+    return json;
+  },
   async sawDisk({ bundlePath, doc }) {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
     if (!lc || (await refOf(lc, doc.stateUpdatedAt))) return;
@@ -824,11 +1406,61 @@ export const cardboard14 = {
     const first = revs.length ? Math.min(...revs) : Infinity;
     return [...revs, ...older.filter((r) => r < first)];
   },
+  // Laptop #2: what a print of the project shows (cb source print, MCP's print_timeline, the mirror's timeline.tsx),
+  // under Carton's exact header: the version project.json's rev names, its records from Carton. Header and records
+  // come from one version, so the apply merges against exactly what was printed. (A numeric header went through 1.4.0's
+  // revisionAtOrBefore, whose "first at or before" over several writers' revs could be a newer version: the print's
+  // older values then read as the agent's edits.) null, and 1.4.0's print of project.json under its numeric rev (which
+  // revisionAtOrBefore now takes exactly): no history, or a version this process can't rebuild (on a shared cut, one
+  // still pending in the lease holder, which project.json shows: never this process's older confirmed head instead).
+  async printed({ bundlePath, project }) {
+    const lc = bundlePath && project ? await open(bundlePath, { projectId: project.id }) : null;
+    if (!lc) return null;
+    const c = lc.carton, ref = await refOf(lc, project.stateUpdatedAt).catch(() => undefined);
+    if (!ref || typeof ref !== "object") return null;
+    // a version still pending in a shared cut's lease holder (offline): what project.json shows, pinned (pendingPrint)
+    if (ref.pending?.length) return pendingPrint(lc, ref, project);
+    // a confirmed version, its state hash computed if the ref lacks it, and the header checked as the apply resolves it
+    const doc = (await c.resolve({ branchId: ref.branchId, seq: ref.seq }).catch(() => null))?.doc;
+    const header = doc ? await headerOf(lc, { ...ref, hash: ref.hash ?? hashDoc(doc, c.schema) }) : null;
+    if (!header || !(await c.resolve(header).then(() => true, () => false))) return null;
+    return { project: forCardboard({ ...materializeProject(doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: header };
+  },
+  // Laptop #2 (review P1): a numeric rev naming a version still pending in the lease holder, which this process can
+  // only rebuild as its confirmed prefix: no base here (null), so the apply says "print it again" (the new print is
+  // pinned, printed). Never that prefix as the version: an edit back to the confirmed value read as no change.
+  // Laptop #2: 1.4.0's revisionAtOrBefore (a numeric header's base, MCP's edit at a rev) with history: the exact
+  // version the rev names (the rev map), never the first one at or before it in history order, which over several
+  // writers' revs (each process's clock, not save order) can be a newer version. A rev older than every version
+  // Carton recorded is a print from before history began: 1.4.0's .revs (`files`, `readFile`), as before. Any other
+  // rev names nothing Carton or .revs can rebuild: null (the apply's "print it again", never a guess).
+  async revisionAtOrBefore({ bundlePath, rev, slice, files, readFile }) {
+    if (rev === undefined || rev === null) return null;
+    const lc = await open(bundlePath);
+    const older = async () => {
+      for (const n of await files()) if (n <= rev) { const r = await readFile(n); if (r) return r.doc; }
+      return null;
+    };
+    if (!lc) return older();
+    const exact = await this.revision({ bundlePath, rev, slice, file: () => null }).catch(() => null);
+    if (exact) return exact.doc;
+    // a version this process can't rebuild (pending in the lease holder, or an outside save not recorded yet) that
+    // project.json still shows: the file is exactly what was printed (the commit pins it as its base: commit())
+    const onDisk = readProject(bundlePath);
+    if (onDisk && onDisk.stateUpdatedAt === rev) return slice ? slice(onDisk) : { tracks: onDisk.tracks ?? [], timelineItems: onDisk.timelineItems ?? [], aspectRatio: onDisk.aspectRatio };
+    if (pendingRef(await refOf(lc, Number(rev)).catch(() => undefined))) return null;
+    for (const v of await lc.carton.log({})) {
+      const r = await revOf(lc, v.ref);
+      if (typeof r === "number" && r <= rev) return null;
+    }
+    return older();
+  },
   // `ref` in place of `rev`: a Carton header ref (H3, the apply's base), {ref, doc} if Carton rebuilds it exactly.
   async revision({ bundlePath, rev, ref: header, slice, file }) {
     const lc = await open(bundlePath);
     const ref = lc ? await refOf(lc, header ?? Number(rev)) : undefined;
-    if (!ref) return file();
+    // (a pending version's ref, without its state hash, would check out as its confirmed prefix: not this version)
+    if (!ref || pendingRef(ref)) return file();
     // (the mirror's revision readers hand it to Cardboard's restore and diff code: a copy, as for head)
     const p = forCardboard(materializeProject(await lc.carton.checkout(ref), readProject(bundlePath)));
     const doc = slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio };
@@ -877,6 +1509,22 @@ export const cardboard14 = {
   },
   worker({ library, emit }) {
     inWorker = true;
+    workerEmit = emit;
+    // Cardboard's derive (ensureDerived) runs for one project at a time in this process: main asks for it once a
+    // session, at the project's first save, and the re-probe after it fills in an entry (deriveMedia). Two at once on a
+    // file whose artefacts aren't cached both make its cache folder again, and Cardboard's cache write then fails with
+    // an ENOENT nothing catches, which ends the process (cbproj.test.js caught cb's and the worker's derives doing it).
+    // Main's call reads `ensureDerived` from the library at each call, so it waits here too.
+    const derive = library.ensureDerived;
+    if (typeof derive === "function") {
+      const chains = new Map();
+      library.ensureDerived = (projectId, ...rest) => {
+        const run = (chains.get(projectId) ?? Promise.resolve()).catch(() => {}).then(() => derive.call(library, projectId, ...rest));
+        chains.set(projectId, run);
+        run.finally(() => chains.get(projectId) === run && chains.delete(projectId)).catch(() => {});
+        return run;
+      };
+    }
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
@@ -921,8 +1569,12 @@ export const cardboard14 = {
       // cards then (review H8 r3 #5: compared with the panel's own cut, from its cuts topic, not the shared handle's).
       let shownCut = lc.carton.cut;
       const cutShown = (m) => (m?.t === "topic" && m.topic === "cuts" ? m.value : m?.t === "init" ? m.topics?.cuts : null)?.find?.((x) => x.current)?.id ?? null;
-      // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+      // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them. "Fold in the
+      // rest" too: it writes the cut the panel shows (only that cut's partial folds offer it), so without this the editor
+      // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
+      // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
+      // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).
@@ -931,6 +1583,7 @@ export const cardboard14 = {
           const agents = views.isAgent(card);
           const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+          else if (headRefusals.has(bundlePath)) throw new Error(HEAD_REFUSED);
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
           if (card && !agents) for (const x of await keptHere()) {
@@ -951,6 +1604,34 @@ export const cardboard14 = {
         close();
         void servePanel(projectId, client).then((n) => n?.receive({ t: "hello" })).catch((err) => warnOnce("panel:" + bundlePath, "the History panel didn't start again: " + errText(err)));
       }));
+      // A cut switch made elsewhere (cb cut switch, another window) is stored as the machine's current cut. The handle
+      // takes it (@carton/local's follower, or here when no follower runs: persist false, so a third switch in between
+      // is never overwritten), but a switch on the handle tells its view model nothing: while a page shows the panel,
+      // a handle on another cut than the one the panel last showed refreshes it (laptop report 90c4127, bug 7). One
+      // small read a second.
+      // Versions another process adds to the cut shown (a cb apply, a helper that held the lease) tell this handle's view
+      // model nothing either: a newer version on that cut than the panel last saw refreshes it too (laptop report
+      // follow-up: a cb edit never showed in the open panel).
+      let following = false, seenSeq = null;
+      const headSeq = async () => (await lc.carton.log({ cut: lc.carton.cut, limit: 1 }))[0]?.ref.seq ?? 0;
+      const follow = setInterval(() => {
+        if (following) return;
+        following = true;
+        followCurrent(lc)
+          .then(async () => {
+            if (lc.carton.cut !== shownCut) {
+              seenSeq = null;
+              return reportHere();
+            }
+            const seq = await headSeq();
+            if (seenSeq !== null && seq !== seenSeq) await handle.refresh?.();
+            seenSeq = seq;
+          })
+          .catch(() => {})
+          .finally(() => { following = false; });
+      }, 1000);
+      follow.unref?.();
+      offs.push(() => clearInterval(follow));
       const close = () => {
         for (const off of offs) off();
         servers.delete(client);
@@ -970,6 +1651,55 @@ export const cardboard14 = {
       servers.set(client, s);
       return s;
     };
+    // Comments per project, opened on first ask and kept while the worker runs (comment servers per page client).
+    const commentServers = new Map();
+    const commentsOpen = new Map();
+    const commentsOf = (projectId) => {
+      let p = commentsOpen.get(projectId);
+      if (!p) {
+        p = (async () => {
+          const lc = await lcOf(projectId);
+          if (!lc) return null;
+          const comments = await Comments.open({ carton: lc.carton, anchor: { media: "mediaItemId" }, cut: () => lc.carton.cut });
+          // Kept with the project and not shared through a host here: nothing is waiting to sync, so no comment says so.
+          const source = new Proxy(comments, { get: (t, k) => (k === "isPending" ? (id) => (t.syncStatus() ? t.isPending(id) : false) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) });
+          // threads are placed again whenever the cut's head moves
+          return { comments, ui: commentsUi(source, { versions: { on: (l) => lc.carton.on((e) => { if (e.type === "change" || e.type === "cut") l(); }) } }) };
+        })();
+        p.catch(() => commentsOpen.delete(projectId));
+        commentsOpen.set(projectId, p);
+      }
+      return p;
+    };
+    const scopeOf = (since) => ({ group: localGroup(), app: true, ...(typeof since === "number" ? { since } : {}) });
+    const canStep = async (lc, since) => {
+      const { group, ...scope } = scopeOf(since);
+      const [u, r] = await Promise.all([lc.carton.undoStack(group, { ...scope, limit: 1 }), lc.carton.redoStack(group, { ...scope, limit: 1 })]);
+      return { undo: u.length > 0, redo: r.length > 0 };
+    };
+    const step = async (which, projectId, since) => {
+      const lc = await lcOf(projectId);
+      if (!lc) return { status: "unavailable" };
+      const op = { kind: which, ...scopeOf(since) }, actor = actorOf("person");
+      const here = extensions.find((e) => typeof e.serveHere === "function");
+      const bundlePath = bundleOf(projectId);
+      // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
+      let r;
+      try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
+      catch (e) {
+        // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
+        // page says so, and never falls back to Cardboard's own undo
+        if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+        throw e;
+      }
+      if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+      // local's write path answers a clash as `conflicts` (the cards)
+      if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
+      // what is left to undo and redo, read while head goes into project.json
+      const [project, can] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null)]);
+      if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}) };
+    };
     return {
       ping: async () => "pong",
       head: async ({ projectId }) => library.projects.read(projectId),
@@ -978,31 +1708,40 @@ export const cardboard14 = {
         const current = await library.projects.read(projectId);
         if (!lc) return current;
         const r = /^\d{13}$/.test(String(ref)) ? await refOf(lc, Number(ref)) : ref;
-        return materializeProject(await lc.carton.checkout(r), current);
+        return projectFor(bundleOf(projectId), await lc.carton.checkout(r), current, { keep: false });
       },
-      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it). The page
-      // waits for it, so where this worker's View holds the project's lease its holder serves the undo here, in this
-      // process (request R4: local's write path would reach that same holder through its control socket); anywhere
-      // else (another process holds the lease, no View runs) it goes through local's write path as before.
-      undo: async ({ projectId }) => {
+      // ⌘Z and ⇧⌘Z for the person's group (H6), then head goes into project.json through the store; the answer carries
+      // that project, which the page adopts at once (the pages' change event follows as usual). The page waits for it,
+      // so where this worker's View holds the project's lease its holder serves the step here, in this process (request
+      // R4: local's write path would reach that same holder through its control socket); anywhere else (another
+      // process holds the lease, no View runs) it goes through local's write path as before. `since`: when the editor's
+      // session began (the bridge's); the answer says what is left to undo and redo (`can`).
+      undo: ({ projectId, since }) => step("undo", projectId, since),
+      redo: ({ projectId, since }) => step("redo", projectId, since),
+      // What Ctrl+Z and redo can do now, for the editor's buttons and shortcuts.
+      undoState: async ({ projectId, since }) => {
         const lc = await lcOf(projectId);
-        if (!lc) return { status: "unavailable" };
-        const op = { kind: "undo", group: localGroup() }, actor = actorOf("person");
-        const here = extensions.find((e) => typeof e.serveHere === "function");
-        const bundlePath = bundleOf(projectId);
-        // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
-        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
-        if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-        return r;
+        return lc ? canStep(lc, since) : null;
       },
-      redo: async () => ({ status: "unavailable" }),
-      // A Director turn ended: its last version on the current cut takes the turn's label, unless it has a name.
-      nameTurn: async ({ projectId, chat, turn, prompt }) => {
+      // An in-app agent's turn ended: its last version on the current cut takes the turn's label, unless it has a name.
+      // The Director's versions name their turn; another provider's (laptop #8: the person's own Claude Code, Codex)
+      // are told by who made them (`actors`, a subagent's as its agent's) and when: from `since`, the turn's start, to
+      // `until`, its end. Review P2 (lap2): those actors are the same in every turn of a session, and the request can
+      // reach this worker after the next turn's edits; bounded by the turn's end, it never takes the next turn's version
+      // (a request without `until` has no end, as before).
+      nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
+        const by = Array.isArray(actors) ? new Set(actors.map(String)) : null;
+        const end = typeof until === "number" && Number.isFinite(until) ? until : Infinity;
+        const ours = (v) => {
+          if (!by) return v.author?.turn === want.turn && (!want.chat || v.author?.chat === want.chat);
+          const who = String((v.authoredAs ?? v.author)?.id ?? "").replace(/\/sub-[^/]*$/, "");
+          return by.has(who) && typeof v.at === "number" && v.at >= (Number(since) || 0) && v.at <= end;
+        };
         for (const v of await lc.carton.log({ limit: 200 })) {
-          if (v.author?.turn !== want.turn || (want.chat && v.author?.chat !== want.chat)) continue;
+          if (!ours(v)) continue;
           if (!v.name) {
             await lc.carton.name(v.ref, label);
             // Core tells no one of a name: the History panels open on this project show it through their own
@@ -1038,6 +1777,19 @@ export const cardboard14 = {
         if (d.decision === "allow") await views.detach(lc, actorOf(id)).catch(() => {});
         return stopOutput(d);
       },
+      // The panel's Comments tab: @carton/comments on the project's own Carton (kept beside its history), served to
+      // each page that asks (remoteComments there), as the History panel is.
+      comments: async ({ projectId, client, message }) => {
+        let s = commentServers.get(client);
+        if (!s) {
+          const c = await commentsOf(projectId);
+          if (!c) return { status: "unavailable" };
+          s = serveComments(c.ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+          commentServers.set(client, s);
+        }
+        s.receive(message);
+        return { status: "ok" };
+      },
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {
         let s = servers.get(client);
@@ -1061,7 +1813,7 @@ export const internals = {
     await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);
   },
   withInstallLock, sweep, readJournal, writeJournal, install, busy, sameCard, markSeen, sha,
-  headProject: async (bundlePath) => { const lc = await open(bundlePath); return lc ? materializeProject((await lc.carton.head()).doc, readProject(bundlePath)) : null; },
+  headProject: async (bundlePath) => { const lc = await open(bundlePath); return lc ? projectFor(bundlePath, (await lc.carton.head()).doc, readProject(bundlePath), { keep: false }) : null; },
   // The helper @carton/local starts as a project's lease holder: the files it runs and its spawn. And what this process
   // opened carton.db with, for comparing a helper's open to it.
   helper: { entry: helperEntry(), factory: defaultFactory(), spawn: spawnHelper },
@@ -1072,8 +1824,13 @@ export const internals = {
     return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
   }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev),
   // The bundles this process has a Carton open for (a staging folder's must be gone once Open Project returns).
-  openBundles: () => [...opened.keys()] };
+  openBundles: () => [...opened.keys()],
+  // A bundle's LocalCarton, as this process opens it (tests that make a project's history as an older build left it).
+  open: (bundlePath) => open(bundlePath) };
 
+// The Carton writes that change the timeline a cb call shows (apply-ryw); the others change no timeline (a name, a pin, a
+// new cut, a view's print), or are shown before the holder answers (a cut switch).
+const SHOWN_WRITES = new Set(["commit", "fold", "restore", "revert", "undo", "redo", "undoTurn"]);
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {
   const lc = await open(target.bundlePath, { projectId: target.id });
@@ -1106,7 +1863,10 @@ async function context(target, as, after) {
       // can't read (confirmed rows only): the holder hands it back (WriteOp `head`) for project.json, never printed.
       const { head, ...r } = await lc.write(op && typeof op === "object" ? { ...op, head: true } : op, o);
       if (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") await after(target, head);
-      return r;
+      // apply-ryw: a write that changed the timeline answers once the app's timeline.tsx shows it (with the app closed,
+      // `after` printed it already); a cut switch is shown before the holder answers it
+      const shows = SHOWN_WRITES.has(op?.kind) ? await showWrite(lc, showTarget({ ...r, head }, o?.actor ?? lc.actor)) : null;
+      return shows ? { ...r, ...shows } : r;
     },
   };
   return { project, actor: as ? identify({ declared: as }) : identify() };
@@ -1131,16 +1891,49 @@ export function headScope(current, next) {
 }
 
 // Head into project.json through the worker's store (the store bridge writes without committing a second change).
+// Head into project.json through Cardboard's store: the project it wrote, or null when the file already showed head.
+// The project as the store has it: `latest` hands back the store's own document when project.json is as the worker
+// last saw it (no second parse of a large project), and reads the file when anything else wrote it.
+// Head is read here, outside the store's chain of mutations. A GUI save that goes into the chain first moves head, and
+// the document made from the head before it would put the older timeline over that save, unseen: the scoped merge keeps
+// the newer timestamp, so the install doesn't take it for stale (review P1 of the fold-author fix: "Fold in the rest",
+// held after it read head while the editor saved). So the version it was made from goes with it (`carton.head`), commit
+// checks it in the chain, and a document whose head moved is not written ("stale"): it is made again from the new head.
+// Usually once: a save that moved head wrote head itself, and then there is nothing left to write.
+const MATERIALIZE_TRIES = 5;
+const staleMaterializations = new Set();
+let materializations = 0;
 async function materializeIn(library, projectId) {
-  const current = await library.projects.read(projectId);
-  const bundlePath = library.projects.bundlePathFor(projectId);
-  let next = await headProject(bundlePath, current);
-  if (!next) return false;
-  // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
-  for (const e of extensions) {
-    if (typeof e.materializeDoc !== "function") continue;
-    try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+  const projects = library.projects;
+  const bundlePath = projects.bundlePathFor(projectId);
+  for (let tries = 1; ; tries++) {
+    const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
+    const made = await headAt(bundlePath, current);
+    if (!made) return null;
+    let next = made.project;
+    // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
+    for (const e of extensions) {
+      if (typeof e.materializeDoc !== "function") continue;
+      try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+    }
+    // P2-1, P2-2: an entry with nothing but what history holds (no details kept anywhere): Cardboard's own probe of its
+    // file, as its import, and its file registered so the app serves it at once; its thumbnails come after (below)
+    const reprobed = await reprobeMedia(library, bundlePath, next);
+    if (reprobed) next = reprobed.project;
+    // P3-1: an entry head brought back whole, its file not in the library's list (the manifest)
+    await placeMedia(library, bundlePath, next);
+    if (testHooks.materialize) await testHooks.materialize(projectId);
+    const scope = headScope(current, next), token = ++materializations;
+    await projects.updateScoped(next, { ...scope, carton: { ...scope.carton, head: made.ref, token } });
+    if (!staleMaterializations.delete(token)) {
+      // the derive writes project.json itself, after this write (the worker's own writes aren't announced: the pages are
+      // told here, as main tells them after its own ensureDerived)
+      if (reprobed) void deriveMedia(library, projectId).then((changed) => changed && workerEmit?.({ kind: "changed", id: projectId, bundlePath }));
+      return next;
+    }
+    if (tries >= MATERIALIZE_TRIES) {
+      warnOnce("materialize:" + bundlePath, "project.json didn't catch up with history: it kept changing while it was written (the next change brings it up to date)");
+      return null;
+    }
   }
-  await library.projects.updateScoped(next, headScope(current, next));
-  return true;
 }

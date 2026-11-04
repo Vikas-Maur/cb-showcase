@@ -111,6 +111,11 @@ export interface HelloMsg {
   claimsAfter?: number;
   /** The person at this replica (`IdentityMsg`); a server that keeps no people ignores it. */
   identity?: Person;
+  /**
+   * The client waits out a host's write limit (`ErrorMsg` code `write-limit`): the server may drop the rest of a push's
+   * epoch it couldn't store, as a reject does, and the client sends those changes again after the limit's time.
+   */
+  writeLimit?: boolean;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -209,6 +214,8 @@ export interface PresenceMsg {
   branchId: string;
   actor: Actor;
   state: PresenceState | null;
+  /** The first presence (not a leave) this connection sends: peers answer with theirs, as for a newcomer. */
+  arrived?: true;
 }
 /** The person at a replica (windows-sync R3): the session's account (`AuthContext.account`) and the name it shows. */
 export interface Person {
@@ -248,9 +255,10 @@ export interface WelcomeMsg {
   maxMessageBytes?: number;
   /**
    * A Published cut's source: the cut it came from, the version published (`at`) and that cut's head now. A watcher
-   * learns that newer edits exist (head > at) without being able to read them.
+   * learns that newer edits exist without being able to read them: `versions` of them (rows after `at` less withdraw
+   * rows, H1, which are no versions); a server that doesn't send it means `head - at`.
    */
-  source?: { branchId: string; at: number; head: number };
+  source?: { branchId: string; at: number; head: number; versions?: number };
   /**
    * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.
@@ -322,6 +330,10 @@ export interface AdoptErrorMsg {
   type: "adoptError";
   branchId: string;
   reason: string;
+  /** `write-limit`: the host refused to store the upload for a while (as `ErrorMsg`'s); ask again after `retryAfterMs`. */
+  code?: "write-limit";
+  retryAt?: number;
+  retryAfterMs?: number;
 }
 export interface ForkedMsg {
   type: "forked";
@@ -346,19 +358,53 @@ export interface PresenceFanoutMsg {
   branchId: string;
   actor: Actor;
   state: PresenceState | null;
+  /**
+   * Sent from what the server keeps, to a connection that just subscribed: a peer already there when it came (that
+   * peer was subscribed, so it got the newcomer's own presence). Absent on a relayed update.
+   */
+  kept?: true;
+  /**
+   * Relayed from a connection's first presence (`PresenceMsg.arrived`): a newcomer, even one whose actor is already
+   * shown through another connection (a second tab), that may not know who is here. Never with `kept`.
+   */
+  arrived?: true;
 }
-export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request";
+export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit" | "history-missing";
 export interface ErrorMsg {
   type: "error";
   reason: string;
   /**
    * What kind of refusal, for a client to act on (`reason` is for people): `schema-too-new` (the client's documents are
    * newer than the server accepts: update the server), `unauthorized` (the token expired, or is for another project),
-   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message). Absent: anything else.
+   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message), `write-limit` (the host
+   * refused to store a write for a while: its daily write cap), `history-missing` (the catch-up needs history the
+   * server's blob store no longer has: a keyframe it can't do without, an archived segment or a change body; nothing a
+   * retry fixes). Absent: anything else.
    */
   code?: ErrorCode;
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
   reconnect?: boolean;
+  /**
+   * `write-limit`: when the host takes writes again (ms since the epoch, by the host's clock, for showing), and how long
+   * that is from when it was sent (what a client waits, whatever its own clock says).
+   */
+  retryAt?: number;
+  retryAfterMs?: number;
+  /**
+   * `write-limit` on a push, to a client whose hello said `writeLimit`: its cut and epoch. The server dropped the rest
+   * of that epoch, as a reject does; the client sends those changes again, in a new epoch, after `retryAfterMs`.
+   */
+  branchId?: string;
+  epoch?: number;
+}
+
+/**
+ * When a refused write may be tried again (ms since the epoch), if `e` is a refusal for a while (BlobStore's contract:
+ * an error carrying `retryAt`, as server-cloudflare's daily write cap throws); null for any other error.
+ */
+export function writeLimitOf(e: unknown): number | null {
+  const at = (e as { retryAt?: unknown } | null | undefined)?.retryAt;
+  return typeof at === "number" && Number.isFinite(at) ? at : null;
 }
 /** Answer to `history`: a page of rows (`more`: ask again after the last), the closure when asked, or why not. */
 export interface HistoryReplyMsg {

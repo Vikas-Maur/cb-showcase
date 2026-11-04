@@ -52,9 +52,14 @@ test(name("History renders a window of a 10k list, marks checkpoints, named and 
   assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Waiting to sync/.test(r.textContent ?? "")));
   assert.ok(rows.some((r) => r.dataset.kind === "turn" && /Checkpoint/.test(r.textContent ?? "") && /tighter intro/.test(r.textContent ?? "")));
   assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client, Monday/.test(r.textContent ?? "")));
-  // The list's full height is there for the scrollbar.
+  // The list's full height is there for the scrollbar: 10k versions over several days are grouped by day (UI audit
+  // P2-17), every day but the newest folded to its named versions and turns, so the height is the rows shown.
   const inner = $(m.container, ".carton-vlist > div")!;
-  assert.equal(inner.style.height, `${10_004 * 52}px`);
+  const days = $$(m.container, ".carton-day");
+  assert.ok(days.length >= 1 && days[0]!.getAttribute("aria-expanded") === "true", "the newest day is open");
+  const height = parseFloat(inner.style.height);
+  assert.ok(height > 600 && height < 10_004 * 52, `${height}px for the grouped list`);
+  assert.equal(height % 2, 0);
   // Named filter.
   await click(byText(m.container, "[role=radio]", "Named"));
   const named = $$(m.container, "[role=option]");
@@ -153,8 +158,9 @@ test(name("cuts menu: lists cuts (Bob's read-only), new cut from here, rename"),
   const trigger = $(m.container, ".carton-menu-trigger")!;
   assert.match(trigger.textContent ?? "", /Main cut/);
   await click(trigger);
+  // a read-only cut says why on a second line under its name (no tooltip)
   const items = $$(m.container, "[role=menuitemradio]").map((e) => e.textContent);
-  assert.ok(items.includes("Bob's Main cut"));
+  assert.ok(items.some((t) => t?.startsWith("Bob's Main cut")));
   assert.ok(items.includes("30s Instagram cut"));
   await click(byText(m.container, "[role=menuitem]", "New cut from here"));
   await type($(m.container, "input.carton-input"), "Teaser");
@@ -195,13 +201,14 @@ test(name("fold in: leave a change out, pick on the card, then fold in N of M"),
   await m.unmount();
 });
 
-test(name("compare card: time, author, clips, length and N shots / X s of Y s differ"), async () => {
+test(name("compare card: time, author, clips, length, and what changed (N changes · X s of Y s differ)"), async () => {
   const ui = createMockUi({ versions: 10 });
   let watched: string[] | null = null;
   const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@9", onWatch: (a: string, b: string) => (watched = [a, b]) })));
   await flush();
   const text = m.container.textContent ?? "";
-  assert.match(text, /\d+ shots \/ \d+\.\d s of \d+\.\d s differ/);
+  assert.match(text, /\d+ changes? · \d+\.\d s of \d+\.\d s differ/);
+  assert.doesNotMatch(text, /shots? \//, "never shots (UI audit P2-5)");
   assert.match(text, /clips/);
   assert.match(text, /\d:\d\d\.\d/);
   await click(byText(m.container, "button", "Watch the changes"));
@@ -257,12 +264,12 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", onFrame: (s: string, t: number) => frames.push([s, t]) })));
   await flush();
   const root = $(m.container, ".carton-watch")!;
-  assert.match(root.textContent ?? "", /Change 1 of 4/);
+  assert.match(root.textContent ?? "", /Section 1 of 4/);
   assert.equal($$(root, ".carton-strip").length, 2);
   assert.ok($$(root, "[data-kind=fold]").length >= 2, "unchanged runs folded");
   assert.ok($$(root, "[data-tone=removed]").length === 1 && $$(root, "[data-tone=added]").length === 1);
-  await click($(root, "[aria-label='Next change']"));
-  assert.match(root.textContent ?? "", /Change 2 of 4/);
+  await click($(root, "[aria-label='Next section']"));
+  assert.match(root.textContent ?? "", /Section 2 of 4/);
   const before = byText(root, "[role=radio]", "Before")!;
   await click(before);
   assert.equal(before.getAttribute("aria-checked"), "true");
@@ -315,8 +322,55 @@ test(name("R1-15: the context-menu key opens the active version's actions; still
   await key(list, "ContextMenu");
   const menu = $(m.container, "[role=menu]");
   assert.ok(menu, "actions menu open");
-  assert.equal(byText(menu!, "[role=menuitem]", "Restore")?.getAttribute("aria-disabled"), "true");
+  // Restore's hint is a line under its name (no tooltip over the next item)
+  assert.equal($$(menu!, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))?.getAttribute("aria-disabled"), "true");
   assert.equal(document.activeElement?.closest("[role=menu]"), menu, "focus moved into the menu");
+  await m.unmount();
+});
+
+test(name("an empty version (the start of an imported project) offers no Preview, New cut from here or Restore, and says why"), async () => {
+  const ui = createMockUi({ versions: 0 });
+  const system = { key: "system/carton", kind: "system" as const, name: "" };
+  ui.addVersion({ author: system, summary: "Started the cut", empty: true });
+  ui.addVersion({ author: people.alice, summary: "Imported the project", kind: "import" });
+  const restored: string[] = [];
+  const restore = ui.restore.bind(ui);
+  ui.restore = async (ref: string) => { restored.push(ref); return restore(ref); };
+  const m = await render(wrap(ui, h("div", { style: { height: 600 } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  const row = (text: string) => $$(m.container, "[role=option]").find((r) => r.textContent?.includes(text))!;
+  await click(row("Started the cut").querySelector(".carton-version-more"));
+  const menu = $(m.container, "[role=menu]")!;
+  const items = () => $$(menu, "[role=menuitem]").map((e) => e.textContent ?? "");
+  assert.ok(!items().some((t) => t.startsWith("Preview")), "no Preview");
+  assert.ok(!items().some((t) => t.startsWith("New cut from here")), "no New cut from here");
+  const r = $$(menu, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!;
+  assert.equal(r.getAttribute("aria-disabled"), "true", "Restore isn't offered");
+  assert.match(r.textContent ?? "", /before the project was added/, "and it says why");
+  await click(r);
+  assert.deepEqual(restored, [], "a click does nothing");
+  // opening the row (Enter, double-click) previews nothing
+  await click(row("Started the cut"));
+  await key($(m.container, "[role=listbox]")!, "Enter");
+  assert.equal(ui.preview(), null);
+  // the version after it is the project: every action is there
+  await click(row("Imported the project").querySelector(".carton-version-more"));
+  const menu2 = $(m.container, "[role=menu]")!;
+  assert.ok($$(menu2, "[role=menuitem]").some((e) => e.textContent?.startsWith("New cut from here")));
+  assert.equal($$(menu2, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!.getAttribute("aria-disabled"), null);
+  await m.unmount();
+});
+
+test(name("a restore the app refuses says why in the panel"), async () => {
+  const ui = createMockUi({ versions: 3 });
+  ui.restore = async () => { throw new Error("Nothing to restore: that version is empty"); };
+  const m = await render(wrap(ui, h("div", { style: { height: 600 } }, h(HistoryPanel, { initialHeight: 600 }))));
+  await flush();
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined)!;
+  await click(row.querySelector(".carton-version-more"));
+  await click($$(m.container, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))!);
+  await waitFor(() => !!$(m.container, ".carton-history-error[role=alert]"), "the error line");
+  assert.equal($(m.container, ".carton-history-error")!.textContent, "Nothing to restore: that version is empty");
   await m.unmount();
 });
 

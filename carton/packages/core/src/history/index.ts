@@ -3,4 +3,4 @@
 // partial accept, restore, undo by actor group, keyframes, view-save bases (§6.4) and shallow and full `.cbproj`
 // exports. Owner: foundation-core.
 export * from "./common.ts";
-export { History, actorKey, branchToken, groupOf, nodeId, parseNode, randomHex, undoLabel } from "./history.ts";
+export { History, actorKey, branchToken, groupOf, nodeId, parseNode, randomHex, undoLabel, type UndoScope } from "./history.ts";

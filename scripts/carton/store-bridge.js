@@ -1,8 +1,8 @@
 // The bridge between Cardboard's project store and timeline mirror and Carton. It is injected into both copies of
 // them: the CLI's (chunk-LL26E55H.mjs) and the library worker's (library-worker.js). patch-carton.js places the hooks;
 // carton/docs/INTEGRATION-1.4.0.md §4.1–4.2 says what each one does and why.
-// With Carton off (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code and nothing of Carton is
-// loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
+// Carton is on by default; CARDBOARD_CARTON=0 (or false / off / no) turns it off (the same rule in main-bridge.js and
+// cli-bridge.js). With Carton off, every hook runs Cardboard's own code and nothing of Carton is loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
 // Usage: require("./carton/store-bridge")({ dir, slice, who, codec }) → the preamble's text. `dir` is a JS expression
 // for the folder that holds carton-node.cjs. `slice` names the bundle's own function that cuts a project down to what
 // `.revs` keeps: tracks, items and aspect ratio, with code sources inlined. `who` is the actor when nothing else says:
@@ -74,11 +74,14 @@ module.exports = ({ dir, slice, who, codec }) => {
     "  applied as your change, and the status file says how it landed: " + q("confirmed") + ", " + q("conflicts") + " (someone else\n" +
     "  changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). Read it\n" +
     "  after each save.\n" +
-    "- " + q("timeline.tsx") + " keeps showing the state you started from while you work, so it never changes under you; it\n" +
-    "  catches up once you are done.\n" +
+    "- While you work, " + q("timeline.tsx") + " holds back the person's and teammates' changes, so it doesn't change under\n" +
+    "  you; they reach it once you are done. Your own changes show in it: a " + q("cb") + " write's (" + q("cb source apply") + " and the\n" +
+    "  others) by the time it returns (if it can't yet, its result says so), a view save's by the time its status file\n" +
+    "  says how it landed.\n" +
     "- " + q("cb conflicts <project>") + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.\n";
-  const agentsMd = (text) => (process.env.CARDBOARD_CARTON === "1" ? text + VIEWS_MD : text);
-  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView, agentsMd };
+  const cartonOn = !/^(?:0|false|off|no)$/i.test(String(process.env.CARDBOARD_CARTON ?? "").trim());
+  const agentsMd = (text) => (cartonOn ? text + VIEWS_MD : text);
+  if (!cartonOn) return { on: false, skipInArchive, cartonView, agentsMd };
   const path = require("node:path");
   // H3: Carton's header form on Cardboard's rev line, read with @carton/cardboard's grammar (header.ts: findRev,
   // parseRevBody): the first "// cardboard:rev" line counts; a body of digits is 1.4.0's rev (ms), any other body is
@@ -90,6 +93,10 @@ module.exports = ({ dir, slice, who, codec }) => {
     const b = REV_LINE.exec(text)?.[1].trim();
     return b && !/^\d+$/.test(b) ? b : null;
   };
+  // A media entry Cardboard's editor can't save (no readable createdAt or addedAt), or a text entry without what
+  // Cardboard's own text media have (@carton/cardboard's completeEntry is the rule; this only says when to ask it).
+  const readable = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
+  const incomplete = (m) => !!m && typeof m === "object" && (!readable(m.createdAt) || !readable(m.addedAt) || (m.data?.type === "text" && (m.data.format === undefined || m.data.size === undefined || m.data.presetId === undefined)));
   let api;
   // carton-node.cjs is loaded on first use, so a cb command that never touches a project pays nothing for it. If it
   // can't load, every hook runs Cardboard's own code, as with Carton off.
@@ -110,6 +117,8 @@ module.exports = ({ dir, slice, who, codec }) => {
   let scoped = null;
   // The last commit's result per project, for the apply's status.
   const last = new Map();
+  // the bundle each project's last commit went to (apply-ryw: its timeline.tsx is asked about it)
+  const lastBundle = new Map();
 
   // Cardboard's own timeline.tsx printer and parser as Carton's TimelineCodec (carton/packages/cardboard/src/codec.ts),
   // for the Materializer's views and the shared file: globalThis.__cartonTimelineCodec, set below at bundle load. They
@@ -211,6 +220,29 @@ module.exports = ({ dir, slice, who, codec }) => {
         }
       }
     },
+    // Laptop, build 915eb36: a project.json Cardboard's reader refused, in a bundle whose history Carton holds: the file
+    // as Carton finds it through that history (the name it last had), for the reader to take; null: as before.
+    async recover(bundlePath, text) {
+      const c = carton();
+      if (typeof c?.recover !== "function") return null;
+      try { return await c.recover({ bundlePath, text }); }
+      catch (e) { console.warn("[carton] a damaged project.json couldn't be read through its history:", e?.message ?? e); return null; }
+    },
+    // Laptop, final candidate P1-1: a project.json whose media entries have no createdAt or addedAt (an earlier build's
+    // restore or recovery wrote them so) is listed and plays, but Cardboard's editor throws "Invalid time value" at
+    // every save, and every edit was lost. The loader's project (the reader's {project, media}) gets them here, the
+    // project's own date when nothing kept theirs (the facade, @carton/cardboard's completeMedia); the next save writes
+    // them. The check is the loader's only cost for a project that has them all: carton-node.cjs isn't loaded for it.
+    loaded(bundlePath, r) {
+      const media = r?.project?.media;
+      if (!Array.isArray(media) || !media.some(incomplete)) return r;
+      const c = carton();
+      if (typeof c?.completeMedia !== "function") return r;
+      try {
+        const project = c.completeMedia(r.project, bundlePath);
+        return project === r.project ? r : { ...r, project };
+      } catch (e) { console.warn("[carton] a project's media entries couldn't be completed:", e?.message ?? e); return r; }
+    },
     attach(store, mirror, root) {
       // (weakly: Open Project's staging library goes when Cardboard is done with it)
       mirrors.push(new WeakRef(mirror));
@@ -238,7 +270,14 @@ module.exports = ({ dir, slice, who, codec }) => {
         console.warn("[carton] commit failed; saving without history:", e?.message ?? e);
         return res;
       }
+      // Head into project.json made from a head that moved before its turn in this chain (a GUI save went first): it
+      // isn't written, and the store keeps the document it had (the facade's materializeIn makes it again).
+      if (out?.status === "stale") {
+        if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: base });
+        return { document: base, changed: false };
+      }
       last.set(id, out);
+      lastBundle.set(id, entry?.bundlePath ?? null);
       if (!out?.doc || out.doc === res.document) return res;
       // The file gets head: the store and the queued write continue from it. When someone else's change was merged
       // in, the pages are told too (main broadcasts it as a project change, which the editor adopts).
@@ -281,6 +320,15 @@ module.exports = ({ dir, slice, who, codec }) => {
     // H2, H3: the mirror's revision readers read Carton's history, newest first, then any older .revs.
     listRevisions: (mirror, bundlePath) => (carton() ? carton().revisions({ bundlePath, files: () => mirror.__cartonListRevisions(bundlePath) }) : mirror.__cartonListRevisions(bundlePath)),
     readRevision: (mirror, bundlePath, rev) => (carton() ? carton().revision({ bundlePath, rev, file: () => mirror.__cartonReadRevision(bundlePath, rev) }) : mirror.__cartonReadRevision(bundlePath, rev)),
+    // Laptop #2: a numeric rev's version exactly (the rev map), 1.4.0's .revs only for a rev older than Carton's history.
+    revisionAtOrBefore: (mirror, bundlePath, rev) => (carton()?.revisionAtOrBefore ? carton().revisionAtOrBefore({ bundlePath, rev, slice: (d) => ${slice}(d), files: () => mirror.__cartonListRevisions(bundlePath), readFile: (n) => mirror.__cartonReadRevision(bundlePath, n) }) : mirror.__cartonRevisionAtOrBefore(bundlePath, rev)),
+    // Laptop #2: a print under Carton's exact header, the version it names as Carton has it; null: 1.4.0's print.
+    printed: async (mirror, project) => {
+      const c = carton();
+      if (!c?.printed) return null;
+      try { return await c.printed({ bundlePath: mirror.options.bundles.bundlePathFor(project?.id), project }); }
+      catch (e) { console.warn("[carton] print without Carton's header:", e?.message ?? e); return null; }
+    },
     history: (mirror, id, rows) => (carton() ? carton().history({ bundlePath: mirror.options.bundles.bundlePathFor(id), rows }) : rows),
     // H3: a header rev nothing can rebuild is an error, never a 2-way merge. No header keeps 1.4.0's meaning, and so
     // does a project without history (Carton then answers as 1.4.0 does).
@@ -307,8 +355,18 @@ module.exports = ({ dir, slice, who, codec }) => {
     // H3: Carton's merge3 in place of Cardboard's item-level 3-way merge; same result shape.
     merge3: (base, current, file, opts, rn) => (carton() ? carton().merge3({ base, current, file, prefer: opts?.prefer, rn }) : rn(base, current, file, opts)),
     // The apply's result gains carton: {status, ref, conflicts} when its write was committed; nothing when history
-    // is off for the project.
-    status: (id) => { const r = last.get(id); return r && r.status !== "off" && r.status !== "materialized" ? { carton: { status: r.status, ref: r.ref, conflicts: r.cards?.length ?? 0 } } : {}; },
+    // is off for the project. apply-ryw: in cb, it answers once the app's timeline.tsx shows the write (at most 2 s), and
+    // says how: \`timeline\` ("shown", "held", "elsewhere", "later") and, when not shown, \`note\`, a sentence the apply's
+    // text prints too. (With the app closed cb printed the file itself already: nothing is added.)
+    async status(id) {
+      const r = last.get(id);
+      if (!r || r.status === "off" || r.status === "materialized") return {};
+      const out = { status: r.status, ref: r.ref, conflicts: r.cards?.length ?? 0 };
+      let shows = null;
+      try { shows = (await carton()?.showCommitted?.(lastBundle.get(id), r)) ?? null; } catch {}
+      if (shows) Object.assign(out, { timeline: shows.timeline }, shows.timelineNote ? { note: shows.timelineNote } : {});
+      return { carton: out };
+    },
     // Runs fn with every write it starts attributed to who.
     as: (who, fn) => acting.run(who, fn),
     // H8 (worker only): the worker's carton RPC namespace, and who the worker's own RPC writers are. A full project

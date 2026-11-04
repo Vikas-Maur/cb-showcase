@@ -98,7 +98,7 @@ export function ConflictStack(p: ConflictStackProps) {
       { className: "carton-stack-head" },
       h("span", { className: "carton-stack-count" }, h(Icon, { name: "warning", size: 13 }), words.conflictsWaiting(conflicts.length)),
       setAsideCards.length ? h("button", { type: "button", className: "carton-see", "aria-expanded": listOpen, onClick: () => setListOpen((o) => !o) }, words.setAsideList(setAsideCards.length)) : null,
-      h(Button, { variant: "ghost", icon: "caretDown", label: words.hideConflicts, title: words.hideConflicts, onClick: () => (setCollapsed(true), setListOpen(false)) }),
+      h(Button, { variant: "ghost", icon: "caretDown", label: words.hideConflicts, onClick: () => (setCollapsed(true), setListOpen(false)) }),
     ),
     h(
       "div",

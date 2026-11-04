@@ -149,16 +149,24 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
     for (const v of bob.cb(["history", "Demo"]).json().versions.filter((x) => x.by?.id === "Alice")) {
       const cmp = compare(v);
       seen.push(v.version + ": " + cmp.out.trim().replace(/\s+/g, " ").slice(0, 160));
-      if (/content|shared media/.test(cmp.out)) return { v, cmp };
+      // in editor words (UI audit P1-2: it read `Set 'clip.mp4' content to "8291f1d9…"`, a hash)
+      if (/for sharing/.test(cmp.out)) return { v, cmp };
     }
     return null;
   };
   const { cmp } = await S.until(shareVersion, 30_000, "alice's share version at bob").catch((e) => { throw new Error(e.message + "; her versions there: " + JSON.stringify(seen)); });
-  assert.match(cmp.out, /content|shared media/, cmp.out + cmp.err);
+  assert.match(cmp.out, /Linked '[^']+' for sharing/, cmp.out + cmp.err);
+  assert.doesNotMatch(cmp.out.replace(/"(from|to)": "[^"]*"/g, ""), /[0-9a-f]{16,}/, "no hash in the share version's words at Bob's: " + cmp.out);
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
   assert.equal(src.stream, r.proxy.stream);
   assert.equal(src.size, r.proxy.size);
+  // UI audit P1-9: opening his copy, Cardboard's loader asks which clips it found no file for are a teammate's. This one
+  // plays from its shared preview; one never sent is waiting (never "Missing Media Files"). On Alice's computer the
+  // clip's original was here: a missing one there is hers ("local"), and Cardboard's own dialog stays right for it.
+  const here = await bob.call("carton.liveMediaHere", { projectId: id, mediaIds: [mediaId, "never-shared"] });
+  assert.deepEqual(here.clips, { [mediaId]: "playable", "never-shared": "waiting" });
+  assert.deepEqual((await alice.call("carton.liveMediaHere", { projectId: id, mediaIds: [mediaId] })).clips, { [mediaId]: "local" });
   const body = await S.asComputer(bob, async () => {
     const res = await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`, { headers: { range: "bytes=0-1023" } }), src);
     assert.equal(res.status, 206);
@@ -400,7 +408,8 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
     assert.ok(!p.isError, p.text);
     assert.match(p.text, /fontSize=\{55\}/, "the pull caught up through a helper before the tool read");
     assert.equal(S.textOf(S.fileOf(alice)).fontSize, 55, "and head went into Alice's project.json");
-    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    // (1.4.0's numeric rev, when the print has one: a Carton header is the print's own, and MCP's rev is a number)
+    const rev = Number(p.text.match(/cardboard:rev (\d+)\s*$/m)?.[1]);
     const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={55}", newText: "fontSize={66}" }], ...(rev ? { rev } : {}) });
     assert.ok(!a.isError, a.text);
     assert.doesNotMatch(a.text, /Not saved to Cardboard storage/, "no whole-file PUT was tried");
@@ -428,7 +437,8 @@ test("app closed: another program's save, and the agent's edit on it, go through
     const p = await m.tool("print_timeline", { project: "Demo" });
     assert.ok(!p.isError, p.text);
     assert.match(p.text, /From an editor/);
-    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    // (1.4.0's numeric rev, when the print has one: a Carton header is the print's own, and MCP's rev is a number)
+    const rev = Number(p.text.match(/cardboard:rev (\d+)\s*$/m)?.[1]);
     const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={66}", newText: "fontSize={44}" }], ...(rev ? { rev } : {}) });
     assert.ok(!a.isError, a.text);
   } catch (e) {

@@ -38,7 +38,8 @@ export type SharedCutEvent =
   | { type: "state"; state: SyncState }
   /** Caught up after a welcome: the host accepted this replica (an earlier error is over). */
   | { type: "online" }
-  | { type: "error"; error: string; code?: string };
+  /** `until`, with code `write-limit`: when the edits held back sync (ms). */
+  | { type: "error"; error: string; code?: string; until?: number };
 
 /** What a write learns within its wait (§6.2, L14). */
 export type WriteOutcome =
@@ -262,7 +263,7 @@ export class SharedCut {
         if (e.type === "status") this.refreshState();
         else if (e.type === "presence") this.emit({ type: "presence", branchId: this.branchId, actor: e.actor, state: e.state });
         else if (e.type === "overwritten") this.emit({ type: "overwritten", id: e.id, by: e.by, author: e.author });
-        else if (e.type === "error") this.emit({ type: "error", error: e.error, ...(e.code ? { code: e.code } : {}) });
+        else if (e.type === "error") this.emit({ type: "error", error: e.error, ...(e.code ? { code: e.code } : {}), ...(e.until !== undefined ? { until: e.until } : {}) });
         else if (e.type === "online") this.emit({ type: "online" });
         else if (e.type === "push") this.emit({ type: "sent", ids: e.ids });
       },

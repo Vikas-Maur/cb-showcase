@@ -26,7 +26,9 @@
 //   connects sync only once Live runs (an unshared project has nothing to connect to).
 // - An agent's own `cb` write during a freeze shows in the frozen timeline.tsx at once, as with 1.4.0 (the Materializer's
 //   foldAgentChanges, whatever told it of head: this holder's write, local's follower, a confirmation); the person's
-//   and remote changes stay out until the freeze ends.
+//   and remote changes stay out until the freeze ends. Read-your-writes (apply-ryw): the `cb` write answers only once
+//   the file shows it: cb asks this holder (`carton.shown`), which looks at carton.db at once and answers with the
+//   Materializer's print (`showChange`). A terminal's cb (`onCb(caller)`) reads its own writes in the file it holds.
 // - The person's GUI save: head moves in the save, and the store writes project.json after it. The facade tells the
 //   Materializer so (onHeadChange("gui", { after }), the extension's hostWrite): its rewrites wait for that write, and
 //   take project.json's envelope and stamp from it instead of reading the file again.
@@ -154,6 +156,11 @@ export class View {
       // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
       // would take an untagged file there as a timeline.tsx save
       displacedDir: path.join(CARTON_DIR, "displaced-views"),
+      // perf/apply-tail: a cb write that waited 500 ms or more for timeline.tsx to show it (the whole wait: the holder's
+      // look at carton.db, beforeMs, and the materializer's part, ms), and where that time went (the queue, its rewrite
+      // step by step, what answered it, the longest tasks meanwhile): into the worker's output, which the app's activity
+      // log keeps (main's __cbPipeWorker). Timings, change ids and task names only.
+      onSlowShow: (s) => console.warn("[carton] a cb write waited " + ((s.beforeMs ?? 0) + s.ms) + " ms for timeline.tsx (" + s.answer + "): " + JSON.stringify(s)),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
       // The cut: the one the save was committed on, as the Materializer reports it (its stored result's: also for a
@@ -184,8 +191,11 @@ export class View {
       hookRead: (a) => mz.hookRead(a),
       hookWrite: (a, rel) => mz.hookWrite(a, rel),
       hookStop: (a) => mz.hookStop(a),
-      onCb: () => mz.onCb(),
+      // a terminal's cb (`caller`) reads its own writes in the frozen file (apply-ryw)
+      onCb: (caller) => mz.onCb(caller),
       onHeadChange: (cause) => mz.onHeadChange(cause),
+      // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
+      showChange: (c, ms, o) => mz.showChange(c, ms, o),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),

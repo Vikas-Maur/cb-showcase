@@ -215,6 +215,12 @@ every host runs the same function. The host:
      existed takes the alarm as its due time. Presence still queued when its connection goes is dropped, never
      relayed. The conformance host suite drops a client and silences one (also across wakes), and checks that its
      peers see the leaves.
+   - **Who is here, for a newcomer.** A connection that subscribes (a teammate joining, or every client after a
+     restart) gets, right after its welcome, the latest presence each other connection there shows, marked `kept`.
+     The sequencer keeps it in memory only (the actors in `state.shown`, up to 16 KiB each), never in `state`, so a
+     socket attachment stays small; after a wake it has none, and the sync clients cover that: each sends its own
+     presence again when a peer first shows on its connection, or when a connection's first presence says
+     `arrived` (relayed as is, through the rate cap, never kept).
    - **People** (windows-sync R3). A GUI save's author is the generic person; the sequencer keeps each device
      credential's person (`hello.identity`, `identity`), so teammates resolve it by the change's replica id, which the
      sequencer already binds to that credential (§6.3). A host needs nothing more: the record is two of the
@@ -427,6 +433,12 @@ live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket ke
 answered by the runtime without waking the room, so idle sockets cost nothing. While a socket shows presence, the
 alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
 the maintenance due time, and sets the alarm; it writes no table rows.
+
+On the DO-blob fallback, a multipart upload that is neither completed nor aborted (the uploader quit) is swept from
+the vault's alarm once it has gone untouched for 24 h (`VAULT_UPLOAD_TTL_MS`), as R2's lifecycle rule would do. Its
+rows are deleted at one row written each, so about 1 per MiB, and at most 500 per alarm (`VAULT_SWEEP_ROWS`). The sweep
+adds no row to a create or a part. A listing writes at most one an hour. The alarm is set only when none is pending,
+and a vault with no upload has none. The sweep's tests check these counts.
 
 Each `POST …/blobs/heads` key is one R2 call (a team project's editor: up to four, for the claim and the grant
 check). The Worker checks at most 200 keys a request, under Cloudflare's per-request subrequest limit; raise

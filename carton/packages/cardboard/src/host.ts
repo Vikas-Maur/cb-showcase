@@ -5,6 +5,7 @@ import { assignKeys, stripEphemeral, deepEqual, POS } from "@carton/core";
 import type { Doc, Rec, ObjectSpec, FieldSpec } from "@carton/core";
 import type { OwnFn } from "@carton/core/plugins";
 import { cardboardSchema as S, ITEMS, TRACKS, MEDIA, LOCAL_ONLY, CARTON_MEDIA_FIELDS } from "./schema.ts";
+import { readableDate, undatedMedia } from "./valid.ts";
 
 /** The slice of a Cardboard `project.json` `project` object that Carton versions. */
 export interface CardboardProject {
@@ -207,11 +208,30 @@ function overlay(spec: ObjectSpec, cur: Rec | undefined, ver: Rec): Rec {
 }
 
 /**
+ * A media entry's details: everything on it that Carton doesn't version (its probe's facts, size, where it plays from,
+ * thumbnails, when it was added…), without its id. null when it has none (an entry made from history alone).
+ */
+export function mediaDetails(entry: Readonly<Rec>): Rec | null {
+  if (!entry || typeof entry !== "object") return null;
+  const { id: _id, ...rest } = overlay(S.collections[MEDIA]!.record, entry as Rec, {});
+  return Object.keys(rest).length ? rest : null;
+}
+
+/**
+ * Where a media entry's details come from when the current file doesn't have the entry (`materializeProject`): given
+ * its id and what history holds of it (its kind, its content id when shared), the details last seen for that same
+ * media, or nothing.
+ */
+export type KnownMedia = (id: string, versioned: Readonly<Rec>) => Readonly<Rec> | null | undefined;
+
+/**
  * The `project` object to write to project.json for engine state `doc`: the current file's project with the
  * versioned slice replaced, every record's unversioned fields kept from the current file (matched by id), and the
- * host's own root fields untouched. Track `order` comes from the engine (B12).
+ * host's own root fields untouched. Track `order` comes from the engine (B12). A media entry the current file doesn't
+ * have (a restore after a version without it, a fold that brings it back) takes its details from `known` (the details
+ * last seen for that id: `mediaDetails` of an earlier file's entry), else it has only what history versions.
  */
-export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null): Record<string, unknown> {
+export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null, known?: KnownMedia): Record<string, unknown> {
   const slice = toHost(doc);
   const cur = (current ?? {}) as CardboardProject;
   const out: Record<string, unknown> = { ...cur };
@@ -232,7 +252,103 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
   });
   if (slice.media) {
     const curMedia = new Map((cur.media ?? []).map((m) => [m.id, m]));
-    out[MEDIA] = slice.media.map((m) => overlay(S.collections[MEDIA]!.record, curMedia.get(m.id), m));
+    const had = (m: Rec): Rec | undefined => {
+      const c = curMedia.get(m.id);
+      // a file's entry the current file holds without what Cardboard's import gives it (review of fix/media-meta #3:
+      // one an older writer left with its src only): what is known of that media fills in what it lacks, its own first
+      if (c && !(known && lacksDetails(c))) return c;
+      const d = known?.(m.id as string, m);
+      if (!d || typeof d !== "object") return c;
+      return c ? { ...d, ...c, data: { ...((d.data as Rec | undefined) ?? {}), ...((c.data as Rec | undefined) ?? {}) } } : { ...d, id: m.id };
+    };
+    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m), m), out[ITEMS] as Rec[]));
+  }
+  // P1-1: every entry complete for Cardboard's editor, also the file's own when the doc never versioned media (review
+  // of fix/recover-save #4): its dates from the entry, else what was kept of that media (looked up for an entry with
+  // every other detail too: review #3), else the project's
+  if (Array.isArray(out[MEDIA])) {
+    out[MEDIA] = (out[MEDIA] as Rec[]).map((m) => completeEntry(m, cur, m && typeof m.id === "string" && !(readableDate(m.createdAt) && readableDate(m.addedAt)) ? known?.(m.id, m) : null));
   }
   return out;
+}
+
+// ------------------------------------------------------------------ complete media entries (laptop, final candidate P1-1)
+// What Cardboard's editor needs of every media entry and Carton doesn't version: createdAt and addedAt, which it reads
+// into Dates at load and writes back at every save (installErrorTelemetry `P2`, `p9`). A project recovered through
+// History had seven entries with neither (they came back from history alone: no file held them, and nothing had kept
+// their details, since the earlier build's bug that emptied the file came before .carton/media.json), and every edit
+// failed to save with "Invalid time value". History never held them: they aren't versioned (`only` media fields).
+// When neither the file nor the details kept for the entry has one, it takes the project's own date (no media was
+// added before its project was made), else when the project was last saved, else Cardboard's own rule for a date it
+// can't read (library-worker.js `sw`: the epoch), and addedAt is createdAt (`sw` again). A text entry gets what
+// Cardboard's own text media have (library-worker.js `ZZ`: format "text", size 0, preset "custom").
+
+/** When a project was made, for an entry with no date of its own: its createdAt, else its updatedAt, else the epoch. */
+export function projectDate(project: Readonly<Record<string, unknown>> | null | undefined): string {
+  for (const f of ["createdAt", "updatedAt"]) {
+    const v = project?.[f];
+    if (readableDate(v)) return v;
+  }
+  return new Date(0).toISOString();
+}
+
+const TEXT_DEFAULTS: Readonly<Rec> = { format: "text", size: 0, presetId: "custom" };
+/**
+ * A media entry with what Cardboard's editor needs to save it; the same object when it has it all. `kept`: the details
+ * kept for that media (`KnownMedia`), whose dates come before the project's.
+ */
+export function completeEntry(m: Rec, project: Readonly<Record<string, unknown>> | null | undefined, kept?: Readonly<Rec> | null): Rec {
+  if (!m || typeof m !== "object") return m;
+  let out = m;
+  const c = readableDate(m.createdAt), a = readableDate(m.addedAt);
+  if (!c || !a) {
+    // each date its own first (the entry's, then the one kept for it), then the other one (review #3)
+    const kc = readableDate(kept?.createdAt) ? kept.createdAt : undefined, ka = readableDate(kept?.addedAt) ? kept.addedAt : undefined;
+    const createdAt = c ? m.createdAt : kc ?? (a ? m.addedAt : ka) ?? projectDate(project);
+    out = { ...out, createdAt, addedAt: a ? m.addedAt : ka ?? createdAt };
+  }
+  const d = m.data as Rec | undefined;
+  if (d && typeof d === "object" && d.type === "text" && Object.keys(TEXT_DEFAULTS).some((k) => d[k] === undefined)) {
+    const data: Rec = { ...d };
+    for (const [k, v] of Object.entries(TEXT_DEFAULTS)) if (data[k] === undefined) data[k] = v;
+    out = { ...out, data };
+  }
+  return out;
+}
+
+/**
+ * The project with every media entry complete (`completeEntry`): what the project loaders give Cardboard for a file an
+ * earlier build wrote without them. An entry's dates come from what was kept of that media (`known`, as
+ * `materializeProject` takes it) before the project's: a date filled in here is the file's own to every later writer.
+ * The same object when nothing was missing (no copy).
+ */
+export function completeMedia<T extends Readonly<Record<string, unknown>>>(project: T, known?: KnownMedia): T {
+  const media = project?.media;
+  if (!Array.isArray(media) || !undatedMedia(project).length && !media.some(textLacks)) return project;
+  const keptOf = (m: Rec) => (known && typeof m?.id === "string" && !(readableDate(m.createdAt) && readableDate(m.addedAt)) ? known(m.id, m) : null);
+  return { ...project, media: (media as Rec[]).map((m) => completeEntry(m, project, keptOf(m))) };
+}
+const textLacks = (m: unknown): boolean => {
+  const d = (m as Rec | undefined)?.data as Rec | undefined;
+  return !!d && typeof d === "object" && d.type === "text" && Object.keys(TEXT_DEFAULTS).some((k) => d[k] === undefined);
+};
+
+const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const FILE_MEDIA: ReadonlySet<unknown> = new Set(["video", "audio", "image"]);
+/** A file's media entry without what Cardboard's import always gives it: where it plays from and its size. */
+export function lacksDetails(m: Readonly<Rec>): boolean {
+  const d = m.data as Rec | undefined;
+  return !!d && typeof d === "object" && FILE_MEDIA.has(d.type) && (d.src === undefined || d.size === undefined || ((d.type === "video" || d.type === "audio") && d.duration === undefined));
+}
+/**
+ * A code graphic's size, which Cardboard's reader requires and Carton doesn't version (only its source), for an entry the
+ * current file doesn't have (a restore after the file lost its media, a teammate's new graphic): the composition size of
+ * a clip that shows it, which is versioned. None: left as it is (a writer's check then refuses the file).
+ */
+function codeSize(m: Rec, items: readonly Rec[]): Rec {
+  const d = m.data as Rec | undefined;
+  const code = d?.code as Rec | undefined;
+  if (!code || typeof code !== "object" || (num(code.width) && num(code.height))) return m;
+  const c = items.find((it) => it.mediaItemId === m.id && num((it.codeComposition as Rec | undefined)?.width) && num((it.codeComposition as Rec | undefined)?.height))?.codeComposition as Rec | undefined;
+  return c ? { ...m, data: { ...d, code: { ...code, width: c.width, height: c.height } } } : m;
 }

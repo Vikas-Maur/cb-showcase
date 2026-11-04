@@ -43,7 +43,7 @@ import { isEmptyMap } from "../engine/remap.ts";
 import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
+import { EmptyVersion, StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
@@ -71,7 +71,6 @@ export const groupOf = (a: Actor | null | undefined): string => a?.group ?? acto
 
 const SYSTEM: Actor = { kind: "system", id: "carton" };
 /** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
-export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
 /**
  * A cut's `b:` token in a printed header: 8 lowercase hex characters, the only form the header's parser reads. The id's
@@ -90,6 +89,11 @@ interface Cut {
   sq: LocalSequencer | null;
   /** The confirmed log (the sequencer's own array for writable cuts). */
   log: readonly ConfirmedChange[];
+  /**
+   * Who made the cut (a fork): its fork version's author. Kept beside the record, never in it: every write on a cut is
+   * conditioned on its whole stored record, and a client that doesn't know this field rebuilds the record without it.
+   */
+  by?: Actor;
 }
 interface Lineage extends DagNode {
   branchName?: string;
@@ -110,6 +114,16 @@ interface View {
 }
 
 /** One replica's history, in memory and synchronous. */
+/**
+ * Is the change at `seq` (1-based) the full fold of a fold-some, completed by the partial revert right after it? The two
+ * are one version (UI audit P1-3): the partial revert's, the state that was chosen. The fold's own state, with what was
+ * left out, is no one's version.
+ */
+export function completedAt(log: readonly ConfirmedChange[], seq: number): boolean {
+  const c = log[seq - 1], n = log[seq];
+  return !!c?.mergeOf && !!n && n.kind === "partial-revert" && !n.withdrawn && !n.squashedInto && n.reverts === c.id;
+}
+
 export class History {
   readonly schema: Schema;
   readonly name: string;
@@ -190,9 +204,10 @@ export class History {
   }
   /**
    * Add a cut. A root cut starts at `root`; a fork starts at its fork node's state. Tracking cuts are read-only here;
-   * shallow ones hold only lineage nodes. Low level: `fork` is the usual way.
+   * shallow ones hold only lineage nodes. Low level: `fork` is the usual way. `by`: who made a fork (its fork version's
+   * author), from wherever it was kept (the store, a full export): taken only when it is a well-formed actor.
    */
-  addCut(o: { name: string; forkOf: NodeId | null; root?: Doc | null; tracking?: boolean; shallow?: boolean; id?: string; owner?: string; kind?: CutKind; at?: number }): CutRecord {
+  addCut(o: { name: string; forkOf: NodeId | null; root?: Doc | null; tracking?: boolean; shallow?: boolean; id?: string; owner?: string; kind?: CutKind; at?: number; by?: unknown }): CutRecord {
     const id = o.id ?? newCutId();
     const shallow = !!o.shallow,
       tracking = !!o.tracking;
@@ -209,7 +224,8 @@ export class History {
       sequencer: { kind: "local" },
       at: o.at ?? this.#clock(),
     };
-    const cut: Cut = { rec, root, kf: new Map(), sq: null, log: [] };
+    const by = o.forkOf ? wellFormedActor(o.by) : undefined;
+    const cut: Cut = { rec, root, kf: new Map(), sq: null, log: [], ...(by ? { by } : {}) };
     if (!shallow) {
       if (!doc0) throw new StateUnknown(o.forkOf, "fork node state not held");
       cut.kf.set(0, doc0);
@@ -222,11 +238,11 @@ export class History {
     return rec;
   }
   /** New cut forked from a node (default: a cut's head). Returns its id. */
-  fork(from: NodeId | StateRef, name: string, opts: { kind?: CutKind; owner?: string; id?: string; source?: string } = {}): string {
+  fork(from: NodeId | StateRef, name: string, opts: { kind?: CutKind; owner?: string; id?: string; source?: string; by?: Actor } = {}): string {
     // a stable cut id makes a retried fork return the cut it already made
     if (opts.id && this.#cuts.has(opts.id)) return opts.id;
     const node = typeof from === "string" ? (from.includes("@") ? from : this.head(from)) : refNode(from);
-    const id = this.addCut({ name, forkOf: this.canon(node), kind: opts.kind ?? "variant", owner: opts.owner, ...(opts.id ? { id: opts.id } : {}) }).id;
+    const id = this.addCut({ name, forkOf: this.canon(node), kind: opts.kind ?? "variant", owner: opts.owner, ...(opts.id ? { id: opts.id } : {}), ...(opts.by ? { by: opts.by } : {}) }).id;
     if (opts.source) this.updateCut(id, { source: opts.source });
     return id;
   }
@@ -235,6 +251,10 @@ export class History {
   }
   cut(cutId: string): CutRecord | undefined {
     return this.#cuts.get(cutId)?.rec;
+  }
+  /** Who made a cut (a fork), when known: its fork version's author. */
+  maker(cutId: string): Actor | undefined {
+    return this.#cuts.get(cutId)?.by;
   }
   /** Rename or re-kind a cut (only labels; its id never changes). */
   updateCut(cutId: string, patch: Partial<Pick<CutRecord, "name" | "kind" | "protected" | "sequencer" | "source">>): CutRecord {
@@ -576,9 +596,10 @@ export class History {
     let ops: Op[] = o.ops ?? E.diff(baseDoc, mine, this.schema);
     const extra = o.extra ?? {};
     let intent: Intent | null = o.intent ?? null;
-    if (!intent && !extra.mergeOf) {
+    if (!intent && !extra.mergeOf && !o.inverse) {
       // an unrecorded edit (an agent's file save) that is unambiguously a ripple: record the inferred remap on the
-      // change, so its [t0, ∞) span is declared and later merges use it as an intent
+      // change, so its [t0, ∞) span is declared and later merges use it as an intent (never on a planned undo, redo or
+      // revert: it records only the inverse of what its changes recorded, HistoryCommit.inverse)
       const maps = E.inferRemaps(this.schema, baseDoc, ops.flatMap((op) => (op.op === "remap" ? [] : [{ path: op.path, op }])));
       if (!isEmptyMap(maps)) intent = { maps, inferred: true };
     }
@@ -695,26 +716,68 @@ export class History {
   }
 
   // ------------------------------------------------------------ versions (the log)
-  /** History: versions of a cut, newest first (`before`: only seqs below it). */
+  /**
+   * History: versions of a cut, newest first (`before`: only seqs below it). A squashed change and a withdraw row (H1,
+   * an id the server spent and nothing else) are no versions: their seqs are gaps.
+   */
   log(cutId: string, { limit = Infinity, before }: { limit?: number; before?: number } = {}): Version[] {
     const br = this.#mustCut(cutId);
     const out: Version[] = [];
     for (let s = Math.min(before === undefined ? br.log.length : before - 1, br.log.length); s >= 0 && out.length < limit; s--) {
       const c = s > 0 ? br.log[s - 1]! : null;
-      if (c?.squashedInto) continue;
+      if (c?.squashedInto || c?.withdrawn || (c && completedAt(br.log, s))) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
+      // a fold-some's partial revert is its fold's version: a merge, saying what it left out (UI audit P1-3)
+      const some = !!c && s > 1 && completedAt(br.log, s - 1);
       const v: Version = {
         ref: { branchId: cutId, seq: s, pending: [] },
         change: c?.id ?? null,
-        author: c?.author ?? null,
+        // a fork version is its cut's maker's, when known
+        author: (c ? c.author : br.rec.forkOf ? br.by : undefined) ?? null,
         at: c?.at ?? br.rec.at ?? 0,
-        kind: c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
+        kind: some ? "merge" : c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
+        ...(some ? { rejected: [...(c!.rejected ?? [])] } : {}),
       };
+      // "fold in the rest": a revert of a partial fold's inverse (final re-check P3-12b)
+      if (c?.kind === "revert" && typeof c.reverts === "string" && this.#byId.get(c.reverts)?.kind === "partial-revert") v.restOf = c.reverts;
       const h = this.#hash.get(id);
       if (h) v.hash = h;
       if (named) v.name = named.name;
+      // a cut's start holds nothing when it is an imported project's empty root, or a cut made from one (its state is
+      // a keyframe: no replay)
+      if (s === 0 && E.isBlank(this.viewOf(id) ?? { _: 1 }, this.schema)) v.blank = true;
       out.push(v);
+    }
+    return out;
+  }
+  /**
+   * Partial folds of cut `from` into cut `into` whose left-out part isn't folded in yet (UI audit P1-4), newest first:
+   * each one's inverse (a `partial-revert` of a merge of `from`) while no later change reverts it or its merge, and
+   * the head still holds what it set back for at least one record (a record changed on `into` since is no longer the
+   * fold's to bring in).
+   */
+  leftOut(into: string, from: string): ConfirmedChange[] {
+    const log = this.#mustCut(into).log;
+    // reverted: by a change still in effect (an undo of the "fold in the rest" puts its partial fold back; a redo of
+    // that undo takes it out again: review #2)
+    const by = new Map<ChangeId, ChangeId[]>();
+    for (const c of log) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) (by.get(x) ?? by.set(x, []).get(x)!).push(c.id);
+    const memo = new Map<ChangeId, boolean>();
+    const undone = (id: ChangeId): boolean => {
+      if (!memo.has(id)) memo.set(id, false), memo.set(id, (by.get(id) ?? []).some((r) => !undone(r)));
+      return memo.get(id)!;
+    };
+    const out: ConfirmedChange[] = [];
+    let head: Doc | undefined;
+    for (let i = log.length - 1; i >= 0; i--) {
+      const c = log[i]!;
+      if (c.kind !== "partial-revert" || c.withdrawn || undone(c.id)) continue;
+      const m = log.find((x) => x.id === [c.reverts ?? []].flat()[0]);
+      if (!m?.mergeOf || undone(m.id) || m.mergeOf.branchId !== from) continue;
+      head ??= this.stateOf(this.head(into))!;
+      const after = this.stateOf(nodeId(into, c.seq));
+      if (after && c.ops.some((op) => op.op !== "remap" && E.deepEqual(E.getIn(head!, op.path, this.schema), E.getIn(after, op.path, this.schema)))) out.push(c);
     }
     return out;
   }
@@ -923,14 +986,15 @@ export class History {
    * removed by the fold), nothing is committed and the result says why.
    */
   foldSome(into: string, from: NodeId, opts: FoldOptions & { reject: PathKey[] | readonly (readonly string[])[] }): FoldResult & { fold?: FoldResult; inverse?: CommitResult } {
-    // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold
+    // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold. The inverse is always
+    // `<fold's id>.inverse`, as a shared cut's is: a server counting versions pairs them by it (review of fold-count)
     const done = this.#done(opts.id && `${opts.id}.inverse`) ?? this.#done(opts.id);
     if (done) return done;
     const p = this.planFoldSome(into, from, opts);
     if (!("reject" in p)) return p;
     const r = this.fold(into, from, opts);
     if (r.status !== "confirmed" || !("change" in r) || !r.change) return r;
-    const inv = this.commit(into, { ops: p.ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", ...(opts.id ? { id: `${opts.id}.inverse` } : {}), extra: { rejected: p.reject, reverts: r.change.id } });
+    const inv = this.commit(into, { ops: p.ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", id: `${r.change.id}.inverse`, extra: { rejected: p.reject, reverts: r.change.id } });
     const { merge: _m, ...invOnly } = inv as CommitResult & { merge?: unknown };
     return { ...invOnly, fold: r, inverse: inv } as FoldResult & { fold: FoldResult; inverse: CommitResult };
   }
@@ -962,16 +1026,14 @@ export class History {
   revert(cutId: string, changeId: ChangeId, { author, kind = "revert", id }: { author?: Actor; kind?: ChangeKind; id?: ChangeId } = {}): CommitResult {
     const done = this.#done(id);
     if (done) return done;
-    const p = this.planRevert(cutId, changeId, { ...(author ? { author } : {}), kind });
+    const p = this.planRevert(cutId, changeId, { author, kind });
     return "status" in p ? p : this.commit(cutId, { ...p, ...(id ? { id } : {}) });
   }
   /** A revert without committing (a shared cut queues it); `tail`: the cut's pending changes, which it may revert. */
-  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail }: { author?: Actor; kind?: ChangeKind; tail?: Tail } = {}): Planned | (CommitResult & { status: "conflicts" }) {
+  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail, what = "revert" }: { author?: Actor | undefined; kind?: ChangeKind; tail?: Tail; what?: string } = {}): Planned | (CommitResult & { status: "conflicts" }) {
     const c = this.#log(cutId, tail).find((x) => x.id === changeId);
     if (!c) throw new Error(`no change ${changeId}`);
-    const inv = this.#inverted(cutId, [c], tail);
-    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
-    return { doc: inv.doc, author: author ?? c.author, kind, ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: changeId } };
+    return this.#inverted(cutId, [c], tail, what, author ?? c.author, kind);
   }
   #log(cutId: string, tail?: Tail): readonly ConfirmedChange[] {
     const log = this.#mustCut(cutId).log;
@@ -982,11 +1044,16 @@ export class History {
     return seq > n ? tail!.states[seq - n - 1]! : this.stateOf(nodeId(cutId, seq))!;
   }
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
-  // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
+  // the head, planned as a change of `kind` by `author` that reverts them. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
   // moves back with it; the changes made since it are the other side's recorded remaps. A card in any step stops it.
-  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail?: Tail): Inverted {
+  // `what` (undo, redo, revert): P2-1, an undo, redo or revert never empties a project its head holds. A result the
+  // schema's own rule takes for empty (`Schema.empty`: Cardboard's name with no aspect ratio, tracks, clips or media),
+  // made from a head that isn't, is refused before anything is written or queued. Core's own rule (no field, every
+  // collection empty) is a state a generic schema reaches by undoing its first record, so only the schema's refuses.
+  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail: Tail | undefined, what: string, author: Actor, kind: ChangeKind): Planned | (CommitResult & { status: "conflicts" }) {
     const log = this.#log(cutId, tail);
-    let cur: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
+    const head: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
+    let cur = head;
     let done: RemapMaps = {};
     for (let i = changes.length - 1; i >= 0; i--) {
       const c = changes[i]!;
@@ -998,11 +1065,14 @@ export class History {
         infer: false,
         remaps: { ...(isEmptyMap(since) ? {} : { ours: { maps: since } }), ...(isEmptyMap(inv) ? {} : { theirs: { maps: inv } }) },
       });
-      if (m.conflicts.length) return { cards: m.conflicts, merge: m };
+      if (m.conflicts.length) return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: m };
       cur = m.doc;
       if (!isEmptyMap(inv)) done = E.composeMaps(done, m.edges.ours);
     }
-    return { doc: cur, maps: done };
+    const empty = this.schema.empty;
+    if (empty?.(cur) && !empty(head)) throw new EmptyVersion(null, what, "result");
+    const ids = changes.flatMap((c) => c.id);
+    return { doc: cur, author, kind, ...(isEmptyMap(done) ? {} : { intent: { kind: "inverse", maps: done } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true };
   }
   acceptRest(cutId: string, inverseId: ChangeId, opts: { author?: Actor } = {}): CommitResult {
     return this.revert(cutId, inverseId, opts);
@@ -1015,8 +1085,13 @@ export class History {
   }
   /** The state a restore writes: a node's, or a header's or StateRef's (pins included). */
   restoreTarget(ref: NodeId | StateRef | string): Doc {
-    const target = typeof ref === "string" && ref.includes("@") && !ref.includes("~") ? this.stateOf(ref) : this.resolve(ref as StateRef | string).doc;
+    const node = typeof ref === "string" && ref.includes("@") && !ref.includes("~");
+    const r = node ? null : this.resolve(ref as StateRef | string);
+    const target = r ? r.doc : this.stateOf(ref as NodeId);
     if (!target) throw new StateUnknown(ref, "restore target not held");
+    // a cut's start, or a later version (P3-2: an earlier build's bug emptied one, and its refusal said "the history
+    // starts there")
+    if (E.isBlank(target, this.schema)) throw new EmptyVersion(ref, "restore", (r ? r.seq : parseNode(ref as NodeId).seq) ? "later" : "start");
     return target;
   }
 
@@ -1024,57 +1099,105 @@ export class History {
   /**
    * The undo stack of an actor group on a cut, newest first: the group's own changes that a later undo hasn't
    * reverted. A change belongs to the group in its author's `group` (else the author itself). Undo changes are not
-   * in the stack (they are undone by redo, not by ⌘Z). Remote teammates are never in your group.
+   * in the stack (they are undone by redo, not by ⌘Z). Remote teammates are never in your group. `scope` narrows it to
+   * what the app's Ctrl+Z sees (UndoScope).
    */
-  undoStack(cutId: string, group: string, tail?: Tail): UndoEntry[] {
+  undoStack(cutId: string, group: string, tail?: Tail, scope: UndoScope = {}): UndoEntry[] {
     const log = this.#log(cutId, tail);
-    const undone = new Set<ChangeId>();
-    for (const c of log) if (c.kind === "undo") for (const id of Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : []) undone.add(id);
+    const undone = undoneIn(log);
+    // P2-1: a fold-some's fold is undone with its partial revert (planUndo), never on its own
+    for (const c of log) if (c.kind === "partial-revert" && !c.withdrawn && !undone.has(c.id)) undone.add(c.reverts as ChangeId);
     const out: UndoEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
-      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || groupOf(c.author) !== group) continue;
+      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || !inScope(c, group, scope)) continue;
       out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
+  }
+  /**
+   * The redo stack of an actor group on a cut, newest first: its undo changes that no redo has re-applied yet, above
+   * its newest edit that is still in effect (a new edit clears redo, as an editor's does). A redo is a revert of one of
+   * those undo changes (`redo`): it re-applies exactly what the undo took back, as a new change, and is itself the next
+   * ⌘Z. Read in the same `scope` as the undo stack.
+   */
+  redoStack(cutId: string, group: string, tail?: Tail, scope: UndoScope = {}): UndoEntry[] {
+    const log = this.#log(cutId, tail);
+    const byId = new Map(log.map((c) => [c.id, c]));
+    const undone = undoneIn(log);
+    const redone = new Set<ChangeId>();
+    const out: UndoEntry[] = [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      const c = log[i]!;
+      if (c.squashedInto || !inScope(c, group, scope)) continue;
+      const target = c.kind === "revert" && typeof c.reverts === "string" ? byId.get(c.reverts) : undefined;
+      // a redo: its undo is used up, whether or not a later ⌘Z took the redo back (that ⌘Z is then the entry)
+      if (target?.kind === "undo") {
+        redone.add(target.id);
+        continue;
+      }
+      if (c.kind === "undo") {
+        if (!redone.has(c.id)) out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: redoLabel(c, byId), author: c.author, at: c.at });
+        continue;
+      }
+      // an edit an undo took back is what that undo's redo brings back; any other edit is newer than what redo has
+      if (undone.has(c.id)) continue;
+      break;
+    }
+    return out;
+  }
+  /** Redo for an actor group: re-apply what the newest undo on its redo stack took back (a revert of that undo). */
+  redo(cutId: string, group: string, { author, id, scope }: { author?: Actor; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
+    return this.#step(cutId, id, () => this.planRedo(cutId, group, { author, scope }));
+  }
+  /** An undo or a redo, planned and committed under `id`: a retry with it answers the first one. */
+  #step(cutId: string, id: ChangeId | undefined, plan: () => (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null): CommitResult & { entry?: UndoEntry } {
+    const done = this.#done(id);
+    if (done) return done;
+    const p = plan();
+    if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
+    if ("status" in p) return p;
+    const { entry, ...c } = p;
+    return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
+  }
+  /** What redo for an actor group would do, without doing it (a shared cut queues it); null when nothing is to redo. */
+  planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor | undefined; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+    const top = this.redoStack(cutId, group, tail, scope)[0];
+    if (!top) return null;
+    const p = this.planRevert(cutId, top.changeId, { author: author ?? top.author, tail, what: "redo" });
+    return "status" in p ? p : { ...p, entry: top };
   }
   /**
    * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
    * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
    * invalid comes back as conflicts, never silently.
    */
-  undo(cutId: string, group: string, { author, turn = true, id }: { author?: Actor; turn?: boolean; id?: ChangeId } = {}): CommitResult & { entry?: UndoEntry } {
-    const done = this.#done(id);
-    if (done) return done;
-    const p = this.planUndo(cutId, group, { ...(author ? { author } : {}), turn });
-    if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
-    if ("status" in p) return p;
-    const { entry, ...c } = p;
-    return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
+  undo(cutId: string, group: string, { author, turn = true, id, scope }: { author?: Actor; turn?: boolean; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
+    return this.#step(cutId, id, () => this.planUndo(cutId, group, { author, turn, scope }));
   }
   /**
    * What ⌘Z for an actor group would do, without doing it (a shared cut queues it): the inverse of the newest entry of
    * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty.
    */
-  planUndo(cutId: string, group: string, { author, turn = true, tail }: { author?: Actor; turn?: boolean; tail?: Tail } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
-    const stack = this.undoStack(cutId, group, tail);
+  planUndo(cutId: string, group: string, { author, turn = true, tail, scope }: { author?: Actor | undefined; turn?: boolean; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+    const stack = this.undoStack(cutId, group, tail, scope);
     const top = stack[0];
     if (!top) return null;
     const log = this.#log(cutId, tail);
-    let entries = [top];
-    const t = top.author.turn;
-    if (turn && t) {
-      entries = [];
-      for (const e of stack) {
-        if (e.author.turn !== t) break;
-        entries.push(e);
-      }
-    }
-    const changes = entries.map((e) => log[e.seq - 1]!).reverse();
-    const inv = this.#inverted(cutId, changes, tail);
-    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
-    const ids = changes.map((c) => c.id);
-    return { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, entry: top };
+    // an agent turn: the entries from the newest on while they share its turn (all of them when they all do)
+    const t = turn && top.author.turn;
+    const entries = t ? stack.slice(0, stack.findIndex((e) => e.author.turn !== t) >>> 0) : [top];
+    // a fold-some is one action, one undo (P2-1): its partial revert's entry takes the fold it reverts with it. Right
+    // after the fold (one version) the two are one step, from before the fold to after the partial revert (as a
+    // compaction's squashed change is), so what the fold left out never meets a later edit of it as a card; with a
+    // teammate's change between them, each in turn. Inverted oldest first by seq; the one step names both changes it
+    // inverts (`id`: [fold, partial revert]), so `reverts` lists every change, oldest first.
+    const changes = entries.flatMap((e) => {
+      const c = log[e.seq - 1]!, m = c.kind === "partial-revert" && log.find((x) => x.id === c.reverts);
+      return !m ? [c] : m.seq < c.seq - 1 ? [m, c] : [{ ...c, id: [m.id, c.id], squashedFrom: m.seq, intent: { kind: "inverse", maps: E.composeMaps(firstParentMap(m), firstParentMap(c)) } } as never];
+    }).sort((a, b) => a.seq - b.seq);
+    const p = this.#inverted(cutId, changes, tail, "undo", author ?? top.author, "undo");
+    return "status" in p ? p : { ...p, entry: top };
   }
 
   // ------------------------------------------------------------ credits (blame)
@@ -1444,7 +1567,7 @@ export class History {
       projectId: this.#projectId ?? "",
       branches: [...this.#cuts.values()]
         .filter((b) => !b.rec.shallow)
-        .map((b) => ({ id: b.rec.id, name: b.rec.name, forkOf: b.rec.forkOf, owner: b.rec.owner, root: b.root ? JSON.parse(E.snapshot(b.root, this.schema)) : null, log: b.log.map((c) => ({ ...c })) })),
+        .map((b) => ({ id: b.rec.id, name: b.rec.name, forkOf: b.rec.forkOf, owner: b.rec.owner, root: b.root ? JSON.parse(E.snapshot(b.root, this.schema)) : null, log: b.log.map((c) => ({ ...c })), ...(b.by ? { by: b.by } : {}) })),
     };
   }
   importFull(pkg: FullExport): void {
@@ -1457,7 +1580,7 @@ export class History {
       if (i < 0) throw new Error("full export: a cut forks from a cut that isn't in it");
       const b = pending.splice(i, 1)[0]!;
       this.#cuts.delete(b.id);
-      const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true }).id);
+      const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true, by: b.by }).id);
       for (const c of b.log) {
         (br.log as ConfirmedChange[]).push({ ...c });
         if (!this.#byId.has(c.id)) this.#byId.set(c.id, br.log.at(-1)!);
@@ -1469,6 +1592,23 @@ export class History {
 
 // ------------------------------------------------------------------ helpers
 
+const ACTOR_KINDS: ReadonlySet<string> = new Set(["human", "agent", "subagent", "external", "system"]);
+const ACTOR_TEXT = ["name", "group", "chat", "turn", "agentId", "agentType", "provider", "model"] as const;
+/**
+ * An actor kept outside a change (a cut's maker), as any writer may have left it (another build, a hand edit): itself
+ * when well formed, else undefined, so a reader never meets an id that isn't a string (review P3: History's panel threw
+ * on `{kind: "agent", id: 42}`). `owner` is told, never recorded (as for a change's author): dropped.
+ */
+function wellFormedActor(a: unknown): Actor | undefined {
+  if (!a || typeof a !== "object") return undefined;
+  const x = a as Record<string, unknown>;
+  if (typeof x.kind !== "string" || !ACTOR_KINDS.has(x.kind) || typeof x.id !== "string" || !x.id) return undefined;
+  if (ACTOR_TEXT.some((k) => x[k] !== undefined && typeof x[k] !== "string") || (x.app !== undefined && typeof x.app !== "boolean")) return undefined;
+  if (x.owner === undefined) return a as Actor;
+  const { owner: _o, ...rest } = x;
+  return rest as unknown as Actor;
+}
+
 /** The remap a change applied to its cut: its intent's maps, or for a fold the edge map it applied to its first parent. */
 const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf ? c.mergeEdges?.first : c.intent?.maps);
 
@@ -1477,6 +1617,26 @@ const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf
  * (default: the change's name, intent or kind). The person's own edits, typed in a terminal included (`external`), and
  * the system's say no one.
  */
+/**
+ * What the app's Ctrl+Z sees of an actor group (§8): `app`, only changes made from the app (the person at the editor, an
+ * agent turn started there: `Actor.app`), never a terminal's `cb`; `since` (ms), only changes made since the editor's
+ * session began, so it never goes back past it. Neither: the whole group, as `cb undo` and History's Undo see it.
+ */
+export interface UndoScope {
+  since?: number;
+  app?: boolean;
+}
+const inScope = (c: ConfirmedChange, group: string, scope: UndoScope): boolean => groupOf(c.author) === group && (!scope.app || c.author.app === true) && (scope.since === undefined || c.at >= scope.since);
+/** The changes an undo change took back, from every undo change in the log. */
+function undoneIn(log: readonly ConfirmedChange[]): Set<ChangeId> {
+  const undone = new Set<ChangeId>();
+  for (const c of log) if (c.kind === "undo") for (const id of [c.reverts ?? []].flat()) undone.add(id);
+  return undone;
+}
+/** "Redo Director: tighter intro": what the undo took back, worded as its undo was. */
+function redoLabel(u: ConfirmedChange, byId: ReadonlyMap<ChangeId, ConfirmedChange>): string {
+  return undoLabel(byId.get([u.reverts ?? []].flat().at(-1)!) ?? u).replace(/^Undo\b/, "Redo");
+}
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
   const a = c.author;
   const agent = a.kind === "agent" || a.kind === "subagent" ? agentName(a) : "";

@@ -16,10 +16,10 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncode
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
+import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
-import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
+import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
+import { History, actorKey, completedAt, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import type {
@@ -107,6 +107,8 @@ export interface JoinInit {
   cut: CutRecord;
   doc0: Doc;
   rootHash?: string;
+  /** Who made the cut, when it is a fork (the sharer's `maker(cut)`): kept beside its record, as the sharer keeps it. */
+  by?: Actor;
 }
 
 /** A commit: the new state (`doc`) or ops, made on `base` (a header ref, an MCP rev, a pin, a held state, or the head). */
@@ -184,6 +186,8 @@ export interface Publication {
   source: string;
   /** The source cut has edits newer than what was published. */
   newer: boolean;
+  /** How many versions the source cut has after the one published (squashed changes and withdraw rows are none). */
+  versions: number;
 }
 
 /** A pinned state for an out-of-process reader (agent, MCP, file view), with the header to print. */
@@ -273,10 +277,12 @@ export interface Carton {
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
+  /** Who made a cut (a fork), as recorded: its fork version's author; null when not known. A join carries it (JoinInit). */
+  maker(cut: string): Promise<Actor | null>;
   /** Rename a cut (its id never changes; the name is only a label). */
   renameCut(cut: string, name: string): Promise<CutRecord>;
   /** Publish a version (default: the current cut's head) as a Published cut: what the share link shows. */
-  publish(opts?: { from?: StateRef | string; name?: string; id?: string }): Promise<CutRecord>;
+  publish(opts?: { from?: StateRef | string; name?: string; id?: string; author?: Actor }): Promise<CutRecord>;
   /** Published cuts, each with the cut it came from and whether that cut has edits newer than what was published. */
   publications(): Promise<Publication[]>;
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
@@ -298,6 +304,13 @@ export interface Carton {
   share(cut?: string): Promise<CutRecord>;
   /** Fold in some of it: everything except the rejected record paths, which an inverse change lists. */
   foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult>;
+  /**
+   * What partial folds of cut `from` into `into` (default: current cut) left out and is still left out (UI audit P1-4:
+   * "you can fold in the rest later"), newest first: each partial fold's inverse change, its version and who folded,
+   * and the paths it left out. Folding in the rest is `revert(change)`; a plain `fold` of `from` doesn't bring it in
+   * (§5.3). Empty once the rest is folded in, its fold is undone, or `into` changed those records since.
+   */
+  leftOut(from: string, opts?: { into?: string }): Promise<{ change: ChangeId; ref: StateRef; at: number; author: Actor | null; rejected: PathKey[] }[]>;
 
   /** Compare: ops and plain-language changes from `a` to `b` (default `b`: current head), with the shot diff. */
   diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean }): Promise<DiffResult>;
@@ -306,23 +319,34 @@ export interface Carton {
   /** History: versions of a cut, newest first; `summary`: each says what it did in plain words. */
   log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean }): Promise<Version[]>;
   /** Name a version ("Sent to client, Monday"). */
-  name(ref: StateRef | string, name: string): Promise<void>;
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
   revert(changeId: ChangeId, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
-  /** ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. */
   /**
+   * ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. The app's Ctrl+Z
+   * passes `app` and `since` (UndoScope): only what was made from the app, in the editor's session.
    * Like commit, undo (and fold, fold-some, restore, revert, fork) takes a stable `id`: a call retried with an id
    * already confirmed returns that confirmation and never makes a second change.
    */
-  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId }): Promise<CommitResult & { entry?: UndoEntry }>;
+  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
+  /**
+   * Redo for an actor group: re-applies exactly what its newest undo took back, as a new change (a revert of that
+   * undo), which the next ⌘Z takes back again. Nothing once the group has made a newer edit (in `since`/`app`'s scope),
+   * as an editor's redo clears. Takes a stable `id` as undo does.
+   */
+  redo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
   /**
    * Optional compaction (§5.4): on this replica's local cuts, squash the micro-changes of every auto-version older than
    * `olderThanDays` (default 90) into the auto-version's last change. Returns how many changes were squashed.
    */
   compact(opts?: { cut?: string; olderThanDays?: number }): Promise<{ squashed: number }>;
-  undoStack(group?: string, opts?: { cut?: string }): Promise<UndoEntry[]>;
+  /** The group's undo stack, newest first, in `since`/`app`'s scope; `limit`: only the newest that many (labelled). */
+  undoStack(group?: string, opts?: { cut?: string; limit?: number } & UndoScope): Promise<UndoEntry[]>;
+  /** What redo would re-apply, newest first, in the same scope; empty once the group made a newer edit. */
+  redoStack(group?: string, opts?: { cut?: string; limit?: number } & UndoScope): Promise<UndoEntry[]>;
   /** Read-only preview of a state. */
   preview(ref: StateRef | string): Promise<Preview>;
   /** Credits: who last changed a record, down to the subagent; `detail`: also when, and in which change. */
@@ -383,7 +407,15 @@ interface PendingRow {
   /** Its latest version's rebase count. */
   k?: number;
   supersedes?: string[];
-  /** A rebase changed its ops (`pendingChanges`' `edited`), kept with `k`: once restored, its earlier versions are gone. */
+  /**
+   * The digest of the ops it was committed with (`hashOps(ops, null)`), kept with `k`: once restored, its earlier versions
+   * are gone, and `pendingChanges`' `edited` compares its latest ops with this (review R6-14).
+   */
+  committed?: string;
+  /**
+   * A rebase changed its ops, as of this write (kept for a reader from before `committed`). A row with no `committed`
+   * (stored before it): true stays edited, its committed ops unknown; absent, its stored ops are the committed ones.
+   */
   edited?: boolean;
   /** The cards its rebases raised, by rebase count: what it reports when it settles. */
   cards?: { k: number; cards: ConflictCard[] }[];
@@ -401,10 +433,25 @@ interface PendingRow {
   /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
   baseDelta?: Op[];
 }
-/** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
+/** The undo scope in a call's options (only the fields given, so a plain call sees the whole group). */
+const scopeOf = (o: UndoScope): UndoScope => ({ ...(o.since !== undefined ? { since: o.since } : {}), ...(o.app ? { app: true } : {}) });
+/** The digest of a version's ops alone (`hashOps(ops, null)`), once per version. */
+const opsDigest = (v: QueueVersion): string => {
+  let d = OPS_DIGEST.get(v);
+  if (d === undefined) OPS_DIGEST.set(v, (d = hashOps(v.ops, null)));
+  return d;
+};
+const OPS_DIGEST = new WeakMap<QueueVersion, string>();
+/** The digest of the ops it was committed with; undefined when unknown (restored from a row from before it that said edited). */
+const committedOf = (p: QueuedChange): string | undefined => p.committed ?? (p.edited ? undefined : opsDigest(p.versions[0]!));
+/**
+ * A rebase changed its ops: its latest version's differ from those it was committed with. Restored from a row: from the
+ * digest it kept (review R6-14); a row from before the digest that said so stays edited.
+ */
 const editedOf = (p: QueuedChange): boolean => {
-  if (p.edited) return true;
   const v = p.versions[p.versions.length - 1]!, first = p.versions[0]!;
+  if (p.committed !== undefined) return opsDigest(v) !== p.committed;
+  if (p.edited) return true;
   // the hash covers the intent too: a remap re-expressed over the same ops edits nothing (review R6-12). Its ops are
   // compared only when the hashes differ, once per latest version
   if (v.hash === first.hash) return false;
@@ -415,6 +462,7 @@ const editedOf = (p: QueuedChange): boolean => {
 const OPS_CHANGED = new WeakMap<QueueVersion, boolean>();
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
+  const committed = v.k ? committedOf(p) : undefined;
   const delta = q.baseDelta(p.branchId, v);
   const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
   return {
@@ -430,7 +478,7 @@ const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow
     kinds: v.kinds,
     policy: v.policy,
     ...(p.history ? { history: p.history } : {}),
-    ...(v.k ? { k: v.k, supersedes: v.supersedes, edited: editedOf(p) } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes, ...(committed !== undefined ? { committed } : {}), edited: editedOf(p) } : {}),
     ...(cards.length ? { cards } : {}),
     ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
     ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -449,7 +497,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.history ? { history: p.history } : {}),
   k: p.k ?? 0,
   supersedes: p.supersedes ?? [],
-  ...(p.edited ? { edited: true } : {}),
+  ...(p.committed !== undefined ? { committed: p.committed } : p.edited ? { edited: true } : {}),
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -469,6 +517,9 @@ const CODED: Record<string, SyncError["code"]> = {
   unreachable: "unreachable",
   closed: "unreachable",
   protocol: "server",
+  "write-limit": "write-limit",
+  // the host's words say what is wrong ("this project's history can't be loaded…"): a server problem, no retry fixes it
+  "history-missing": "server",
 };
 /**
  * A state handed to a caller (`head`, `checkout`, `resolve`): its own collection arrays (add, remove or reorder freely),
@@ -488,10 +539,10 @@ function owned(doc: Doc, schema: Schema): Doc {
   return E.fork(doc, schema);
 }
 /** A sync client's error, classified for a status line (the words are kept as they came). */
-function syncError(message: string, code?: string): SyncError {
+function syncError(message: string, code?: string, until?: number): SyncError {
   const words = message.replace(/^connect: /, "");
   const coded = code ? CODED[code] : undefined;
-  if (coded) return { code: coded, message: words };
+  if (coded) return { code: coded, message: words, ...(coded === "write-limit" && until !== undefined ? { until } : {}) };
   // no code (an older host, another transport): by the words. A failed connect is unreachable unless the host said it
   // refused (a message that only mentions a token is not a refusal: REQ-9b); otherwise the token or its scope
   // ("token expired", "this token is for another project", "can't read …", a write refused as forbidden, read-only or
@@ -514,6 +565,13 @@ function syncError(message: string, code?: string): SyncError {
 }
 /** Confirmed states past the stored rows that pending rows were made on (meta `[QUEUE_HEAD, cut, seq]`): `#gapWrites`. */
 const QUEUE_HEAD = "queue-head";
+/**
+ * Who made a cut (meta `[MAKER, cut]` → Actor): its fork version's author. Beside the cut record, never in it: every
+ * write on a cut is conditioned on its whole stored record, which a client that doesn't know the maker rebuilds without
+ * it (review P2: a maker in the record made that client's writes fail). Written with the cut; a full export and a join
+ * (JoinInit.by, from the sharer's `maker`) carry it.
+ */
+const MAKER = "maker";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
 const TURN = ["append-turn"] as const;
 /** A turn its holder never gave back is free after this long (a crashed writer; one append takes far less). */
@@ -530,6 +588,20 @@ const CURRENT = ["current"] as const;
  */
 const PINS_GEN = ["pinsGen"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
+/**
+ * P2-1: a fold-some's undo takes its fold with it (History's planUndo), so the entry of that undo, and of the redo of
+ * that undo, reads as a whole fold's ("Undo merge", "Redo merge"), never by the partial revert's kind. `log`: the cut's
+ * changes the entry was planned on (a shared cut's pending ones included).
+ */
+function asFold<R>(r: R, log: readonly ConfirmedChange[], redo = false): R {
+  const e = (r as { entry?: UndoEntry } | null)?.entry;
+  const find = (id: unknown) => (typeof id === "string" ? log.find((x) => x.id === id) : undefined);
+  const u = e && log[e.seq - 1], undid = [u?.reverts ?? []].flat();
+  const p = redo ? find(undid.at(-1)) : u;
+  const m = p?.kind === "partial-revert" ? find(p.reverts) : undefined;
+  if (!m || (redo && !undid.includes(m.id))) return r;
+  return { ...r, entry: { ...e!, label: redo ? undoLabel(m).replace(/^Undo\b/, "Redo") : undoLabel(m) } };
+}
 const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
   projectId: string;
@@ -586,6 +658,8 @@ class CartonImpl implements Carton {
   #rq: ReplicaQueue | null = null;
   #shared = new Map<string, SharedCut>();
   #connected: { nonce: string; fence?: (nonce: string) => boolean } | null = null;
+  /** The cut this handle's presence shows on (its last word there wasn't a leave), and as whom. */
+  #presenceOn: { cut: string; who: Actor } | null = null;
   /** Store conditions every settling write carries (`connect({ conditions })`); `#fenced` once one failed. */
   #settleConds: StoreCondition[] = [];
   #fenced = false;
@@ -626,6 +700,8 @@ class CartonImpl implements Carton {
   /** Change number within this handle's rid. Kept here, not in History: a rebuild after a lost race must not reuse ids. */
   #n = 0;
   #listeners = new Set<(e: CartonEvent) => void>();
+  /** The cuts as the last `cuts` event (or opening) knew them. History replaces a record on any change, never edits it. */
+  #cutsTold: readonly CutRecord[] | null = null;
   #queue: Promise<unknown> = Promise.resolve();
   #confirmed: { cut: string; change: ConfirmedChange }[] = [];
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
@@ -634,6 +710,12 @@ class CartonImpl implements Carton {
   #pinsGen: string | undefined = undefined;
   /** The pins must be read again whatever the token says: a pin write landed after a rebuild replaced its History. */
   #pinsStale = false;
+  /**
+   * Refreshes that loaded other processes' rows into History (a count), and how many of them the people read since
+   * covers: while they differ, those rows' people are still to read and their events to tell (R6-15).
+   */
+  #rowsLoaded = 0;
+  #rowsPeople = 0;
   #ridSaved = false;
   /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
   #people = new Map<string, Person>();
@@ -647,6 +729,10 @@ class CartonImpl implements Carton {
   #joined = false;
   /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
   #peopleSaved: Promise<unknown> = Promise.resolve();
+  /** People reads one at a time (#readPeople): the chain, how many began, and the newest whose snapshot is set. */
+  #peopleReads: Promise<unknown> = Promise.resolve();
+  #peopleRead = 0;
+  #peopleSet = 0;
   #closed = false;
   /** close() has begun: nothing starts a load or a connection any more. */
   #closing = false;
@@ -718,7 +804,7 @@ class CartonImpl implements Carton {
           for (const sc of self.#shared.values()) await sc.disconnect(o);
         },
         // as this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person"
-        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#who(self.#actor(), `${self.#rid}.0`)!, state),
+        presence: (state) => self.#presence(state),
         waitFor: async (id, ms, cut) => {
           const b = cut ?? self.#h.current;
           const sc = self.#shared.get(b);
@@ -833,13 +919,17 @@ class CartonImpl implements Carton {
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
     const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
+    // who made it goes beside the record (MAKER), never in it: a record from a build that kept it there gives it up
+    const { by: inRecord, ...cut } = j.cut as CutRecord & { by?: unknown };
+    const by = j.cut.forkOf ? (j.by ?? inRecord) : undefined;
     const ok = await this.store.write(
       [
         { table: T.meta, key: PROJECT, value: meta },
         { table: T.meta, key: CURRENT, value: j.cut.id },
         // a fork's record gets its fork point once its lineage is here (a fork node's state comes with it): until then
         // `doc0` is its root, as for any joined cut. ["join", cut] says the lineage is still to fetch (Stage F2).
-        { table: T.cuts, key: [j.cut.id], value: { ...j.cut, forkOf: null } },
+        { table: T.cuts, key: [j.cut.id], value: { ...cut, forkOf: null } },
+        ...(by ? [{ table: T.meta, key: [MAKER, j.cut.id], value: by }] : []),
         { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
         { table: T.meta, key: ["join", j.cut.id], value: { forkOf: j.cut.forkOf ?? null } },
         // for good (["join", cut] goes once the lineage is here): the project's import is the sharer's (#who)
@@ -889,6 +979,8 @@ class CartonImpl implements Carton {
     for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) exp.set(e.key[1] as string, [...(exp.get(e.key[1] as string) ?? []), e.value]);
     h.loadKnowledge({ exports: [...exp] });
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
+    // who made each fork, kept beside its record (MAKER); History takes only a well-formed actor
+    const makers = new Map((await s.range<unknown>(T.meta, { prefix: [MAKER] })).map((e) => [e.key[1] as string, e.value]));
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
     // a root cut's state at 0, or a fork's own copy of its fork state (SF1-1; older forks have none and rebuild it from
@@ -910,7 +1002,7 @@ class CartonImpl implements Carton {
         if (p) await add(p, [...stack, c.id]);
       }
       const root = roots.get(c.id) ?? null;
-      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
+      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}), ...(makers.has(c.id) ? { by: makers.get(c.id) } : {}) });
       if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
       if (c.shallow) return;
@@ -967,6 +1059,7 @@ class CartonImpl implements Carton {
     this.#loadErr = null;
     h.loaded();
     this.#drain();
+    this.#noteCuts();
   }
   /**
    * (Carton.open, last) Start loading the rows opening held back, once open has returned and the caller has its head: a
@@ -1053,17 +1146,22 @@ class CartonImpl implements Carton {
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
-    let loaded = false;
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
       // a compaction by another process squashed rows this handle holds into a new one: what it holds is from before,
       // the new row's ops from after; read it all again
       if (rows.some((r) => r.squashedFrom! <= this.#h.headSeq(id))) return this.#rebuild();
-      if (rows.length) (loaded = true), this.#h.load(id, rows);
+      if (rows.length) this.#rowsLoaded++, this.#h.load(id, rows);
     }
     // another process's rows: its replica id and what it learnt of people may be new too; and events waiting for them
-    // (rows another handle fetched: R6-10)
-    if (loaded) await this.#loadPeople(), this.#drain();
+    // (rows another handle fetched: R6-10). Kept until done: rows loaded by a refresh whose next read failed (a later
+    // cut's rows, or people) are in History already, so the next refresh loads none and does this for them (R6-15)
+    if (this.#rowsPeople !== this.#rowsLoaded) {
+      const n = this.#rowsLoaded;
+      await this.#loadPeople();
+      this.#rowsPeople = Math.max(this.#rowsPeople, n);
+      this.#drain();
+    }
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
       const h = this.#h,
@@ -1074,6 +1172,7 @@ class CartonImpl implements Carton {
       else ({ snap: this.#pinSnap, gen: this.#pinsGen } = loaded), (this.#pinsStale = false);
     }
     if (exports) await this.#newExports();
+    this.#noteCuts();
   }
   /**
    * Exports other processes made since this handle last looked: each exported version is a lineage point (R4-01), so a
@@ -1088,15 +1187,30 @@ class CartonImpl implements Carton {
   async #loadPeople(): Promise<void> {
     (await this.#readPeople())();
   }
-  /** People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. */
-  async #readPeople(): Promise<() => void> {
-    const s = this.store;
-    await this.#peopleSaved;
-    const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
-    const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
-    const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
-    const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
-    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined));
+  /**
+   * People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. The
+   * reads run one at a time, numbered in order, and a snapshot is set only if none read after it was set first: an older
+   * read finishing late (a refresh's retry, a rebuild that sets everything at its end) never takes back what a newer one
+   * set, which no later refresh would read again if it loads no row (review of fix/core-deferred, finding 2).
+   */
+  #readPeople(): Promise<() => void> {
+    const read = async () => {
+      const s = this.store;
+      await this.#peopleSaved;
+      const n = ++this.#peopleRead;
+      const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+      const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+      const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
+      const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
+      return () => {
+        if (n <= this.#peopleSet) return;
+        this.#peopleSet = n;
+        (this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined);
+      };
+    };
+    const p = this.#peopleReads.then(read, read);
+    this.#peopleReads = p.catch(() => {});
+    return p;
   }
   /**
    * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
@@ -1233,12 +1347,14 @@ class CartonImpl implements Carton {
             // the model may hold changes the store never got (a write that threw): drop them before anything else runs
             this.#confirmed.length = 0;
             this.#noops.length = 0;
-            await this.#rebuild();
+            // (an empty version is refused before anything changes: the model is as it was)
+            if (!(e instanceof EmptyVersion)) await this.#rebuild();
             throw e;
           }
           if (ok) {
             turn = null; // given back with the append
             done?.();
+            this.#noteCuts();
             return r;
           }
           // another process appended first, someone holds the turn, or a caller's condition (a lease fence) failed:
@@ -1277,6 +1393,22 @@ class CartonImpl implements Carton {
   }
   #emit(e: CartonEvent): void {
     for (const l of this.#listeners) l(e);
+  }
+  /**
+   * A `cuts` event when the cuts this handle knows differ from what it last told: a cut made, renamed or gone, here or
+   * by another process (seen at its next read), or by a sync. A cut made with no edit yet moves no head, so no `change`
+   * event tells a cut menu about it. The same records (no change, the usual case) cost one pass over them; a rebuild's
+   * new records of the same cuts are compared by content.
+   */
+  #noteCuts(): void {
+    const now = this.#h.cuts(),
+      was = this.#cutsTold;
+    if (was && now.length === was.length && now.every((c, i) => c === was[i])) return;
+    this.#cutsTold = now;
+    if (!was) return; // opening: nothing told yet
+    const before = new Map(was.map((c) => [c.id, E.canonical(c)]));
+    if (now.length === was.length && now.every((c) => before.get(c.id) === E.canonical(c))) return;
+    this.#emit({ type: "cuts" });
   }
   #actor(a?: Actor): Actor {
     // `owner` is told (log, credits), never recorded: an actor read back and passed in commits without it
@@ -1370,29 +1502,123 @@ class CartonImpl implements Carton {
     await this.#refresh();
     return this.#h.cuts();
   }
+  async maker(cut: string) {
+    await this.#refresh();
+    return this.#h.maker(cut) ?? null;
+  }
   async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     await this.#refresh(cut);
     const versions = this.#h.log(cut, opts).map((v) => {
+      if (v.rejected) v.leftOutChanges = this.#leftOutChanges(cut, v);
+      // a redo is a revert of an undo: marked, so a list shows it as a redo (laptop: `cb history` listed it as `revert`)
+      const c = v.kind === "revert" && v.change ? this.#h.findChange(v.change) : null;
+      if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
       const who = this.#who(v.author, v.change);
       // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
     });
     if (!opts.summary || !versions.length) return versions;
-    // one state per page, walked forward: each version is described against the state just before it
-    const lo = versions[versions.length - 1]!.ref.seq;
+    // one state per page, walked forward: each version is described against the state just before it. A fold-some's
+    // version (UI audit P1-3) is its fold and partial revert together, so the walk starts before its fold.
     const log = this.#h.changes(cut);
+    let lo = versions[versions.length - 1]!.ref.seq;
+    if (lo > 1 && completedAt(log, lo - 1)) lo--;
     let doc = E.fork(this.#h.stateOf(nodeId(cut, Math.max(0, lo - 1)))!, this.schema);
-    const summary = new Map<number, string>();
+    const words = new Map<number, { summary: string; details?: string[] }>();
+    const name = (id: string) => this.#h.cut(id)?.name;
+    // "Folded 'Client review' into 'Main cut'": the cut folded in by name (a copy's lineage node has none)
+    const foldOf = (m: ConfirmedChange, rest = false) => {
+      const from = m.mergeOf && name(m.mergeOf.branchId);
+      return `${rest ? "the rest of " : ""}${from ? `'${from}'` : "another copy"} into '${name(cut) ?? "this cut"}'`;
+    };
+    const fold = (m: ConfirmedChange, rest = false) => `Folded ${foldOf(m, rest)}`;
+    // a change per record, a split one: as the Fold dialog lists them, and everything else counts them (E.countChanges)
+    const records = (ops: readonly Op[], base: Doc) => E.countChanges(ops, base, this.schema);
+    const changes = (n: number, of?: number) => (of !== undefined ? `${n} of ${of} change${of === 1 ? "" : "s"}` : `${n} change${n === 1 ? "" : "s"}`);
+    let byId: Map<string, ConfirmedChange> | null = null;
+    const find = (id: unknown) => (typeof id === "string" ? (byId ??= new Map(log.map((c) => [c.id, c]))).get(id) : undefined);
+    // An undo or a redo of a restore or a fold says so, however often it went back and forth (baseline P3-2, regress
+    // prod3 P3-D: the second ⌘Z after a restore read as a fresh edit): back along what each one undid or redid to the
+    // restore or fold it began with; an odd number of steps took it back. Others read as what they did.
+    const undid = (c: ConfirmedChange): string | undefined => {
+      let n = 0, x = c;
+      for (;;) {
+        const t = x.kind === "undo" || x.kind === "revert" ? find([x.reverts ?? []].flat().at(-1)) : undefined;
+        if (!t || (x.kind === "revert" && t.kind === "partial-revert")) break; // x is "fold in the rest" itself
+        n++;
+        x = t;
+      }
+      const rest = x.kind === "revert";
+      const m = x.mergeOf ? x : x.kind === "partial-revert" ? find(x.reverts) : rest ? find(find(x.reverts)?.reverts) : undefined;
+      const what = x.kind === "restore" ? "the restore" : m?.mergeOf ? `the fold of ${foldOf(m, rest)}` : "";
+      return n && what ? `${n % 2 ? "Undid" : "Redid"} ${what}` : undefined;
+    };
+    let pairBase: Doc | null = null;
     for (let s = Math.max(1, lo); s <= versions[0]!.ref.seq; s++) {
       const c = log[s - 1]!;
-      // an import is the whole project arriving: one line, not its first field ("Changed the project name …")
-      const first = c.name ?? (c.kind === "import" ? "Imported the project" : E.describe(c.ops, doc, this.schema, c.intent)[0]);
-      if (first) summary.set(s, first);
-      doc = E.apply(doc, c.ops, this.schema);
+      if (completedAt(log, s)) {
+        pairBase = E.fork(doc, this.schema);
+        doc = E.apply(doc, c.ops, this.schema);
+        continue;
+      }
+      // the version's own ops, described against the state before it: a fold-some's are its fold's and partial
+      // revert's together (described before the walk applies them: apply writes into the walk's state)
+      // `n`: its changes, counted against that state too (a fold's and "fold in the rest"'s titles say it)
+      let after: Doc, ops: readonly Op[], v: { summary: string; lines: string[] }, n = 0;
+      if (pairBase) {
+        after = E.apply(E.fork(doc, this.schema), c.ops, this.schema);
+        ops = E.diff(pairBase, after, this.schema);
+        v = E.describeVersion(ops, pairBase, this.schema);
+        n = records(ops, pairBase);
+      } else {
+        ops = c.ops;
+        v = E.describeVersion(ops, doc, this.schema, c.intent);
+        if (c.mergeOf || c.kind === "revert") n = records(ops, doc);
+        after = E.apply(doc, c.ops, this.schema);
+      }
+      let summary = v.summary, again: string | undefined;
+      const merged = pairBase ? find(c.reverts) : c.mergeOf ? c : undefined;
+      if (c.kind === "import") summary = "Imported the project"; // the whole project arriving: one line, not its first field
+      else if (merged && pairBase) summary = `${fold(merged)}: ${changes(n, records(merged.ops, pairBase))}`;
+      else if (merged) summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
+      else if (c.kind === "restore") summary = "Restored an earlier version";
+      else if ((c.kind === "undo" || c.kind === "revert") && (again = undid(c))) summary = again;
+      else if (c.kind === "revert") {
+        // "Fold in the rest" reverts a partial fold's inverse
+        const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;
+        if (m?.mergeOf) summary = `${fold(m, true)}: ${changes(n)}`;
+      }
+      if (c.name) summary = c.name;
+      const details = c.kind !== "import" && v.lines.length && (v.lines.length > 1 || v.lines[0] !== summary) ? v.lines : undefined;
+      if (summary || details) words.set(s, { summary, ...(details ? { details } : {}) });
+      doc = after;
+      pairBase = null;
     }
-    return versions.map((v) => (summary.has(v.ref.seq) ? { ...v, summary: summary.get(v.ref.seq)! } : v));
+    return versions.map((v) => {
+      const w = words.get(v.ref.seq);
+      return w ? { ...v, ...(w.summary ? { summary: w.summary } : {}), ...(w.details ? { details: w.details } : {}) } : v;
+    });
+  }
+  /** A partial fold's left-out changes, counted in its fold's records against the state it folded into; by change id. */
+  #leftOutN = new Map<string, number>();
+  #leftOutChanges(cut: string, v: Version): number {
+    const key = `${cut}\u0000${v.change ?? v.ref.seq}`;
+    let n = this.#leftOutN.get(key);
+    if (n === undefined) {
+      const fold = this.#h.changes(cut)[v.ref.seq - 2];
+      const base = fold ? this.#h.viewOf(nodeId(cut, v.ref.seq - 2)) : null;
+      n = E.countChanges(fold?.ops ?? [], base ?? {}, this.schema, v.rejected ?? []);
+      this.#leftOutN.set(key, n);
+    }
+    return n;
+  }
+  async leftOut(from: string, opts: { into?: string } = {}) {
+    const into = opts.into ?? this.#h.current;
+    await this.#whole();
+    await this.#refresh(into);
+    return this.#h.leftOut(into, from).map((c) => ({ change: c.id, ref: { branchId: into, seq: c.seq, pending: [] }, at: c.at, author: this.#who(c.author, c.id), rejected: [...(c.rejected ?? [])] }));
   }
   async diff(a: StateRef | string, b?: StateRef | string, opts: { shots?: boolean } = {}): Promise<DiffResult> {
     const cur = this.#h.current;
@@ -1509,7 +1735,13 @@ class CartonImpl implements Carton {
     const rid = change.slice(0, Math.max(0, change.indexOf(".")));
     return this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
   }
-  async undoStack(group?: string, opts: { cut?: string } = {}) {
+  async undoStack(group?: string, opts: { cut?: string; limit?: number } & UndoScope = {}) {
+    return this.#stack("undo", group, opts);
+  }
+  async redoStack(group?: string, opts: { cut?: string; limit?: number } & UndoScope = {}) {
+    return this.#stack("redo", group, opts);
+  }
+  async #stack(which: "undo" | "redo", group: string | undefined, opts: { cut?: string; limit?: number } & UndoScope) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const sc = this.#shared.get(cut);
@@ -1520,16 +1752,29 @@ class CartonImpl implements Carton {
     const tail = sc && sc.queue.headSeq(cut) === this.#h.headSeq(cut) ? this.#tail(cut, sc) : undefined;
     const n = this.#h.headSeq(cut);
     const log = tail ? [...this.#h.changes(cut), ...tail.rows] : this.#h.changes(cut);
+    const scope = scopeOf(opts), g = group ?? groupOf(this.#actor());
+    const entries = which === "undo" ? this.#h.undoStack(cut, g, tail, scope) : this.#h.redoStack(cut, g, tail, scope);
+    // labelled only as far as asked: a label describes the change against the state before it
+    const listed = opts.limit === undefined ? entries : entries.slice(0, Math.max(0, opts.limit));
+    if (which === "redo") return listed.map((e) => asFold({ entry: e }, log, true).entry);
     // a named version's label is its name, given with the edit or after it (as a teammate who joined sees it, on the
     // row); an unnamed edit's says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
     const names = new Map(this.#h.names());
-    return this.#h.undoStack(cut, group ?? groupOf(this.#actor()), tail).map((e) => {
+    const at = (seq: number) => (seq > n ? tail!.states[seq - n - 1] : this.#h.stateOf(nodeId(cut, seq))) ?? {};
+    return listed.map((e) => {
       const c = log[e.seq - 1]!;
       const name = e.seq <= n ? names.get(nodeId(cut, e.seq))?.name : undefined;
       if (name) return { ...e, label: undoLabel(c, name) };
+      // P2-1: a fold-some's entry undoes its fold and partial revert together. It says what the fold kept, as its
+      // version does (or, with a teammate's change between the two, what the fold brought, as a whole fold's says)
+      const m = c.kind === "partial-revert" ? log.find((x) => x.id === c.reverts) : undefined;
+      if (m) {
+        const before = at(m.seq - 1);
+        const what = E.describe(m.seq === e.seq - 1 ? E.diff(before, at(e.seq), this.schema) : m.ops, before, this.schema)[0];
+        return what ? { ...e, label: undoLabel(c, what) } : e;
+      }
       if (c.name || c.intent?.kind) return e;
-      const before = e.seq - 1 > n ? tail!.states[e.seq - n - 2] : this.#h.stateOf(nodeId(cut, e.seq - 1));
-      const what = E.describe(c.ops, before ?? {}, this.schema, c.intent)[0];
+      const what = E.describe(c.ops, at(e.seq - 1), this.schema, c.intent)[0];
       return what ? { ...e, label: undoLabel(c, what) } : e;
     });
   }
@@ -1649,6 +1894,7 @@ class CartonImpl implements Carton {
     return { node, doc: this.#h.resolve(ref).doc };
   }
   async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string; source?: string } = {}): Promise<CutRecord> {
+    const author = this.#actor(opts.author);
     const cur = this.#h.current;
     await this.#whole();
     let rec!: CutRecord;
@@ -1660,24 +1906,54 @@ class CartonImpl implements Carton {
         const known = opts.id ? this.#h.cut(opts.id) : undefined;
         if (known) return void (rec = known); // a retried fork: the cut it already made
         const from = opts.from === undefined ? { node: this.#h.head(cur), doc: null } : this.#held(opts.from);
-        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
+        // who made it is recorded with it (MAKER): its fork version's author (History's "Made this cut", cb history).
+        // A cut made from an empty version ("New cut from here" on an imported project's empty root) would hold nothing
+        // of the project, not even its name. (A cut from head is the head as it is.)
+        if (opts.from !== undefined && E.isBlank(from.doc ?? this.#h.viewOf(from.node) ?? { _: 1 }, this.schema)) throw new EmptyVersion(opts.from, "make a cut from", parseNode(from.node).seq === 0 ? "start" : "later");
+        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, by: author, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
         made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
-        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author), publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
+        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author, publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
         rec = this.#h.cut(rec.id)!;
       },
       {
         // the fork's root state is kept with it: it never depends on its fork version's state surviving (a compaction
         // in another process, or one this handle hasn't seen, may squash it: review SF1-1)
-        extra: () => (made ? { writes: [{ table: T.cuts, key: [rec.id], value: rec }, { table: T.keyframes, key: [rec.id, 0], value: this.#h.stateOf(nodeId(rec.id, 0))! }], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] } : {}),
+        extra: () => {
+          if (!made) return {};
+          const by = this.#h.maker(rec.id);
+          return { writes: [{ table: T.cuts, key: [rec.id], value: rec }, { table: T.keyframes, key: [rec.id, 0], value: this.#h.stateOf(nodeId(rec.id, 0))! }, ...(by ? [{ table: T.meta, key: [MAKER, rec.id], value: by }] : [])], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] };
+        },
         idempotent: !!opts.id,
       },
     );
     return rec;
   }
+  /**
+   * As this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person". On the
+   * current cut; first a leave on the cut it showed on before, if the current cut has changed since (a switch here,
+   * or another process's that this handle followed), so teammates never keep it on a cut it left: a host would tell
+   * that old presence to anyone subscribing there later (presence P2 review).
+   */
+  #presence(state: PresenceState | null): void {
+    const who = this.#who(this.#actor(), `${this.#rid}.0`)!;
+    const cut = this.#h.current;
+    this.#leavePresence(cut);
+    const sc = this.#shared.get(cut);
+    sc?.sendPresence(who, state);
+    this.#presenceOn = sc && state !== null ? { cut, who } : null;
+  }
+  /** A leave on the cut this handle's presence shows on, unless that is `stay`. */
+  #leavePresence(stay: string): void {
+    const on = this.#presenceOn;
+    if (!on || on.cut === stay) return;
+    this.#presenceOn = null;
+    this.#shared.get(on.cut)?.sendPresence(on.who, null);
+  }
   async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
+    this.#leavePresence(cut);
     if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {
@@ -1696,7 +1972,7 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
-  async publish(opts: { from?: StateRef | string; name?: string; id?: string } = {}): Promise<CutRecord> {
+  async publish(opts: { from?: StateRef | string; name?: string; id?: string; author?: Actor } = {}): Promise<CutRecord> {
     const cur = this.#h.current;
     await this.#whole();
     // the cut it comes from, said explicitly: a fork node is canonical, so an unedited variant's would name its parent;
@@ -1707,7 +1983,7 @@ class CartonImpl implements Carton {
       const p = this.#h.parseRef(from);
       return "legacy" in p ? cur : p.branchId;
     })();
-    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}) });
+    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}), ...(opts.author ? { author: opts.author } : {}) });
   }
   async publications(): Promise<Publication[]> {
     await this.#whole();
@@ -1718,7 +1994,14 @@ class CartonImpl implements Carton {
       const from = this.#h.canon(cut.forkOf);
       const source = cut.source ?? parseNode(from).branchId;
       const src = this.#h.cut(source);
-      out.push({ cut, from, source, newer: !!src && !src.shallow && this.#h.head(source) !== from });
+      // the versions after the one published, as log() lists them: a withdraw row (H1), a squashed change or a
+      // fold-some's fold half (its partial revert is the version, UI audit P1-3) is none
+      let versions = 0;
+      if (src && !src.shallow && this.#h.head(source) !== from) {
+        const log = this.#h.changes(source), at = parseNode(from);
+        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto && !completedAt(log, s + 1)) versions++;
+      }
+      out.push({ cut, from, source, newer: versions > 0, versions });
     }
     return out;
   }
@@ -1764,15 +2047,17 @@ class CartonImpl implements Carton {
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
     return out as FoldResult;
   }
-  async name(ref: StateRef | string, name: string): Promise<void> {
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  async name(ref: StateRef | string, name: string, opts: { author?: Actor } = {}): Promise<void> {
     await this.#whole();
+    const by = this.#actor(opts.author);
     let node!: NodeId;
-    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, this.#actor()), {
+    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, by), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -1794,13 +2079,24 @@ class CartonImpl implements Carton {
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRevert(cut, changeId, { author: this.#actor(opts.author), tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
-  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
+  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const actor = this.#actor(opts.author);
+    const scope = scopeOf(opts);
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail }));
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    // P2-1: its entry (`cb undo` prints it) is labelled from the log it was planned on, a shared cut's pending tail too
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows]));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+  }
+  async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    const actor = this.#actor(opts.author);
+    const scope = scopeOf(opts);
+    this.#writable(cut);
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows], true));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ retention (§5.4)
@@ -1973,7 +2269,9 @@ class CartonImpl implements Carton {
       // compaction squashed; review SF2-4). A fork without one is rebuilt from its fork version.
       const root = (await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null;
       if (!c.forkOf && !root) continue; // a root cut without its root state can't be rebuilt here
-      branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log });
+      // who made it (review P4: an authored fork came in anonymous); History takes only a well-formed actor
+      const by = c.forkOf ? await from.get<Actor>(T.meta, [MAKER, c.id]) : undefined;
+      branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log, ...(by !== undefined ? { by } : {}) });
       for (const e of await from.range<{ name: string; at: number; by?: Actor }>(T.names, { prefix: [c.id] })) names.push({ key: e.key, value: e.value });
     }
     let took: { id: string; from: number }[] = [];
@@ -2009,7 +2307,8 @@ class CartonImpl implements Carton {
           const w: StoreWrite[] = [];
           for (const t of took) {
             const b = branches.find((x) => x.id === t.id)!;
-            if (!t.from) w.push({ table: T.cuts, key: [t.id], value: this.#h.cut(t.id)! }, ...(b.root ? [{ table: T.keyframes, key: [t.id, 0], value: b.root }] : []));
+            const by = t.from ? undefined : this.#h.maker(t.id);
+            if (!t.from) w.push({ table: T.cuts, key: [t.id], value: this.#h.cut(t.id)! }, ...(b.root ? [{ table: T.keyframes, key: [t.id, 0], value: b.root }] : []), ...(by ? [{ table: T.meta, key: [MAKER, t.id], value: by }] : []));
             for (const c of b.log.slice(t.from)) w.push({ table: T.changes, key: [t.id, c.seq], value: c });
           }
           for (const n of names) if (took.some((t) => t.id === n.key[0])) w.push({ table: T.names, key: n.key, value: n.value });
@@ -2131,7 +2430,7 @@ class CartonImpl implements Carton {
     switch (e.type) {
       // a sync failure, until a welcome or an ack says the host accepts this replica again (web-demo REQ-8)
       case "error": {
-        const err = syncError(e.error, e.code);
+        const err = syncError(e.error, e.code, e.until);
         const was = this.#syncErrors.get(cut);
         if (!was || was.code !== err.code || was.message !== err.message) {
           this.#syncErrors.set(cut, err);
@@ -2373,7 +2672,7 @@ class CartonImpl implements Carton {
       }
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
-    if (handed) this.#h.updateCut(cut, { sequencer: qs });
+    if (handed) this.#h.updateCut(cut, { sequencer: qs }), this.#noteCuts();
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     this.#tell(cut);
   }
@@ -2390,12 +2689,15 @@ class CartonImpl implements Carton {
   }
   /**
    * #tell on the serialized chain, after any settle under way has told its `change` events (so a batch's notice or
-   * absorption never comes before them): for every cut, or `cut`, with `all`.
+   * absorption never comes before them): for every cut, or `cut`, with `all`. An `all` drain (a fetch that failed) is
+   * queued even with nothing waiting yet: a settle under way may still be storing a batch whose events wait for that
+   * fetch, and they go into #due only once it is stored (R6-13). A fetch of the cut started since (the next sync
+   * event's retry) holds them again, as any fetch under way does.
    */
   #drain(cut?: string, all = false): void {
-    if (!this.#due.size) return;
+    if (!all && !this.#due.size) return;
     const run = () => {
-      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all);
+      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all && !this.#fetching.has(c));
     };
     // a listener that throws doesn't break the chain
     this.#queue = this.#queue.then(run, run).catch(() => {});
@@ -2508,12 +2810,12 @@ class CartonImpl implements Carton {
     return { sc, done: null };
   }
   /** Queue a change synchronously (nothing may run between computing `ops` on the optimistic state and this). */
-  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields, held = false): CommitResult {
+  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name"> & { inferIntent?: false }, history?: HistoryFields, held = false): CommitResult {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
     this.#queuedIn(cut).add(id);
-    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) }, { deferEmpty: true });
+    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(input.inferIntent === false ? { inferIntent: false } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) }, { deferEmpty: true });
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
       this.#authors.delete(id);
@@ -2662,7 +2964,13 @@ class CartonImpl implements Carton {
   #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
     const rows = sc.queue.rows(cut).slice(at.seq);
     if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
-    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
+    // the base's causal changes are in it, pending or confirmed since (a held GUI save's own change, confirmed before the
+    // next save: its ripple was composed again, moving a clip twice; as History's local commit, `causal` is never the
+    // other side's); a pending change carries what it reverts, as a confirmed row has it (an undo: no remap is inferred
+    // for it, sideOf)
+    const causal = new Set(at.causal);
+    const pending = sc.queue.pending(cut).filter((p) => !causal.has(p.id)).map((p) => ({ ...p.versions[p.versions.length - 1]!, reverts: p.history?.reverts }));
+    return E.sideOf([...rows.filter((r) => !causal.has((r as ConfirmedChange).id)), ...pending] as { intent?: Intent | null; kinds?: EditKinds | null; reverts?: unknown }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
@@ -2739,7 +3047,7 @@ class CartonImpl implements Carton {
    * so ⌘Z right after an edit undoes it) and queued as an ordinary change with its intent, kind and `reverts` under a
    * stable id: pending, then confirmed or rebased like any edit, and credited to its author.
    */
-  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra"> & { extra?: Planned["extra"] } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
+  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra" | "inverse"> & { extra?: Planned["extra"]; inverse?: true } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
     const id = given ?? `${this.#rid}.${++this.#n}`;
     const { sc, done } = await this.#prepShared(cut, id);
     if (done) return done;
@@ -2748,9 +3056,10 @@ class CartonImpl implements Carton {
     if (p && "status" in p) return { ...p, ref: this.#sharedRef(cut) };
     // nothing to undo: an empty write, so a retry under the same id stays a no-op
     if (!p) return this.#persistEnqueued(sc, cut, id, this.#enqueue(sc, cut, id, this.#actor(), [], {}));
-    const { doc, author, kind, intent, extra, ...rest } = p;
+    const { doc, author, kind, intent, extra, inverse, ...rest } = p;
     const ops = E.diff(sc.queue.optimistic(cut).doc, doc, this.schema);
-    const r = this.#enqueue(sc, cut, id, author, ops, intent ? { intent } : {}, { kind, ...extra });
+    // an undo, redo or revert records only the inverse of what its changes recorded: the queue infers no remap for it
+    const r = this.#enqueue(sc, cut, id, author, ops, { ...(intent ? { intent } : {}), ...(inverse ? { inferIntent: false } : {}) }, { kind, ...extra });
     return { ...(await this.#persistEnqueued(sc, cut, id, r)), ...(rest as Partial<R>) };
   }
   /** A shared cut's pending changes as History's newest changes, each with the optimistic state after it. */

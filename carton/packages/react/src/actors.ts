@@ -12,19 +12,25 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-/** A stable presence colour for an actor. Agents take the colour of the person who started them. */
+/**
+ * A stable presence colour for an actor. Agents take the colour of the person who started them. An entry that isn't
+ * a UI actor (core's `{kind, id}` from the sync layer, with no `key`) is coloured by its id, then its name: never a
+ * crash in the panel that draws it (UI audit P1-1).
+ */
 export function actorColor(a: Actor, byKey?: (key: string) => Actor | undefined): string {
   if (a.color) return a.color;
   if (a.kind !== "human" && a.parent && byKey) {
     const p = byKey(a.parent);
     if (p) return actorColor(p, byKey);
   }
-  return PALETTE[hash(a.key) % PALETTE.length]!;
+  const loose = a as Partial<Actor> & { id?: unknown };
+  const seed = typeof loose.key === "string" ? loose.key : typeof loose.id === "string" ? loose.id : typeof loose.name === "string" ? loose.name : "";
+  return PALETTE[hash(seed) % PALETTE.length]!;
 }
 
-/** One or two letters for an avatar. Uses grapheme-safe slicing so "Émile" and emoji names don't split. */
+/** One or two letters for an avatar. Uses grapheme-safe slicing so "Émile" and emoji names don't split. No name: "?". */
 export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const parts = (typeof name === "string" ? name : "").trim().split(/\s+/).filter(Boolean);
   const first = (s: string) => Array.from(s)[0] ?? "";
   if (!parts.length) return "?";
   if (parts.length === 1) return first(parts[0]!).toUpperCase();

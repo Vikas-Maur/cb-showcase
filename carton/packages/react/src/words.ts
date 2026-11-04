@@ -19,11 +19,22 @@ export const words = {
   you: "You",
 
   // History panel
-  historyFilters: { all: "All", named: "Named", turns: "Director turns" } as Record<"all" | "named" | "turns", string>,
+  // Every agent's turns (UI audit P1-10): the Director's and your Claude Code's are both named turns, and an agent's
+  // versions with no turn recorded are its turn too
+  historyFilters: { all: "All", named: "Named", turns: "Agent turns" } as Record<"all" | "named" | "turns", string>,
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
-  historyEmptyNamed: "No named versions yet. Name a version to find it again, like “Sent to client, Monday”.",
-  historyEmptyTurns: "No Director turns yet.",
+  historyEmptyNamed: "No named versions yet. Name one to find it again.",
+  historyEmptyTurns: "No agent turns yet.",
   checkpoint: "Checkpoint",
+  // Day headers in a long History (UI audit P2-17)
+  today: "Today",
+  yesterday: "Yesterday",
+  dayCount: (n: number) => plural(n, "version", "versions"),
+  dayFolded: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
+  // A version of several changes: its list, on expand (UI audit P1-5)
+  versionChanges: (n: number) => plural(n, "change", "changes"),
+  showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
+  hideChanges: (n: number) => (n === 1 ? "Hide the change" : "Hide the changes"),
   turnEdits: (n: number) => plural(n, "edit", "edits"),
   provisional: "Waiting to sync",
   provisionalHint: "This version gets its final place in History once it reaches the server.",
@@ -31,6 +42,7 @@ export const words = {
   preview: "Preview",
   create: "Create",
   restoreHint: "Restoring saves this version as a new version. Nothing is lost.",
+  emptyVersionHint: "The history starts here, before the project was added. There's nothing to restore.",
   compareWithCurrent: "Compare with current",
   nameVersion: "Name this version",
   nameVersionPlaceholder: "Sent to client, Monday",
@@ -49,6 +61,7 @@ export const words = {
   switchTo: (name: string) => `Switch to ${name}`,
   renameCut: "Rename cut",
   foldInto: (into: string) => `Fold into ${into}`,
+  foldInHere: (from: string) => `Fold “${from}” in here`,
   readOnlyCut: "From someone else's copy. You can watch it and fold it in.",
   currentCut: "Current cut",
   qualified: (owner: string, name: string) => `${owner}'s ${name}`,
@@ -64,6 +77,9 @@ export const words = {
   foldAllCards: "Bring it in with every difference shown as a card",
   foldRestLater: "You can fold in the rest later.",
   foldRest: "Fold in the rest",
+  // A change an earlier "fold in some of it" left out (UI audit P1-4): offered again; one fold's come in together
+  foldLeftOutEarlier: "Left out earlier",
+  foldLeftOutTogether: "Left out together earlier, so they fold in together.",
   foldChangedSince: "Something changed since you looked. Pick on the cards below, then fold in.",
   foldLocked: "Comes with the rest: it can't be left out on its own.",
   foldChanges: (n: number) => plural(n, "change", "changes"),
@@ -76,7 +92,7 @@ export const words = {
 
   // Conflict cards
   conflictCard: "Conflict card",
-  conflictLead: "Both edits kept; you pick.",
+  conflictLead: "Two different edits. Pick one.",
   // Each choice says whose edit and, in a fold, which cut, so "mine" never has to be guessed: the cut I'm in, or the
   // clip's author? (PLAN §2.6 "Keep mine/theirs/both", made explicit.)
   keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
@@ -107,7 +123,16 @@ export const words = {
   compare: "Compare",
   watchTheChanges: "Watch the changes",
   clips: (n: number) => plural(n, "clip", "clips"),
+  // Compare's clip count with the other kinds of item apart (laptop re-check P3-10): "1 clip, 6 titles"
+  clipsAnd: (clips: number, kinds: readonly { noun: string; n: number }[]) =>
+    [...(clips || !kinds.length ? [plural(clips, "clip", "clips")] : []), ...kinds.map((k) => plural(k.n, k.noun, `${k.noun}s`))].join(", "),
   length: (s: number) => duration(s),
+  // The Compare card's summary (UI audit P2-5): changes and seconds, as Watch the changes counts them; never shots.
+  compareSummary: (changes: number | null, s: number, total: number) =>
+    changes === 0 || (changes == null && s <= 0) ? "No differences" : `${changes == null ? "" : `${plural(changes, "change", "changes")} · `}${seconds(s)} of ${seconds(total)} differ`,
+  compareChanges: "What changed",
+  compareMore: (n: number) => `Show ${n} more`,
+  compareLess: "Show fewer",
   differ: (shots: number, s: number, total: number) =>
     shots === 0 ? "No shots differ" : `${plural(shots, "shot", "shots")} / ${seconds(s)} of ${seconds(total)} differ`,
   current: "Current",
@@ -161,16 +186,27 @@ export const words = {
   removed: "Removed",
   added: "Added",
   changed: "Changed",
-  changeOf: (i: number, n: number) => `Change ${i} of ${n}`,
-  nextChange: "Next change",
-  previousChange: "Previous change",
+  // The counter steps through the sections of the edit that differ, not the changes (laptop re-check P3-11: "2 changes ·
+  // Change 1 of 2" beside Compare's "3 changes"): one section can hold several changes, and a change can show nowhere.
+  changeOf: (i: number, n: number) => `Section ${i} of ${n}`,
+  nextChange: "Next section",
+  previousChange: "Previous section",
   noChanges: "No changes to watch. The two versions look the same.",
+  // What differs: changes, counted as Compare and History count them, and seconds; never shots.
+  watchSummary: (changes: number, s: number, total: number) =>
+    changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
+  // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
+  shownInPlayer: "Shown in the player, read-only",
+  noPicture: "Preview not available here",
 
   // Read-only preview (§9, R2-16)
   // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
   previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
+  versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
+  returnToCurrentKey: "Return to current (Esc)",
   previewBlocked: "This is a preview, so edits don't apply here.",
 
   // Times

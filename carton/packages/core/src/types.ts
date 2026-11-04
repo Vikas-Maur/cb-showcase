@@ -153,14 +153,20 @@ export interface Overlap {
 export type ActorKind = "human" | "agent" | "subagent" | "external" | "system";
 
 /**
- * Who made a change, down to the subagent. `group` is the undo group (§8): your edits, the agent turns you started
- * from this window, and every local windowless actor (`cb` without a turn id) on the same machine and OS user.
+ * Who made a change, down to the subagent. `group` is the undo group (§8): every local actor on the same machine and OS
+ * user (your edits, the agent turns you started, a terminal's `cb`), as `cb undo` and History's Undo see it; a
+ * teammate is never in yours. The app's Ctrl+Z sees only the part of it marked `app`, made in the editor's session.
  */
 export interface Actor {
   kind: ActorKind;
   id: string;
   name?: string;
   group?: string;
+  /**
+   * Made from the app: the person at the editor, or an agent turn they started there (an agent the app started, which
+   * names it in `CARDBOARD_ACTOR`). Never a terminal's `cb`. The app's Ctrl+Z and redo see only these (UndoScope).
+   */
+  app?: boolean;
   chat?: string;
   turn?: string;
   agentId?: string;
@@ -249,6 +255,13 @@ export interface ConfirmedChange extends Change {
   squashedInto?: number;
   /** A squashed change: the hash of its version's state before it was squashed (its identity in others' lineage). */
   squashedHash?: string;
+  /**
+   * A shared cut's withdraw row (H1): the server spent the id of an edit a rebase emptied (no ops, authored
+   * `{kind: "system", id: "withdraw"}`). It keeps its seq and id, so the id can never land later, but it is never a
+   * version: `log()` leaves it out (so History, `cb history`, the Compare and Fold pickers and their counts do), and a
+   * `change` event carrying it only moves the head. Its ref names the same state as the seq before it.
+   */
+  withdrawn?: boolean;
 }
 
 /** A pending change in a replica's queue: every version it had (each rebase adds one), newest last. */
@@ -361,8 +374,39 @@ export interface Version {
   at: number;
   name?: string;
   kind: ChangeKind | "root" | "fork";
-  /** What the change did in plain words (describe()'s first line), when asked for (`log({summary: true})`). */
+  /**
+   * What the version did in one line, when asked for (`log({summary: true})`): its name; a fold, a partial fold ("Folded
+   * 'Client review' into 'Main cut': 2 of 3 changes"), the rest of one, a restore or the import by what it was; else
+   * its change, or its changes summed up ("Moved 'a', changed 'b' and 'c'", `describeVersion`).
+   */
   summary?: string;
+  /**
+   * A cut's start (seq 0) with nothing in it: the empty root an imported project's history starts from (§16), or a cut
+   * made from it. `restore` and `fork` refuse it (`EmptyVersion`), so a UI doesn't offer them.
+   */
+  blank?: true;
+  /** Every change the version made, one line each (describe()), when the summary doesn't already say it all. */
+  details?: string[];
+  /**
+   * A partial fold ("fold in some of it"): what it left out, by path. Its fold and the partial revert after it are one
+   * version (UI audit P1-3), of kind `merge`; `change` is the partial revert's id, which "fold in the rest" reverts.
+   */
+  rejected?: PathKey[];
+  /**
+   * How many changes a partial fold left out, counted as History, the Fold dialog and Compare count them: a record each,
+   * a split one (`countChanges`). With `rejected`.
+   */
+  leftOutChanges?: number;
+  /**
+   * "Fold in the rest" of a partial fold (a `revert` of its partial revert): that partial fold's `change`. A list marks
+   * it as the fold it is, not as an undo (final re-check, baseline P3-12b). Its undo and the redo of that have none.
+   */
+  restOf?: ChangeId;
+  /**
+   * A redo (a `revert` of an undo change): the undo it takes back. A list shows it as a redo, as it shows an undo as an
+   * undo (laptop: `cb history` listed it as `revert`). Set by `Carton.log()`.
+   */
+  redoOf?: ChangeId;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
@@ -400,7 +444,8 @@ export interface ShallowExport {
 export interface FullExport {
   format: "carton-full/1";
   projectId: string;
-  branches: { id: string; name: string; forkOf: NodeId | null; owner: string; root: Doc | null; log: ConfirmedChange[] }[];
+  /** `by`: who made the cut (a fork), its fork version's author; absent when not known. */
+  branches: { id: string; name: string; forkOf: NodeId | null; owner: string; root: Doc | null; log: ConfirmedChange[]; by?: Actor }[];
 }
 
 // ------------------------------------------------------------------ merge, conflict cards (§7)
@@ -560,14 +605,23 @@ export type CartonEvent =
    */
   | { type: "sync-error"; branchId: string; error: SyncError | null }
   /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
-  | { type: "people" };
+  | { type: "people" }
+  /**
+   * The cuts changed: one made (with no edit yet too), renamed, gone, or its kind, protection or sync changed. By this
+   * handle, by a sync, or by another process on the same store (told once this handle reads the store again: any read
+   * such as log() or cuts() does). cuts() says how they are now.
+   */
+  | { type: "cuts" };
 
 /**
  * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's
  * document schema), `unauthorized` (its token or scope), `unreachable` (no connection), `unknown-cut`, `too-large`,
- * or `server` (anything else the host said). `message`: the host's or connection's own words.
+ * `write-limit` (the host's daily limit is reached: edits are kept, and sync on their own at `until`), or `server`
+ * (anything else the host said). `message`: the host's or connection's own words.
  */
 export interface SyncError {
-  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "server";
+  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "write-limit" | "server";
   message: string;
+  /** `write-limit`: when the edits held back sync (ms since the epoch). */
+  until?: number;
 }

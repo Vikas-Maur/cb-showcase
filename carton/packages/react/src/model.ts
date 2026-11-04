@@ -58,6 +58,11 @@ export interface Version {
    * CartonUi.foldRest().
    */
   readonly foldRest?: boolean;
+  /**
+   * Nothing in it (core's `blank`): the start of an imported project's history, from before the project was added. It
+   * can't be previewed, restored or made into a cut (laptop, build 915eb36: restoring it emptied the project).
+   */
+  readonly empty?: boolean;
 }
 
 /** Which rows History shows. */
@@ -176,7 +181,10 @@ export interface CompareSide {
   readonly ref: string;
   readonly at: number;
   readonly author: Actor;
+  /** Clips only: a title, a code graphic or a caption is no clip (the schema's `nounOf`, laptop re-check P3-10). */
   readonly clipCount: number;
+  /** The timeline's other kinds of item, counted apart ("6 titles"). */
+  readonly kinds?: readonly { readonly noun: string; readonly n: number }[];
   /** Seconds. */
   readonly length: number;
 }
@@ -194,6 +202,16 @@ export interface Comparison {
   readonly a: CompareSide;
   readonly b: CompareSide;
   readonly diff: DiffSummary;
+  /**
+   * What changed from a to b, one plain-words line each, as History and Fold in word them ("Moved 'Intro' 0:02.0 →
+   * 0:04.0"). Optional: a host without it shows only the summary.
+   */
+  readonly changes?: readonly string[];
+  /**
+   * How many changes, counted as History, `cb history`, the Fold dialog and Watch the changes count them: a record each,
+   * a split one (core's `countChanges`; laptop re-check P3-11). Lines in `changes` can be more (a ripple's own line).
+   */
+  readonly changeCount?: number;
 }
 
 /** Credits for one clip: who last changed each part of it, down to the subagent. */
@@ -249,6 +267,11 @@ export interface FoldChange {
   readonly at: number;
   /** Can't be left out on its own (a project-level field): it is folded in with the rest. */
   readonly locked?: boolean;
+  /**
+   * Left out of an earlier partial fold (UI audit P1-4, "you can fold in the rest later"): that fold's id. Changes with
+   * the same id fold in together, or stay left out together.
+   */
+  readonly leftOut?: string;
 }
 
 export interface FoldPlan {
@@ -293,6 +316,11 @@ export interface ShotDiff {
   readonly matches: readonly (readonly [number, number])[];
   readonly aLabel: string;
   readonly bLabel: string;
+  /**
+   * How many changes from a to b, counted as Compare and History count them (laptop re-check P3-11). Watch the changes
+   * says it; its counter steps through the sections of the edit that differ, which can be fewer or more.
+   */
+  readonly changes?: number;
 }
 
 export type Topic =

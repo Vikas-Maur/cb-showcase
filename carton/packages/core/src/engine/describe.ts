@@ -2,8 +2,8 @@
 // "Trimmed 'Intro' end 6.0 s → 5.0 s". Never prints more than four parts per record.
 import { POS } from "../types.ts";
 import type { FieldSpec, Schema } from "../schema.ts";
-import type { ConflictCard, Doc, Intent, Op, Path, Rec, RemapMaps, RemapOp } from "../types.ts";
-import { getIn } from "./doc.ts";
+import type { ConflictCard, Doc, Intent, Op, Path, PathKey, Rec, RemapMaps, RemapOp } from "../types.ts";
+import { getIn, specAt } from "./doc.ts";
 import { EMPTY, deepEqual, unescapeSegment } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
 
@@ -43,34 +43,344 @@ const short = (v: unknown): string => {
   return s === undefined ? "none" : s.length > 48 ? s.slice(0, 45) + "…" : s;
 };
 
-export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): string[] {
-  const tl = schema.timeline,
-    out: string[] = [];
-  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
-  // The doc a label looks names up in (a clip is named after its media's file name): base, plus the records this
-  // change inserts, so a clip added with its media is named after it. Built once, only when a label asks.
-  let named: Doc | null = null;
-  const nameDoc = (): Doc => {
-    if (named) return named;
-    const added = new Map<string, Rec[]>();
-    for (const op of plain) {
-      if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
-      const c = op.path[0] as string;
-      let l = added.get(c);
-      if (!l) added.set(c, (l = []));
-      l.push(op.value as Rec);
-    }
-    named = base;
-    if (added.size) {
-      named = { ...base };
-      for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
-    }
-    return named;
+/**
+ * One line of describe(), with what a version's summary needs (UI audit P1-5): its verb as a template (`%s` is the
+ * record), the record's collection, and the record as named alone ("video 'clip.mp4'" for an add, "'Intro'" else).
+ * A line that isn't about one record (a ripple, a project field) has no verb: a summary keeps it whole.
+ */
+interface Line {
+  text: string;
+  verb?: string;
+  coll?: string;
+  one?: string;
+  /** The record (as it was; as added), for what the host calls it (`nounOf`). */
+  rec?: Rec;
+}
+
+// A value no person reads (UI audit P1-2): a hash, a UUID, or a structure holding one. Shown by its field's name only.
+const HASHY = /^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const HASH_IN = /[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
+const opaque = (key: unknown, v: unknown): boolean =>
+  isIdKey(String(key)) || /(?:^h|H)ash(?:es)?$/.test(String(key)) || (typeof v === "string" ? HASHY.test(v) : !!v && typeof v === "object" && HASH_IN.test(JSON.stringify(v) ?? ""));
+
+/**
+ * `names`: when these ops are only some of a larger set (one row of the Fold dialog), the doc records are named from,
+ * `namingDoc(base, allOps)`, made once for all of them: a record the set adds is named ("to track 'Text 1'", a track
+ * the same fold adds; regress prod3 P3-B read "another track").
+ */
+export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null, names?: Doc): string[] {
+  return lines(ops, base, schema, intent, names).map((l) => l.text);
+}
+
+/**
+ * A version in words: every line describe() gives (`lines`), and one line that sums them up (`summary`): the line
+ * itself when there is one, else the changes grouped by what was done ("Moved 'clip.mp4', changed 'W1' and 'W2'"),
+ * a record by its name and several of a kind by their count ("Added 2 tracks, 4 clips and media 'intro.mp4'"), at
+ * most three such groups ("…, and 2 more changes"). Empty when nothing is worded.
+ */
+export function describeVersion(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): { summary: string; lines: string[] } {
+  const ls = lines(ops, base, schema, intent);
+  return { summary: summaryOf(ls, schema), lines: ls.map((l) => l.text) };
+}
+
+const lower = (x: string) => (/^[A-Z][a-z]/.test(x) ? x[0]!.toLowerCase() + x.slice(1) : x);
+const plural = (noun: string) => (noun.endsWith("s") ? noun : noun === "media" ? "media files" : `${noun}s`);
+const and = (xs: readonly string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+function summaryOf(all: readonly Line[], schema: Schema): string {
+  // each record by what it is (laptop re-check P3-8: titles were counted as clips, and their own media entries as
+  // media files): the host's noun for it, and a record that is part of another left out
+  const nounOf = (l: Line) => {
+    const cs = l.coll === undefined ? undefined : schema.collections[l.coll];
+    const own = cs?.nounOf && l.rec ? cs.nounOf(l.rec) : undefined;
+    return own === null ? null : (own ?? cs?.noun ?? (l.coll === schema.timeline?.lanes ? "track" : "item"));
   };
-  const label = (coll: string, rec: Rec | undefined) => schema.label?.(coll, rec, nameDoc()) ?? String(rec?.name ?? rec?.id ?? "?");
+  const kept = all.filter((l) => !l.verb || nounOf(l) !== null);
+  const ls = kept.length ? kept : all;
+  if (ls.length <= 1) return ls[0]?.text ?? "";
+  const groups: { verb?: string; text?: string; n: number; byNoun: Map<string, string[]> }[] = [];
+  for (const l of ls) {
+    let g = l.verb ? groups.find((x) => x.verb === l.verb) : undefined;
+    if (!g) groups.push((g = { ...(l.verb ? { verb: l.verb } : { text: l.text }), n: 0, byNoun: new Map() }));
+    g.n++;
+    const k = l.verb ? (nounOf(l) ?? "item") : "";
+    if (l.verb) (g.byNoun.get(k) ?? g.byNoun.set(k, []).get(k)!).push(l.one!);
+  }
+  const words = groups.map((g) => {
+    if (!g.verb) return g.text!;
+    const one = g.byNoun.size === 1;
+    const what = [...g.byNoun].map(([noun, xs]) => (xs.length === 1 ? xs[0]! : one && xs.length === 2 ? `${xs[0]} and ${xs[1]}` : `${xs.length} ${plural(noun)}`));
+    return g.verb.replace("%s", and(what));
+  });
+  if (words.length > 3) {
+    const rest = groups.slice(2).reduce((n, g) => n + g.n, 0);
+    words.splice(2, words.length - 2, `and ${rest} more change${rest === 1 ? "" : "s"}`);
+  }
+  return words.map((w, i) => (i ? lower(w) : w)).join(", ");
+}
+
+type Group = { coll: string | null; id: unknown; ops: PlainOp[] };
+/** The ops by record ("items/c1"), and root fields by name, in the order they come. */
+function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group> {
+  const groups = new Map<string, Group>();
+  for (const op of plain) {
+    const cs = schema.collections[op.path[0] as string];
+    const k = cs ? op.path[0] + "/" + op.path[1] : String(op.path[0]);
+    let g = groups.get(k);
+    if (!g) groups.set(k, (g = { coll: cs ? (op.path[0] as string) : null, id: op.path[1], ops: [] }));
+    g.ops.push(op);
+  }
+  return groups;
+}
+/**
+ * `base` plus the records `ops` insert, as a new doc: the doc a label looks records up in (`describe`'s `names`, made
+ * once for many rows, and read as it is then: who holds a part is indexed on it).
+ */
+export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
+  const added = new Map<string, Rec[]>();
+  for (const op of ops) {
+    if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
+    const c = op.path[0] as string;
+    let l = added.get(c);
+    if (!l) added.set(c, (l = []));
+    l.push(op.value as Rec);
+  }
+  // a doc of its own even with nothing added: heldParts keys its index on it
+  const named: Doc = { ...base };
+  for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
+  return named;
+}
+function labeller(plain: readonly PlainOp[], base: Doc, schema: Schema, names?: Doc) {
+  let named: Doc | null = names ?? null;
+  const nameDoc = (): Doc => (named ??= namingDoc(base, plain, schema));
+  return { nameDoc, label: (coll: string, rec: Rec | undefined) => schema.label?.(coll, rec, nameDoc()) ?? String(rec?.name ?? rec?.id ?? "?") };
+}
+
+/**
+ * A clip split (the editor's Split at playhead): one clip removed, and in its place two or more of the same footage
+ * (same kind, same references, same name) on its track, back to back over its range. Or two parts of which one is still
+ * where the split left it and the other keeps the cut's source point (it was moved, or trimmed at its far end, after
+ * the split in the same version). `parts` left to right, each with the record the split alone made of it (`ideal`), so
+ * what was done to it afterwards can be told; `at`: the timeline times it was split at.
+ */
+interface Split {
+  coll: string;
+  key: string;
+  rec: Rec;
+  at: number[];
+  parts: { key: string; rec: Rec; ideal: Rec }[];
+}
+const SRC_EPS = 1e-3;
+const close = (a: unknown, b: unknown) => (typeof a === "number" && typeof b === "number" ? Math.abs(a - b) < SRC_EPS : a === b);
+function findSplits(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, label: (coll: string, rec: Rec | undefined) => string): Split[] {
+  const tl = schema.timeline;
+  if (!tl) return [];
+  const K = schema.collections[tl.collection]!.key;
+  const whole = (g: Group, kind: string) => g.coll === tl.collection && g.ops.length === 1 && g.ops[0]!.path.length === 2 && g.ops[0]!.op === kind;
+  const added: { key: string; rec: Rec }[] = [],
+    removed: { key: string; rec: Rec }[] = [];
+  for (const [key, g] of groups) {
+    if (whole(g, "insert")) added.push({ key, rec: (g.ops[0] as { value: Rec }).value });
+    else if (whole(g, "remove")) {
+      const rec = getIn(base, [tl.collection, g.id as string], schema) as Rec | undefined;
+      if (rec) removed.push({ key, rec });
+    }
+  }
+  const out: Split[] = [];
+  if (!removed.length || added.length < 2) return out;
+  const num = (r: Rec, f: string) => r[f] as number;
+  // the same footage: every reference (a field named like an id) and the kind as they were, and the same name
+  const names = new Map<Rec, string>();
+  const named = (x: Rec) => names.get(x) ?? names.set(x, label(tl.collection, x)).get(x)!;
+  const same = (r: Rec, x: Rec) => {
+    for (const k of new Set([...Object.keys(r), ...Object.keys(x)])) if (k !== K && k !== tl.lane && (k === "type" || isIdKey(k)) && !deepEqual(r[k], x[k])) return false;
+    return named(r) === named(x);
+  };
+  const used = new Set<string>();
+  for (const R of removed) {
+    const r = R.rec,
+      s0 = num(r, tl.start),
+      e0 = num(r, tl.end);
+    if (!Number.isFinite(s0) || !Number.isFinite(e0)) continue;
+    const speed = typeof r[tl.speed] === "number" ? num(r, tl.speed) : 1;
+    const src = num(r, tl.source),
+      srcEnd = num(r, tl.sourceEnd),
+      hasSrc = Number.isFinite(src) && Number.isFinite(srcEnd);
+    // the record the split alone makes of [s, e]: forwards the source runs from in-point to out-point, backwards the
+    // other way; the outer sides keep the original's own values
+    const ideal = (p: Rec, s: number, e: number, back: boolean): Rec => {
+      const x: Rec = { ...r, [K]: p[K], [tl.start]: s, [tl.end]: e };
+      if (hasSrc) {
+        if (back) (x[tl.sourceEnd] = close(s, s0) ? srcEnd : srcEnd - (s - s0) * speed), (x[tl.source] = close(e, e0) ? src : srcEnd - (e - s0) * speed);
+        else (x[tl.source] = close(s, s0) ? src : src + (s - s0) * speed), (x[tl.sourceEnd] = close(e, e0) ? srcEnd : src + (e - s0) * speed);
+      }
+      return x;
+    };
+    const cands = added.filter((a) => !used.has(a.key) && same(r, a.rec)).sort((a, b) => num(a.rec, tl.start) - num(b.rec, tl.start) || num(a.rec, tl.end) - num(b.rec, tl.end) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    if (cands.length < 2) continue;
+    const take = (parts: { key: string; rec: Rec }[], at: number[], ideals: Rec[]) => {
+      for (const p of parts) used.add(p.key);
+      out.push({ coll: tl.collection, key: R.key, rec: r, at, parts: parts.map((p, i) => ({ ...p, ideal: ideals[i]! })) });
+    };
+    // back to back over its range, on its track
+    const chain: { key: string; rec: Rec }[] = [];
+    for (let at = s0; !close(at, e0); ) {
+      const next = cands.find((a) => !chain.includes(a) && a.rec[tl.lane] === r[tl.lane] && close(num(a.rec, tl.start), at) && num(a.rec, tl.end) > at + SRC_EPS && num(a.rec, tl.end) < e0 + SRC_EPS);
+      if (!next) break;
+      chain.push(next);
+      at = num(next.rec, tl.end);
+    }
+    if (chain.length >= 2 && close(num(chain.at(-1)!.rec, tl.end), e0)) {
+      const p0 = chain[0]!.rec;
+      // played backwards: the left part ends at the original's out-point
+      const back = hasSrc && !close(p0[tl.source], src) && close(p0[tl.sourceEnd], srcEnd);
+      take(chain, chain.slice(1).map((p) => num(p.rec, tl.start)), chain.map((p) => ideal(p.rec, num(p.rec, tl.start), num(p.rec, tl.end), back)));
+      continue;
+    }
+    // two parts: one where the split left it (its anchor: from the start, or to the end, of the original on its track),
+    // the other changed since (it keeps the cut's source point, or without source points its length). Only anchors are
+    // paired (a bulk replacement with none costs nothing more), and a forward reading wins over a backward one whatever
+    // order the ops come in: core doesn't know which way a clip plays, and the two can both fit one pair
+    const inside = (t: number) => t > s0 + SRC_EPS && t < e0 - SRC_EPS;
+    const onTrack = (a: { rec: Rec }) => a.rec[tl.lane] === r[tl.lane];
+    const lefts = cands.filter((a) => onTrack(a) && close(num(a.rec, tl.start), s0) && inside(num(a.rec, tl.end)));
+    const rights = cands.filter((b) => onTrack(b) && close(num(b.rec, tl.end), e0) && inside(num(b.rec, tl.start)));
+    if (!lefts.length && !rights.length) continue;
+    const keeps = (p: Rec, x: Rec, left: boolean, back: boolean) => (hasSrc ? close(p[left !== back ? tl.sourceEnd : tl.source], x[left !== back ? tl.sourceEnd : tl.source]) : close(num(p, tl.end) - num(p, tl.start), num(x, tl.end) - num(x, tl.start)));
+    const pairs: [{ key: string; rec: Rec }, { key: string; rec: Rec }, number][] = [];
+    for (const a of lefts) for (const b of cands) if (a !== b) pairs.push([a, b, num(a.rec, tl.end)]);
+    for (const b of rights) for (const a of cands) if (a !== b) pairs.push([a, b, num(b.rec, tl.start)]);
+    found: for (const back of hasSrc ? [false, true] : [false])
+      for (const [a, b, t] of pairs) {
+        const ia = ideal(a.rec, s0, t, back),
+          ib = ideal(b.rec, t, e0, back);
+        if (keeps(a.rec, ia, true, back) && keeps(b.rec, ib, false, back)) {
+          take([a, b], [t], [ia, ib]);
+          break found;
+        }
+      }
+  }
+  return out;
+}
+
+/**
+ * The clips a version split (the editor's Split at playhead): the removed clip's id and its parts' ids, left to right.
+ * A list of changes by record (the Fold dialog) keeps them together: one change, worded as the split.
+ */
+export function splits(ops: readonly Op[], base: Doc, schema: Schema): { collection: string; removed: string; parts: string[] }[] {
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const K = schema.timeline ? schema.collections[schema.timeline.collection]?.key : undefined;
+  if (!K) return [];
+  return findSplits(groupOps(plain, schema), base, schema, labeller(plain, base, schema).label).map((s) => ({ collection: s.coll, removed: String(s.rec[K]), parts: s.parts.map((p) => String(p.rec[K])) }));
+}
+
+/**
+ * How many changes `ops` make, counted one way everywhere (History's fold titles, `cb history`'s left out, Compare,
+ * Watch the changes and the Fold dialog's rows; laptop re-check P3): one per record changed, one per root field, and
+ * a split (its removed clip and its parts) one. A ripple's remap is no change of its own. `among` (a partial fold's
+ * left-out paths): only the records those paths name, a split among them still one.
+ */
+export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, among?: readonly PathKey[]): number {
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const groups = groupOps(plain, schema);
+  let keys: ReadonlySet<string> = new Set(groups.keys());
+  if (among) {
+    const ks = new Set<string>();
+    for (const k of among) {
+      const [c, id] = k.split("/").map(unescapeSegment);
+      if (c) ks.add(schema.collections[c] && id !== undefined ? `${c}/${id}` : c);
+    }
+    keys = ks;
+  }
+  let n = keys.size;
+  if (n < 2) return n;
+  // a record part of another (a title's own media entry) is its holder's change
+  for (const [k, holder] of heldParts(groups, base, schema)) if (keys.has(k) && keys.has(holder)) n--;
+  if (keys.size < 3) return n; // a split is three records at least
+  for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
+  return n;
+}
+
+/**
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) whose change is their
+ * holder's, as a split's parts are the split's (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted
+ * media 'Text: W6'"; regress prod3 P3-C: a setup row's "15 changes" listed every title's entry). The holder is the one
+ * record of the part's `partOf` collection whose declared field names it, in base or among the records the change
+ * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
+ * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
+ * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
+ * is still told. Who names what is read once per call (a restore of many titles stays linear), and once per `names`
+ * doc (describe's, `namingDoc(base, allOps)`: base plus all of a larger set's inserts) for the rows of one Fold plan,
+ * so a duplicate another row inserts counts too (review of the merge: each row rebuilt it). Part's key → holder's.
+ */
+// by `names` doc, then "collection\0field": the value → the keys of every record whose field holds it
+const NAMERS = new WeakMap<Doc, Map<string, Map<unknown, Set<unknown>>>>();
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, names?: Doc): Map<string, string> {
+  const out = new Map<string, string>();
+  const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
+  let index = names && NAMERS.get(names);
+  if (!index) {
+    index = new Map();
+    if (names) NAMERS.set(names, index);
+  }
+  const namers = (coll: string, field: string, hk: string) => {
+    const at = coll + "\0" + field;
+    let m = index!.get(at);
+    if (!m) {
+      const add = (v: unknown, id: unknown) => (m!.get(v) ?? m!.set(v, new Set()).get(v)!).add(id);
+      index!.set(at, (m = new Map()));
+      // `names` holds base and every insert of the set; else base, then what these ops insert
+      for (const h of ((names ?? base)[coll] as Rec[] | undefined) ?? EMPTY) add(h[field], h[hk]);
+      if (!names) for (const [, g] of groups) {
+        const w = g.coll === coll && whole(g);
+        if (w && w.op === "insert") add((w.value as Rec)?.[field], g.id);
+      }
+    }
+    return m;
+  };
+  for (const [k, g] of groups) {
+    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf;
+    if (!of || !cs?.nounOf) continue;
+    const w = whole(g);
+    const r = (w?.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
+    if (!r || cs!.nounOf(r) !== null) continue;
+    const hk = schema.collections[of.collection]?.key;
+    const names = hk ? namers(of.collection, of.field, hk).get(r[cs!.key]) : undefined;
+    if (names?.size !== 1) continue;
+    const hkey = of.collection + "/" + [...names][0], hw = whole(groups.get(hkey));
+    // the holder touched too; added or deleted together, or both edited
+    if (groups.has(hkey) && (w || hw ? w?.op === hw?.op : true)) out.set(k, hkey);
+  }
+  return out;
+}
+/**
+ * The records `ops` add or delete with the record that holds them (heldParts): one change with it, so a list by record
+ * (the Fold dialog) joins each to its holder's row, as it joins a split's parts.
+ */
+export function heldBy(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; holder: [string, string] }[] {
+  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
+  return [...heldParts(groups, base, schema)].map(([p, h]) => {
+    const a = groups.get(p)!, b = groups.get(h)!;
+    return { part: [a.coll!, String(a.id)], holder: [b.coll!, String(b.id)] };
+  });
+}
+
+const PART = ["first", "second", "third", "fourth", "fifth"];
+
+function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: Doc): Line[] {
+  const tl = schema.timeline,
+    out: Line[] = [];
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const { nameDoc, label } = labeller(plain, base, schema, names);
+  // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
-    const t = tl && (getIn(base, [tl.lanes, id as string], schema) as Rec | undefined);
-    return t ? `'${label(tl!.lanes, t)}'` : `track ${String(id).slice(0, 6)}`;
+    const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
+    return t ? `'${label(tl!.lanes, t)}'` : "another track";
+  };
+  // "to track 'Text 1'"; a track it can't name is "to another track", never "to track another track" (P3-B)
+  const toTrack = (id: unknown) => {
+    const n = laneName(id);
+    return n[0] === "'" ? `track ${n}` : n;
   };
   const remapOps = ops.filter((op): op is RemapOp => op.op === "remap");
   let maps: RemapMaps = intent?.maps ?? (tl && !remapOps.length ? inferRemaps(schema, base, plain.map((op) => ({ path: op.path, op }))) : {});
@@ -84,90 +394,179 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       if (sp && !near(sp[0], it[tl.start] as number)) explained.add(it[schema.collections[tl.collection]!.key]);
     }
     for (const st of chain) {
-      for (const [a, b] of st.d) out.push(`Removed ${fmtS(b - a)} from ${laneName(lane)} at ${fmtT(a)} (later items pulled left)`);
-      for (const [p, len] of st.i) out.push(`Inserted ${fmtS(len)} into ${laneName(lane)} at ${fmtT(p)} (later items pushed right)`);
+      for (const [a, b] of st.d) out.push({ text: `Removed ${fmtS(b - a)} from ${laneName(lane)} at ${fmtT(a)} (later items pulled left)` });
+      for (const [p, len] of st.i) out.push({ text: `Inserted ${fmtS(len)} into ${laneName(lane)} at ${fmtT(p)} (later items pushed right)` });
     }
   }
-  const groups = new Map<string, { coll: string | null; id: unknown; ops: PlainOp[] }>();
-  for (const op of plain) {
-    const cs = schema.collections[op.path[0] as string];
-    const k = cs ? op.path[0] + "/" + op.path[1] : String(op.path[0]);
-    let g = groups.get(k);
-    if (!g) groups.set(k, (g = { coll: cs ? (op.path[0] as string) : null, id: op.path[1], ops: [] }));
-    g.ops.push(op);
-  }
+  const groups = groupOps(plain, schema);
   const val = (op: PlainOp | undefined) => (op as { value?: unknown } | undefined)?.value as number;
-  for (const g of groups.values()) {
+  /** A record's changed fields in words; `before` and `doc` as they were, `called` its name when not its label. */
+  const recordLine = (coll: string, id: unknown, ops: readonly PlainOp[], before: Rec | undefined, doc: Doc, called?: string): Line | null => {
+  const name = called ?? `'${label(coll, before)}'`;
+  const cs = schema.collections[coll]!;
+  const noun = coll === tl?.lanes ? cs.noun ?? "track" : ((before?.type as string | undefined) ?? cs.noun ?? "item");
+  const f = new Map<string, PlainOp>();
+  for (const op of ops) if (op.path.length === 3) f.set(op.path[2] as string, op);
+  const parts: string[] = [];
+  let verb = "Changed %s";
+  let rest = ops;
+  // a field the host words as a phrase ("Linked %s for sharing"): one phrase for all its ops, never its values
+  const phrases = cs.phrases;
+  if (phrases) {
+    const said = new Set<string>();
+    for (const op of ops) {
+      const p = phrases[op.path[2] as string];
+      if (!p) continue;
+      const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
+      const fresh = op.path.length === 3 && op.op !== "unset" && op.op !== "remove" && getIn(doc, op.path, schema) === undefined;
+      const t = gone ? p.cleared : fresh ? p.set : (p.changed ?? p.set);
+      if (!parts.length) verb = t;
+      if (!said.has(t)) parts.push(t.replace("%s", name));
+      said.add(t);
+    }
+    rest = rest.filter((op) => !phrases[op.path[2] as string]);
+  }
+  if (coll === tl?.lanes && f.get(POS)) {
+    if (!parts.length) verb = "Reordered %s";
+    parts.push(`Reordered ${noun} ${name}`);
+    rest = rest.filter((op) => op !== f.get(POS));
+  }
+  if (tl && coll === tl.collection && before) {
+    const s = f.get(tl.start),
+      e = f.get(tl.end),
+      ln = f.get(tl.lane);
+    const used = new Set([s, e, ln, f.get(tl.source), f.get(tl.sourceEnd)].filter(Boolean));
+    const os = before[tl.start] as number,
+      oe = before[tl.end] as number;
+    const n0 = parts.length;
+    if (explained.has(id)) used.add(s).add(e);
+    else if (s && e && Math.abs(val(s) - os - (val(e) - oe)) < 1e-4) parts.push(`Moved ${name} ${fmtT(os)} → ${fmtT(val(s))}`);
+    else if (s && e) parts.push(`Retimed ${name} ${fmtT(os)}–${fmtT(oe)} → ${fmtT(val(s))}–${fmtT(val(e))}`);
+    else if (e) parts.push(`Trimmed ${name} end ${fmtS(oe)} → ${fmtS(val(e))}`);
+    else if (s) parts.push(`Trimmed ${name} start ${fmtS(os)} → ${fmtS(val(s))}`);
+    else if (f.get(tl.source)) parts.push(`Slipped ${name} source in ${fmtS(before[tl.source] as number)} → ${fmtS(val(f.get(tl.source)))}`);
+    if (ln) parts.push(parts.length ? `to ${toTrack(val(ln))}` : `Moved ${name} to ${toTrack(val(ln))}`);
+    if (!n0 && parts.length) verb = `${parts[0]!.split(" ")[0]} %s`;
+    rest = rest.filter((op) => !used.has(op));
+  }
+  // an element of a keyed list by its own name or type ("blur"), else its key when that isn't an id ("opacity"
+  // keyframes), else nothing: never an effect's id (UI audit P1-2, review #3)
+  const elem = (op: PlainOp) => {
+    const v = (op.op === "insert" ? op.value : getIn(doc, op.path, schema)) as Rec | undefined;
+    const own = v && typeof v === "object" ? [v.name, v.type, v.label].find((x) => typeof x === "string" && x) : undefined;
+    if (own) return ` ${short(own)}`;
+    const spec = specAt(schema, op.path.slice(0, 3)), k = op.path.at(-1);
+    return (spec?.kind === "keyed" && isIdKey(spec.key)) || opaque("", k) ? "" : ` ${short(k)}`;
+  };
+  for (const op of rest) {
+    const field = fieldWords(schema, op.path).words;
+    const list = fieldWords(schema, op.path.slice(0, 3)).words;
+    // a keyed list set whole where there was none (a clip's first effect: no effects field yet) is its elements added,
+    // as an insert into a list that was there says it (regress 2026-11-02 P3-1: "Changed 'clip.mp4' effect")
+    const spec = op.op === "set" && op.path.length === 3 && Array.isArray(op.value) && op.value.length ? specAt(schema, op.path) : undefined;
+    const was = spec?.kind === "keyed" ? getIn(doc, op.path, schema) : null;
+    if (spec?.kind === "keyed" && (was === undefined || (Array.isArray(was) && !was.length))) {
+      for (const v of (op as { value: Rec[] }).value) parts.push(`added ${list}${elem({ op: "insert", path: [...op.path, String(v?.[spec.key] ?? "")], value: v } as PlainOp)}`);
+      continue;
+    }
+    if (op.op === "insert") parts.push(`added ${list}${elem(op)}`);
+    else if (op.op === "remove") parts.push(`removed ${list}${elem(op)}`);
+    else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
+    else if (op.op === "unset") parts.push(`cleared ${field}`);
+    else {
+      const old = getIn(doc, op.path, schema);
+      // never an id or a hash (UI audit P1-2): the field is named alone
+      if (opaque(op.path[2], op.value) || opaque(op.path[2], old) || opaque(op.path.at(-1), op.value)) parts.push(`changed ${field}`);
+      else parts.push(old === undefined ? `set ${field} to ${short(op.value)}` : `${field} ${short(old)} → ${short(op.value)}`);
+    }
+  }
+  if (!parts.length) return null;
+  if (parts.length > 4) parts.splice(3, parts.length - 3, `and ${parts.length - 3} more changes`);
+  const p0 = parts[0]!;
+  if (!/^[A-Z]/.test(p0))
+    parts[0] = p0.startsWith("set ") ? `Set ${name} ${p0.slice(4)}` : p0.startsWith("changed ") ? `Changed ${name} ${p0.slice(8)}` : /^(added|removed|reordered|cleared) /.test(p0) ? `${p0[0]!.toUpperCase()}${p0.slice(1)} on ${name}` : `Changed ${name} ${p0}`;
+  return { text: parts.map((p, i) => (i ? lower(p) : p)).join(", "), verb, coll, one: name, ...(before ? { rec: before } : {}) };
+  };
+  const split = new Map<string, Split | null>();
+  for (const sp of findSplits(groups, base, schema, label)) {
+    split.set(sp.key, sp);
+    for (const p of sp.parts) split.set(p.key, null);
+  }
+  // a part with the record holding it: told with it (heldParts)
+  for (const k of heldParts(groups, base, schema, names).keys()) split.set(k, null);
+  for (const [key, g] of groups) {
+    const sp = split.get(key);
+    if (sp === null) continue; // a split's part, or a part held by another record: told with it
+    if (sp) {
+      // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
+      // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,
+      // a field the host's split leaves off its parts, `splitDrops`, keyframes it rescaled, are no change of their own)
+      const name = `'${label(sp.coll, sp.rec)}'`;
+      const said: string[] = [`Split ${name} at ${and(sp.at.map(fmtT))}`];
+      // a field the host's split leaves off its parts (`splitDrops`), gone from every part: the split's own
+      const drops = new Set((tl!.splitDrops ?? EMPTY).filter((f) => sp.rec[f] !== undefined && sp.parts.every((p) => p.rec[f] === undefined)));
+      sp.parts.forEach(({ rec, ideal }, i) => {
+        const id = rec[schema.collections[sp.coll]!.key] as string;
+        const fs = new Set([...Object.keys(rec), ...Object.keys(ideal)]);
+        const ops: PlainOp[] = [];
+        for (const f of fs) {
+          const v = rec[f],
+            was = ideal[f];
+          const timing = f === tl!.start || f === tl!.end || f === tl!.source || f === tl!.sourceEnd || f === tl!.lane;
+          const plainV = (x: unknown) => x === null || typeof x !== "object";
+          if (timing) {
+            if (!close(v, was)) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          } else if (was === undefined) {
+            if (v !== undefined) ops.push({ op: "set", path: [sp.coll, id, f], value: v }); // set on the part since
+          } else if (v === undefined) {
+            // a value cleared, unless the split dropped it from every part (Cardboard: autoReframe, laptop re-check P3)
+            if (plainV(was) && !drops.has(f)) ops.push({ op: "unset", path: [sp.coll, id, f] });
+          } else if (plainV(v) && plainV(was) && v !== was) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
+          // a structure in both that differs (keyframes): the split rescales those; not told as a change of the part
+        }
+        if (!ops.length) return;
+        const doc = { ...base, [sp.coll]: [...((base[sp.coll] as Rec[] | undefined) ?? EMPTY), ideal] };
+        const part = `its ${sp.parts.length === 2 ? (i ? "right" : "left") : (PART[i] ?? `${i + 1}th`)} part`;
+        const l = recordLine(sp.coll, id, ops, ideal, doc, part);
+        if (l) said.push(lower(l.text));
+      });
+      out.push({ text: said.join(", "), verb: "Split %s", coll: sp.coll, one: name, rec: sp.rec });
+      continue;
+    }
     if (!g.coll) {
       for (const op of g.ops) {
         const old = getIn(base, op.path, schema);
         const f = fieldWords(schema, op.path);
         const what = f.labelled ? `the ${f.words}` : f.words;
         const v = (op as { value?: unknown }).value;
-        // never "none" as a value: a field set for the first time is named or set ("Named the project 'Dragon short'")
-        if (op.op === "unset") out.push(`Cleared ${what}`);
-        else if (old === undefined) out.push(namedAs(f, v) ?? `Set ${what} to ${short(v)}`);
-        else out.push(`Changed ${what} ${short(old)} → ${short(v)}`);
+        // never "none" as a value: a field set for the first time is named or set ("Named the project 'Dragon short'");
+        // never an id or a hash: the field is named alone
+        if (op.op === "unset") out.push({ text: `Cleared ${what}` });
+        else if (opaque(op.path.at(-1), v) || opaque(op.path.at(-1), old)) out.push({ text: `${old === undefined ? "Set" : "Changed"} ${what}` });
+        else if (old === undefined) out.push({ text: namedAs(f, v) ?? `Set ${what} to ${short(v)}` });
+        else out.push({ text: `Changed ${what} ${short(old)} → ${short(v)}` });
       }
       continue;
     }
     const before = getIn(base, [g.coll, g.id as string], schema) as Rec | undefined;
     const whole = g.ops.find((op) => op.path.length === 2);
     const cs = schema.collections[g.coll]!;
-    const noun = g.coll === tl?.lanes ? cs.noun ?? "track" : ((((before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined)?.type as string | undefined) ?? cs.noun ?? "item");
+    const rec = (before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined;
+    // what the host calls it ("title"), else its kind ("video")
+    const own = rec && cs.nounOf?.(rec);
+    const noun = g.coll === tl?.lanes ? cs.noun ?? "track" : (own || ((rec?.type as string | undefined) ?? cs.noun ?? "item"));
     if (whole?.op === "insert") {
       const r = whole.value as Rec;
       const where = tl && g.coll === tl.collection ? ` on ${laneName(r[tl.lane])} at ${fmtT(r[tl.start] as number)}` : "";
-      out.push(`Added ${noun} '${label(g.coll, r)}'${where}`);
+      out.push({ text: `Added ${noun} '${label(g.coll, r)}'${where}`, verb: "Added %s", coll: g.coll, one: `${noun} '${label(g.coll, r)}'`, rec: r });
       continue;
     }
     if (whole) {
-      out.push(`Deleted ${noun} '${label(g.coll, before)}'`);
+      out.push({ text: `Deleted ${noun} '${label(g.coll, before)}'`, verb: "Deleted %s", coll: g.coll, one: `${noun} '${label(g.coll, before)}'`, ...(before ? { rec: before } : {}) });
       continue;
     }
-    const name = `'${label(g.coll, before)}'`;
-    const f = new Map<string, PlainOp>();
-    for (const op of g.ops) if (op.path.length === 3) f.set(op.path[2] as string, op);
-    const parts: string[] = [];
-    let rest = g.ops;
-    if (g.coll === tl?.lanes && f.get(POS)) {
-      parts.push(`Reordered ${noun} ${name}`);
-      rest = rest.filter((op) => op !== f.get(POS));
-    }
-    if (tl && g.coll === tl.collection && before) {
-      const s = f.get(tl.start),
-        e = f.get(tl.end),
-        ln = f.get(tl.lane);
-      const used = new Set([s, e, ln, f.get(tl.source), f.get(tl.sourceEnd)].filter(Boolean));
-      const os = before[tl.start] as number,
-        oe = before[tl.end] as number;
-      if (explained.has(g.id)) used.add(s).add(e);
-      else if (s && e && Math.abs(val(s) - os - (val(e) - oe)) < 1e-4) parts.push(`Moved ${name} ${fmtT(os)} → ${fmtT(val(s))}`);
-      else if (s && e) parts.push(`Retimed ${name} ${fmtT(os)}–${fmtT(oe)} → ${fmtT(val(s))}–${fmtT(val(e))}`);
-      else if (e) parts.push(`Trimmed ${name} end ${fmtS(oe)} → ${fmtS(val(e))}`);
-      else if (s) parts.push(`Trimmed ${name} start ${fmtS(os)} → ${fmtS(val(s))}`);
-      else if (f.get(tl.source)) parts.push(`Slipped ${name} source in ${fmtS(before[tl.source] as number)} → ${fmtS(val(f.get(tl.source)))}`);
-      if (ln) parts.push(parts.length ? `to track ${laneName(val(ln))}` : `Moved ${name} to track ${laneName(val(ln))}`);
-      rest = g.ops.filter((op) => !used.has(op));
-    }
-    for (const op of rest) {
-      const field = fieldWords(schema, op.path).words;
-      const list = fieldWords(schema, op.path.slice(0, 3)).words;
-      if (op.op === "insert") parts.push(`added ${list} ${short(op.path.at(-1))}`);
-      else if (op.op === "remove") parts.push(`removed ${list} ${short(op.path.at(-1))}`);
-      else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
-      else if (op.op === "unset") parts.push(`cleared ${field}`);
-      else {
-        const old = getIn(base, op.path, schema);
-        parts.push(old === undefined ? `set ${field} to ${short(op.value)}` : `${field} ${short(old)} → ${short(op.value)}`);
-      }
-    }
-    if (!parts.length) continue;
-    if (parts.length > 4) parts.splice(3, parts.length - 3, `and ${parts.length - 3} more changes`);
-    const p0 = parts[0]!;
-    if (!/^[A-Z]/.test(p0))
-      parts[0] = p0.startsWith("set ") ? `Set ${name} ${p0.slice(4)}` : /^(added|removed|reordered|cleared) /.test(p0) ? `${p0[0]!.toUpperCase()}${p0.slice(1)} on ${name}` : `Changed ${name} ${p0}`;
-    out.push(parts.join(", "));
+    const l = recordLine(g.coll, g.id, g.ops, before, base);
+    if (l) out.push(l);
   }
   return out;
 }
@@ -229,7 +628,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
   const isTimeline = !!tl && coll === tl.collection;
   const laneName = (id: unknown) => {
     const t = tl && doc ? (getIn(doc, [tl.lanes, id as string], schema) as Rec | undefined) : undefined;
-    return t ? `'${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
+    return t ? `track '${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
   };
   // A field's words: its label (or its nearest labelled parent's), else its path when the collection labels nothing.
   const labelOf = (key: string): string | null => {
@@ -291,7 +690,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
       const t = timeWords(v, isObj(b) ? b : undefined);
       if (t) parts.push(t);
     }
-    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to track ${laneName(v[tl.lane])}` : `on track ${laneName(v[tl.lane])}`);
+    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to ${laneName(v[tl.lane])}` : `on ${laneName(v[tl.lane])}`);
     for (const k of keys) {
       if (isTimeline && (TIME.has(k) || k === tl!.lane)) continue;
       const p = fieldPart(k, lv.get(k));
@@ -306,7 +705,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
     if (rest.at(-1) === POS) return "Its own order";
     if (whole || group) return isObj(v) ? fieldsWords(v, other, card.base) : "Changed it";
     const key = rest.join(".");
-    if (isTimeline && tl && key === tl.lane) return `On track ${laneName(v)}`;
+    if (isTimeline && tl && key === tl.lane) return `On ${laneName(v)}`;
     const w = valueWords(key, v);
     return w === null ? "Changed it" : cap(w);
   };

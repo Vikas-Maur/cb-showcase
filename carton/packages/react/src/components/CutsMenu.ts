@@ -6,7 +6,7 @@ import { createElement as h, useState } from "react";
 import { useCartonUi, useShownCuts, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Cut } from "../model.ts";
-import { InlineName, MenuButton, MenuItem, MenuLabel, MenuSeparator, cx } from "./ui.ts";
+import { InlineName, MenuButton, MenuItem, MenuLabel, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 
 export interface CutsMenuProps {
   /** Fold the current cut into another (opens the Fold in dialog). */
@@ -56,12 +56,14 @@ export function CutsMenu(p: CutsMenuProps) {
 
   const menu = h(MenuButton, {
     label: words.cuts,
-    title: words.cuts,
+    // no tip: the trigger already says which cut, and a tip would sit over the History filters below it
     triggerClassName: cx("carton-cuts-trigger", p.className),
+    // what the button is, for screen readers (P3-8); a name cut off at the panel's width shows whole on hover (P2-16)
+    ariaLabel: `${words.cut}: ${current?.label ?? words.mainCut}`,
     onOpenChange: (open) => !open && setMode("menu"),
     trigger: [
       h(Icon, { key: "i", name: "cut" }),
-      h("span", { key: "n", className: "carton-cuts-name" }, current?.label ?? words.mainCut),
+      h("span", { key: "n", className: "carton-cuts-name", onMouseEnter: tipIfCut }, current?.label ?? words.mainCut),
       h(Icon, { key: "c", name: "caretDown", size: 12 }),
     ],
     children: (close) => {
@@ -125,6 +127,27 @@ export function CutsMenu(p: CutsMenuProps) {
               words.foldInto(main.label),
             )
           : null,
+        // Fold another cut into this one, from here (P2-19): before, Main could only be folded into from the other
+        // cut's menu, which meant switching the editor to it first.
+        ...(current && !current.readOnly && p.onFoldIn
+          ? cuts
+              .filter((c) => c.id !== current.id)
+              .map((c) =>
+                h(
+                  MenuItem,
+                  {
+                    key: "in:" + c.id,
+                    icon: "fold",
+                    onSelect: () => {
+                      close();
+                      const now = ui.cuts();
+                      p.onFoldIn!(now.find((x) => x.id === c.id) ?? c, now.find((x) => x.id === current.id) ?? current);
+                    },
+                  },
+                  words.foldInHere(c.label),
+                ),
+              )
+          : []),
       ];
     },
   });

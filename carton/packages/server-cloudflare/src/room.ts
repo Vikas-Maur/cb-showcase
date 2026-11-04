@@ -29,6 +29,7 @@ import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
 import { r2BlobStore } from "./blob-r2.ts";
 import { doBlobStore } from "./blob-do.ts";
+import { cappedBlobStore, prepaidCap, reserveIn, writeCapOf, WRITE_CAP_PATH, type WriteCap } from "./write-cap.ts";
 import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 
 export const AUTH_HEADER = "x-carton-auth";
@@ -74,9 +75,10 @@ const trusted: AuthProvider = { kind: "worker-verified", verify: async () => nul
 // One project's blobs, in two scopes no route can cross: the sequencer's keyframes, segments and large change bodies
 // under `projects/<p>/seq/`, and the media the HTTP API signs and uploads under `projects/<p>/media/`. An editor
 // can write media, never the sequencer's records (which may belong to a cut they may not write).
-function projectBlobs(env: Env, projectId: string, scope: "seq" | "media"): BlobStore | undefined {
-  if (env.BLOBS) return scopedBlobStore(r2BlobStore(env.BLOBS), `projects/${projectId}/${scope}/`);
-  if (env.BLOB_VAULT) return scopedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), `${scope}/`);
+// Both sit on the physical store wrapped by the deployment's daily write cap (write-cap.ts; off unless configured).
+function projectBlobs(env: Env, projectId: string, scope: "seq" | "media", cap: WriteCap | undefined = writeCapOf(env)): BlobStore | undefined {
+  if (env.BLOBS) return scopedBlobStore(cappedBlobStore(r2BlobStore(env.BLOBS), cap), `projects/${projectId}/${scope}/`);
+  if (env.BLOB_VAULT) return scopedBlobStore(cappedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), cap), `${scope}/`);
   return undefined;
 }
 export const sequencerBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "seq");
@@ -92,8 +94,26 @@ function teamOf(env: Env, projectId: string): string | undefined {
   const team = Object.hasOwn(teams.map, projectId) ? teams.map[projectId] : undefined;
   return typeof team === "string" ? team : undefined;
 }
-export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
-  env.BLOBS ? projectMediaStore(r2BlobStore(env.BLOBS), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
+// A team's grants (host-http team.ts: which team media a project may read) are outside the write cap: an editor's HEAD
+// claims, so a grant is written by a read, and a cap reached must not stop editors reading media their project can
+// read. They can't fill a bucket: each is an empty object, at most one per project and hash the team already holds,
+// and a claim of a granted hash writes nothing.
+// `cap`: the write cap the store's writes reserve against (default the deployment's; a stream append passes one it
+// reserved for in a single call, `mediaBlobsForWrites`).
+export function mediaBlobs(env: Env, projectId: string, cap: WriteCap | undefined = writeCapOf(env)): BlobStore | undefined {
+  if (!env.BLOBS) return projectBlobs(env, projectId, "media", cap);
+  const r2 = r2BlobStore(env.BLOBS);
+  return projectMediaStore(cappedBlobStore(r2, cap), projectId, teamOf(env, projectId), { grants: r2 });
+}
+/**
+ * The media store for one request's writes of about `bytes` in `ops` calls (a stream append): the daily write cap
+ * reserved once for them. Refused, it throws the cap's WriteCapError (with `retryAt`) before anything is written: the
+ * Worker answers 429 with Retry-After, and the client's batch stays queued (a refused append is retried, never dropped).
+ */
+export async function mediaBlobsForWrites(env: Env, projectId: string, bytes: number, ops: number): Promise<BlobStore | undefined> {
+  const cap = writeCapOf(env);
+  return mediaBlobs(env, projectId, cap && (await prepaidCap(cap, bytes, ops)));
+}
 
 // The newest document schemaVersion the room accepts in hello: SCHEMA_VERSION when set (to pin a deployment), else the
 // Cardboard adapter's CARDBOARD_SCHEMA_VERSION, so a Worker built with an adapter takes that adapter's clients (H-SV).
@@ -199,6 +219,10 @@ export class ProjectRoom {
       sql.exec("INSERT OR REPLACE INTO carton_open_create (client, n) VALUES (?, ?)", client, n + 1);
       return Response.json({ ok: true });
     }
+    // the deployment's daily write cap (write-cap.ts): one room per UTC day, named `write-cap/<day>`, reached only by
+    // the Worker and its rooms
+    if (url0.pathname === WRITE_CAP_PATH && req.method === "POST")
+      return Response.json(reserveIn(this.#ctx.storage.sql, (await req.json()) as { bytes: number; ops: number; maxBytes: number; maxOps: number }));
     const projectId = req.headers.get(PROJECT_HEADER);
     const authJson = req.headers.get(AUTH_HEADER);
     if (!projectId || !authJson) return new Response("the room is reached through the Worker", { status: 400 });
@@ -425,4 +449,4 @@ export class ProjectRoom {
 }
 
 /** What of a connection's state the attachment must keep up with (all of it: a wake restores only the attachment). */
-const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.comments ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}|${JSON.stringify(s.identity ?? null)}`;
+const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.writeLimit ? 1 : 0}|${s.comments ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}|${JSON.stringify(s.identity ?? null)}`;

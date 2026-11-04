@@ -4,7 +4,7 @@
 // it), and refuses a file that already has these patches. Each part lives in scripts/carton/sync/patches/<part>.js and
 // exports `app({ main, worker, index, editor, store })` and/or `cli({ cb, chunk })`, each value being the file's
 // `{ replace(from, to, count = 1), prepend(text) }`; every anchor must match exactly `count` times or the build stops.
-// With Carton off at run time (CARDBOARD_CARTON is not "1") nothing here runs: each patch is behind `window.__carton?.on`
+// With Carton off at run time (CARDBOARD_CARTON=0; it is on by default) nothing here runs: each patch is behind `window.__carton?.on`
 // or `__carton.on` / `__cartonMain.on` / `__cartonCli.on`, and the worker's services exist only when the facade loads.
 // Usage: node patch-carton-sync.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>
 //        node patch-carton-sync.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>

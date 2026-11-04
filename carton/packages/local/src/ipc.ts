@@ -138,7 +138,10 @@ export class ControlServer {
       const result = await fn(msg.params ?? {}, ctx);
       reply({ result: result ?? null });
     } catch (e: any) {
-      reply({ error: { code: typeof e?.code === "number" ? e.code : RPC.internal, message: String(e?.message ?? e), ...(e?.data !== undefined ? { data: e.data } : {}) } });
+      // a string code (a domain error's: core's EMPTY_VERSION) travels in `data`, where JSON-RPC keeps an error's own
+      // detail, so the caller can tell it (review of fix/recover-save #2: a refused undo read as an unknown failure)
+      const data = e?.data !== undefined ? e.data : typeof e?.code === "string" ? { code: e.code } : undefined;
+      reply({ error: { code: typeof e?.code === "number" ? e.code : RPC.internal, message: String(e?.message ?? e), ...(data !== undefined ? { data } : {}) } });
     }
   }
 

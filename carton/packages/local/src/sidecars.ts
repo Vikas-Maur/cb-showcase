@@ -6,6 +6,8 @@
 //   - one change gets several answers in a row (its confirmation, then its late-conflict notice): they are handled one
 //     at a time in the order they came, and a weaker one never replaces a stronger one (a confirmation never overwrites
 //     the late conflict's cards).
+// A save a rebase emptied after it was sent comes back as a withdraw row (a `change` event with `withdrawn`), then as
+// `absorbed`: only the absorption answers it (confirmed, or the cards that took its place), never the row.
 // On a local cut the save answered for itself: nothing to forward.
 import type { Carton, CartonEvent } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
@@ -69,7 +71,8 @@ export function forwardSettles(carton: Carton, store: Store, onChangeUpdate: Non
 
   const off = carton.on((e: CartonEvent) => {
     // by id, whoever made it (a view save's id isn't this handle's): only a view's last change has a sidecar to settle
-    if (e.type === "change" && e.change.id) settle(e.branchId, e.change.id, { status: "confirmed", seq: e.seq });
+    // a withdraw row (H1) spends an id and confirms nothing: the `absorbed` event after it is the answer
+    if (e.type === "change" && e.change.id && !e.change.withdrawn) settle(e.branchId, e.change.id, { status: "confirmed", seq: e.seq });
     else if (e.type === "absorbed") settle(e.branchId, e.id, e.cards.length ? { status: "conflicts", conflicts: e.cards } : { status: "confirmed" });
     else if (e.type === "notice" && e.notice.change && e.notice.kind === "late-conflict") settle(null, e.notice.change, { status: "conflicts", conflicts: e.notice.cards ?? [] });
     else if (e.type === "notice" && e.notice.change && e.notice.kind === "rejected") settle(null, e.notice.change, { status: "rejected", reason: e.notice.text });

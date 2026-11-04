@@ -8,7 +8,23 @@
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { SHA256_HEADER } from "@carton/blob-memory/signed";
 import { platformFetch } from "@carton/http-node";
+import {
+  fromBase64,
+  streamEndOf,
+  streamPartOf,
+  streamSegmentOf,
+  StreamPartMissingError,
+  StreamRouteMissingError,
+  toBase64,
+  type StreamAppendAnswer,
+  type StreamAppendBatch,
+  type StreamAppender,
+  type StreamBatchReader,
+  type StreamReadItem,
+  type StreamReadOptions,
+} from "@carton/media";
 import { eachLimit } from "./pool.ts";
+import { ByteReader, headerFrame, StreamWireError, STREAM_WIRE_VERSION, type AppendHeaderPart, type ReadHeader } from "./stream-wire.ts";
 
 export interface HostBlobsOptions {
   /** The host's origin, e.g. `https://carton.example` or `http://127.0.0.1:8787`. */
@@ -52,12 +68,30 @@ export function hostMessageBlobs(opts: HostBlobsOptions): BlobStore {
 export class HostApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
-  constructor(status: number, code: string | undefined, message: string) {
+  /**
+   * A refusal for a while (a host's daily write limit: 429 with Retry-After): when to try again, in ms since the epoch
+   * on this machine's clock (BlobStore's contract for such a refusal). Undefined for any other failure.
+   */
+  readonly retryAt?: number;
+  constructor(status: number, code: string | undefined, message: string, retryAt?: number) {
     super(`${code ? `${code}: ` : ""}${message} (HTTP ${status})`);
     this.name = "HostApiError";
     this.status = status;
     this.code = code;
+    if (retryAt !== undefined) this.retryAt = retryAt;
   }
+}
+
+/** When a refused request may go again: the answer's retryAfterMs, else its Retry-After (seconds or a date). */
+function retryAtOf(r: Response, body: { retryAfterMs?: unknown }): number | undefined {
+  if (r.status !== 429 && r.status !== 503) return undefined;
+  if (typeof body.retryAfterMs === "number" && Number.isFinite(body.retryAfterMs) && body.retryAfterMs >= 0) return Date.now() + body.retryAfterMs;
+  const h = r.headers.get("retry-after");
+  if (!h) return undefined;
+  const sec = Number(h);
+  if (Number.isFinite(sec) && sec >= 0) return Date.now() + sec * 1000;
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? at : undefined;
 }
 
 // The stored object's info a signed PUT's answer carries, under the caller's key; null when it carries none.
@@ -91,15 +125,16 @@ async function olderHost(r: Response): Promise<{ older: boolean; text: string } 
 async function failed(r: Response, read?: string): Promise<never> {
   const text = read ?? (await r.text().catch(() => ""));
   let code: string | undefined, message = text || r.statusText;
+  let j: { error?: string; code?: string; retryAfterMs?: unknown } = {};
   try {
-    const j = JSON.parse(text) as { error?: string; code?: string };
+    j = JSON.parse(text) as typeof j;
     code = j.code;
     message = j.error ?? message;
   } catch {} // a signed blob URL answers in plain text
-  throw new HostApiError(r.status, code, message);
+  throw new HostApiError(r.status, code, message, retryAtOf(r, j));
 }
 
-export interface HostMediaBlobs extends BlobStore {
+export interface HostMediaBlobs extends BlobStore, StreamAppender, StreamBatchReader {
   getStream(key: string, range?: ByteRange): Promise<ReadableStream<Uint8Array> | null>;
   /** A short-lived URL for a player or ffmpeg (GET, with HTTP ranges) or for a direct upload (PUT). */
   signedUrl(key: string, opts: { method: "GET" | "PUT"; expiresIn: number }): Promise<string>;
@@ -116,6 +151,16 @@ export interface HostMediaBlobs extends BlobStore {
    * Not part of BlobStore: code that takes any store should look for it (`"heads" in store`).
    */
   heads(keys: readonly string[]): Promise<({ size: number } | null)[]>;
+  /**
+   * A proxy stream's parts in one request (POST /streams/<id>/append): `@carton/media`'s ProxyStreamWriter batches
+   * through it. A host from before the route: StreamRouteMissingError (the writer goes part by part).
+   */
+  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<StreamAppendAnswer>;
+  /**
+   * A batch of a stream's entries, manifests and bytes in one request (GET /streams/<id>/read), parts yielded as their
+   * bytes arrive; ProxyStreamReader reads through it. A host from before the route: StreamRouteMissingError.
+   */
+  readStream(stream: string, o: StreamReadOptions): AsyncGenerator<StreamReadItem>;
 }
 
 /** A store that answers many heads at once (hostMediaBlobs). */
@@ -274,6 +319,102 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
     },
     resumeMultipart: async (key, uploadId) => handle(key, uploadId),
     signedUrl: (key, o) => sign(key, o.method, o.expiresIn),
+    async appendStream(stream, batch, signal) {
+      const header = {
+        v: STREAM_WIRE_VERSION,
+        parts: batch.parts.map((p): AppendHeaderPart => ({
+          kind: p.kind,
+          hash: p.hash,
+          size: p.size,
+          manifest: toBase64(p.manifest),
+          bytes: p.bytes !== null,
+          ...(p.repair && p.bytes ? { repair: true } : {}),
+          ...(p.kind === "segment" ? { index: p.index!, durationSec: p.durationSec!, at: p.at! } : {}),
+        })),
+        ...(batch.end ? { end: batch.end } : {}),
+        ...(batch.lease ? { lease: batch.lease } : {}),
+      };
+      const head = headerFrame(header);
+      let n = head.length;
+      for (const p of batch.parts) n += p.bytes?.length ?? 0;
+      const body = new Uint8Array(n);
+      body.set(head, 0);
+      let at = head.length;
+      for (const p of batch.parts) {
+        if (!p.bytes) continue;
+        body.set(p.bytes, at);
+        at += p.bytes.length;
+      }
+      const r = await f(api(`/streams/${stream}/append`), {
+        method: "POST",
+        headers: { authorization: await bearer(), "content-type": "application/octet-stream" },
+        body: body as Uint8Array<ArrayBuffer>,
+        ...(signal ? { signal } : {}),
+      });
+      if (r.ok) {
+        // the host's limits for later batches, when it says them
+        const a = (await r.json().catch(() => null)) as { limits?: { parts?: unknown; bytes?: unknown } } | null;
+        const l = a?.limits;
+        return l && typeof l.parts === "number" && typeof l.bytes === "number" ? { limits: { parts: l.parts, bytes: l.bytes } } : {};
+      }
+      const text = await r.text().catch(() => "");
+      let j: { error?: unknown; code?: unknown } = {};
+      try {
+        j = JSON.parse(text) as typeof j;
+      } catch {}
+      if (r.status === 404 && j.error === "no such route") throw new StreamRouteMissingError("the host has no stream routes");
+      if (r.status === 409 && j.code === "Missing") throw new StreamPartMissingError(String(j.error ?? "a part isn't stored"));
+      return failed(r, text);
+    },
+    async *readStream(stream, o) {
+      const q = new URLSearchParams({ from: String(o.from) });
+      if (o.init) q.set("init", "1");
+      if (o.maxBytes !== undefined) q.set("bytes", String(o.maxBytes));
+      if (o.maxParts !== undefined) q.set("parts", String(o.maxParts));
+      if (o.waitMs) q.set("wait", String(o.waitMs));
+      const r = await f(`${api(`/streams/${stream}/read`)}?${q}`, { headers: { authorization: await bearer() }, ...(o.signal ? { signal: o.signal } : {}) });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        let j: { error?: unknown } = {};
+        try {
+          j = JSON.parse(text) as typeof j;
+        } catch {}
+        if (r.status === 404 && j.error === "no such route") throw new StreamRouteMissingError("the host has no stream routes");
+        await failed(r, text);
+      }
+      if (!r.body) throw new StreamWireError("the host sent no body");
+      const rd = new ByteReader(r.body as ReadableStream<Uint8Array>);
+      try {
+        const h = (await rd.header()) as Partial<ReadHeader> | null;
+        if (!h || h.v !== STREAM_WIRE_VERSION || !Array.isArray(h.segments)) throw new StreamWireError("not a stream read answer");
+        // every entry checked as media's reader checks one read from the store
+        const bytesOf = async (listed: { bytes?: unknown; size: number }): Promise<Uint8Array | null> => {
+          if (listed.bytes !== true) return null;
+          const n = await rd.u32();
+          if (n === 0) return null;
+          if (n !== listed.size) throw new StreamWireError(`the host sent ${n} bytes for a part of ${listed.size}`);
+          return rd.exactly(n);
+        };
+        const manifestOf = (v: { manifest?: unknown }) => (typeof v.manifest === "string" ? fromBase64(v.manifest) : null);
+        // how many segments this answer carries, before any of its bytes: a reader can start its next read now
+        yield { kind: "listed", segments: h.segments.length };
+        if (h.init) {
+          const part = streamPartOf(h.init);
+          if (!part) throw new StreamWireError("bad init entry");
+          yield { kind: "init", part, manifest: manifestOf(h.init), bytes: await bytesOf(h.init) };
+        }
+        let i = o.from;
+        for (const raw of h.segments) {
+          const segment = streamSegmentOf(raw, i);
+          if (!segment) throw new StreamWireError(`bad entry for segment ${i}`);
+          yield { kind: "segment", segment, manifest: manifestOf(raw), bytes: await bytesOf(raw) };
+          i++;
+        }
+        yield { kind: "status", ...(h.end !== undefined ? { end: streamEndOf(h.end) } : {}), ...(h.init === null ? { initMissing: true } : {}) };
+      } finally {
+        rd.cancel();
+      }
+    },
     async reportDamaged(key, leaf) {
       return (await (await call("POST", api("/blobs/damaged"), { key, leaf })).json()) as { damaged: boolean; removed?: boolean };
     },

@@ -69,6 +69,10 @@ holds; they don't say how fast the built code is.
   codex/fix-captions`); that is checked for shape only, not authenticated, and their late conflicts arrive as notices
   on their next `cb` call. With H9 wired, agents the app starts get a per-chat actor from the app without declaring
 anything.
+- **Ctrl+Z doesn't reach a terminal's agents** (new, by design, laptop report 90c4127). It covers the person's own
+  edits and the agent turns they started in the app, from the editor's session only. A `cb` agent in a terminal, even
+  on the same machine, is undone from History ("Undo turn") or with `cb undo --turn`. An undo that clashes with a
+  later change does nothing but raise its cards; there is no partial undo from Ctrl+Z.
 - **The hook's prefix is shell syntax** (`export CARDBOARD_ACTOR=…;`). Claude Code runs Bash commands in Git Bash on
   Windows, so it should work there, but that hasn't been run. An agent whose shell is cmd or PowerShell doesn't get it.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
@@ -76,8 +80,9 @@ anything.
 - **While an agent turn is running, the shared `timeline.tsx` is frozen (L16).** From the agent's first Read of it
   until its turn's Stop, Carton doesn't rewrite it with the person's or remote teammates' changes; the app always shows
   head. Local agents' saves still go into it, and so do their confirmed `cb` changes; on a shared cut, only those of
-  agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). It can show newer state
-  before the Stop. A plain `cb source print` and a cut switch reprint it from head. A save that repeats an edit the file
+  agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A `cb` write answers once the
+  file shows it (read-your-writes: the holder's `carton.shown`, at most 2 s; the result's `timeline` says `shown`, or
+  `held`, `elsewhere` or `later` with a sentence). It can show newer state before the Stop. A plain `cb source print` and a cut switch reprint it from head. A save that repeats an edit the file
   hides, or whose check for that reads more than its limit of changes or fails, restarts the freeze from that save's
   state; a `cb` change restarts it from that change's state when merging it wouldn't add exactly its edits (it repeats,
   overwrites or builds on an edit the file hides). Claude Code sends no
@@ -157,7 +162,7 @@ Not run yet:
 
 ## Our Windows build (for reference)
 
-With Carton off (the default), every Carton hook there runs Cardboard's own code, except three changes that apply
+With Carton off (`CARDBOARD_CARTON=0`; it is on by default), every Carton hook there runs Cardboard's own code, except three changes that apply
 either way: the staging folder's removal after Open Project retries on Windows; Open Project of a `.cbproj` that holds
 Carton's data removes, from the staged copy only, the `.carton\` folder and the view files Carton wrote in
 `.scratch\views\` (a person's or an agent's own files there stay; a stock `.cbproj` opens as before); and Save As of a
@@ -169,7 +174,7 @@ library worker and `cb`: history, cuts, fold, credits and `undo --turn`; the per
 freeze (H8), with the Director's and host Claude Code's hooks; and, between two libraries through a host on
 127.0.0.1, sharing, live edits, presence, offline and back, shared media (H10), `.cbproj` with history and "Bring in
 their changes" (H11), and `cb`'s cloud mode (H13). The editor's pages (H4–H7, the History tab, the Share panel) and
-main's hooks run only on Windows, so they have been tested against stand-ins. It is off by default
-(`CARDBOARD_CARTON=1`) until G1 and G2 pass. Not wired there yet: Carton's merge in the apply's preview (H3), the
+main's hooks run only on Windows, so they have been tested against stand-ins. It is on by default
+(`CARDBOARD_CARTON=0` turns it off). Not wired there yet: Carton's merge in the apply's preview (H3), the
 engine thread, a hook of its own for H1b, and H12 (dormant on desktop). This is windows-sync's branch, ahead of the
 snapshot the kit runs on; `carton/docs/INTEGRATION-1.4.0.md` §6 has the details.

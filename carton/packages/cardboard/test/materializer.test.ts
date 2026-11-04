@@ -6,24 +6,25 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow } from "../src/node/materializer.ts";
+import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow, type MaterializerOptions, type SlowShow } from "../src/node/materializer.ts";
 import { jsonTimelineCodec } from "../src/codec.ts";
 import { findRev } from "../src/header.ts";
 import { FakeClock, FakeEngine, plainHost } from "./helpers/fake-engine.ts";
+import { cardboardFilesHost } from "../src/index.ts";
 
 type Item = { id: string; [k: string]: unknown };
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
 const clip = (id: string, s: number, e: number, extra: Record<string, unknown> = {}): Item => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, ...extra });
 
-async function setup(t: test.TestContext, items: Item[], opts: { start?: boolean } = {}) {
+async function setup(t: test.TestContext, items: Item[], opts: { start?: boolean; mz?: Partial<MaterializerOptions> } = {}) {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
   const project = { id: "p1", name: "Demo", stateUpdatedAt: 1, timelineItems: items };
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
   const engine = new FakeEngine({ name: "Demo", timelineItems: items });
   const clock = new FakeClock();
-  const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock });
+  const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock, ...opts.mz });
   t.after(() => mz.close());
   t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 1 })).ref);
@@ -393,6 +394,43 @@ test("project.json follows head with every unversioned field kept, stateUpdatedA
   assert.equal(env.project.id, "p1", "host fields kept");
   assert.equal(env.project.timelineItems[0].name, "gui");
   assert.ok(env.project.stateUpdatedAt > 1);
+});
+
+test("a head Cardboard couldn't read (no name, nothing in it) is never written to project.json: the old file stays, the refusal is logged", async (t) => {
+  // laptop, build 915eb36: Restore of "Started the cut" made head the empty root, and project.json followed it. With
+  // Cardboard's own conversion (cardboardFilesHost: materializeProject), a head without a name drops it from the file.
+  fs.mkdirSync(SCRATCH, { recursive: true });
+  const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
+  const project = { id: "p1", name: "Demo", updatedAt: "2026-11-02T00:00:00.000Z", stateUpdatedAt: 1, aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: [clip("a", 0, 5)], media: [] };
+  fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
+  const engine = new FakeEngine(cardboardFilesHost.fromProject(project, null));
+  const clock = new FakeClock();
+  const mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: jsonTimelineCodec, clock });
+  t.after(() => mz.close());
+  await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 1 })).ref);
+  await mz.adoptCurrentFiles();
+  await mz.start();
+  const file = path.join(bundle, PROJECT_FILE);
+  const before = fs.readFileSync(file, "utf8");
+  const pin = await engine.getMeta(["file", PROJECT_FILE, "pin"]);
+  // head becomes the empty root: no root field, every collection empty
+  engine.external((d) => {
+    for (const k of Object.keys(d)) delete d[k];
+    Object.assign(d, { tracks: [], timelineItems: [], media: [] });
+  });
+  mz.onHeadChange("local");
+  await clock.advance(50, () => mz.idle());
+  assert.equal(fs.readFileSync(file, "utf8"), before, "the old file, byte for byte");
+  assert.deepEqual(mz.log.refused.map((r) => [r.path, r.problems]), [[PROJECT_FILE, ["no name"]]]);
+  assert.deepEqual(mz.log.errors, [], "a refusal, not a failure to retry");
+  assert.deepEqual(await engine.getMeta(["file", PROJECT_FILE, "pin"]), pin, "the file's pin is the state it shows");
+  // a head with a name again is written as usual
+  engine.external((d) => Object.assign(d, cardboardFilesHost.fromProject({ ...project, timelineItems: [clip("a", 0, 5, { name: "back" })] }, null)));
+  mz.onHeadChange("local");
+  await clock.advance(50, () => mz.idle());
+  const env = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual([env.project.name, env.project.timelineItems[0].name, env.project.tracks.length], ["Demo", "back", 1]);
 });
 
 test("a foreign project.json write is imported as external:project.json against Carton's last materialization", async (t) => {
@@ -1258,4 +1296,212 @@ test("review 9 #2: a cut switched while a failed rewrite waits for its retry is 
   // another process switches the current cut meanwhile
   s.engine.headRef = async () => JSON.stringify(["cut-b", "b7e1c2d3-0000-4000-8000-00000000000b", 0, []]);
   assert.equal(await s.mz.onExternalHeadChange(), "cut", "the cut it was on is remembered");
+});
+
+// apply-ryw: read-your-writes. A `cb` write asks (through the lease holder) for the shared file to show it, and is
+// answered by the print that does, at once: the coalescing timer's rewrite is made then and there, with no wait on the
+// clock. On the laptop the file was read before the rewrite and the agent took the old value for its turn's start.
+test("apply-ryw: showChange makes the coalesced rewrite at once and answers 'shown' with the print that holds the change", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.1");
+  s.mz.onHeadChange("local"); // the holder's write (or its follower) told it: a rewrite is due in 20 ms
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.clock.now(), t0, "no wait on the clock: the rewrite was made at once");
+  assert.equal(s.find(s.read().items, "a").name, "the agent's write", "the next read shows the write");
+  // already shown: answered at once
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a change nobody told the materializer of (another process's commit) is found and shown", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "committed elsewhere"), "cb.7");
+  assert.equal(await s.mz.showChange({ id: "cb.7", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "committed elsewhere");
+});
+
+test("apply-ryw: during a freeze, a change the frozen file holds back (the person's, not an agent's) is 'held', at once", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.hookRead({ kind: "agent", id: "director/c/t1", turn: "t1" });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the person's"), "person.1");
+  s.mz.onHeadChange("local");
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "person.1", seq: s.engine.headSeq, author: { kind: "human", id: "person" } }, 2000), "held");
+  assert.equal(s.clock.now(), t0, "said at once, not after the wait");
+  assert.equal(s.find(s.read().items, "a").name, "a", "the file still holds it back");
+});
+
+test("apply-ryw: a write that can't show within the wait (a host write still landing) is 'later', then shows", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) }); // the app's save is writing project.json
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "under a landing save"), "agent.2");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  land();
+  await s.tick(100);
+  assert.equal(s.find(s.read().items, "a").name, "under a landing save", "the rewrite follows once the save has landed");
+  assert.equal(await s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a windowless cb caller named to onCb (a terminal's) is held to the freeze it starts; close settles waiting writes", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.onCb({ kind: "external", id: "terminal:me@box", name: "Terminal" });
+  assert.equal(s.mz.freeze.active, true, "its call holds the file a while");
+  assert.ok(s.mz.freeze.callers.has("terminal:me@box"));
+  await s.tick(61_000);
+  assert.equal(s.mz.freeze.active, false);
+  assert.equal(s.mz.freeze.callers.size, 0, "forgotten once the freeze ends");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "x"), "late.1");
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) });
+  const asked = s.mz.showChange({ id: "late.1", seq: s.engine.headSeq }, 60_000);
+  await s.mz.close();
+  assert.equal(await asked, "later");
+  land();
+});
+
+// Review #1: "shown" only while the file on disk is the print's bytes. A foreign writer that replaced the print (before
+// any watch event was read) leaves the write unshown, never certified by a stamp taken after the install.
+test("apply-ryw review #1: a print a foreign writer replaced doesn't count as showing the write", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const old = fs.readFileSync(s.abs(TIMELINE_FILE), "utf8");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.9");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000), "shown");
+  s.writeAtomic(TIMELINE_FILE, old); // someone else's bytes over the print, not read yet
+  const asked = s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later", "the file doesn't hold the write: not 'shown'");
+});
+
+// Review #2: a shared cut offline, the file frozen by a terminal's cb, and its own edit still pending: the pending change
+// moves the file (pendingMoved and withPending take the same changes), so it shows at once.
+test("apply-ryw review #2: an offline terminal's pending edit shows in the file its call holds", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const terminal = { kind: "external" as const, id: "terminal:me@box", name: "Terminal" };
+  const engine = s.engine as FakeEngine & { pendingChanges?: unknown };
+  engine.isShared = true;
+  const pending: { id: string; author: typeof terminal; before: Record<string, unknown>; after: Record<string, unknown> }[] = [];
+  engine.pendingChanges = async () => ({ seq: engine.headSeq, changes: pending });
+  // the host tells a change's edits (cardboard's does), so a pending change shows by its own edits
+  (s.mz as unknown as { host: typeof plainHost }).host = { ...plainHost, changes: (from, to) => {
+    const was = new Map(((from.timelineItems ?? []) as Item[]).map((i) => [i.id, JSON.stringify(i)]));
+    return ((to.timelineItems ?? []) as Item[]).filter((i) => was.get(i.id) !== JSON.stringify(i)).map((i) => JSON.stringify(i));
+  } };
+  await s.mz.onCb(terminal);
+  const before = await engine.head();
+  const after = { ...before, timelineItems: (before.timelineItems as Item[]).map((i) => (i.id === "a" ? { ...i, name: "typed offline" } : i)) };
+  pending.push({ id: "term.1", author: terminal, before, after });
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "term.1", author: terminal }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "typed offline");
+});
+
+// perf/apply-tail: on the laptop about 4 % of Carton-on round trips gained exactly the 2 s read-your-writes wait, which no
+// Linux run reproduced. An answer that took 500 ms or more is reported with where its time went, so a run in the app
+// names the cause: the holder's look at carton.db, the wait for the materializer's queue, its own rewrite, what
+// answered it, what held rewrites back, and the longest tasks meanwhile. A prompt answer reports nothing.
+test("apply-tail: a slow read-your-writes answer is reported with where its time went; a prompt one isn't", async (t) => {
+  const reports: SlowShow[] = [];
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { onSlowShow: (r) => reports.push(r) } });
+  // prompt: the coalesced rewrite is made at once
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "prompt"), "agent.1");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000, { beforeMs: 3 }), "shown");
+  assert.equal(reports.length, 0, "nothing for a prompt answer");
+
+  // a host write still landing holds the rewrite back until the wait ends: the wait's end answers it
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "under a landing save"), "agent.2");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000, { beforeMs: 7 });
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  land();
+  await s.tick(100);
+  assert.equal(reports.length, 1);
+  const r = reports[0]!;
+  assert.equal(r.change, "agent.2");
+  assert.equal(r.answer, "later");
+  assert.equal(r.by, "timer");
+  assert.equal(r.landing, true, "a host write was landing");
+  assert.equal(r.budgetMs, 2000);
+  assert.equal(r.beforeMs, 7);
+  assert.ok(r.ms >= 2000 && r.ms <= 2001, String(r.ms));
+  assert.ok(r.queueMs !== null && r.queueMs < 100, `its look came at once (the fake clock's first timer, 20 ms, may pass first): what held it was the landing; ${r.queueMs}`);
+  assert.equal(r.rewriteMs, null, "no rewrite of its own");
+  assert.equal(typeof r.lookMs, "number", "its own look at the file");
+
+  // a slow rewrite of its own (the pin stalls 800 ms): answered by it, the time in rewriteMs and its task named
+  const pin = s.engine.pin.bind(s.engine);
+  let release!: () => void, pinned!: () => void;
+  const reached = new Promise<void>((r) => (pinned = r));
+  s.engine.pin = async (o) => { pinned(); await new Promise<void>((r) => (release = r)); return pin(o); };
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "slow print"), "agent.3");
+  s.mz.onHeadChange("local");
+  const slow = s.mz.showChange({ id: "agent.3", seq: s.engine.headSeq }, 2000);
+  await reached;
+  s.clock.t += 800;
+  release();
+  assert.equal(await slow, "shown");
+  s.engine.pin = pin;
+  assert.equal(reports.length, 2);
+  const q = reports[1]!;
+  assert.equal(q.change, "agent.3");
+  assert.equal(q.by, "own rewrite");
+  assert.equal(q.rewriteMs, 800);
+  assert.equal(q.ms, 800);
+  assert.equal(q.landing, false);
+  assert.ok(q.tasks.length >= 1 && q.tasks[0]!.ms === 800, JSON.stringify(q.tasks));
+  assert.match(q.tasks[0]!.task, /holdsChange|showing/, "the task that ran: the answer's own look and rewrite");
+  assert.ok(q.tasks.every((x) => x.task.length <= 120));
+  assert.equal(q.print?.pin, 800, "the rewrite's steps: the pin took the time");
+  assert.ok(q.print!.look + q.print!.print + q.print!.install + q.print!.tell < 50, JSON.stringify(q.print));
+});
+
+// Review #1 of perf/apply-tail: the whole wait counts. A holder whose look at carton.db took most of the wait, and a
+// prompt answer here, is still a slow wait, and is reported with that look (`beforeMs`).
+test("apply-tail review #1: a wait the holder's look at carton.db took is reported, the materializer's own part prompt", async (t) => {
+  const reports: SlowShow[] = [];
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { onSlowShow: (r) => reports.push(r) } });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "late look"), "agent.4");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.4", seq: s.engine.headSeq }, 100, { beforeMs: 1900 }), "shown");
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0]!.beforeMs, 1900);
+  assert.ok(reports[0]!.ms < 50, String(reports[0]!.ms));
+  assert.equal(reports[0]!.by, "own rewrite");
+  // and a prompt one stays unreported
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "prompt again"), "agent.5");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.5", seq: s.engine.headSeq }, 2000, { beforeMs: 4 }), "shown");
+  assert.equal(reports.length, 1);
+});
+
+// Review #2: a rewrite that fails ends its steps when it fails. A report made later (the wait's end, while the retry
+// waits on its timer) says the rewrite failed, in which step, and doesn't count the idle wait for the retry into it.
+test("apply-tail review #2: a failed rewrite's steps end with it: a later report says it failed, without the retry's wait", async (t) => {
+  const reports: SlowShow[] = [];
+  let broken = false;
+  const codec = { ...jsonTimelineCodec, print: (project: Record<string, unknown>, rev: string) => { if (broken) throw new Error("the printer broke"); return jsonTimelineCodec.print(project, rev); } };
+  const s = await setup(t, [clip("a", 0, 5)], { mz: { codec, onSlowShow: (r) => reports.push(r) } });
+  broken = true;
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "never printed"), "agent.6");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.6", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  assert.equal(reports.length, 1);
+  const r = reports[0]!;
+  assert.equal(r.by, "timer");
+  assert.equal(r.retrying, true, "the failed rewrite waits to be tried again");
+  assert.equal(r.print?.failed, true, "the last rewrite failed");
+  const sum = r.print!.look + r.print!.pin + r.print!.print + r.print!.install + r.print!.tell;
+  assert.ok(sum < 50, `its steps took what the rewrite took, not the wait for its retry: ${JSON.stringify(r.print)}`);
+  assert.ok(r.print!.at + sum < r.ms, "and it ended before the wait did");
+  broken = false;
 });

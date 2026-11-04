@@ -26,7 +26,8 @@ function __cbCartonStageHost({ className, children }) {
   const m = __cbCartonModule();
   const projectId = window.__carton?.projectId ?? null;
   o.useEffect(() => (typeof __cbCartonPresence === "function" ? __cbCartonPresence(projectId) : undefined), [projectId]);
-  return c.jsxs("div", { className: className + " relative", children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton }, projectId) : null] });
+  // data-carton-stage-host: the side panel measures the preview's room by it (scripts/carton/ui.js, fitPanel).
+  return c.jsxs("div", { className: className + " relative", "data-carton-stage-host": "", children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton }, projectId) : null] });
 }
 function __cbCartonSide() {
   const m = __cbCartonModule();

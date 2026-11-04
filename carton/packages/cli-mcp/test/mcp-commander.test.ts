@@ -93,6 +93,29 @@ test("commander: commands next to 1.4.0's; history/undo extended in place; git w
   process.exitCode = 0;
 });
 
+test("commander: 1.4.0's `undo <project> [rev]` hands its rev over as a number; 0 is a version (refused when it can't be restored), never no version", async () => {
+  // laptop, merge/prod-2 P3: `cb undo <project> 0` undid the newest change, silently (1.4.0 parses [rev] as an integer)
+  const program = new Cmd("cb");
+  program.command("undo").description("1.4.0").argument("<project>").argument("[rev]");
+  const { ctx, fake } = project();
+  const printed: { json: any; text: string }[] = [];
+  register(program, { open: async () => ctx(human), out: (json, text) => printed.push({ json, text: text() }) });
+  await ctx(human).project.write(setName("c1", "Mine"));
+  await ctx(human).project.write(setName("c2", "Mine too"));
+  const head = (await fake.head()).ref.seq;
+  const undo = program.commands.find((c) => c.name() === "undo")!;
+  process.exitCode = 0;
+  await undo.run(["Demo", 99], {});
+  assert.equal(process.exitCode, 2, "a version that isn't there is a usage error");
+  assert.match(printed.at(-1)!.text, /^main@99 doesn't exist yet/);
+  process.exitCode = 0;
+  await undo.run(["Demo", 0], {});
+  assert.equal((await fake.head()).ref.seq, head + 1, "0 restored main@0 (the fake's root holds the project): no undo of the newest change");
+  assert.match(printed.at(-1)!.text, /^Restored 0/);
+  assert.equal(((await fake.head()).doc as any).timelineItems[0].name, "Intro", "the older edit is undone too: a restore, not an undo of the newest");
+  process.exitCode = 0;
+});
+
 const z = {
   string: () => zt("string"), number: () => zt("number"), boolean: () => zt("boolean"), unknown: () => zt("unknown"),
   enum: (v: string[]) => zt(`enum(${v.join("|")})`), array: (i: any) => zt(`array<${i.t}>`), record: (_k: any, v: any) => zt(`record<${v.t}>`),

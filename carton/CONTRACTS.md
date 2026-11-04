@@ -37,7 +37,7 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 | `SequencerStorage` | sync `exec(sql, ...params)` and `transaction(fn)` (DO `ctx.storage.sql`, node:sqlite) | inside server-cloudflare, server-node |
 | `SequencerHost` | `url`, `close()`; feeds authenticated `SequencerConnection`s to `createSequencer` | server-cloudflare, server-node |
 | `Transport` | `connect(url, {token})` → ordered, at-most-once message connection | WebSocket, in-process |
-| `BlobStore` | put/get (ranges)/head/delete/list, multipart with resume | blob-r2, blob-s3, blob-fs, blob-memory |
+| `BlobStore` | put/get (ranges)/head/delete/list, multipart with resume; optional `getWithInfo` (the info and the bytes in one call, so a host's signed read is one storage call, not a head and a get) | blob-r2, blob-s3, blob-fs, blob-memory |
 | `AuthProvider` | `verify(token)` → `{account, credential, role, projectId, branches?, expires}` | demo HMAC (server) |
 | `Hasher` | async `sha256(bytes)`, optional `sha256HexSync(text)` (core uses it for state hashes) | node:crypto (local), WebCrypto |
 | `ProxyEncoder` | `probe()`, `encode(input, output, profile)` | Cardboard proxy, NVENC → QSV → AMF → libx264 |
@@ -82,6 +82,28 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches the clip's
   first piece only. `carton.lineage(from, to)` reads the lineage composed between two versions (`{ cut, seq }`, `from`
   before `to`; null: none), for code that maps old ids itself (comments' anchors).
+- **Empty versions** (laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, and the
+  project left Cardboard's library). A version with nothing in it (`isBlank`: no root field, every collection empty)
+  holds nothing of the project: the root an imported project's history starts from (`init.asChange`; the project is
+  `main@1`), or a cut made from it. `log()` marks a cut's start that is one (`Version.blank`, read from its keyframe:
+  no replay). `restore` of one, and `fork` from one given as `from`, throw `EmptyVersion` (`code: "EMPTY_VERSION"`)
+  before anything changes, on local and shared cuts; a UI doesn't offer either on such a row. A `fork` from head takes
+  the head as it is.
+  - **The schema's own rule** (laptop, final candidate P2-1, P3-2). `SchemaDef.empty(doc)` adds the states a host can't
+    open as a project though they have a field or a record (Cardboard: a name with no aspect ratio, tracks, clips or
+    media, what the root-restore bug left once the project was named again); `isBlank` takes it beside core's own rule.
+    Restore and `fork` from such a version throw `EmptyVersion`, its words saying which it is: a cut's start "(the
+    history starts there, before the project was in it)", any later version "(nothing of the project is in it)".
+    `undo`, `redo` and `revert` whose result the schema's rule takes for empty, made from a head it doesn't, throw
+    `EmptyVersion` ("Can't undo that: the project would be left empty") before anything is written or queued (History's
+    `planUndo` and `planRevert`; local's `undoTurn` too). On a shared cut a queued one is rebased onto teammates' edits
+    before it is pushed: one that has become empty so is refused at the push (`rejectLocally`, its author told "it would
+    have left the project empty"; review of fix/recover-save #1). Not checked: a push the server confirms on a head that
+    moved without the client's rebase (the sequencer has no schema rule). Core's own rule never refuses an undo: a
+    generic schema reaches no field and no record by undoing its first record.
+  - A lease holder's refusal keeps its code across the control socket (`@carton/local`: a thrown error's string `code`
+    rides in the JSON-RPC error's `data.code`, and `submit` answers `{via: "error", code}` with it; retries still read
+    the transport's code), so the app's undo tells "refused" from a failure wherever the lease is held.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
@@ -123,7 +145,7 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   settle's `notice` events (a late conflict's cards). After a settle that couldn't store, they come with the one that
   does; after a keyframe catch-up, once the skipped rows are in History (fetched, or loaded from the store). If they
   can't be fetched (offline, a server that can't serve history), or the handle stops or closes first, they come on what
-  History holds, and credits for those rows are unknown (review R6-8, R6-10, R6-11).
+  History holds, and credits for those rows are unknown (review R6-8, R6-10, R6-11, R6-13, R6-15).
   Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
   shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
@@ -134,9 +156,18 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
   still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. When this
   replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
-  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. This
-  replica's own latest presence (unless it was a leave) goes out again after each reconnect's welcome, an update a
-  disconnect caught waiting included. A pending edit survives a
+  host that restarts keeps no one to send leaves for. This replica's own latest presence (unless it was a leave) goes
+  out again after each reconnect's welcome, an update a disconnect caught waiting included, and again (once, coalesced
+  by the throttle) when a peer shows for the first time on a connection or relays its connection's first presence
+  (`arrived`: a second tab of someone shown already), unless the host sent that peer as `kept`. A connection's first
+  presence that isn't a leave says `arrived`; an answer never does, so no round goes on. Peers are told apart by
+  kind, id and agentId. The handle's `sync.presence()` shows on its current cut: when that changes (`switchTo`, or
+  another process's switch it follows), the cut it showed on gets a leave.
+  The sequencer keeps each connection's latest presence per branch and actor in memory (the actors `shown` holds, up
+  to 16 KiB each) and sends a connection that subscribes the presence every other connection there shows, right
+  after its welcome, marked `kept`. So after a host restart or a join, in either order, each side lists the other
+  even when nobody moves (presence P2); a host that lost what it kept (a Durable Object's wake) still converges by
+  the clients' answer. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
   when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
   causal base (the confirmed seq and the pending edits it was made on, and what those did as it read them) and is
@@ -145,13 +176,29 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one, and
   so do the edits made on it. A retry of an edit already queued (here, waiting, or another process's row) answers
   `pending`. An
-  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). A settle that fails keeps its outcome for the next one; a wait answers
+  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). One withdrawn after it
+  was sent is spent by the server's withdraw row (`ConfirmedChange.withdrawn`, authored `{kind: "system", id:
+  "withdraw"}`): every replica stores and syncs it (its seq and the spent id stay), and none shows it as a version:
+  `log()` leaves it out (so History, `cb history`, the Compare and restore pickers and version counts do), its `change`
+  event only moves the head, and its seq is a gap in the numbering. A settle that fails keeps its outcome for the next one; a wait answers
   `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
   `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
   acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
-  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
-  `unauthorized`, `protocol`, `closed`), by the words only when there is none.
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`, `write-limit`, `history-missing`; a failed connect's
+  transport code: `unreachable`, `unauthorized`, `protocol`, `closed`), by the words only when there is none.
+  `history-missing` (stuck-sync, laptop run 2026-11-03): a catch-up needs history the server's blob store no longer
+  has. Keyframes only shorten a catch-up, so the sequencer passes over one whose blob is gone (an older keyframe, or
+  the rows alone when the replica holds a state they extend; `SequencerStats.missingBlobs`, a `missingBlob` event);
+  only a joiner with no state left to start from, or rows held only in a lost archived segment or body, is refused,
+  in words a status line shows ("this project's history can't be loaded: …"; `SyncError` code `server`), and a
+  `history` request over such rows gets that as its reply's error. Before, the host's "internal: keyframe … is
+  missing" left the replica in "syncing" for good. `write-limit` is a host's
+  daily write cap: a blob write refused for a while throws an error with `retryAt` (BlobStore's contract), the
+  sequencer drops the rest of that push's epoch for a client whose hello said `writeLimit` and tells it the wait
+  (`retryAfterMs`); the client keeps its edits, pushes nothing (nor a hand-off upload) until then, and pushes again
+  on its own, with no reconnect. `SyncError.until` says when. An older client gets the limit in plain words, its epoch
+  left as it was.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **People (windows-sync R3).** Cardboard's GUI saves are the generic person `{kind: "human", id: PERSON}` ("person")
   on every computer.
@@ -170,12 +217,88 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     cut isn't held here.
   - Presence goes out as the resolved person.
   - A `people` event says authors may read differently.
+- **A `cuts` event (laptop re-check P3 #1)** says the cuts changed: one made (with no edit yet, which moves no head and
+  so tells no `change`), renamed, gone, or its kind, protection or sync changed. This handle's own writes, a sync, and
+  another process's writes on the same store alike; another process's are told once this handle reads the store again
+  (any read: `log()`, `cuts()`, `head()`…). A cut menu reads `cuts()` again on it.
   - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
+- **Versions in words (UI audit 2026-11-02).** `log({summary: true})` gives each version one line (`summary`) and,
+  when that line doesn't say it all, every change it made (`details`, describe()'s lines). A version of several changes
+  is summed up (`describeVersion`: "Moved 'clip.mp4', changed 'W1' and 'W2'"); a fold, the rest of a partial fold, a
+  restore and the import say what they were ("Folded 'Client review' into 'Main cut': 3 changes", "Restored an earlier
+  version"). Descriptions never print an id or a hash: an id field (`…Id`, `…Ids`, `…Hash`) or a hash-like value is
+  told by its field's name, and a collection's `phrases` tell a field in a sentence ("Linked %s for sharing").
+  - **A split reads as a split** (laptop re-check P3 #2). One clip removed and, in its place, two or more of the same
+    footage (same kind, references and name) on its track, back to back over its range, is one line: "Split
+    'clip.mp4' at 4.0 s" (several points: "at 3.0 s and 7.0 s"). A part changed after it in the same version is told
+    against what the split made of it: "Split 'clip.mp4' at 4.0 s, moved its right part 4.0 s → 20.0 s" (one part
+    where the split left it, the other keeping the cut's source point: moved, or trimmed at its far end). A field the
+    split itself drops or rescales (a transition, a fade, keyframes) is no change of its own, nor is a field the host's
+    split leaves off every part (`TimelineConfig.splitDrops`; Cardboard: `autoReframe`, which its editor's save doesn't
+    write on a new clip; laptop re-check P3: "…, cleared auto reframe on its left part, … on its right part"); a value
+    set on a part, or cleared on one part only, is still told. `splits(ops, base, schema)` names them (removed clip,
+    parts left to right), so a list by record (the Fold dialog) shows a split as one row, left out whole.
+  - **One counting rule for changes** (laptop re-check P3: the Fold dialog said "2 changes", History "1 of 4 changes"
+    and `cb history` "merge (3 left out)" for one fold; Compare "3 changes" where Watch said "2"). `countChanges(ops,
+    base, schema, among?)` counts a change per record (a root field: one each), a split one, a ripple's remap none:
+    the Fold dialog's rows. History's fold titles, `cb history`'s left out (`leftOutChanges` on a partial fold's
+    version), Compare (`Comparison.changeCount`) and Watch the changes (`ShotDiff.changes`) all use it. Watch's counter
+    steps through the sections of the edit that differ ("Section 1 of 2"), which aren't changes.
+  - **A record by what it is** (laptop re-check P3-8, P3-10). `CollectionDef.nounOf(record)` names a record when its
+    collection holds several kinds (Cardboard: a text item is a title, a code item a code graphic, a caption a
+    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). A version's summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
+    media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
+    ("1 clip, 6 titles").
+  - **A part goes with what holds it** (laptop, merge/prod-2 N-1). `CollectionDef.partOf: {collection, field}` says
+    whose part a record is (`nounOf` null): the record of `collection` whose `field` holds its key (Cardboard: media
+    `partOf: {collection: "timelineItems", field: "mediaItemId"}`; descriptions only, not in the schema fingerprint).
+    A part whose holder (the one record naming it by that field, in base or among the change's inserts; never any
+    equal value elsewhere) the same change also touches, adding or deleting the part only as it adds or deletes the
+    holder (or editing both: a title's text and its entry's), is no change of its own, as a split's parts are the
+    split's: describe tells the holder alone ("Deleted title 'W6'"), `countChanges` counts one (regress prod3 P3-C: a
+    setup row's "15 changes" listed every title's entry), and `heldBy(ops, base, schema)` names the pairs (`{part:
+    [coll, id], holder: [coll, id]}`) so a list by record (the Fold dialog) joins the part to its holder's row, left
+    out with it. A part two records name (a duplicated title's shared entry), or whose holder the change leaves
+    alone, or added or deleted on its own, is still told, and is its own row. Who names what is read once per call.
+  - **Naming from a larger set** (regress prod3 P3-B). `describe(ops, base, schema, intent, names)`: when the ops are
+    one row of a larger set (the Fold dialog), `names = namingDoc(base, allOps)`, made once per plan, names the
+    records the set adds ("Moved 'W1' to track 'Text 1'", a track the same fold adds). A track nothing names is
+    "another track", never "track another track".
+  - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
+    only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
+    out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
+    changes" (a split one change), its `details` exactly the changes taken. `cb history` shows it as `merge (1 left out)`,
+    `leftOut` (the paths) and `leftOutChanges` (how many changes) in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
+    history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids and the DAG are
+    unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+    **It is one undo** (laptop P2-1: after it and "fold in the rest", Ctrl+Z ② reverted the partial revert alone, which
+    brought the rest back in, and Ctrl+Z ③ undid the fold). The undo stack lists only the partial revert: a fold whose
+    partial revert (the `partial-revert` that `reverts` it, not withdrawn) is in effect is never an entry of its own,
+    also with a teammate's change between the two. Undoing that entry is one undo change with `reverts: [fold,
+    inverse]` (so History reads "Undid the fold of 'X' into 'Y'"), and its redo re-applies both. The two right after
+    each other (one version) are inverted as one step, from before the fold to after the partial revert, so what the
+    fold left out never meets a teammate's later edit of it as a card (review #1); with a change between them, each in
+    turn. An agent turn's changes are inverted newest first by seq (review #2). A partial revert that an earlier build
+    undid alone leaves its fold an ordinary entry. `undoStack()` labels the entry by what the fold kept; `undo()`'s
+    and `redo()`'s entries and the redo stack's read as a whole fold's (`Undo merge`, `Redo merge`), a shared cut's
+    pending ones too (review #3, #4); `@carton/local`'s `undo --turn` undoes a fold-some version from before its fold,
+    naming both changes.
+    The partial revert's id is always `<fold's id>.inverse` (local and shared), which is how a server, holding only
+    ids and flags, pairs them; its count reads archived rows from the segment index, so it holds across an archive.
+  - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
+    part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
+    is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).
+    `log()` marks that revert's version with `restOf` (the partial fold's `change`), so a list shows it as a fold, not
+    an undo (final re-check P3-12b); its undo and the redo of that have none. A redo (a `revert` of an undo change) is
+    marked `redoOf` (the undo it takes back) by `Carton.log()`, so a list shows it as a redo: `cb history` says `redo`
+    (laptop: it said `revert`), as it says `undo` for an undo.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
-  Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
-  version published and that cut's head now, so a watch page can say "newer edits exist" (head > at) without reading
-  them. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
+  Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
+  the version published, that cut's head now and how many versions it has since (its rows after `at` less withdraw
+  rows, and less each fold-some's fold row `X` right before its partial revert `X.inverse`: one version, as `log()`
+  lists it; laptop re-check P3), so a watch page can say "newer edits exist" (versions > 0; `head - at` from a host that sends no count) without
+  reading them. `publications()` gives the same count as `versions` (and `newer`), as `log()` lists versions. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
   reader's hello for any other cut is refused before a row is sent.
 - **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
   library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the

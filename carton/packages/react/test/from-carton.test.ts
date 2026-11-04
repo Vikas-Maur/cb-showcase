@@ -206,6 +206,8 @@ test("compare and watch the changes: real shots, aligned, and the N shots / X s 
   assert.equal(c.a.clipCount, 4);
   assert.equal(c.b.length, 20);
   assert.equal(c.diff.shots, 1, "one clip's look changed: one shot differs");
+  // what changed, in History's words (UI audit P2-5)
+  assert.deepEqual(c.changes, ["Changed 'B' color \"red\" → \"blue\""]);
   assert.equal(c.diff.seconds, 5);
   const d = await ui.shotDiff(first, head);
   assert.equal(d.a.length, 4);
@@ -391,7 +393,26 @@ test("ui-words: authors in words an editor knows: You (a cb you typed too), prod
   assert.equal(toUiActor({ kind: "human", id: "person" }, alice, g).name, "Teammate");
 });
 
-test("ui-words: the import row is the person's ('Imported the project', You); the cut's start names no one", async () => {
+test("regress #1: an agent CLI's view saves (Claude Code with CLAUDECODE=1, no hook) are that agent's, never You; a terminal user's view stays yours", () => {
+  const g = "alice@laptop";
+  const ui = (a: Actor) => toUiActor(a, alice, g);
+  // @carton/local credits them to the view, with the agent's product
+  const cc = ui({ kind: "external", id: "external:.scratch/views/cc.tsx", name: "Claude Code (view cc)", provider: "claude-code", group: g });
+  assert.deepEqual([cc.kind, cc.name, cc.isYou, cc.parent, cc.key], ["agent", "Claude Code", true, "human/alice", "external/external:.scratch/views/cc.tsx"]);
+  // recorded before the product was kept: the name says it
+  assert.deepEqual([ui({ kind: "external", id: "external:.scratch/views/agent-1f2e.tsx", name: "Codex (view agent-1f2e)", group: g }).kind, ui({ kind: "external", id: "external:.scratch/views/agent-1f2e.tsx", name: "Codex (view agent-1f2e)", group: g }).name], ["agent", "Codex"]);
+  // a teammate's: their agent
+  const leo = toUiActor({ kind: "external", id: "external:.scratch/views/cc.tsx", name: "Claude Code (view cc)", provider: "claude-code", group: "leo@studio", owner: { id: "leo", name: "Leo" } }, alice, g);
+  assert.deepEqual([leo.kind, leo.name, leo.parent, !!leo.isYou], ["agent", "Claude Code", "human/leo", false]);
+  // the person's own writers stay the person's: a terminal user's view, an outside program's save of a view file
+  for (const a of [
+    { kind: "external", id: "external:.scratch/views/notes.tsx", name: "Terminal (view notes)", group: g },
+    { kind: "external", id: "external:.scratch/views/x.tsx", name: ".scratch/views/x.tsx", group: g },
+    { kind: "external", id: "external:project.json", name: "project.json", group: g },
+  ] as Actor[]) assert.deepEqual([ui(a).key, ui(a).kind, ui(a).isYou], ["human/alice", "human", true], a.name);
+});
+
+test("ui-words: the import row is the person's ('Started the project's history', You, never 'Imported' for a created project: UI audit P2-18); the cut's start names no one", async () => {
   const me: Actor = { kind: "human", id: "person", group: "alice@laptop" };
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: me });
   const ui = make(carton, { me });
@@ -399,10 +420,74 @@ test("ui-words: the import row is the person's ('Imported the project', You); th
   await settle();
   const rows = ui.history().all!();
   const imp = rows.find((v) => v.kind === "import")!;
-  assert.equal(imp.summary, "Imported the project");
+  assert.equal(imp.summary, "Started the project's history");
   assert.deepEqual([imp.author.isYou, imp.author.kind], [true, "human"]);
   const root = rows.find((v) => v.seq === 0)!;
   assert.deepEqual([root.summary, root.author.kind, root.author.name], ["Started the cut", "system", ""]);
+  // the empty root it was imported over: nothing to preview, restore or make a cut from (laptop, build 915eb36)
+  assert.equal(root.empty, true);
+  assert.equal(imp.empty, undefined);
+  await assert.rejects(ui.restore(root.ref), /Nothing to restore/);
+  await assert.rejects(ui.newCut("From the start", root.ref), /Nothing to make a cut from/);
+  assert.equal((await carton.head()).doc.name, doc0().name, "the project is as it was");
   ui.dispose();
   await carton.close();
+});
+
+// Laptop #2 (fold author): a host may open its Carton as someone other than the person at the panel (Cardboard's
+// library worker opens a project that isn't shared with its process's identity: "Terminal", or "Claude Code" when the
+// app was started from its shell). Every write the panel makes is the person's (`me`), never that actor.
+test("the panel's writes are `me`'s, not the Carton's own actor", async () => {
+  const terminal: Actor = { kind: "external", id: "terminal:vikas@laptop", name: "Terminal", group: "alice@laptop" };
+  const store = createMemoryStore();
+  const carton = await Carton.open({ adapter, store, init: { doc: doc0(), cutName: "Main cut" }, actor: terminal });
+  const ui = make(carton, { me: alice });
+  await ui.ready;
+  const main = carton.cut;
+  const by = (v: { author: Actor | null } | undefined) => (v?.author ? `${v.author.kind}/${v.author.id}` : "nobody");
+  const newest = async (cut: string) => (await carton.log({ cut, limit: 1 }))[0];
+  // New cut from here: its fork version ("Made this cut") is the person's
+  const alt = await ui.newCut("Alt", `${main}@0`);
+  const forkV = (await carton.log({ cut: alt.id })).find((v) => v.kind === "fork");
+  assert.equal(by(forkV), "human/alice", "Made this cut");
+  // Name this version: named by the person
+  await carton.commit({ cut: alt.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: alice });
+  await ui.refresh();
+  await ui.nameVersion(ui.history().at("all", 0)!.id, "Rough");
+  const named = (await carton.store.range<{ name: string; by?: Actor }>("names")).find((e) => e.value.name === "Rough");
+  assert.equal(by(named && { author: named.value.by ?? null }), "human/alice", "named by");
+  // Fold in, leaving one change out, then the rest
+  await ui.switchCut(main);
+  await ui.planFold(alt.id, main);
+  assert.equal((await ui.fold(alt.id, main, { leaveOut: ["items/d"], choices: {} })).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "the partial fold");
+  await settle();
+  const inv = ui.history().at("all", 0)!;
+  assert.equal((await ui.foldRest(inv.id)).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "fold in the rest");
+  // A whole fold
+  await carton.commit({ cut: alt.id, ops: [set("a", "color", "green")], author: alice });
+  await ui.planFold(alt.id, main);
+  assert.equal((await ui.fold(alt.id, main, { leaveOut: [], choices: {} })).ok, true);
+  assert.equal([(await newest(main))?.kind, by(await newest(main))].join(" "), "merge human/alice", "Fold in");
+  // Restore, then Undo
+  await ui.restore(`${main}@0`);
+  assert.equal(by(await newest(main)), "human/alice", "restore");
+  await settle();
+  const turn = ui.undoTurn();
+  assert.ok(turn, "Undo is offered for the person's restore");
+  assert.equal((await ui.undo(turn.id)).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "undo");
+  // Publish: the published cut's fork version
+  await ui.publish(main);
+  const pub = (await carton.cuts()).find((c) => c.kind === "published")!;
+  assert.equal(by((await carton.log({ cut: pub.id })).find((v) => v.kind === "fork")), "human/alice", "publish");
+  // And nothing in Main's or Alt's history is the Carton's own actor
+  for (const cut of [main, alt.id]) for (const v of await carton.log({ cut })) assert.notEqual(v.author?.id, terminal.id, `${cut}@${v.ref.seq} ${v.kind}`);
+  ui.dispose();
+  await carton.close();
+  // the fork's author is kept with the cut: another handle on the same store (another process: cb history) reads it
+  const again = await Carton.open({ adapter, store, actor: terminal });
+  assert.equal(by((await again.log({ cut: alt.id })).find((v) => v.kind === "fork")), "human/alice", "Made this cut, read again");
+  await again.close();
 });

@@ -212,6 +212,8 @@ export class Replica {
       maxBehind: this.world.maxBehind,
       pipeline: this.pipeline,
       backoffMs: 500,
+      // the fixed retry these seeded scenarios were written for (the backoff policy has its own tests in core)
+      maxBackoffMs: 500,
       timers: this.sim.timers(),
       defer: (fn, cost) => {
         if (cost > 0) proc.engine.post(() => {}, cost); // the rebase holds the engine thread...
@@ -1174,11 +1176,14 @@ export class Gui {
       }),
     );
   }
-  /** §8 / R2-08: the actor group is you, agent turns from this window, and windowless local actors (same machine/user). */
+  /**
+   * §8 / R2-08: the actor group is you and agent turns from this window (the app's session), as stock Cardboard: a
+   * terminal agent's edit (windowless, same machine) is not ⌘Z's to undo (the user's choice after the laptop test of
+   * 90c4127; it used to be in the group).
+   */
   inGroup(a: SimActor): boolean {
     if (a.id === this.human.id) return true;
-    if (a.window && a.window === this.w.window) return true;
-    return !!(a.windowless && a.machine === this.r.machine && a.osUser === this.r.osUser);
+    return !!(a.window && a.window === this.w.window);
   }
   /** ⌘Z: an inverse change at head (a revert), for the latest entry of the actor group. */
   cmdZ(): { id: string; reverted: string; label: string; cards: ConflictCard[] } | null {

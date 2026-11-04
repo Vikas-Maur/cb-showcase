@@ -41,4 +41,21 @@ export interface Env {
   OPEN_CREATE_PER_DAY?: string;
   // the largest file one upload stores, in bytes (default: none; 200 MiB when OPEN_CREATE is on)
   MAX_UPLOAD_BYTES?: string;
+  // the deployment's daily write cap (write-cap.ts), across every project: bytes stored and blob write calls per UTC
+  // day. Over either, writes answer 429 (code DailyWriteCap) until 00:00 UTC; reads and deletes go on. Off unless set.
+  WRITE_CAP_BYTES_PER_DAY?: string;
+  WRITE_CAP_OPS_PER_DAY?: string;
+  // The DO-blob fallback's sweep of abandoned uploads (blob-do.ts): a multipart upload neither completed nor aborted,
+  // untouched (made, a part written, its parts listed) for VAULT_UPLOAD_TTL_MS, is deleted with its parts (default
+  // 86400000, 24 h, as an R2 lifecycle rule would; up to an hour later, the interval at which parts write its touch).
+  // VAULT_SWEEP_ROWS is the most rows one sweep alarm deletes (default 500), and 8 times it the most it reads; the next
+  // alarm comes a second later while more remain. Set them for tests and the lab; a deployment needs neither.
+  VAULT_UPLOAD_TTL_MS?: string;
+  VAULT_SWEEP_ROWS?: string;
+  // a proxy stream's batches (host-http streams.ts): parts and bytes per append, bytes per read. The Worker advertises
+  // them to writers and clamps reads to them, so one request's CPU stays inside the plan's (Free: 10 ms). Defaults in
+  // worker.ts (PREVIEW_DEFAULTS); a Paid plan can raise them for fewer requests.
+  PREVIEW_BATCH_PARTS?: string;
+  PREVIEW_BATCH_BYTES?: string;
+  PREVIEW_READ_BYTES?: string;
 }

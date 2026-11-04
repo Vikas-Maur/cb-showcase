@@ -45,8 +45,10 @@ backends](#swapping-backends) · [Migration](#migration-of-existing-projects) ·
   imported as an attributed change (`external:project.json`), §6.4.
 - **Who is acting** travels as `CARDBOARD_ACTOR`: `person`, `director/<chat>/<turn>[/sub-<type>-<id>]`, `claude/<chat>`,
   `codex/<name>`… Every change records its actor, so History and credits go down to the subagent.
-- **Undo is per actor group:** your edits, the agent turns you started, and windowless local `cb` agents on this
-  machine. A teammate's edits are never in your ⌘Z (§8).
+- **Ctrl+Z behaves like the editor's own:** your edits and the agent turns you started in the app, from this session
+  only. It never goes back past the session's start and never undoes a terminal's `cb` (those are undone from
+  History's "Undo turn" or `cb undo --turn`). A teammate's edits are never in it. `cb undo` and History's Undo see the
+  machine's whole actor group (§8).
 
 ## Opening a project: `Carton.open` on each platform
 
@@ -362,15 +364,25 @@ at 1/s for 10 minutes).
 **Today.** `pushTimelineHistory(label)` pushes a whole-timeline snapshot (50 kept). `undo` and `redo` swap snapshots.
 Ctrl+Z, the toolbar and Edit › Undo all end there.
 
-**With Carton.** `undo()` sends the pending save first, then `carton.undo(group)`: the inverse of the newest change of
-the person's actor group, saved at head. `redo` undoes that undo. The result comes back through H5 with no undo entry.
-The group holds the person's edits, the agent turns they started, and windowless local `cb` agents; a teammate's edits
-are never in it. Keep the snapshot push: the caption editor detects a push by the identity of `historyPast`. Without
-history for a project, today's undo runs.
+**With Carton.** `undo()` sends the pending save first, then `carton.undo(group, { app: true, since })`: the inverse
+of the newest change of the person's actor group that was made from the app (`Actor.app`: the person at the editor, or
+an agent the app started, which main names in `CARDBOARD_ACTOR`) since the editor's session began (`since`, set when
+the editor opens the project), saved at head. A terminal's `cb` is in the machine's group but never `app`, so Ctrl+Z
+skips it, as it never goes back past the session. `redo()` is `carton.redo(group, { app: true, since })`: a revert of
+the newest undo, re-applying exactly what it took back as a new change; a newer edit in that scope clears it. The
+answer carries the project the worker wrote, which the editor adopts at once, and what is left to undo and redo, which
+the undo and redo buttons show (`cartonCanUndo`, `cartonCanRedo` in place of the snapshot stacks' lengths). An undo
+whose inverse clashes with a later change changes nothing: its cards go to the person's conflict stack, each saying
+why. Keep the snapshot push: the caption editor detects a push by the identity of `historyPast`. Without history for a
+project, today's undo runs.
 
-**Invariant (C10).** ⌘Z undoes the AI's edit too, including an external `cb` agent's, and never a teammate's.
+**Invariant (C10).** Ctrl+Z undoes the person's own edits and the agent turns they started in the app, in this session
+only; never a terminal's `cb`, never a teammate's, never past the session's start. Redo re-applies what the last undo
+took back until the next edit.
 
-**Proof.** System `R2-08 external cb then ⌘Z` (`r2-08-undo.ts`); store-memory's `ids.test.ts` (undo by group, ids).
+**Proof.** `scripts/carton/test/sync/undo.test.js` (the real worker: scope, redo, the clash card); store-memory's
+`undo-scope.test.ts` and local's `undo-app.test.ts`. (System `R2-08` in `r2-08-undo.ts` still models the rule this
+replaces, where ⌘Z took an external `cb` agent's edit; its owner updates it.)
 
 ### H7 · Ripple, split, remove silences, ripple trim
 
@@ -429,7 +441,10 @@ built from a list of namespaces.
   subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
   file, the person's and remote teammates' changes reach it; the app always shows head. Local agents' saves still go
   into the frozen file, each merged on its own base, and so do their confirmed `cb` changes; on a shared cut, only those
-  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A plain `cb source print`
+  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). **Read-your-writes:** a
+  `cb` write that changed the timeline asks the holder to show it before it answers (`carton.shown`, `showOnHolder`;
+  the holder's engine `show`, the materializer's `showChange`), so an agent reading `timeline.tsx` next sees its own
+  change; the answer (`shown`, `held`, `elsewhere`, `later`) goes into the write's result. A plain `cb source print`
   and a cut switch reprint it from head. A save that repeats an edit the file hides, or whose check for that reads more
   than its limit of changes or fails, restarts the freeze from that save's state; a `cb` change restarts it from that
   change's state when merging it wouldn't add exactly its edits (it repeats, overwrites or builds on an edit the file
@@ -734,8 +749,9 @@ cuts (`branches`), for remote agents.
 ## Rolling it out safely
 
 - **A switch.** Keep Carton behind a flag that main reads once at start and passes to every process it starts (our
-  build: `CARDBOARD_CARTON=1`). With it off, every hook runs today's code, and the bytes written are today's.
-- **Mixed versions are safe.** An old `cb`, a text editor, or a terminal `cb` without the flag is a foreign writer:
+  build: `CARDBOARD_CARTON`, on unless it is `0`). With it off, every hook runs today's code, and the bytes written are
+  today's.
+- **Mixed versions are safe.** An old `cb`, a text editor, or a terminal `cb` with Carton turned off is a foreign writer:
   displaced and imported, never overwritten (H1). The `.cbproj` exclusions (H11) stay on even with Carton off.
 - **Gates before turning it on by default** (§16, [GATE] = measured on real machines):
   - G1: 3 remote writers at 1/s for 10 minutes: 0 lost local edits, 0 remote changes re-committed under the person's

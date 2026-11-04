@@ -7,7 +7,7 @@ import { exactTime, when } from "../format.ts";
 import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublishedShown, useSyncStatus, useUndoTurn, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Credits } from "../model.ts";
-import { ActorName, Avatar, Button, cx } from "./ui.ts";
+import { ActorName, Avatar, Button, HoverMore, cx } from "./ui.ts";
 
 /** Syncing · Up to date · Offline: N edits waiting (§0.1, §13). Nothing for a cut that isn't shared. */
 export function SyncStatusWords({ className }: { className?: string }) {
@@ -128,7 +128,7 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
                   h("span", { className: "carton-credit-what" }, l.what),
                   h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16, named: true }), h(ActorName, { actor: l.author, detail: true })),
                   l.at != null
-                    ? h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow))
+                    ? h(HoverMore, { as: "time", className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), short: when(l.at, now, locale, words.justNow), more: exactTime(l.at, locale) })
                     : h("span", { className: "carton-credit-when" }),
                 ),
               ),
@@ -136,19 +136,66 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
   );
 }
 
-/** Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click. */
-export function PreviewBanner({ className }: { className?: string }) {
+/**
+ * Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click, or Esc (regress
+ * 2026-11-02 #4, UI audit P2-1: in a preview focus is on the page itself, so Esc reached nothing). Esc returns only when
+ * it was nobody else's: focus on the page (<body>) or in the banner, and decided once the key has reached every handler
+ * (not by which listened first: a chat approval that appears during the preview registers after this one). It stays
+ * when a handler took it (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the
+ * host's own Esc changes (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc
+ * was theirs, and the next one returns. That state is read as the key arrives (the capture phase), so the host's
+ * listener may come before or after this one (final re-check N2). Listened for only while a preview is open.
+ */
+export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
   const preview = usePreview();
   const ui = useCartonUi();
   const words = useWords();
+  const banner = useRef<HTMLDivElement>(null);
+  const state = useRef(escapeState);
+  state.current = escapeState;
+  const open = !!preview;
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // The host's state as the key found it, read in the capture phase: before every page listener, whichever was
+    // registered first (final re-check N2: Cardboard registers its Esc-deselect again on every selection change, so a
+    // clip selected before the preview put it ahead of this listener, which then read the selection already cleared).
+    let seen: { e: KeyboardEvent; before: unknown } | null = null;
+    const onCapture = (e: KeyboardEvent) => {
+      seen = e.key === "Escape" && state.current ? { e, before: state.current() } : null;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const was = seen?.e === e ? seen : null;
+      seen = null;
+      // a preview closed a moment ago (this listener goes after the render): the key isn't ours
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
+      const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
+      if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
+      const before = was ? was.before : state.current?.();
+      // a task, not a microtask: one runs between two listeners of the same key
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (e.defaultPrevented || !ui.preview() || (state.current && !Object.is(state.current(), before))) return;
+        ui.openPreview(null);
+      }, 0);
+    };
+    window.addEventListener("keydown", onCapture, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onCapture, true);
+      window.removeEventListener("keydown", onKey);
+      if (timer) clearTimeout(timer);
+    };
+  }, [open, ui]);
   if (!preview) return null;
   return h(
     "div",
-    { className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
+    { ref: banner, className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
     h(Icon, { name: "eye", size: 14 }),
-    h("span", { className: "carton-preview-label" }, words.previewing(preview.label)),
+    h("span", { className: "carton-preview-label", title: words.previewing(preview.label) }, words.previewing(preview.label)),
     h("span", { className: "carton-badge", "data-tone": "muted" }, words.readOnly),
     preview.blockedEdit ? h("span", { className: "carton-preview-blocked" }, words.previewBlocked) : null,
-    h(Button, { variant: "primary", icon: "arrowLeft", onClick: () => ui.openPreview(null) }, words.returnToCurrent),
+    h(Button, { variant: "primary", icon: "arrowLeft", keys: "Escape", title: words.returnToCurrentKey, onClick: () => ui.openPreview(null) }, words.returnToCurrent),
   );
 }

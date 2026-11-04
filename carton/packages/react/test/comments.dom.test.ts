@@ -18,7 +18,9 @@ test(name("threads in timeline order with where they sit: timecode, Moved, May b
   assert.deepEqual(texts(threads.map((t) => $(t, ".carton-comment-at")!)), ["0:12.4", "0:31.0–0:34.5", "0:47.2", "Whole version"]);
   assert.equal(byText(threads[1]!, ".carton-badge", "Moved")?.dataset.tone, "info");
   assert.equal(byText(threads[2]!, ".carton-badge", "May be outdated")?.dataset.tone, "warning");
-  assert.equal($(threads[2]!, ".carton-badge")?.getAttribute("data-carton-tip"), "What's there changed since this comment was made.");
+  // laptop report: no tooltip over the next thread; the hint is for screen readers
+  assert.equal($(threads[2]!, ".carton-badge")?.getAttribute("aria-description"), "What's there changed since this comment was made.");
+  assert.equal($(threads[2]!, ".carton-badge")?.getAttribute("data-carton-tip"), null);
   assert.equal($$(threads[0]!, ".carton-thread-replies .carton-comment").length, 1);
   assert.match(threads[0]!.getAttribute("aria-label")!, /Bob Okafor's comment at 0:12.4/);
   assert.deepEqual(texts($$(m.container, "[role=tab]")), ["Open 4", "Resolved 1", "All 5"]);

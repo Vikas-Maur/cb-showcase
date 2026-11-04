@@ -24,7 +24,11 @@
 //   stay. Then, before the bundle is first read, its history starts from the sender's shallow export (`init:
 //   {import}`), a writable cut forked from theirs, so the two copies share a lineage and later exchanges fold in with
 //   the right base; with the file's history, the sender's cuts come in as read-only cuts with every version, author and
-//   name. `.carton-export/` is then removed.
+//   name. `.carton-export/` is then removed. The staged bundle's timeline.tsx names the sender's version on their cut
+//   (Carton's header), which this history has only as a read-only shallow cut: the facade takes it as the version here
+//   with that state (the fork's start), so Cardboard's prepare applies it as unchanged (laptop #5: "no longer
+//   available", and the Open Project failed). A read-only cut of theirs that would share a name with one of this
+//   copy's is shown as "<name> (their copy)" (nameTheirCuts; also after a bring-in).
 // - Open Project, a project you have with history: in place of "This project ID already exists in your library",
 //   "Bring in their changes" — their lineage (and history, if the file has it) is imported as tracking knowledge and
 //   their head is folded into your current cut. Where you both changed the same thing, theirs goes in and yours is
@@ -242,6 +246,7 @@ async function seed(bundle) {
       c = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, actor: actorHere(), init: { import: pkg } });
       const history = childDir(exportDir, "history.db");
       if (history) await takeHistory(c, history, name);
+      await nameTheirCuts(c);
       await c.close();
       c = null;
     } catch (e) {
@@ -256,6 +261,24 @@ async function seed(bundle) {
   } finally {
     try { await removeDir(exportDir); } catch (e) { warnOnce("rm:" + bundle, `couldn't remove ${EXPORT_DIR} from ${name}: ${errText(e)}`); }
   }
+}
+
+// Laptop #9: the sender's cuts come in read-only under their own names, so a file's "Main cut" sat beside this copy's
+// own "Main cut" (Open Project forks this copy's from theirs, under the same name; a bring-in adds theirs beside yours).
+// Theirs is named "<name> (their copy)" here wherever a name would be shown twice (numbered if that is taken too). The
+// name is this copy's label only: their prints still name their cut by its token.
+async function nameTheirCuts(c) {
+  try {
+    const cuts = await c.cuts(), mine = (x) => !x.shallow && !x.tracking;
+    const taken = new Set(cuts.map((x) => x.name));
+    for (const x of cuts) {
+      if (mine(x) || !cuts.some((y) => y !== x && y.name === x.name && (mine(y) || cuts.indexOf(y) < cuts.indexOf(x)))) continue;
+      let name = `${x.name} (their copy)`;
+      for (let n = 2; taken.has(name); n++) name = `${x.name} (their copy ${n})`;
+      taken.add(name);
+      await c.renameCut(x.id, name);
+    }
+  } catch (e) { warnOnce("cutnames", "a copy's cuts keep their names: " + errText(e)); }
 }
 
 // ---------------------------------------------------------------- Open Project, a project you have
@@ -413,6 +436,7 @@ async function bringIn(file, store) {
         return f;
       },
     }, contents, history);
+    await nameTheirCuts(c);
     // the clips head uses now, for their files (adoptMedia); up to date too (round 4 #3: a file that comes again with a
     // clip's member an earlier copy lacked still brings it in)
     if (res.status === "forked" || (res.status === "folded" && ["confirmed", "pending", "up-to-date"].includes(res.fold.status))) {

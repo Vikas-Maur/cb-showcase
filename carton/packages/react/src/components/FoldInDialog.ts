@@ -72,11 +72,16 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const unpicked = plan ? plan.conflicts.filter((c) => !choices[c.id]).length : 0;
   const title = plan ? words.foldTitle(plan.from.label, plan.into.label) : words.foldSomeOfIt;
 
+  // A change an earlier partial fold left out comes with that fold's other left-out changes (UI audit P1-4): they
+  // fold in, or stay left out, together
   const toggle = (id: string) =>
     setLeft((s) => {
       const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
+      const group = plan?.changes.find((c) => c.id === id)?.leftOut;
+      const ids = group ? plan!.changes.filter((c) => c.leftOut === group).map((c) => c.id) : [id];
+      const out = !n.has(id);
+      for (const x of ids) if (out) n.add(x);
+      else n.delete(x);
       return n;
     });
 
@@ -132,6 +137,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                       h(
                         "span",
                         { className: "carton-fold-meta" },
+                        c.leftOut ? h("span", { className: "carton-fold-tag", title: words.foldLeftOutTogether }, words.foldLeftOutEarlier) : null,
                         h(Avatar, { actor: c.author, size: 14, named: true }),
                         h(ActorName, { actor: c.author }),
                         h("time", null, when(c.at, now, locale, words.justNow)),

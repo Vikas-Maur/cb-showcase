@@ -26,9 +26,14 @@ const { carton } = await importProject({ bundleDir, projectId, appDataDir, adapt
 
 With the default durability, WAL checkpoints never run inside a commit. SQLite's automatic one (which runs inside
 COMMIT, after the write lock is released) made about one commit in 1,000 take tens of ms to return; it is off, and a
-passive checkpoint runs on its own turn of the event loop (after 1,000 writes, every 30 s, and at open; inline before
-a write if the caller never yields). It costs the calling thread a few ms to tens of ms now and then, never other
-writers. A reader that keeps an old snapshot open stops the WAL from being reused until it lets go. With
+passive checkpoint runs on its own turn of the event loop (after 1,000 writes, every 30 s, and after open; inline
+before a write if the caller never yields). It costs the calling thread a few ms to tens of ms now and then, never other
+writers. The one after open runs at once only for a WAL file past 4 MiB (`OPEN_CHECKPOINT_BYTES`, SQLite's own
+1,000-frame trigger), else 2 s later (`OPEN_CHECKPOINT_DELAY_MS`): a short process such as a `cb` call exits before
+then and leaves it to the processes that stay open (the app's worker, a helper, an MCP server), where a checkpoint at
+open had copied and synced the WAL on every call, a read-only one too. The WAL file's size (beside the file SQLite
+opened, also through a symlink) bounds what a short process leaves unchecked. SQLite shrinks it only to
+`journal_size_limit` (16 MiB), so a WAL a burst grew past 4 MiB keeps the checkpoint at open, as before. A reader that keeps an old snapshot open stops the WAL from being reused until it lets go. With
 `durability: "full"` SQLite's automatic checkpoint stays on: every commit already fsyncs under the lock, and moving the
 checkpoint out only made each commit slower there (verify-ci S3c).
 

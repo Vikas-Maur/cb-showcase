@@ -5,6 +5,10 @@
 //   #2 a stale save whose merge clashes keeps its other edits; the clash becomes a card, head's value stays;
 //   #6 a signed media URL goes onto the configured origin whole (scheme too), never http where the app said https;
 //   #7 one host media client per project from one share to the next (media fd87449), let go on the facade's release.
+// Laptop #2 (agents' cb edits overwrote each other): a cb edit made on an older version that core takes without a
+//   rebase (nothing in it overlaps what landed since) gets head back for project.json, never the writer's document,
+//   which lacks what landed since (the next print showed those older values under the newer version's rev, and the
+//   next apply committed them back); so does one with nothing of its own.
 // H8's save path: a GUI save tells the worker's Materializer its project.json write is under way (an extension's
 //   hostWrite), and the install that lands it resolves `after` to the envelope written and the file's stamp.
 // #1, #2 and the save path need Cardboard's bundles (CARDBOARD_PRISTINE, as ../patches.test.js); #6 and #7 run anywhere.
@@ -35,7 +39,14 @@ const pick = (r) => ({ status: r.status, empty: !!r.empty, rebased: r.rebased ??
   const c = await commit(p1, { ...p1, name: "C's name", stateUpdatedAt: p1.stateUpdatedAt + 1 }, "codex/c");
   const d = await commit(p1, { ...p1, name: "D's name", description: "D's description", stateUpdatedAt: p1.stateUpdatedAt + 2 }, "codex/d");
   const head = await api.headProject(bundle, { ...p0, stateUpdatedAt: -1 });
-  process.stdout.write(JSON.stringify({ a: pick(a), b: pick(b), c: pick(c), d: pick(d), head: { name: head?.name, description: head?.description ?? null } }) + "\n");
+  // laptop #2: from head, E renames; F, from the same version, changes only the description (core takes it on its
+  // base, no rebase); G, from that version too, changes nothing
+  const p2 = await api.headProject(bundle, { ...p0, stateUpdatedAt: -1 });
+  const e = await commit(p2, { ...p2, name: "E's name", stateUpdatedAt: p2.stateUpdatedAt + 1 }, "codex/e");
+  const f = await commit(p2, { ...p2, description: "F's description", stateUpdatedAt: p2.stateUpdatedAt + 2 }, "codex/f");
+  const g = await commit(p2, { ...p2, stateUpdatedAt: p2.stateUpdatedAt + 3 }, "codex/g");
+  const head2 = await api.headProject(bundle, { ...p0, stateUpdatedAt: -1 });
+  process.stdout.write(JSON.stringify({ a: pick(a), b: pick(b), c: pick(c), d: pick(d), head: { name: head?.name, description: head?.description ?? null }, e: pick(e), f: pick(f), g: pick(g), head2: { name: head2?.name, description: head2?.description ?? null } }) + "\n");
   process.exit(0);
 })().catch((e) => { process.stdout.write(JSON.stringify({ error: String(e?.stack ?? e) }) + "\n"); process.exit(1); });
 `;
@@ -131,6 +142,14 @@ test("H8 a GUI save's project.json write: the Materializer is told, and the inst
   assert.deepEqual(g.notHead, { ok: false, got: null }, "a write that doesn't install: nothing (the file is read)");
   assert.equal(g.last, 4, "a save that isn't the GUI's isn't told");
   assert.equal(g.bundle, true);
+});
+
+test("laptop #2 a cb edit core takes on an older version without a rebase gets head for project.json, not its own document", { skip: S.skip }, () => {
+  assert.equal(out.e.status, "confirmed", JSON.stringify(out.e));
+  assert.deepEqual([out.f.status, out.f.rebased], ["confirmed", 0], "F's edit went in on its older base: " + JSON.stringify(out.f));
+  assert.deepEqual([out.f.name, out.f.description], ["E's name", "F's description"], "F's project.json is head, E's rename too");
+  assert.deepEqual([out.g.name, out.g.description], ["E's name", "F's description"], "an edit with nothing of its own gets head too");
+  assert.deepEqual([out.head2.name, out.head2.description], ["E's name", "F's description"]);
 });
 
 test("#6 a signed media URL goes onto the configured origin whole: scheme, host and port", async () => {

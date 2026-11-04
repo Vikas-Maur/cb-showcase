@@ -33,6 +33,7 @@ import { withInstallLock } from "./install-lock.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
+import { breaks } from "../valid.ts";
 
 export const PROJECT_FILE = "project.json";
 export const TIMELINE_FILE = "timeline.tsx";
@@ -73,6 +74,32 @@ export interface Pinned {
   cut?: string;
   /** With `deferRecord`: the engine's record of the pin, for the caller to store with its next meta write. */
   record?: MetaRow;
+  /** The changes past `seq` the pinned state holds (head's pending changes on a shared cut), when the engine says. */
+  pending?: string[];
+}
+
+/**
+ * A write whose author waits to read it in the shared timeline.tsx (`showChange`, read-your-writes): its change id, the
+ * cut it went to, its confirmed seq (none while it is pending on a shared cut), and who made it.
+ */
+export interface ShowTarget {
+  id: string;
+  cut?: string;
+  seq?: number;
+  author?: Actor | null;
+}
+/**
+ * Whether timeline.tsx shows a write (`showChange`): `shown`; `held`: the file is frozen for someone else's work and
+ * holds this change back until that ends (the person's own `cb` during an agent's turn); `elsewhere`: the change is on
+ * another cut than the one the file shows; `later`: not within the wait (a host write still landing, a rewrite that
+ * failed and is tried again), and it shows once that is done.
+ */
+export type Showing = "shown" | "held" | "elsewhere" | "later";
+/** A write waiting to show (`showChange`): `rewriting` while its own rewrite runs, `done` its answer and what gave it. */
+interface Waiting {
+  c: ShowTarget;
+  rewriting: boolean;
+  done: (s: Showing, by: SlowShow["by"]) => void;
 }
 
 /** A row of local metadata (`MaterializerEngine.putMeta`). */
@@ -157,6 +184,8 @@ export interface MaterializerEngine {
   pendingChanges?(cut?: string): Promise<{ seq: number; changes: PendingChange[] }>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
+  /** Where a confirmed change is (its cut and seq), or null while it isn't confirmed (pending, withdrawn, unknown). */
+  changeAt?(id: string): Promise<{ cut: string; seq: number } | null>;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
   /** M4: did `author` create sequence element `id`? Keeps one author's run of inserts contiguous across saves. */
   own?(author: Actor): OwnFn;
@@ -288,7 +317,54 @@ export interface MaterializerOptions {
    * agent's does. Without it, only hooked agents' changes there.
    */
   group?: string;
+  /**
+   * A read-your-writes answer (`showChange`) that took `slowShowMs` (default 500) or longer, and where the time went
+   * (`SlowShow`): the app logs it. Nothing for a prompt one, nothing without it.
+   */
+  onSlowShow?: (s: SlowShow) => void;
+  slowShowMs?: number;
 }
+
+/**
+ * Where a slow read-your-writes answer's time went (perf/apply-tail). On the laptop, Carton on, about 4 % of agents'
+ * print-and-apply round trips took the run's normal time plus 2 s or plus 4 s, which no Linux run reproduced (0 of
+ * 1,928): `cb` waits at most 2 s for the app's timeline.tsx to show its write, and this says what that wait was spent
+ * on, in the app, so a run there names the cause. Times in ms; never file contents, never anything typed.
+ * - `ms`: from the ask to the answer; `budgetMs`: the wait it was given; `beforeMs`: the holder's look at carton.db
+ *   before it asked (when it says). The wait reported is the two together: `beforeMs` + `ms` >= `slowShowMs`.
+ * - `queueMs`: from the ask until this answer's own look at the file (behind the materializer's other work); null
+ *   when it never got that far (another print answered it first, or the wait ran out). `lookMs`: that look (the read
+ *   of timeline.tsx that checks whether it shows the write already).
+ * - `rewriteMs`: the rewrite it made itself (fold, pin, print, install), null when none.
+ * - `by`: what answered it: its own rewrite, a print made for something else, its first look (`at once`), the end of
+ *   the wait (`timer`), or the materializer closing.
+ * - `landing`, `retrying`, `frozen`: whether a host write was landing, a failed rewrite was waiting to be tried again,
+ *   or the file was frozen, when it was answered.
+ * - `tasks`: the materializer's longest tasks while it waited (20 ms or more, at most 4, longest first): the first
+ *   line of each one's source and how long it ran.
+ * - `print`: the shared file's last rewrite since it was asked, step by step: `look` (the file read, a foreign save
+ *   imported, the freeze checked), `pin`, `print` (project.json read, the printer), `install` (the bundle's install
+ *   lock, displace and link) and `tell` (the read-back of the file that tells the waiting writes); `at` when it began,
+ *   `failed` when it threw (its last step is the one that failed).
+ */
+export interface SlowShow {
+  change: string;
+  answer: Showing;
+  ms: number;
+  budgetMs: number;
+  beforeMs?: number;
+  queueMs: number | null;
+  lookMs: number | null;
+  rewriteMs: number | null;
+  by: "own rewrite" | "another print" | "at once" | "timer" | "closed";
+  landing: boolean;
+  retrying: boolean;
+  frozen: boolean;
+  tasks: { task: string; ms: number }[];
+  print?: { at: number; look: number; pin: number; print: number; install: number; tell: number; failed?: boolean };
+}
+/** The shared file's rewrite, step by step (`SlowShow.print`). */
+type PrintStep = "look" | "pin" | "print" | "install" | "tell";
 
 export interface ViewRow {
   /** Who printed it: the turn's actor for hooked agents, otherwise the view's own name. */
@@ -420,7 +496,7 @@ export class Materializer {
   private readonly host: MaterializerHost;
   private readonly codec: TimelineCodec;
   private readonly clock: Clock;
-  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock" | "onCards" | "keepPrints" | "group">>;
+  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock" | "onCards" | "keepPrints" | "group" | "onSlowShow" | "slowShowMs">>;
   private readonly onCards: ((c: SaveCards) => void) | null;
   /** How long the shared file's superseded prints stay pinned (`keepPrints`). */
   private readonly keepPrints: PinKeep;
@@ -430,6 +506,15 @@ export class Materializer {
   private readonly noLinks: boolean;
   private readonly busy: BusyOptions;
   private queue: Promise<unknown> = Promise.resolve();
+  /** A slow read-your-writes answer's report (`SlowShow`), and from how long on. */
+  private readonly onSlowShow: ((s: SlowShow) => void) | null;
+  private readonly slowShowMs: number;
+  /** The queue's last tasks: what each was and when it ran, for a slow answer's report (`SlowShow.tasks`). */
+  private readonly ran: { task: () => Promise<unknown>; at: number; ms: number }[] = [];
+  /** The task running now, and since when (`SlowShow.tasks`: one still running counts up to the report). */
+  private current: { task: () => Promise<unknown>; at: number } | null = null;
+  /** The shared file's last rewrite, step by step, the one under way counted up to now (`SlowShow.print`). */
+  private lastPrint: (() => NonNullable<SlowShow["print"]>) | null = null;
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
   /** project.json's envelope for its stamp; `hash` null when the host gave it (`HostWrite`) and the file wasn't read. */
@@ -465,7 +550,21 @@ export class Materializer {
   // `saves`: saves applied in a freeze whose commit is still pending on a shared cut, by change id: they show on top of
   // the view (`withPending`) and join it once confirmed (`foldAgentChanges`), so a rebase that changes one shows; one
   // no longer pending on the freeze's cut (confirmed, withdrawn, another cut's) is let go at the next print
-  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown, scanned: 0, pending: "", saves: new Map<string, FrozenSave>() };
+  // `callers`: windowless `cb` callers whose call holds the freeze (`onCb(actor)`: a terminal's cb, which nothing tells
+  // apart from a windowless agent): their own changes join the view as a local agent's do (read-your-writes, apply-ryw)
+  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), callers: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown, scanned: 0, pending: "", saves: new Map<string, FrozenSave>() };
+  /**
+   * What the installed timeline.tsx print holds (read-your-writes, `showChange`): the cut it shows, the confirmed seq it
+   * was made from, the changes past that seq it holds (a freeze view's causal past and the pending changes shown on it,
+   * or head's pending changes), and the hash of the print's bytes: a write is shown only while the file on disk has
+   * exactly those bytes (review #1: a stamp taken after the install could name a foreign file that replaced the print
+   * in between). Null until this materializer prints or checks it.
+   */
+  private printed: { cut: string | undefined; seq: number; ids: ReadonlySet<string>; hash: string } | null = null;
+  /** Writes waiting to show in timeline.tsx (`showChange`). */
+  private readonly showing = new Set<Waiting>();
+  /** The cause the coalesced local rewrite (`localTimer`) was armed for. */
+  private localCause: "local" | "gui" | "remote" = "local";
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   /** The cut `sharedRef` was pinned on. */
@@ -490,7 +589,7 @@ export class Materializer {
   private projectPin: string | null = null;
 
   /** What happened, for tests and the activity log (never file contents). */
-  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[], recovered: [] as Record_[], cards: [] as SaveCards[] };
+  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[], recovered: [] as Record_[], refused: [] as Record_[], cards: [] as SaveCards[] };
 
   constructor(o: MaterializerOptions) {
     this.bundle = path.resolve(o.bundle);
@@ -499,6 +598,8 @@ export class Materializer {
     this.codec = o.codec;
     this.clock = o.clock ?? realClock;
     this.onCards = o.onCards ?? null;
+    this.onSlowShow = o.onSlowShow ?? null;
+    this.slowShowMs = o.slowShowMs ?? 500;
     this.keepPrints = { count: o.keepPrints?.count ?? 256, ms: o.keepPrints?.ms ?? DAY };
     this.group = o.group ?? null;
     this.opts = {
@@ -582,6 +683,7 @@ export class Materializer {
     await this.run(() => this.reviewDisplaced()).catch(() => undefined);
     this.closed = true;
     for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, ...this.writeRetryTimers.values(), this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
+    for (const w of [...this.showing]) w.done("later", "closed");
     await this.queue;
   }
 
@@ -596,7 +698,18 @@ export class Materializer {
   }
 
   private run<T>(task: () => Promise<T>): Promise<T> {
-    const p = this.queue.then(task, task);
+    // each task's run is noted (the last 32), for a slow read-your-writes answer's report (`SlowShow.tasks`)
+    const go = async (): Promise<T> => {
+      const at = this.clock.now();
+      this.current = { task, at };
+      try {
+        return await task();
+      } finally {
+        this.current = null;
+        if (this.ran.push({ task, at, ms: this.clock.now() - at }) > 32) this.ran.shift();
+      }
+    };
+    const p = this.queue.then(go, go);
     this.queue = p.catch(() => undefined);
     return p;
   }
@@ -791,10 +904,16 @@ export class Materializer {
     return h;
   }
 
-  /** Any `cb` call: windowless agents count as active for a while after it. */
-  onCb(): Promise<void> {
+  /**
+   * Any `cb` call: windowless agents count as active for a while after it. `caller`: who made the call, when it is a
+   * windowless caller nothing else names as an agent (a terminal's `cb`, `@carton/local`'s fallback actor): its own
+   * changes show in the frozen file as a local agent's do, so the caller reads what it just wrote (apply-ryw). Before,
+   * its call froze the file against its own write for a minute.
+   */
+  onCb(caller?: Actor | null): Promise<void> {
     return this.run(async () => {
       this.freeze.lastCb = this.clock.now();
+      if (caller?.id) this.freeze.callers.set(caller.id, caller);
       await this.updateFreeze();
     });
   }
@@ -827,19 +946,135 @@ export class Materializer {
       return;
     }
     if (this.localTimer) return;
+    this.localCause = cause;
     this.localTimer = this.clock.setTimeout(() => {
       this.localTimer = null;
       if (this.landing.size) return;
-      this.fire(() => this.orRetry("shared", async () => {
-        // a print made while a host write landed: checked against what it wrote (`writeSharedNow` prints again only
-        // if the print would show something new), also in a freeze, where nothing else would rewrite the file
-        const landed = this.printedLanding;
-        this.printedLanding = false;
-        if (!this.freeze.active) await this.writeSharedNow(cause);
-        // during a freeze: local agents' confirmed changes, and on a shared cut their pending ones (`withPending`)
-        else if ((await this.foldAgentChanges()) || (await this.pendingMoved()) || landed) await this.writeSharedNow("cb");
-      }));
+      this.fire(() => this.orRetry("shared", () => this.localRewrite(cause)));
     }, this.opts.localRewriteMs);
+  }
+  /** The coalesced local rewrite of the shared file (`onHeadChange`'s timer, or `showChange` at once). */
+  private async localRewrite(cause: "local" | "gui" | "remote"): Promise<void> {
+    // a print made while a host write landed: checked against what it wrote (`writeSharedNow` prints again only if the
+    // print would show something new), also in a freeze, where nothing else would rewrite the file
+    const landed = this.printedLanding;
+    this.printedLanding = false;
+    if (!this.freeze.active) await this.writeSharedNow(cause);
+    // during a freeze: local agents' confirmed changes, and on a shared cut their pending ones (`withPending`)
+    else if ((await this.foldAgentChanges()) || (await this.pendingMoved()) || landed) await this.writeSharedNow("cb");
+  }
+
+  /**
+   * Read-your-writes (apply-ryw): resolves once the shared timeline.tsx shows the write `c`, or says why it doesn't, at
+   * most `ms` later. A `cb` write calls it (through the lease holder) before it answers, so an agent that reads
+   * timeline.tsx right after its `cb source apply` reads its own change. On the laptop it read the file before this
+   * materializer had even heard of the change (another process's commit is found by a poll of carton.db, then
+   * rewritten 20 ms later), and took the old value for a freeze of the turn's start.
+   * - `shown`: the installed print holds the change: its confirmed seq is at or below the print's, or the print holds
+   *   it past that seq (a freeze view's causal past, a shared cut's pending change).
+   * - `held`: the file is frozen for someone else's work, and the freeze holds this change back (it isn't a local
+   *   agent's, a windowless `cb` caller's or a save's): it shows when that work ends.
+   * - `elsewhere`: the change is on another cut than the current one, which the file shows.
+   * - `later`: none of these within `ms` (a host write still landing, a rewrite that failed and is retried).
+   * No polling: a rewrite waiting on its coalescing timer is made at once, and every print that lands (or is found
+   * unchanged) tells the waiting writes (`wakeShowing`).
+   * An answer that took `slowShowMs` or longer is reported (`onSlowShow`) with where its time went (`SlowShow`);
+   * `o.beforeMs`: what the caller spent before it asked (the holder's look at carton.db).
+   */
+  showChange(c: ShowTarget, ms: number, o: { beforeMs?: number } = {}): Promise<Showing> {
+    if (this.closed) return Promise.resolve("later");
+    return new Promise<Showing>((resolve) => {
+      let timer: unknown = null;
+      // for the report: when it was asked, when its own look began, and its own rewrite's time
+      const asked = this.clock.now();
+      let looked: number | null = null, lookMs: number | null = null, rewriteMs: number | null = null, rewroteAt = 0;
+      const w: Waiting = {
+        c,
+        rewriting: false,
+        done: (s, by) => {
+          if (!this.showing.delete(w)) return;
+          if (timer !== null) this.clock.clearTimeout(timer);
+          resolve(s);
+          const now = this.clock.now(), took = now - asked;
+          // the whole wait counts, the caller's look at carton.db too (review #1: one that took the wait left a prompt
+          // answer here, and nothing was reported); `ms` is this part, `beforeMs` the caller's
+          // (answered by the print of its own rewrite, which hasn't returned yet: its time so far)
+          if (this.onSlowShow && (o.beforeMs ?? 0) + took >= this.slowShowMs) this.reportSlowShow({ change: c.id, answer: s, ms: took, budgetMs: ms, ...(o.beforeMs !== undefined ? { beforeMs: o.beforeMs } : {}), queueMs: looked === null ? null : looked - asked, lookMs: lookMs ?? (looked === null ? null : now - looked), rewriteMs: rewriteMs ?? (w.rewriting ? now - rewroteAt : null), by }, asked);
+        },
+      };
+      this.showing.add(w);
+      timer = this.clock.setTimeout(() => w.done("later", "timer"), Math.max(0, ms));
+      // the head this write moved, if nobody has told this materializer yet (B11: its holder's follower normally has)
+      this.onExternalHeadChange()
+        .catch(() => undefined)
+        .then(() => this.run(async () => {
+          if (!this.showing.has(w)) return;
+          looked = this.clock.now();
+          const there = await this.holdsChange(c);
+          lookMs = this.clock.now() - looked;
+          if (there) return w.done("shown", "at once");
+          const cut = this.engine.cut?.();
+          if (c.cut !== undefined && cut !== undefined && c.cut !== cut) return w.done("elsewhere", "at once");
+          // the rewrite this write is waiting for, coalescing on its timer: made now (a host write landing goes first)
+          if (this.localTimer && !this.landing.size) {
+            this.clock.clearTimeout(this.localTimer);
+            this.localTimer = null;
+            rewroteAt = this.clock.now();
+            w.rewriting = true;
+            await this.orRetry("shared", () => this.localRewrite(this.localCause)).catch((e: unknown) => {
+              this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: e instanceof Error ? e.message : String(e) });
+            });
+            w.rewriting = false;
+            rewriteMs = this.clock.now() - rewroteAt;
+            if (!this.showing.has(w)) return; // the print told it (`wakeShowing`)
+            if (await this.holdsChange(c)) return w.done("shown", "own rewrite");
+          }
+          if (this.holdsBack(c)) w.done("held", "at once");
+        }))
+        .catch(() => undefined);
+    });
+  }
+  /** A slow answer's report (`SlowShow`): what held rewrites back, and the longest tasks since it was asked. */
+  private reportSlowShow(s: Omit<SlowShow, "landing" | "retrying" | "frozen" | "tasks">, since: number): void {
+    const now = this.clock.now();
+    const tasks = [...this.ran, ...(this.current ? [{ ...this.current, ms: now - this.current.at }] : [])]
+      .filter((r) => r.at + r.ms > since && r.ms >= 20)
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 4)
+      .map((r) => ({ task: String(r.task).split("\n").slice(0, 2).join(" ").replace(/\s+/g, " ").slice(0, 120), ms: r.ms }));
+    const last = this.lastPrint?.();
+    const print = last && last.at >= since ? { ...last, at: last.at - since } : null;
+    try {
+      this.onSlowShow!({ ...s, landing: this.landing.size > 0, retrying: this.writeRetryTimers.size > 0, frozen: this.freeze.active, tasks, ...(print ? { print } : {}) });
+    } catch {
+      // a report that fails changes nothing
+    }
+  }
+  /** Whether the installed print holds `c` (see `showChange`). */
+  private async holdsChange(c: ShowTarget): Promise<boolean> {
+    const p = this.printed;
+    if (!p) return false;
+    // the file on disk is that print, byte for byte (a foreign save since is imported, and the file printed again); one
+    // that can't be read shows nothing
+    let bytes: Buffer;
+    try {
+      bytes = await retryBusy(() => fs.readFileSync(this.abs(TIMELINE_FILE)), this.busy);
+    } catch {
+      return false;
+    }
+    if (sha(bytes) !== p.hash) return false;
+    if (p.ids.has(c.id)) return true;
+    const at = c.seq !== undefined && c.cut !== undefined ? { cut: c.cut, seq: c.seq } : ((await this.engine.changeAt?.(c.id).catch(() => null)) ?? (c.seq !== undefined ? { cut: c.cut, seq: c.seq } : null));
+    return !!at && at.seq <= p.seq && (at.cut === undefined || p.cut === undefined || at.cut === p.cut);
+  }
+  /** The freeze holds `c` back: a change the frozen file doesn't take in (see `foldAgentChanges`). */
+  private holdsBack(c: ShowTarget): boolean {
+    if (!this.freeze.active || !this.freeze.view) return false;
+    return !this.localAgent(c.author) && !this.freeze.saves.has(c.id);
+  }
+  /** A print landed (or was found unchanged): the writes it shows are told. */
+  private async wakeShowing(): Promise<void> {
+    for (const w of [...this.showing]) if (await this.holdsChange(w.c)) w.done("shown", w.rewriting ? "own rewrite" : "another print");
   }
 
   /** Host writes told with a head change (`onHeadChange`'s `after`) that haven't landed yet. */
@@ -928,7 +1163,8 @@ export class Materializer {
   }
   /** Whether a change by `a` is a local agent's (see `foldAgentChanges`). */
   private localAgent(a: Actor | null | undefined): boolean {
-    if (!isAgent(a)) return false;
+    // an agent, or a windowless `cb` caller whose call holds the freeze (`onCb`): its own changes show (apply-ryw)
+    if (!isAgent(a) && !(a?.id && this.freeze.callers.has(a.id))) return false;
     if (!this.engine.shared()) return true; // a cut only this replica writes: every agent on it is local
     // on a shared cut: an agent of this machine's group (windowless ones too, windows-sync round 2), or one hooked here
     if (this.group !== null && a!.group === this.group) return true;
@@ -1006,6 +1242,7 @@ export class Materializer {
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
+      this.freeze.callers.clear();
       // a host write still landing: its own call rewrites the file once it has (from head now)
       if (!this.landing.size) await this.writeSharedNow("freeze-end");
     }
@@ -1105,6 +1342,29 @@ export class Materializer {
   }
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
+    // how long each step took, for a slow read-your-writes answer's report (`SlowShow.print`; one made during a step
+    // counts that step up to then): each `step(next)` ends the step under way, and the rewrite's end, failed or not,
+    // ends the last one (review #2: a failed rewrite's step went on counting the wait for its retry)
+    const steps: NonNullable<SlowShow["print"]> = { at: this.clock.now(), look: 0, pin: 0, print: 0, install: 0, tell: 0 };
+    let mark = steps.at, doing: PrintStep | null = "look";
+    const step = (next: PrintStep | null): void => {
+      const n = this.clock.now();
+      if (doing) steps[doing] += n - mark;
+      mark = n;
+      doing = next;
+    };
+    this.lastPrint = () => (doing ? { ...steps, [doing]: steps[doing] + this.clock.now() - mark } : { ...steps });
+    try {
+      await this.rewriteShared(cause, force, step);
+    } catch (e) {
+      steps.failed = true;
+      throw e;
+    } finally {
+      step(null);
+    }
+  }
+  /** The shared file's rewrite (`writeSharedNow`), telling `step` where it is. */
+  private async rewriteShared(cause: string, force: boolean, step: (next: PrintStep | null) => void): Promise<void> {
     // the path is read once: what the import found there (current, not parsing yet, or nothing) is what the "unchanged"
     // check below compares, and a write landing in between is read at its own event; after an import it is read again
     const seen = await this.importUnseen(TIMELINE_FILE);
@@ -1112,6 +1372,7 @@ export class Materializer {
     // the freeze view only on the cut it belongs to (if the cut moved since, head until the next check restarts it)
     const frozen = this.freeze.active && !!this.freeze.view && this.freeze.cut === (this.engine.cut?.() ?? null);
     const shown = frozen ? await this.withPending() : null;
+    step("pin");
     // superseded prints are released past `keepPrints` (R7-01's bound); the pin's record goes with the next meta write
     // (the path's token before the install, or its state after it) instead of one write of its own
     // the print the file shows is never released, whatever was pinned since (a print that failed, a restart point),
@@ -1120,7 +1381,16 @@ export class Materializer {
     const pinned = shown
       ? await this.engine.pin({ owner: "shared-view", doc: shown.doc, seq: this.freeze.baseSeq, causal: [...this.freeze.causal, ...shown.ids], ttlMs: 7 * DAY, keep, deferRecord: true })
       : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY, keep, deferRecord: true });
+    step("print");
     const carry = { rows: pinned.record ? [pinned.record] : [] };
+    // what the file shows once this print is there (read-your-writes, `showChange`): told to the writes waiting for it
+    const holds = { cut: pinned.cut, seq: pinned.seq, ids: new Set(shown ? [...this.freeze.causal, ...shown.ids] : (pinned.pending ?? [])) };
+    const showed = async (hash: string): Promise<void> => {
+      step("tell"); // (unchanged: "print" was project.json's read, and the print made again to compare)
+      this.printed = { ...holds, hash };
+      if (this.showing.size) await this.wakeShowing();
+      step(null);
+    };
     let landedBefore: number | null = null;
     try {
       if (shown) this.freeze.pending = shown.key;
@@ -1135,7 +1405,7 @@ export class Materializer {
       landedBefore = this.landedWrites;
       const src = await this.projectSource();
       const same = !force && !!cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body;
-      if (same && this.sharedEnv === src.key) return;
+      if (same && this.sharedEnv === src.key) return await showed(cur!.hash);
       const project = (src.env?.project as Project | undefined) ?? null;
       if (same && this.sharedHeader) {
         // only project.json changed since (written again for fields the print doesn't show, `lastOpenedAt`): printed
@@ -1144,11 +1414,12 @@ export class Materializer {
         const again = await this.codec.print(this.host.toProject(pinned.doc, project), this.sharedHeader.slice(REV_PREFIX.length));
         if (sha(Buffer.from(again, "utf8")) === cur!.hash) {
           this.sharedEnv = src.key;
-          return;
+          return await showed(cur!.hash);
         }
       }
       const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
       const text = await this.codec.print(this.host.toProject(pinned.doc, project), header.slice(REV_PREFIX.length));
+      step("install");
       await this.install(TIMELINE_FILE, text, undefined, carry);
       this.sharedRef = body; // only once installed: a failed rewrite must not read as done
       this.sharedCut = pinned.cut;
@@ -1156,6 +1427,7 @@ export class Materializer {
       this.sharedHeader = header;
       this.shownPin = { branchId: pinned.branchId, ref: pinned.ref };
       this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
+      await showed(sha(Buffer.from(text, "utf8")));
     } finally {
       if (landedBefore !== null && (this.landedWrites !== landedBefore || this.landing.size)) this.printedLanding = true;
       // not stored with another write (unchanged, or a failure before it): on its own, so the pin can be released early
@@ -1199,7 +1471,7 @@ export class Materializer {
       await this.foldAgentChanges();
       for (const id of [...saves.keys()]) if (!waiting.has(id)) saves.delete(id);
     }
-    const mine = changes.filter((p) => isAgent(p.author) || saves.has(p.id));
+    const mine = changes.filter((p) => this.showsPending(p));
     let doc = this.freeze.view!;
     const ids: string[] = [];
     for (const p of mine) {
@@ -1229,7 +1501,15 @@ export class Materializer {
   private async pendingMoved(): Promise<boolean> {
     if (!this.engine.pendingChanges || !this.engine.shared() || !this.freeze.view) return false;
     const { changes } = await this.engine.pendingChanges(this.freeze.cut ?? undefined);
-    return this.pendingKey(changes.filter((p) => isAgent(p.author) || this.freeze.saves.has(p.id))) !== this.freeze.pending;
+    return this.pendingKey(changes.filter((p) => this.showsPending(p))) !== this.freeze.pending;
+  }
+  /**
+   * The pending changes a frozen file shows (`withPending`) and whose moves rewrite it (`pendingMoved`): this replica's
+   * agents', a windowless `cb` caller's whose call holds the freeze (apply-ryw review #2: one predicate for both, so an
+   * offline terminal's edit rewrites the file), and saves applied in the freeze.
+   */
+  private showsPending(p: PendingChange): boolean {
+    return isAgent(p.author) || this.freeze.callers.has(p.author?.id ?? "") || this.freeze.saves.has(p.id);
   }
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
@@ -1302,6 +1582,22 @@ export class Materializer {
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
     const next = this.host.toProject(p.doc, cur);
+    // A project Cardboard reads is never replaced by one it can't (no name: laptop, build 915eb36, Restore of "Started
+    // the cut"). Checked on the state just pinned, which is what would be written (head may have moved since it was
+    // read): refused, the old file stays, the state it shows is pinned for it again, and the refusal is logged. Head's
+    // next change tries again.
+    const problems = breaks({ ...env, project: { ...next, updatedAt: "", stateUpdatedAt: 0 } }, onDisk);
+    if (problems.length) {
+      await this.engine.release("project-file");
+      const shown = this.projectPin ? await this.resolveOrNull(this.projectPin) : null;
+      if (shown) {
+        const again = await this.engine.pin({ owner: "project-file", doc: shown.baseDoc, seq: shown.baseSeq, causal: shown.causal, ...(shown.cut ? { cut: shown.cut } : {}), ttlMs: 7 * DAY });
+        this.projectPin = refBodyOf(again);
+        await this.engine.putMeta(["file", PROJECT_FILE, "pin"], this.projectPin);
+      }
+      this.log.refused.push({ t: this.clock.now(), path: PROJECT_FILE, cause, ref: body, problems });
+      return;
+    }
     if (cur && same({ ...env, project: next })) {
       // the file already says this (also when it is a fresh foreign envelope: another materializer's install of the
       // same head, B11/B3; rewriting it would answer that install with one of ours, back and forth)

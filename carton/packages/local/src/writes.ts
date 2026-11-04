@@ -11,10 +11,11 @@
 // once the result exists (a call that fails gives none away), recorded against the request, so a retry of a request
 // whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
 // report, never another call's.
-import { merge3 } from "@carton/core";
-import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
+import { merge3, EmptyVersion } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef, Version } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
 import type { HookOp } from "./hooks.ts";
 
@@ -28,11 +29,16 @@ export type WriteOp =
    * its own handle has the confirmed rows only. A confirmed answer needs it too: a write that changed nothing confirms
    * at once while the holder's own edits still wait for the server.
    */
-  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
+  | { kind: "commit"; cut?: string; base?: string | StateRef | HeldBase; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
   | { kind: "restore"; ref: string; cut?: string; head?: boolean }
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
-  | { kind: "undo"; group?: string; cut?: string; head?: boolean }
+  /**
+   * ⌘Z (undo) and its redo for an actor group (default: the author's). `app` and `since` (core's UndoScope): the app's
+   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`.
+   */
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
+  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
   | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
@@ -67,8 +73,10 @@ export interface WriteRequest {
    * work on the shared timeline.tsx because of it, so it doesn't start or extend a freeze of the file (`tellBusy`). A
    * freeze an agent already holds still applies (the file shows the write once it ends). `cb` never sets it. Only
    * `true` counts. Written by the holder (or in-process); a helper that took the lease from a stalled app answers it
-   * too, but the app's follower then sees the change as another process's and freezes the file as for a `cb` call
-   * (the flag isn't stored with the change).
+   * too, and the app's follower, which then finds the change as another process's, knows it by its id as the person's
+   * own (`LocalCarton.write` notes it: `noteGuiWrite`) and freezes nothing for it (windows-sync review round 4 #1). The
+   * flag isn't stored with the change: a follower in another process than the write's would count it as a `cb` call
+   * (the app makes its GUI writes in the process that follows).
    */
   gui?: boolean;
 }
@@ -95,7 +103,7 @@ export const WAIT_MS = 5000;
  * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
  * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "redo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -117,7 +125,7 @@ export async function withRaceRetry<T>(idempotent: boolean, fn: () => Promise<T>
 export function destCut(op: WriteOp): string | undefined {
   switch (op.kind) {
     case "fold": return op.into;
-    case "commit": case "restore": case "revert": case "undo": case "undoTurn": case "pin": case "share": return op.cut;
+    case "commit": case "restore": case "revert": case "undo": case "redo": case "undoTurn": case "pin": case "share": return op.cut;
     default: return undefined;
   }
 }
@@ -147,18 +155,27 @@ export function toCbResult(r: CommitResult | Record<string, any>, notices: Notic
   }
 }
 
-type Outcome = { kind: "confirmed"; seq: number } | { kind: "notice"; notice: Notice };
+/**
+ * `absorbed`: emptied by a rebase, its id spent (by the server's withdraw row at `seq`, H1, or here before it was sent):
+ * with no cards it is already in place; with cards, they took its place.
+ */
+export type Outcome = { kind: "confirmed"; seq: number } | { kind: "absorbed"; seq?: number; cards: ConflictCard[] } | { kind: "notice"; notice: Notice };
 
 /**
- * Collects pending changes' outcomes from the moment it is created (confirmed by the server, a late conflict, a
- * rejection), so an answer that arrives while the commit itself is still running isn't missed.
+ * Collects pending changes' outcomes from the moment it is created (confirmed by the server, absorbed, a late conflict,
+ * a rejection), so an answer that arrives while the commit itself is still running isn't missed. The first answer
+ * wins. A withdraw row (a `change` event with `withdrawn`) is no answer: it only notes the seq that spent the id, and
+ * the `absorbed` event that follows it decides (core emits it once the row is in History, so with any cards).
  */
 export function watchOutcomes(carton: Carton): { wait(id: ChangeId, ms: number): Promise<Outcome | null>; close(): void } {
   const seen = new Map<ChangeId, Outcome>();
   const waiting = new Map<ChangeId, (o: Outcome) => void>();
+  const spent = new Map<ChangeId, number>();
   const off = carton.on((e: CartonEvent) => {
     let id: ChangeId | undefined, o: Outcome | undefined;
+    if (e.type === "change" && e.change.id && e.change.withdrawn) { spent.set(e.change.id, e.seq); return; }
     if (e.type === "change" && e.change.id) { id = e.change.id; o = { kind: "confirmed", seq: e.seq }; }
+    else if (e.type === "absorbed") { id = e.id; const seq = spent.get(e.id); spent.delete(e.id); o = { kind: "absorbed", cards: e.cards, ...(seq !== undefined ? { seq } : {}) }; }
     else if (e.type === "notice" && e.notice.change && (e.notice.kind === "late-conflict" || e.notice.kind === "rejected")) { id = e.notice.change; o = { kind: "notice", notice: e.notice }; }
     if (!id || !o) return;
     const w = waiting.get(id);
@@ -284,8 +301,19 @@ export interface ViewPrinter {
   hookRead?(actor: Actor): Promise<void>;
   hookWrite?(actor: Actor, rel: string): Promise<void>;
   hookStop?(actor: Actor): Promise<void>;
-  /** A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it. */
-  onCb?(): Promise<void>;
+  /**
+   * A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it.
+   * `caller`: a terminal's cb (`isFallbackActor`, nothing tells it apart from a windowless agent): its own changes show
+   * in the frozen file, so it reads what it just wrote (apply-ryw).
+   */
+  onCb?(caller?: Actor): Promise<void>;
+  /**
+   * Read-your-writes (apply-ryw): resolves once the shared timeline.tsx shows change `c` (`shown`), or why it doesn't
+   * (`held` by a freeze for someone else's work, `elsewhere`: another cut), or `later` after `ms` (cardboard's
+   * `Materializer.showChange`). The holder answers `carton.shown` with it, so a `cb` write returns once the file shows it.
+   * `o.beforeMs`: what the holder spent before it asked (its look at carton.db), for a slow answer's report.
+   */
+  showChange?(c: ShowTarget, ms: number, o?: { beforeMs?: number }): Promise<Showing>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
    * The current cut changed (`cb cut switch`): the files must show the new cut now, and a freeze started on the old
@@ -317,14 +345,22 @@ export async function tellBusy(mz: ViewPrinter | null | undefined, authors: read
   const hooks = !!(mz.hookRead && mz.hookStop);
   let windowless = authors.length === 0;
   const told = new Set<string>();
+  // a terminal's cb (the environment's fallback actor) holds the file as a windowless agent does, and reads its own
+  // writes in it (apply-ryw): named to onCb. Anyone else (the person's GUI save another holder served, an outside
+  // program's import) isn't, so the freeze keeps holding their changes back.
+  const callers: Actor[] = [];
   for (const a of authors) {
-    if (!(a && hooks && hookDelivered(a))) windowless = true;
-    else if (!told.has(a.id)) {
+    if (!(a && hooks && hookDelivered(a))) {
+      windowless = true;
+      if (a && isFallbackActor(a) && !told.has(a.id)) told.add(a.id), callers.push(a);
+    } else if (!told.has(a.id)) {
       told.add(a.id);
       await mz.hookRead!(a);
     }
   }
-  if (windowless) await mz.onCb?.();
+  if (!windowless) return;
+  if (!callers.length) await mz.onCb?.();
+  for (const a of callers) await mz.onCb?.(a);
 }
 
 const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
@@ -421,8 +457,12 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       if (!opts.materializer) return { status: "error", error: "views need the app open (or a helper that materializes)", notices };
       const name = opts.viewName ? await opts.viewName(author, op.name) : op.name ?? author.id.replace(/[^A-Za-z0-9._-]/g, "_");
       // saves of the view are credited to its owner: a hooked or self-declared agent is itself; an unnamed terminal
-      // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4)
-      const owner: Actor = isFallbackActor(author) ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group } : author;
+      // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4). An agent CLI
+      // known by its environment (CLAUDECODE=1…) keeps its product (`provider`): History tells its saves as that agent's,
+      // never the person's (regress 2026-11-02 #1)
+      const owner: Actor = isFallbackActor(author)
+        ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group, ...(author.provider ? { provider: author.provider } : {}) }
+        : author;
       const v = await opts.materializer.printView(name, owner, { hooked: hookDelivered(author) });
       return { status: "confirmed", seq: 0, ref: v.ref, notices, view: { ...v, status: v.status ?? statusPath(v.name) } };
     }
@@ -500,7 +540,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
-    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
+    case "undo": case "redo": {
+      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}) };
+      r = await carton[op.kind](op.group ?? author.group, { cut: op.cut, author, id: req.id, ...scope });
+      break;
+    }
     case "undoTurn": {
       // what the turn changed that was changed again since stays at its newer value, as a card; the rest is undone
       const u = await undoTurn(carton, req.id, op.turn, author, op.cut);
@@ -554,6 +598,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const out = await outcomes.wait(r.id, ms);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
+  // emptied and its id spent, as the commit path answers it: already in place, or the cards that took its place (their
+  // late-conflict notice is this result, as there)
+  if (out.kind === "absorbed") {
+    if (!out.cards.length) return asConflicts({ status: "confirmed", id: r.id, seq: out.seq ?? (await carton.head(destCut(op))).ref.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
+    answered = r.id;
+    return { status: "conflicts", id: r.id, conflicts: [...kept, ...out.cards], ref: null, notices, absorbed: true };
+  }
   // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
   answered = r.id;
@@ -604,8 +655,12 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   // first card's base is the turn's last value and ours is head's; each older change's card only moves theirs back to
   // the value before it, so picking the undo restores the value from before the turn, not one of the turn's own
   const byPath = new Map<string, ConflictCard>();
+  // P2-1: a fold-some's version (`rejected`) is its fold and the partial revert right after it: undone from before the
+  // fold, and both named in `undoOf` (the partial revert's id is always `<fold's id>.inverse`), never the partial
+  // revert alone, which would bring in what the fold left out
+  const pair = (v: Version) => (v.rejected && v.change!.endsWith(".inverse") ? [v.change!, v.change!.slice(0, -".inverse".length)] : [v.change!]);
   for (const v of mine) {
-    const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
+    const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - pair(v).length }), carton.checkout(v.ref)]);
     // base: the turn's change; ours: head (a clash keeps head's newer value); theirs: before the change
     const m = merge3(after, doc, before, carton.schema, { infer: false });
     doc = m.doc;
@@ -616,6 +671,9 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
       byPath.set(c.path, { ...kept, theirs: c.theirs });
     }
   }
+  // an undo never empties a project its head holds (P2-1; core's planUndo refuses the same for ⌘Z and cb undo)
+  const empty = carton.schema.empty;
+  if (empty?.(doc) && !empty(head.doc)) throw new EmptyVersion(null, "undo", "result");
   const cards = [...byPath.values()];
   if (store) {
     // the cards go in only while this request has no answer yet: a copy of it that finished meanwhile (and whose cards
@@ -638,7 +696,7 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
       }
     }
   }
-  return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) }), cards };
+  return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.flatMap(pair) }), cards };
 }
 /** The cards an `undo --turn` request raised (local `notices` table, no actor reads it): its retry answers with them. */
 const undoCardsKey = (id: ChangeId) => ["@undo-cards", id];

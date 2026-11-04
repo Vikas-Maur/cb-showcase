@@ -38,7 +38,9 @@ test("fold, fold-some, restore, revert and undo retried with their id make one c
   const u2 = await c.undo(undefined, { id: "cb.undo.1" });
   assert.equal(seqOf(u1), 7);
   assert.equal(seqOf(u2), 7, "a retried undo doesn't undo the next entry");
-  assert.equal((await c.log()).length, 8, "root + 7 changes, none twice");
+  assert.equal((await c.head()).ref.seq, 7, "7 changes, none twice");
+  // a fold-some's fold and its inverse are one version (UI audit P1-3): root + 6 versions
+  assert.equal((await c.log()).length, 7, "root + 6 versions");
 });
 
 test("a retry from another process (the next lease holder) returns the first process's confirmation", async () => {

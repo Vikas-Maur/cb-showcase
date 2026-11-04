@@ -71,6 +71,11 @@ export interface ConnectionState {
    * from then on. Kept here, so a socket restored after hibernation still gets them.
    */
   comments?: true;
+  /**
+   * The client waits out a host's write limit (its hello said `writeLimit`): a push the blob store refused for a while
+   * drops the rest of its epoch, and the client sends it again after the limit's time.
+   */
+  writeLimit?: true;
 }
 
 /** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
@@ -92,7 +97,13 @@ export type SequencerEvent =
   | { type: "withdraw"; branchId: string; id: string; seq: number }
   | { type: "adopt"; branchId: string; n: number; repeat: boolean }
   | { type: "keyframe"; branchId: string; seq: number; mismatch: boolean }
-  | { type: "ridClaimConflict"; rid: string };
+  | { type: "ridClaimConflict"; rid: string }
+  /**
+   * A blob the tables refer to (a keyframe, an archived segment, a change body) is gone from the blob store: deleted
+   * under the sequencer (an operator's cleanup, a bucket lifecycle rule). A keyframe is passed over; history that only
+   * the blob held can't be served, and the client is told so (`history-missing`).
+   */
+  | { type: "missingBlob"; branchId: string; key: string };
 
 export interface SequencerStats {
   pushes: number;
@@ -113,6 +124,10 @@ export interface SequencerStats {
   /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
   envelopesIn: number;
   envelopesOut: number;
+  /** Pushes and hand-offs the blob store refused for a while (a host's daily write cap), told as `write-limit`. */
+  writeLimited: number;
+  /** Reads of a blob the tables refer to that the blob store no longer has (`missingBlob` events). */
+  missingBlobs: number;
 }
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
@@ -252,6 +267,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     envelopesIn: 0,
     envelopesOut: 0,
+    writeLimited: 0,
+    missingBlobs: 0,
   };
   const emit = (e: SequencerEvent) => opts.onEvent?.(e);
 
@@ -287,6 +304,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     comments.forget(peerOf(c));
     outboxes.delete(c);
     presenceBuckets.delete(c);
+    presenceKept.delete(c);
     clearTrailing(c);
   }
 
@@ -431,7 +449,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   async function fillBody(r: { row: Row; blob: string | null }): Promise<{ row: Row; bytes: number }> {
     if (!r.blob) return { row: r.row, bytes: 0 };
     const bytes = await opts.blobs?.get(r.blob);
-    if (!bytes) throw new Error(`change body ${r.blob} is missing from the blob store`);
+    if (!bytes) throw new MissingBlob(r.blob, `change body ${r.blob} is missing from the blob store`);
     return { row: { ...r.row, ...(JSON.parse(dec.decode(bytes)) as Partial<Row>) } as Row, bytes: bytes.byteLength };
   }
   /**
@@ -483,13 +501,25 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     for (let i = 0; i < rows.length; i++) if (!(await take(rows[i]!, sizes[i]!))) break;
     return out;
   }
+  /**
+   * Per branch, a stretch of keyframe seqs `[lo, hi]` whose every keyframe's blob was found gone. In memory only: a
+   * restart (a Durable Object's wake) reads them again, so a blob an operator restores is found then.
+   */
+  const lostKeyframes = new Map<string, { lo: number; hi: number }>();
+  /** `e` is a blob the tables refer to that the store no longer has: counted and told (`missingBlob`), else rethrown. */
+  function missingBlob(branchId: string, e: unknown): MissingBlob {
+    if (!(e instanceof MissingBlob)) throw e;
+    stats.missingBlobs++;
+    emit({ type: "missingBlob", branchId, key: e.key });
+    return e;
+  }
   /** A stored keyframe, with its document's size in reply bytes (at most). */
   async function loadKeyframe(branchId: string, k: { seq: number; hash: string; blob: string | null; doc: string | null }): Promise<{ keyframe: sync.KeyframeData; bytes: number }> {
     let docText = k.doc;
     let bytes = 3 * (docText?.length ?? 0);
     if (docText === null && k.blob) {
       const stored = await opts.blobs?.get(k.blob);
-      if (!stored) throw new Error(`keyframe ${k.blob} is missing from the blob store`);
+      if (!stored) throw new MissingBlob(k.blob, `keyframe ${k.blob} is missing from the blob store`);
       docText = dec.decode(stored);
       bytes = stored.byteLength;
     }
@@ -626,6 +656,24 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   // ---------------------------------------------------------------- handlers
+  /**
+   * A write the blob store refused for a while (a host's daily write cap; `sync.writeLimitOf`), told in plain words with
+   * its time. On a push, to a client that waits out the limit (`ConnectionState.writeLimit`), the rest of the push's
+   * epoch is dropped, as a reject drops it, and the client sends those changes again after `retryAfterMs`. Any other
+   * client gets the reason and nothing else changes for it: an older client would resend a dropped epoch at once, and
+   * again on every answer, until the limit ended.
+   */
+  function writeLimited(c: HostConnection, retryAt: number, push?: sync.PushMsg): void {
+    stats.writeLimited++;
+    const msg: sync.ErrorMsg = { type: "error", code: "write-limit", reason: writeLimitWords(retryAt), retryAt, retryAfterMs: Math.max(0, retryAt - clock()) };
+    if (push && stateOf(c).writeLimit) {
+      stateOf(c).deadEpoch = Math.max(stateOf(c).deadEpoch, push.epoch);
+      msg.branchId = push.branchId;
+      msg.epoch = push.epoch;
+    }
+    send(c, msg);
+  }
+
   function reject(c: HostConnection, branchId: string, id: string | undefined, reason: RejectReason, epoch: number, extra: Partial<sync.RejectMsg> = {}) {
     stats.rejects++;
     stats.rejectReasons[reason] = (stats.rejectReasons[reason] ?? 0) + 1;
@@ -726,6 +774,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (source !== forkCut && tables.branch(source)?.rec.forkOf === rec.forkOf) return { branchId: source, at: 0 };
     return { branchId: source, at };
   }
+  /**
+   * The catch-up needs history whose blob is gone (a keyframe it can't do without, an archived segment, a change
+   * body): refused with a code, in words for people, so the client says so instead of waiting in "syncing" forever.
+   */
+  function historyMissing(c: HostConnection, branchId: string): void {
+    send(c, { type: "error", code: "history-missing", branchId, reason: HISTORY_MISSING_WORDS });
+  }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
     // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
@@ -733,6 +788,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", code: "schema-too-new", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
     const st = stateOf(c);
     if (m.envelopes === true && opts.blobs) st.envelopes = true;
+    if (m.writeLimit === true) st.writeLimit = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
@@ -770,33 +826,69 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // a client that refused a keyframe and holds nothing at or after the root can't be served: say so, never loop
     if (m.noKeyframe && from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId} that the client can check` });
     if (from < b.root || (head - from > K && !m.noKeyframe)) {
-      const k = tables.latestKeyframe(m.branchId, head);
-      if (k && k.seq > from) {
-        const loaded = await loadKeyframe(m.branchId, k);
+      // the newest keyframe whose state can still be read: one whose blob is gone from the store (deleted under the
+      // sequencer) is passed over for an older one, or for the rows alone when the client holds a state they extend.
+      // A keyframe only shortens a catch-up; the rows are the history (stuck-sync: a replica stayed "syncing" forever)
+      // The keyframes found missing are remembered (one stretch per branch, in memory), so a catch-up of many pages
+      // reads each lost blob once, not once per page (review #1)
+      let lost = false;
+      const known = lostKeyframes.get(m.branchId);
+      let run = null as { lo: number; hi: number } | null;
+      for (let k = tables.latestKeyframe(m.branchId, head); k && k.seq > from; k = k.seq > 0 ? tables.latestKeyframe(m.branchId, k.seq - 1) : null) {
+        if (known && k.seq >= known.lo && k.seq <= known.hi) {
+          // every keyframe in the stretch is known gone: skip to the one below it, unread
+          lost = true;
+          run = { lo: known.lo, hi: run?.hi ?? known.hi };
+          k = { ...k, seq: known.lo };
+          continue;
+        }
+        let loaded: Awaited<ReturnType<typeof loadKeyframe>>;
+        try {
+          loaded = await loadKeyframe(m.branchId, k);
+        } catch (e) {
+          missingBlob(m.branchId, e);
+          lost = true;
+          run = { lo: k.seq, hi: run?.hi ?? k.seq };
+          continue;
+        }
         keyframe = loaded.keyframe;
         budget -= loaded.bytes; // the keyframe is part of the page
         from = k.seq;
-      } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
+        break;
+      }
+      if (run) lostKeyframes.set(m.branchId, run);
+      if (!keyframe && from < b.root) return lost ? historyMissing(c, m.branchId) : send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // every page that subscribes or may (rows, a keyframe) holds the people, [] too: it says this server keeps them
     budget -= sync.jsonBytesBound(seesPeople(c) ? tables.people() : [], Infinity);
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
-    const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
+    let rows: Row[];
+    try {
+      rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
+    } catch (e) {
+      missingBlob(m.branchId, e);
+      return historyMissing(c, m.branchId);
+    }
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     // taken after the rows' read, so no change to them can fall between this list and the subscription below
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed, people: seesPeople(c) ? tables.people() : [] };
     if (keyframe) msg.keyframe = keyframe;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
-    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId) };
+    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId), versions: tables.versionsAfter(src.branchId, src.at) };
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
+    let joined = false;
     if (last < head) msg.more = true;
     // fan-out starts with the last page: a subscriber still paging would get live rows ahead of its backlog (finding 3)
-    else if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
+    else if (!st.subs.includes(m.branchId)) {
+      st.subs.push(m.branchId);
+      joined = true;
+    }
     send(c, msg);
+    if (joined) tellPresent(c, m.branchId);
   }
 
   async function onPush(c: HostConnection, m: sync.PushMsg) {
@@ -840,7 +932,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
         // keyed by the digest of the exact body the server stores, never by a hash the client supplied (finding 2)
         blobKey = `changes/${m.branchId}/${sha256Hex(verdict.text)}`;
-        await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        try {
+          await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        } catch (e) {
+          // refused for a while (a host's daily write cap): nothing of this change was stored
+          const at = sync.writeLimitOf(e);
+          if (at === null) throw e;
+          return writeLimited(c, at, m);
+        }
         verdict = judge();
         if (verdict.kind === "large") throw new Error("unreachable: a blob body is never inline");
       }
@@ -946,6 +1045,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const rootHash = rootSeq === m.n ? m.stateHash : m.rootHash;
       await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: typeof rootHash === "string" && SHA256.test(rootHash) ? rootHash : "", closure }, rows, key, credentialOf(c));
     } catch (e) {
+      // the root keyframe refused for a while (a host's daily write cap): the client asks again after the limit's time
+      const at = sync.writeLimitOf(e);
+      if (at !== null) {
+        stats.writeLimited++;
+        return send(c, { type: "adoptError", branchId: m.branchId, reason: writeLimitWords(at), code: "write-limit", retryAt: at, retryAfterMs: Math.max(0, at - clock()) });
+      }
       return fail(e instanceof Error ? e.message : String(e));
     }
     stats.adopts++;
@@ -964,7 +1069,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
     const after = Math.max(b.root, Number.isInteger(m.after) ? m.after : 0);
     const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
-    const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    // history whose blob is gone answers this request (an error with no request would leave it waiting)
+    const lost = (e: unknown) => (missingBlob(m.branchId, e), reply({ rows: [], error: HISTORY_MISSING_WORDS }));
+    let rows: Row[];
+    try {
+      // no further than `upTo` (rows are dense by seq): a lost blob past the range asked for is not this request's (review #2)
+      rows = after < upTo ? (await readRows(m.branchId, after, Math.min(catchup, upTo - after), catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    } catch (e) {
+      return lost(e);
+    }
     const last = rows.length ? rows[rows.length - 1]!.seq : after;
     // The lineage: whole, or with `lineageFrom` paged like catch-up (SF1-8): entries in closure order within the
     // catch-up byte budget, at least one state (or one entry with none) per page, `lineageNext` where the next starts.
@@ -1000,7 +1113,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         for (let i = s; i < nodes.length; i++) {
           const k = tables.keyframeAt(id, nodes[i]!.seq);
           if (!k) continue;
-          const { keyframe, bytes } = await loadKeyframe(id, k);
+          let loaded: Awaited<ReturnType<typeof loadKeyframe>>;
+          try {
+            loaded = await loadKeyframe(id, k);
+          } catch (e) {
+            // a carried state whose blob is gone is left out, as one never carried is: the lineage still loads
+            missingBlob(id, e);
+            continue;
+          }
+          const { keyframe, bytes } = loaded;
           if (taken > 0 && bytes > budget) {
             lineageNext = { entry: e, state: i };
             if (s === 0 || entry.states!.length) lineage.push(entry);
@@ -1058,7 +1179,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (have.hash !== k.stateHash) emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: true });
       return;
     }
-    await storeKeyframe(m.branchId, k.seq, k.stateHash, k.doc);
+    try {
+      await storeKeyframe(m.branchId, k.seq, k.stateHash, k.doc);
+    } catch (e) {
+      // refused for a while (a host's daily write cap): keyframes are optional, and a later one is asked for
+      if (sync.writeLimitOf(e) !== null) return;
+      throw e;
+    }
     stats.keyframes++;
     emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: false });
   }
@@ -1096,20 +1223,57 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // Who a connection shows (ConnectionState.shown), noted as each presence is accepted, so a leave is owed for every
   // actor whose last word wasn't `null`, whether or not the rate cap has relayed that word yet.
   const sameActor = (a: ShownPresence["actor"], b: sync.PresenceFanoutMsg["actor"]) => a.kind === b.kind && a.id === b.id && a.agentId === (b.agentId ?? undefined);
-  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): void {
+  /** Notes `actor` as shown (or not) on `branchId`; true when the connection's `shown` now holds it. */
+  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): boolean {
     const st = stateOf(c);
     const i = st.shown?.findIndex((s) => s.branchId === branchId && sameActor(s.actor, actor)) ?? -1;
     if (!showing) {
-      if (i < 0) return;
+      if (i < 0) return false;
       st.shown!.splice(i, 1);
       if (st.shown!.length === 0) delete st.shown;
+      return false;
+    }
+    if (i >= 0) return true;
+    if ((st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return false;
+    const { kind, id, agentId } = actor;
+    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return false;
+    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return false;
+    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
+    return true;
+  }
+
+  // Who is here, for a connection that subscribes later: the latest presence each connection shows, per branch and
+  // actor (only actors `shown` holds, so at most PRESENCE_SHOWN_MAX each, of at most PRESENCE_KEPT_BYTES; a leave or
+  // a bigger update drops it). A teammate joining, or rejoining after the host restarted, is told who is already there
+  // right after its welcome, instead of waiting for their next update, which an idle editor never sends (presence
+  // P2: after a host restart the first client back re-announced to an empty room, and the latecomer never listed it).
+  // In memory only, never in ConnectionState: a hibernating host's socket attachment stays small. A host that lost it
+  // (a Durable Object's wake) tells a newcomer nobody; the sync client covers that by announcing itself again to a
+  // peer it sees for the first time on a connection.
+  const presenceKept = new Map<HostConnection, Map<string, sync.PresenceFanoutMsg>>();
+  const keptKey = (branchId: string, a: sync.PresenceFanoutMsg["actor"]) => `${branchId}\n${a.kind}\n${a.id}\n${a.agentId ?? ""}`;
+  function keepPresence(c: HostConnection, msg: sync.PresenceFanoutMsg, shown: boolean): void {
+    const k = keptKey(msg.branchId, msg.actor);
+    if (shown && msg.state !== null && sync.jsonBytesBound(msg, PRESENCE_KEPT_BYTES) <= PRESENCE_KEPT_BYTES) {
+      let kept = presenceKept.get(c);
+      if (!kept) presenceKept.set(c, (kept = new Map()));
+      if (!msg.arrived) kept.set(k, msg);
+      else {
+        const { arrived: _a, ...plain } = msg; // told later as `kept`, never as an arrival
+        kept.set(k, plain);
+      }
       return;
     }
-    if (i >= 0 || (st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return;
-    const { kind, id, agentId } = actor;
-    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return;
-    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return;
-    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
+    const kept = presenceKept.get(c);
+    if (!kept?.delete(k)) return;
+    if (kept.size === 0) presenceKept.delete(c);
+  }
+  /** `c` just subscribed to `branchId`: the presence every other connection there shows, marked `kept`. */
+  function tellPresent(c: HostConnection, branchId: string): void {
+    for (const [o, kept] of presenceKept) {
+      if (o === c || !attached(o) || !stateOf(o).subs.includes(branchId)) continue;
+      for (const p of kept.values()) if (p.branchId === branchId) send(c, { ...p, kept: true });
+    }
   }
 
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
@@ -1120,16 +1284,19 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
+    // a connection's first presence: its peers answer with theirs (presence P2 review: a second tab of someone shown)
+    if (m.arrived === true && msg.state !== null) msg.arrived = true;
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
-    noteShown(c, m.branchId, actor, msg.state !== null);
+    keepPresence(c, msg, noteShown(c, m.branchId, actor, msg.state !== null));
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
       const byBranch = presenceTrailing.get(c) ?? new Map();
       presenceTrailing.set(c, byBranch);
       const waiting = byBranch.get(m.branchId);
       if (waiting) {
-        waiting.msg = msg;
+        // the newest state, still saying `arrived` if one it replaces did: the peers' answer is owed either way
+        waiting.msg = waiting.msg.arrived && msg.state !== null && !msg.arrived ? { ...msg, arrived: true } : msg;
         return;
       }
       const b = presenceBuckets.get(c)!;
@@ -1238,6 +1405,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(c.id);
       outboxes.delete(c);
       presenceBuckets.delete(c);
+      presenceKept.delete(c);
       comments.forget(peerOf(c));
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
@@ -1316,6 +1484,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+
+/** A blob the tables refer to is gone from the blob store (`get` answered null). */
+class MissingBlob extends Error {
+  readonly key: string;
+  constructor(key: string, message: string) {
+    super(message);
+    this.key = key;
+  }
+}
+/** What a client is told when its catch-up needs history that is gone (no blob key: these are for people). */
+const HISTORY_MISSING_WORDS = "this project's history can't be loaded: part of it is missing from the server's storage";
 /** A state digest (`hashDoc`: SHA-256, hex). */
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
@@ -1335,7 +1514,7 @@ function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStr
   return new ReadableStream<Uint8Array>({
     async pull(ctl) {
       const part = await blobs.get(key, { offset, length: chunk });
-      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (!part) return ctl.error(new MissingBlob(key, `segment ${key} is missing from the blob store`));
       if (part.byteLength) ctl.enqueue(part);
       offset += part.byteLength;
       if (part.byteLength < chunk) ctl.close();
@@ -1391,6 +1570,15 @@ async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Recor
   }
 }
 /** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
+/**
+ * A write limit in people's words (the error's `reason`): what an older client shows as it is. A client that waits the
+ * limit out says it in its own words, with the time in its own zone; this one can only give the host's time, in UTC.
+ */
+function writeLimitWords(retryAt: number): string {
+  const t = new Date(retryAt).toISOString().slice(11, 16);
+  return `The server's daily limit is reached. Your edits are kept and will sync after ${t} UTC; reopen the project then if they don't.`;
+}
+
 function utf8Over(text: string, limit: number): boolean {
   if (text.length * 3 <= limit) return false;
   return new TextEncoder().encode(text).length > limit;
@@ -1403,6 +1591,8 @@ function declarationTooLarge(ch: Change): boolean {
 const PRESENCE_SHOWN_MAX = 4;
 /** Longest actor id, agent id or branch id kept for it (an attachment of a Durable Object's socket stays small). */
 const PRESENCE_ID_MAX = 200;
+/** The biggest presence (JSON) kept for a connection that subscribes later; a bigger one shows at its next update. */
+const PRESENCE_KEPT_BYTES = 16 * 1024;
 /** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SEC = 20;

@@ -152,6 +152,31 @@ test("the library worker: Windows build, Carton off, Carton on", { skip }, () =>
   assert.equal(commits[1].meta.source, "timeline");
 });
 
+// Baseline P3-9 (final re-check N3): the stage's text editor opened inside a read-only preview and dropped what was
+// typed. Both ways into it ask the bridge first (renderer-bridge.test.js: refused only in a Carton preview, with
+// Cardboard's own note), and the store hands the bridge Cardboard's own guard of its edits, `me`: declared with the
+// `Rde` the hook already passes (`const Ede=me,…,Rde=…;` right before it), so the same binding. Each once, on the
+// bundles as the build patches them (the Windows patches, then Carton's).
+test("Carton on: the stage's text editor asks the bridge before it opens; the store hands over Cardboard's guard", { skip }, () => {
+  const read = (re) => { const f = fs.readdirSync(carton.assets).find((n) => re.test(n)); return fs.readFileSync(path.join(carton.assets, f), "utf8"); };
+  const editor = read(/^EditorRoute-.*\.js$/), store = read(/^installErrorTelemetry-.*\.js$/);
+  const count = (s, t) => s.split(t).length - 1;
+  assert.equal(count(editor, 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(E(!1),S({kind:"edit-text"'), 1, "Enter on a selected title");
+  assert.equal(count(editor, 'if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;const{selectTimelineItem:ze,setEditingTextItemId:It}'), 1, "a double-click on a title or caption");
+  assert.equal(count(editor, "__carton?.refuse"), 2, "and nowhere else");
+  // regress prod3: in a preview the stage's text and caption toolbars aren't shown (vn: what both are given); U is the
+  // editor's store, whose state the bridge's adopt sets (cartonPreview), as the text toolbar itself reads it
+  assert.equal(count(editor, "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B,bounds:pe,canvasRect:et,scale:b.scale}:null"), 1, "the toolbars' props, none in a preview");
+  assert.equal(count(editor, 'vn?.item.type==="caption"&&c.jsx(TB,{...vn}),vn?.item.type==="text"&&c.jsx(BB,{...vn})'), 1, "both toolbars render from it");
+  const guard = store.indexOf("function me(){return _v()?(xv(),!0):!1}const Ede=me,"), hook = store.indexOf("ne.setState=tN(");
+  const between = store.slice(guard, hook);
+  assert.ok(guard > 0 && hook > guard && between.includes(",Rde=t=>{") && between.endsWith(";") && between.length < 2000, "me and Rde in one statement list, right before the hook");
+  assert.equal(count(store, "deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});"), 1, "the hook passes it, and the store's subscribe and playback clock (final re-check N5)");
+  // qx: the playback clock, a binding of the module itself (exported), declared before the hook runs
+  assert.ok(/[,;]qx=\{get:\(\)=>mg,set:/.test(store) && store.search(/[,;]qx=\{get:/) < hook && /\bqx as aI\b/.test(store), "qx is the module's own playback clock");
+  assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
+});
+
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
@@ -276,7 +301,8 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   const dir = path.join(b, ".carton", "displaced");
   for (const n of fs.existsSync(dir) ? fs.readdirSync(dir) : []) assert.ok(seen.has(require("crypto").createHash("sha256").update(fs.readFileSync(path.join(dir, n))).digest("hex")), "foreign file left: " + n);
   // cb undo <rev> with a 1.4.0 rev (as cb history printed before Carton, or a timeline header) reaches that version.
-  const header = Number(/cardboard:rev (\d+)/.exec(fs.readFileSync(path.join(b, "timeline.tsx"), "utf8"))[1]);
+  // (the project's rev: with Carton on the timeline's header is Carton's own, laptop #2)
+  const header = JSON.parse(fs.readFileSync(path.join(b, "project.json"), "utf8")).project.stateUpdatedAt;
   assert.ok(header > 1e12);
   const undoRev = cb(carton.cli, root, ["undo", "Demo cut", String(header)], real());
   assert.equal(undoRev.code, 0, undoRev.out);

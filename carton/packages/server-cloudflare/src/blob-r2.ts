@@ -21,10 +21,10 @@
 // R2 itself enforces the part rules (5 MiB minimum, equal parts, the last no larger); the shared checks run first so
 // the error is the same as on every other store.
 
-import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated } from "@carton/blob-memory/rules";
+import type { BlobInfo, BlobStore, BlobWithInfo, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated, servedRange } from "@carton/blob-memory/rules";
 import type { BlobUrlSigner } from "@carton/blob-memory/signed";
-import type { R2Bucket, R2Object } from "./cf.ts";
+import type { R2Bucket, R2MultipartUpload, R2Object, R2ObjectBody, R2UploadedPart } from "./cf.ts";
 
 const UPLOADS = ".carton-uploads/";
 export const R2_MIN_PART_SIZE = 5 * 1024 * 1024;
@@ -47,6 +47,16 @@ function infoOf(o: R2Object): BlobInfo {
 function checkUserKey(key: string): void {
   checkKey(key);
   if (key.startsWith(UPLOADS)) throw new BlobError("InvalidKey", `keys under ${UPLOADS} are reserved for upload records`);
+}
+
+// R2 takes a stream only when its length is known: workerd's FixedLengthStream says it (and errors if the bytes that
+// arrive don't match). Outside workerd (tests through a binding proxy) the stream goes as it is.
+function fixedLength(body: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+  const FLS = (globalThis as { FixedLengthStream?: new (n: number) => TransformStream<Uint8Array, Uint8Array> }).FixedLengthStream;
+  if (!FLS) return body;
+  const t = new FLS(size);
+  void body.pipeTo(t.writable).catch(() => {}); // a short or long body fails the readable side, and so the upload
+  return t.readable;
 }
 
 const r2Code = (e: unknown): number => {
@@ -110,6 +120,38 @@ export class R2BlobStore implements BlobStore {
     if (o === null) return null;
     if (o === "empty") return new ReadableStream({ start: (c) => c.close() });
     return o.body;
+  }
+
+  // One GetObject answers the size and type with the bytes (a signed read's head-then-get was two Class B operations).
+  // R2 refuses a range at or past the end; only then does a HEAD tell absent from unsatisfiable.
+  async getWithInfo(key: string, range?: ByteRange): Promise<BlobWithInfo | null> {
+    checkUserKey(key);
+    if (range) checkRange(range);
+    if (range?.length === 0) {
+      // nothing to read (R2 refuses an empty range): the HEAD alone answers
+      const h = await this.#b.head(key);
+      if (!h) return null;
+      const span = servedRange(h.size, range);
+      return span ? { info: infoOf(h), range: { offset: span.offset, length: 0 }, body: new ReadableStream({ start: (c) => c.close() }) } : { info: infoOf(h), range: null, body: null };
+    }
+    let o: R2ObjectBody | null;
+    try {
+      o = range ? await this.#b.get(key, { range: range.length === undefined ? { offset: range.offset } : { offset: range.offset, length: range.length } }) : await this.#b.get(key);
+    } catch (e) {
+      if (!range) throw e;
+      const h = await this.#b.head(key);
+      if (!h) return null;
+      if (range.offset >= h.size) return { info: infoOf(h), range: null, body: null };
+      throw e;
+    }
+    if (!o) return null;
+    const span = servedRange(o.size, range);
+    if (!span) {
+      // a range past the end that R2 answered anyway (an empty object): the contract's 416
+      await o.body.cancel().catch(() => {});
+      return { info: infoOf(o), range: null, body: null };
+    }
+    return { info: infoOf(o), range: span, body: o.body };
   }
 
   async head(key: string): Promise<BlobInfo | null> {
@@ -216,45 +258,49 @@ export class R2BlobStore implements BlobStore {
       if (c === 10025) throw new BlobError("InvalidPart", String((e as Error).message));
       throw e;
     };
+    const sendPart = async (partNumber: number, size: number, send: (mpu: R2MultipartUpload) => Promise<R2UploadedPart>): Promise<{ partNumber: number; etag: string }> => {
+      checkPartNumber(partNumber);
+      // the upload must belong to this key before anything is touched: an id alone must not reach another
+      // project's upload or its part records
+      await store.#checkUpload(key, uploadId);
+      // Under the part's lock: the record is removed before the part is sent and created after it, create-only. A
+      // failure in between leaves the part unlisted (a resuming client sends it again). Finding a record already
+      // there means another writer overlapped this one (only possible past the lock's TTL): nothing tells which
+      // bytes R2 kept, so the record goes, the part is unlisted, and this call fails. (R2 refuses parts of an
+      // aborted, completed or unknown upload itself, 10024.)
+      const n = String(partNumber).padStart(5, "0");
+      const lock = await store.#lockPart(uploadId, n);
+      let terminal = false;
+      try {
+        const marker = `${UPLOADS}${uploadId}/p${n}`;
+        await b.delete(marker);
+        const part = await send(b.resumeMultipartUpload(key, uploadId)).catch((e) => {
+          // the upload completed or aborted while this request waited: it may have just made this part's lock
+          // after the cleanup ran, so clean up again, once our lock is released
+          if (r2Code(e) === 10024) terminal = true;
+          return translate(e);
+        });
+        const made = await b.put(marker, null, {
+          onlyIf: { etagDoesNotMatch: "*" },
+          customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(size) },
+        });
+        if (!made) {
+          await b.delete(marker);
+          throw new BlobError("InvalidPart", `part ${partNumber} was written by another request at the same time; upload it again`);
+        }
+        return { partNumber, etag: part.etag };
+      } finally {
+        await store.#unlockPart(uploadId, n, lock);
+        if (terminal) await store.#cleanup(uploadId);
+      }
+    };
     return {
       key,
       uploadId,
-      async uploadPart(partNumber, data) {
-        checkPartNumber(partNumber);
-        // the upload must belong to this key before anything is touched: an id alone must not reach another
-        // project's upload or its part records
-        await store.#checkUpload(key, uploadId);
-        // Under the part's lock: the record is removed before the part is sent and created after it, create-only. A
-        // failure in between leaves the part unlisted (a resuming client sends it again). Finding a record already
-        // there means another writer overlapped this one (only possible past the lock's TTL): nothing tells which
-        // bytes R2 kept, so the record goes, the part is unlisted, and this call fails. (R2 refuses parts of an
-        // aborted, completed or unknown upload itself, 10024.)
-        const n = String(partNumber).padStart(5, "0");
-        const lock = await store.#lockPart(uploadId, n);
-        let terminal = false;
-        try {
-          const marker = `${UPLOADS}${uploadId}/p${n}`;
-          await b.delete(marker);
-          const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch((e) => {
-            // the upload completed or aborted while this request waited: it may have just made this part's lock
-            // after the cleanup ran, so clean up again, once our lock is released
-            if (r2Code(e) === 10024) terminal = true;
-            return translate(e);
-          });
-          const made = await b.put(marker, null, {
-            onlyIf: { etagDoesNotMatch: "*" },
-            customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) },
-          });
-          if (!made) {
-            await b.delete(marker);
-            throw new BlobError("InvalidPart", `part ${partNumber} was written by another request at the same time; upload it again`);
-          }
-          return { partNumber, etag: part.etag };
-        } finally {
-          await store.#unlockPart(uploadId, n, lock);
-          if (terminal) await store.#cleanup(uploadId);
-        }
-      },
+      // one part, whole or streamed: the same lock and records either way (sendPart)
+      uploadPart: (partNumber, data) => sendPart(partNumber, data.byteLength, (mpu) => mpu.uploadPart(partNumber, data)),
+      // the part's bytes go to R2 as they arrive (the Worker never holds them): a Worker's 10 ms of CPU and 128 MB
+      uploadPartStream: (partNumber, body, size) => sendPart(partNumber, size, (mpu) => mpu.uploadPart(partNumber, fixedLength(body, size))),
       async listParts() {
         await store.#checkUpload(key, uploadId);
         return (await store.#markers(uploadId)).map(({ partNumber, etag, size }) => ({ partNumber, etag, size }));

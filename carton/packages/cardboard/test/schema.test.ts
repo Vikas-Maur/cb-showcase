@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { merge3, diff, hashDoc, declare } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
 import { cardboardSchema as S, fromHost, toHost, projectGuiSave, materializeProject, itemOf, hard, standInProjection, createCardboardAdapter, CARDBOARD_SCHEMA_VERSION } from "../src/index.ts";
+// a media entry's dates as Cardboard writes them (its editor saves an entry only with both readable: P1-1)
+const AT = "2026-11-02T00:00:00.000Z";
 
 const clip = (id: string, s: number, e: number, extra: Rec = {}): Rec => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, ...extra });
 const doc = (items: Rec[], extra: Rec = {}): Doc => fromHost({ name: "P", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: items, ...extra }, null);
@@ -88,7 +90,7 @@ test("the versioned slice: stateUpdatedAt and the other host fields never become
 });
 
 test("media: only data.code.source, data.content, data.fileName, data.type and contentHash are versioned; code source merges by line", () => {
-  const media = (source: string, thumbs: string[]) => [{ id: "g", createdAt: "t", data: { type: "code", fileName: "Lower third", thumbnailIds: thumbs, code: { source, width: 1920, height: 1080 } } }];
+  const media = (source: string, thumbs: string[]) => [{ id: "g", createdAt: AT, addedAt: AT, data: { type: "code", fileName: "Lower third", thumbnailIds: thumbs, code: { source, width: 1920, height: 1080 } } }];
   const b = doc([], { media: media("a\nb\nc\nd", ["t1"]) });
   assert.deepEqual(diff(b, fromHost({ ...toHost(b), media: media("a\nb\nc\nd", ["t1", "t2"]) }, b), S), [], "thumbnails are not versioned");
   const ours = fromHost({ ...toHost(b), media: media("A\nb\nc\nd", ["t1"]) }, b);
@@ -132,7 +134,7 @@ test("materializeProject writes the versioned slice back over the file's project
     cast: [{ id: "x" }],
     tracks: [{ id: "V1", name: "V1", order: 0, locked: false, visible: true, muted: false }],
     timelineItems: [{ ...clip("a", 0, 5), annotations: [{ note: "local" }] }],
-    media: [{ id: "g", createdAt: "t", data: { type: "code", fileName: "F", thumbnailIds: ["t1"], code: { source: "old", width: 1920, height: 1080 } } }],
+    media: [{ id: "g", createdAt: AT, addedAt: AT, data: { type: "code", fileName: "F", thumbnailIds: ["t1"], code: { source: "old", width: 1920, height: 1080 } } }],
   };
   const d = fromHost(current, null);
   assert.equal(itemOf(d, "a")!.annotations, undefined, "local-only fields are not versioned");
@@ -143,7 +145,7 @@ test("materializeProject writes the versioned slice back over the file's project
   assert.equal(out.stateUpdatedAt, 7, "the materializer bumps it, not the conversion");
   assert.deepEqual(out.cast, [{ id: "x" }]);
   assert.deepEqual(out.timelineItems[0]!.annotations, [{ note: "local" }]);
-  assert.deepEqual(out.media[0], { id: "g", createdAt: "t", data: { type: "code", fileName: "F", thumbnailIds: ["t1"], code: { source: "new", width: 1920, height: 1080 } } });
+  assert.deepEqual(out.media[0], { id: "g", createdAt: AT, addedAt: AT, data: { type: "code", fileName: "F", thumbnailIds: ["t1"], code: { source: "new", width: 1920, height: 1080 } } });
   assert.deepEqual(out.tracks, current.tracks);
 });
 
@@ -174,7 +176,7 @@ test("§4.1 soft validators: an overlap that only the merge creates is a warning
 
 // S5-G3 (PLAN §11 T0): the shared media record beyond contentHash rides in the document, so a teammate finds the proxy,
 // the T1 files and the clip's facts from the project itself.
-const sharedEntry = (shared: Rec, extra: Rec = {}) => ({ id: "m", createdAt: "t", contentHash: "src-hash", data: { type: "video", fileName: "a.mp4", src: "/Users/alice/a.mp4" }, shared, ...extra });
+const sharedEntry = (shared: Rec, extra: Rec = {}) => ({ id: "m", createdAt: AT, addedAt: AT, contentHash: "src-hash", data: { type: "video", fileName: "a.mp4", src: "/Users/alice/a.mp4" }, shared, ...extra });
 const proxyRef = { profile: "720p-h264", encoder: "h264_nvenc", hash: "px-hash", size: 1234 };
 
 test("S5-G3: the shared media record is versioned field by field; undeclared fields under it (paths) are not", () => {
@@ -204,13 +206,13 @@ test("S5-G3: two machines sharing different tiers of one clip both land, no card
 
 test("S5-G3: a GUI save whose media entry lacks Carton's fields (Cardboard never writes them) keeps them; project.json carries them", () => {
   const b = doc([], { media: [sharedEntry({ size: 10, proxy: proxyRef })] });
-  const gui = { ...toHost(b), media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "renamed.mp4" } }] };
+  const gui = { ...toHost(b), media: [{ id: "m", createdAt: AT, addedAt: AT, data: { type: "video", fileName: "renamed.mp4" } }] };
   const saved = fromHost(gui, b);
   assert.deepEqual(diff(b, saved, S).map((o) => o.path.join("/")), ["media/m/data/fileName"], "only the rename; contentHash and shared kept");
   const viaGui = projectGuiSave(b, gui, standInProjection);
   assert.deepEqual(diff(b, viaGui, S).map((o) => o.path.join("/")), ["media/m/data/fileName"]);
-  const file = materializeProject(saved, { id: "p", media: [{ id: "m", createdAt: "t", thumbnail: "blob:x", data: { type: "video", fileName: "a.mp4", src: "/Users/alice/a.mp4" } }] }) as { media: Rec[] };
-  assert.deepEqual(file.media[0], { id: "m", createdAt: "t", thumbnail: "blob:x", contentHash: "src-hash", shared: { size: 10, proxy: proxyRef }, data: { type: "video", fileName: "renamed.mp4", src: "/Users/alice/a.mp4" } });
+  const file = materializeProject(saved, { id: "p", media: [{ id: "m", createdAt: AT, addedAt: AT, thumbnail: "blob:x", data: { type: "video", fileName: "a.mp4", src: "/Users/alice/a.mp4" } }] }) as { media: Rec[] };
+  assert.deepEqual(file.media[0], { id: "m", createdAt: AT, addedAt: AT, thumbnail: "blob:x", contentHash: "src-hash", shared: { size: 10, proxy: proxyRef }, data: { type: "video", fileName: "renamed.mp4", src: "/Users/alice/a.mp4" } });
 });
 
 test("the schema version and the hosts' defaults (H-SV): a bump ships with the hosts accepting it", () => {
@@ -221,9 +223,9 @@ test("the schema version and the hosts' defaults (H-SV): a bump ships with the h
 });
 
 test("S5-G2: data.content that 1.4.0's store strips (media types without it) is kept from the base, not unset", () => {
-  const b = doc([], { media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4", content: "notes" } }] });
-  const stripped = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4" } }] }, b);
+  const b = doc([], { media: [{ id: "m", createdAt: AT, addedAt: AT, data: { type: "video", fileName: "a.mp4", content: "notes" } }] });
+  const stripped = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: AT, addedAt: AT, data: { type: "video", fileName: "a.mp4" } }] }, b);
   assert.deepEqual(diff(b, stripped, S), [], "nothing unset");
-  const edited = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4", content: "new" } }] }, b);
+  const edited = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: AT, addedAt: AT, data: { type: "video", fileName: "a.mp4", content: "new" } }] }, b);
   assert.deepEqual(diff(b, edited, S).map((o) => o.path.join("/")), ["media/m/data/content"], "an edit still lands");
 });

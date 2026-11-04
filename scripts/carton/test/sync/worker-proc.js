@@ -21,6 +21,7 @@ console.info = console.log;
   let seen = 0;
   setInterval(() => { while (seen < events.length) out({ event: events[seen++] }); }, 10).unref();
   out({ ready: true, pid: process.pid });
+  const held = { waiting: false, release: null };
   for await (const line of createInterface({ input: process.stdin })) {
     if (!line.trim()) continue;
     const { id, method, args } = JSON.parse(line);
@@ -29,6 +30,27 @@ console.info = console.log;
     // What the worker did since the last call, as count-calls.cjs counts it (save-cost.test.js; null without it).
     if (method === "test.counters") {
       out({ id, ok: true, data: globalThis.__cartonTestCounters?.() ?? null });
+      continue;
+    }
+    // A materialization (head into project.json) held once it has made the project from head, before the store has
+    // it: "test.holdMaterialize" holds the next one, "test.materializeHeld" says whether one is waiting there,
+    // "test.releaseMaterialize" lets it go on (panel-author.test.js: a GUI save made meanwhile).
+    if (method === "test.holdMaterialize" || method === "test.materializeHeld" || method === "test.releaseMaterialize") {
+      try {
+        const hooks = require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs")).internals.testHooks;
+        if (method === "test.holdMaterialize") {
+          const gate = new Promise((r) => (held.release = r));
+          hooks.materialize = async () => { hooks.materialize = null; held.waiting = true; await gate; held.waiting = false; };
+        }
+        if (method === "test.releaseMaterialize") held.release?.();
+        out({ id, ok: true, data: held.waiting });
+      } catch (e) { out({ id, ok: false, error: String(e?.message ?? e) }); }
+      continue;
+    }
+    // The project as Carton's head makes it, for a bundle (args[0]): what project.json should show.
+    if (method === "test.headProject") {
+      try { out({ id, ok: true, data: await require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs")).internals.headProject(args[0]) }); }
+      catch (e) { out({ id, ok: false, error: String(e?.message ?? e) }); }
       continue;
     }
     if (method === "test.cartonOpen") {

@@ -28,6 +28,7 @@ export function scopedBlobStore(inner: BlobStore, prefix: string): BlobStore {
     key: u.key.slice(prefix.length),
     uploadId: u.uploadId,
     uploadPart: (n, d) => u.uploadPart(n, d),
+    ...(u.uploadPartStream ? { uploadPartStream: (n: number, body: ReadableStream<Uint8Array>, size: number) => u.uploadPartStream!(n, body, size) } : {}),
     listParts: () => u.listParts(),
     complete: async (parts) => strip(await u.complete(parts)),
     abort: () => u.abort(),
@@ -57,6 +58,13 @@ export function scopedBlobStore(inner: BlobStore, prefix: string): BlobStore {
   if (inner.getStream) {
     const gs = inner.getStream.bind(inner);
     store.getStream = async (key, range) => gs(full(key), range);
+  }
+  if (inner.getWithInfo) {
+    const gi = inner.getWithInfo.bind(inner);
+    store.getWithInfo = async (key, range) => {
+      const o = await gi(full(key), range);
+      return o && { ...o, info: strip(o.info) };
+    };
   }
   if (inner.signedUrl) {
     const su = inner.signedUrl.bind(inner);

@@ -27,4 +27,4 @@ export type { LocalOptions, LocalCarton, HolderEngineOptions } from "./open.ts";
 // `cartonMaterializerEngine(carton)` as is (it reads whether the cut is shared and cards invalid records itself, `b4c9b5f`;
 // local's CartonMaterializerEngine wrapper is gone).
 export { cartonMaterializerEngine, displaceThenInstall, DisplacedFiles, Materializer, viewPath, statusPath } from "@carton/cardboard/node";
-export type { CartonEngine } from "@carton/cardboard/node";
+export type { CartonEngine, ShowTarget, Showing } from "@carton/cardboard/node";

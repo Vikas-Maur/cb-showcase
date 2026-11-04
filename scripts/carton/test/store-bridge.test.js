@@ -8,7 +8,7 @@ const fs = require("fs"), os = require("os"), path = require("path");
 
 const load = (on) => {
   const saved = process.env.CARDBOARD_CARTON;
-  process.env.CARDBOARD_CARTON = on ? "1" : "";
+  process.env.CARDBOARD_CARTON = on ? "1" : "0"; // unset would be on: Carton's default
   try { return new Function("require", require("../store-bridge.js")({ dir: '"unused"', slice: "((d) => d)", who: "cli" }) + "return __carton;")(require); }
   finally { process.env.CARDBOARD_CARTON = saved ?? ""; if (saved === undefined) delete process.env.CARDBOARD_CARTON; }
 };
@@ -102,6 +102,76 @@ test("a merged save's put-back is Cardboard's own copy: an in-place edit sticks"
     assert.equal(kept.name, "Renamed");
     assert.ok(!Object.isFrozen(kept) && !Object.isFrozen(kept.timelineItems[0]));
   } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
+  }
+});
+
+// A materialization whose head moved before its turn in the store's chain (the facade's commit answers "stale"): the
+// bridge writes nothing and the store keeps the document it had, so a GUI save that went first stays in project.json
+// (review P1 of the fold-author fix). Any other answer goes on as before.
+test("a stale materialization writes nothing: the store keeps its document", async () => {
+  const dir = path.join(ROOT, "facade-stale");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), `
+    exports.cardboard14 = { commit: async ({ base, doc, meta }) => (meta?.head === "moved" ? { doc: base, status: "stale" } : { doc, status: "materialized" }) };
+  `);
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = load(true);
+    const saved0 = { id: "p", stateUpdatedAt: 5, timelineItems: [{ id: "a", startTime: 0, endTime: 2, fontSize: 166 }] };
+    const store = {
+      options: { root: ROOT },
+      byId: new Map([["p", { bundlePath: path.join(ROOT, "p.cardboard"), document: saved0 }]]),
+      async __cartonApplyMutation(id, mutate) {
+        const e = this.byId.get(id), next = mutate(e.document);
+        this.byId.set(id, { ...e, document: next });
+        return { document: next, changed: true };
+      },
+    };
+    // the older head's document, merged in by the store's scope (as the patched updateScoped tells the bridge)
+    const older = (head) => (d) => (c.scope({ ownedFields: ["timelineItems"], carton: { materialize: true, head } }), { ...d, stateUpdatedAt: 6, timelineItems: [{ id: "a", startTime: 0, endTime: 2, fontSize: 140 }] });
+    const res = await c.applyMutation(store, "p", older("moved"));
+    assert.deepEqual(res, { document: saved0, changed: false }, "nothing to write");
+    assert.equal(store.byId.get("p").document, saved0, "the store keeps the save");
+    const ok = await c.applyMutation(store, "p", older("same"));
+    assert.equal(ok.changed, true);
+    assert.equal(store.byId.get("p").document.timelineItems[0].fontSize, 140, "a materialization whose head is still head goes in");
+  } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
+  }
+});
+
+// Laptop, final candidate P1-1: the loaders' project from a project.json whose media entries have no dates (an earlier
+// restore wrote them so) goes to the facade (completeMedia); one whose entries have them never loads the facade.
+test("loaded: a project with media Cardboard's editor can't save is completed by the facade; a complete one is left alone, the facade unloaded", () => {
+  const dir = path.join(ROOT, "facade-loaded");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), `
+    globalThis.__loadedFacade = (globalThis.__loadedFacade ?? 0) + 1;
+    exports.cardboard14 = { completeMedia: (p, b) => ({ ...p, media: p.media.map((m) => ({ createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z", ...m })), bundle: b }) };
+  `);
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = load(true);
+    const at = "2026-11-01T00:00:00.000Z";
+    const whole = { project: { id: "p", media: [{ id: "m", createdAt: at, addedAt: at, data: { type: "video" } }, { id: "t", createdAt: at, addedAt: at, data: { type: "text", format: "text", size: 0, presetId: "custom" } }] }, media: [] };
+    assert.equal(c.loaded("/b", whole), whole, "complete: as it was");
+    assert.equal(c.loaded("/b", { project: { id: "p" }, media: [] }).project.id, "p", "no media list");
+    assert.equal(globalThis.__loadedFacade, undefined, "carton-node.cjs isn't loaded for them");
+    const recovered = { project: { id: "p", media: [{ id: "m", data: { type: "video" } }] }, media: [{ mediaId: "m" }] };
+    const out = c.loaded("/b", recovered);
+    assert.deepEqual(out.project.media[0], { createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z", id: "m", data: { type: "video" } });
+    assert.equal(out.project.bundle, "/b");
+    assert.equal(out.media, recovered.media, "the manifest as read");
+    // an unreadable date, or a title without what Cardboard's own have, asks too
+    const unreadable = { project: { id: "p", media: [{ id: "m", createdAt: "t", addedAt: at }] }, media: [] };
+    assert.equal(c.loaded("/b", unreadable).project.bundle, "/b", "the facade was asked");
+    const title = { project: { id: "p", media: [{ id: "t", createdAt: at, addedAt: at, data: { type: "text" } }] }, media: [] };
+    assert.equal(c.loaded("/b", title).project.bundle, "/b");
+  } finally {
+    delete globalThis.__loadedFacade;
     if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
   }
 });

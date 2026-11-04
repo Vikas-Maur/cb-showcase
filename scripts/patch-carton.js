@@ -2,7 +2,7 @@
 // in Cardboard's own terms, is in carton/docs/INTEGRATION-1.4.0.md; the numbers below (H1…H13) are its hook numbers.
 // It runs after the Windows patches, on the files they wrote. Each Windows patch script starts again from its pristine
 // copy, so a rebuild runs both in order; this script refuses a file that already has Carton in it.
-// With Carton off at run time (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code; only the .cbproj
+// With Carton off at run time (CARDBOARD_CARTON=0; it is on by default), every hook runs Cardboard's own code; only the .cbproj
 // exclusions (H11: .carton/ and Carton's own view files) apply either way. build-windows.js --no-carton leaves this
 // script out.
 // Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
@@ -35,6 +35,8 @@ const STORE = {
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
     readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
+    // the bundle loader's parse of project.json (`ti` in the worker): the reader, named
+    recover: ["let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map(", "qe"],
     install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,a)===!1?null:await Qo(c):await Bx(l,c)}"],
     // the envelope writeNow writes ({format, version, project, media}): the name it stringifies
     envelope: ["u=JSON.stringify(a);this.lastWritten", "a"],
@@ -44,13 +46,15 @@ const STORE = {
       ["let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);", "let[m]=await this.__cartonListRevisions(r),p=m===void 0?null:await this.__cartonReadRevision(r,m);"],
       ["let d=await this.listRevisions(r);for(let m of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let m of d.slice(20))"],
     ],
+    // the mirror's print (cb source print, MCP's print_timeline, timeline.tsx): Carton's exact header with Carton on
+    print: ["async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Cr(__p.project),__p.rev,r):this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(o,c.doc,c.added),a.rev}", "return await this.writeTimeline(o,c.doc,c.added,{source:\"undo\",rev:a.rev}),a.rev}"],
     headerRev: ["g=Nh(r)?rt(r):r", "g=Nh(r)?(__carton.on?__carton.headerRev(rt(r),r):rt(r)):r"],
     base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=(__carton.on&&typeof g.rev==\"string\"?await __carton.cartonBase(g.rev,o):await this.revisionAtOrBefore(o,g.rev))??(__carton.on?await __carton.missingRev(g.rev,j,o):j),"],
     merge: ["Z=rn(B,j,J.doc,{prefer:n.prefer})", "Z=__carton.on?await __carton.merge3(B,j,J.doc,{prefer:n.prefer},rn):rn(B,j,J.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})",
-      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
+      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let o={...Aa(t,r)", "writeTimeline(t,r,n,__cm){let o={...Aa(t,r)"],
@@ -85,6 +89,7 @@ const STORE = {
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
     readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
+    recover: ["let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map(", "ti"],
     install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,o)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
     envelope: ["d=JSON.stringify(o);this.lastWritten", "o"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
@@ -93,13 +98,14 @@ const STORE = {
       ["let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);", "let[u]=await this.__cartonListRevisions(r),p=u===void 0?null:await this.__cartonReadRevision(r,u);"],
       ["let l=await this.listRevisions(r);for(let u of l.slice(20))", "let l=await this.__cartonListRevisions(r);for(let u of l.slice(20))"],
     ],
+    print: ["async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Zs(__p.project),__p.rev,r):this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(i,s.doc,s.added),o.rev}", "return await this.writeTimeline(i,s.doc,s.added,{source:\"undo\",rev:o.rev}),o.rev}"],
     headerRev: ["h=OC(r)?li(r):r", "h=OC(r)?(__carton.on?__carton.headerRev(li(r),r):li(r)):r"],
     base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,i):await this.revisionAtOrBefore(i,h.rev))??(__carton.on?await __carton.missingRev(h.rev,de,i):de),"],
     merge: ["ee=$f(be,de,qe.doc,{prefer:n.prefer})", "ee=__carton.on?await __carton.merge3(be,de,qe.doc,{prefer:n.prefer},$f):$f(be,de,qe.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
-      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
+      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let i={...Ay(t,r)", "writeTimeline(t,r,n,__cm){let i={...Ay(t,r)"],
@@ -165,12 +171,27 @@ const patchStore = (replace, k) => {
   // The bundle loader behind read() and the library's rescan: a project.json caught mid-install is waited for, not
   // taken for a removed project.
   replace(...s.readBundle);
+  // Laptop, build 915eb36: a project.json the reader refuses (no name: Restore of "Started the cut" wrote one) in a
+  // bundle whose history Carton holds is read through that history, so the library lists the project again, cb finds
+  // it, and Restore in History brings it back. Cardboard's reader still decides: it parses what Carton gives, and what it
+  // refuses stays unlisted, as before. Only when its own parse failed: a project it reads costs nothing more.
+  // Laptop, final candidate P1-1: media entries without the dates Cardboard's editor writes back at every save (an
+  // earlier build's restore or recovery wrote them so) get them as the file is read (the store bridge's `loaded`), so
+  // the editor's saves land again; the next save writes them. A project whose entries have them costs one check.
+  replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;__carton.on&&(r=__carton.loaded(e,r));let n=await Promise.all(r.media.map(`);
   replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.
   for (const [from, to] of s.revFiles) replace(from, to);
   around(replace, "listRevisions", "t", () => "__carton.listRevisions(this,t)");
   around(replace, "readRevision", "t,r", () => "__carton.readRevision(this,t,r)");
+  // Laptop #2 (agents' cb edits overwrote each other): a numeric rev's base is the exact version the rev names, not the
+  // first at or before it in history order (several writers' revs aren't in save order: a newer version was taken, and
+  // the print's older values read as the agent's edits); .revs only for a rev older than Carton's history. And a print
+  // carries Carton's exact header, its records that version's as Carton has them, so the apply merges against exactly
+  // what was printed and `cb source check` of an unchanged print finds nothing.
+  around(replace, "revisionAtOrBefore", "t,r", () => "__carton.revisionAtOrBefore(this,t,r)");
+  replace(...s.print);
   replace("async history(t){", "history(t){return __carton.on?this.__cartonHistory(t).then(r=>__carton.history(this,t,r)):this.__cartonHistory(t)}async __cartonHistory(t){");
   // undo <rev> restores through writeTimeline, whose scope says so.
   replace(...s.undoWrite);
@@ -222,6 +243,13 @@ if (mode === "--cli") {
     replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
     replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
     replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
+    // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
+    // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
+    // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
+    replace(
+      "for(let u of t.matched)a.push(`matched: ${u.name} (${u.id}) ${u.distanceBefore} -> ${u.distanceAfter}`);return a.join(`\n`)},Nr=",
+      "for(let u of t.matched)a.push(`matched: ${u.name} (${u.id}) ${u.distanceBefore} -> ${u.distanceAfter}`);typeof t.carton?.note==\"string\"&&a.push(t.carton.note);return a.join(`\n`)},Nr=",
+    );
   });
 } else if (mode === "--app") {
   const [mainFile, workerFile, indexFile, editorFile, storeFile, tabsFile] = files;
@@ -255,25 +283,37 @@ if (mode === "--cli") {
     replace('e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})', 'e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s,...__cartonMain.on&&{carton:!0}})');
     // H8: the worker's Carton events go to every tab.
     replace('onChange:async i=>{if(i.kind==="removed"){n(i.id);return}', 'onChange:async i=>{if(i.kind==="carton"){e.tabs.broadcast("carton:event",i);return}if(i.kind==="removed"){n(i.id);return}');
-    // H9: who is acting, for every agent main starts.
+    // H9: who is acting, for every agent main starts (agentEnv: the agents deps.spawn starts, Codex in 1.4.0).
     // The title bar's History and Share icons (the tab strip, tabsFile below): their commands go to the active tab's
     // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
     // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
+    // For a shared project the report also carries a small live summary (sync state, who is here: UI audit P2-11),
+    // and the strip gets {panel, live} instead of the panel's name alone.
     replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){_e.emit(r,\"carton:command\",{action:t.action});return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
     replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
-    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.panel??null)}),');
+    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.live?{panel:t?.panel??null,live:t.live}:t?.panel??null)}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
-    // H9: the Director's Bash hook names the turn and the subagent; Stop and SubagentStop return late conflicts.
+    // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop
+    // return late conflicts. oH runs two agents in 1.4.0: the Director (RVt) and the person's own Claude Code (v_e,
+    // provider "claude"; deps.spawn never starts it). Laptop #8: main-bridge's hookActor names the Director's turn
+    // (director/<chat>/<turn>) and the person's Claude Code claude-code/<session>, never the Director.
     replace('PreToolUse:[{matcher:"Bash",hooks:[async v=>{', 'PreToolUse:[{matcher:"Bash",hooks:[__cartonMain.directorHook(e,async v=>{');
     // H8: and its Read/Write/Edit calls reach the worker's Materializer (the shared timeline.tsx's freeze, credit).
+    // Regress prod4 (director-hold): fileHooks also hooks Claude Code's PowerShell tool, which 1.4.0's transport hooked
+    // nowhere (a turn's cb calls and long pings there held nothing); main keeps a running turn's hold alive itself.
     replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
-    // H9: each Director turn's last version is named from the turn's prompt when the turn ends (as the chat's
-    // checkpoints are); the label stays in the project's history.
+    // H9: each in-app agent's turn (the Director's, the person's own Claude Code's, Codex's) ends here (closeTurn: the
+    // stream's result, an interrupt, an error): its hold on timeline.tsx ends, and its last version is named from the
+    // turn's prompt (as the chat's checkpoints are); the label stays in the project's history. The transport, and so its
+    // hooks, outlives the turn (n.process): review P2 (lap2), each start and end is a new turn generation in main-bridge,
+    // so a hook still waiting at the end (an interrupted turn's Stop) sends nothing after it, and the turn's name request
+    // carries its end (a late one never takes the next turn's version).
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
-    // H9: host Claude Code gets the same hooks through --settings.
+    // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude
+    // Code through the Agent SDK transport instead (the hooks above), so this reaches it only if a build spawns it.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
     // H8 (item 4): every agent's appended system prompt (ju: the Director, host Claude Code, Codex, the others) gains
     // Carton's view flow with Carton on; with Carton off the list is Cardboard's.
@@ -282,15 +322,32 @@ if (mode === "--cli") {
 
   // H4, H6, H7: the editor store (installErrorTelemetry-*.js). The bridge goes first; it waits for the store's handles.
   patch(storeFile, (replace, prepend) => {
-    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De});");
+    // `refuse` is Cardboard's own guard of its edits (me(): true and its "read-only" note over the timeline when a write
+    // is blocked, as in a preview): the bridge's refuse() uses it for the stage's text editor (baseline P3-9).
+    // `subscribe` (the store's, zustand's (state, prev)) and `clock` (its playback clock, qx, exported as aI: the
+    // playhead while playing) let a preview tell the person's moves of the playhead from its own (final re-check N5).
+    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
-    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
-    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,projectId:n,projectName:r,activeLeftTab:"media",');
+    // H4 (one action, one save): and a media entry an editor action owns goes with that action's timeline save (send answers its own save
+    // with that one), so one action is one version and one undo step (laptop, merge/prod-2 N-1).
+    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),window.__carton.send(t,e,()=>On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)})))');
+    // H4 (one action, one save): deleting a title or code graphic drops the media entry it owns (Kx, after removeTimelineItem(s) armed the
+    // timeline save): noted as that action's, so the timeline save carries it. Both of the timeline save's call sites
+    // (the 300 ms debounce, de(), and its flush, cN()) board what their action noted.
+    replace("(nN.set(o.id,o),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))", "(nN.set(o.id,o),window.__carton.ride(i.id,{removedMediaIds:[o.id]}),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))");
+    replace('c=oN(Jt(o,{ownedFields:["tracks","timelineItems"]}),r,"Failed to save timeline to IndexedDB:")', 'c=oN(Jt(o,window.__carton.board(r,{ownedFields:["tracks","timelineItems"]})),r,"Failed to save timeline to IndexedDB:")');
+    replace('s=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},{ownedFields:["tracks","timelineItems"]}),t,"Failed to flush timeline to IndexedDB:")', 's=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},window.__carton.board(t,{ownedFields:["tracks","timelineItems"]})),t,"Failed to flush timeline to IndexedDB:")');
+    // H6: the editor's session starts here (Ctrl+Z never goes back past it), with nothing to undo or redo yet.
+    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,cartonSince:Date.now(),cartonCanUndo:!1,cartonCanRedo:!1,projectId:n,projectName:r,activeLeftTab:"media",');
     // H4: a preview of an earlier version is read-only, says so, and is never saved.
     replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
     replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
     replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
     replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
+    // Laptop, final candidate P1-1: a save that fails in the page (its project couldn't be written out: there, media
+    // entries with no dates) was only logged, and every edit was lost unseen. The bridge tells the person (a toast over
+    // the stage); Cardboard's own handling (log, rethrow) is unchanged.
+    replace('throw console.error("Failed to update scoped project data:",n),n', 'throw window.__carton?.saveFailed?.(n),console.error("Failed to update scoped project data:",n),n');
     // H6: undo and redo of the person's actor group.
     replace("undo:()=>{if(me())return;const n=e();", "undo:()=>{if(window.__carton.undo())return;if(me())return;const n=e();");
     replace("redo:()=>{if(me())return;const n=e();", "redo:()=>{if(window.__carton.redo())return;if(me())return;const n=e();");
@@ -310,7 +367,26 @@ if (mode === "--cli") {
   // conflict cards' floating stack and the preview banner. With Carton off the editor's row and stage are Cardboard's.
   patch(editorFile, (replace, prepend) => {
     replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
+    // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
+    // the editor's own snapshot stacks, which Carton's undo never pops. During a read-only preview neither applies
+    // (Ctrl+Z already does nothing there), so both look unavailable (UI audit P3-12).
+    replace("y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)", "y=U(_=>window.__carton?.on?!!_.cartonCanUndo&&!_.cartonPreview:_.historyPast.length>0),g=U(_=>window.__carton?.on?!!_.cartonCanRedo&&!_.cartonPreview:_.historyFuture.length>0)");
     replace('b&&c.jsx(X_,{variant:"project"})]}),c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",', 'b&&c.jsx(X_,{variant:"project"})]}),...window.__carton?.on?[c.jsx(__cbCartonSide,{},"carton-side")]:[],c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",');
+    // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened, from Enter on a selected
+    // title and from a double-click on a title or caption, and dropped what was typed (opening it is no write, so
+    // Cardboard's guard of its edits never saw it). Both ask the bridge first, which refuses only in a Carton preview,
+    // with Cardboard's own "Previewing an earlier version. Return to current to edit." Crop mode, the double-click's
+    // other branch, is refused by Cardboard's guard already.
+    replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
+    replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
+    // Regress prod3 (baseline P3-9 family): in a read-only preview a selected title or caption still showed the stage's
+    // text toolbar (font, size, bold, alignment…), which Cardboard's guard then refused. It isn't shown there: nothing
+    // in a preview looks editable. The preview's opening and its Return both replace the timeline (the bridge's adopt),
+    // so the stage renders again then and reads the store's state as it is.
+    replace("vn=B&&pe&&!p&&ct&&!ue&&!M&&!x?{item:B", "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B");
+    // H4 (one action, one save): adding a title (iu) adds its "Text: …" media entry and the timeline item (addTimelineItem armed the timeline
+    // save), then saves the entry on its own: noted as that action's, so the title and its entry are one version.
+    replace("const g=je.getState().getProjectById(a)??f;return vt(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return vt(async()=>{const{updateProjectScoped:b}");
     prepend(require("./carton/editor-panel"));
   });
   // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose

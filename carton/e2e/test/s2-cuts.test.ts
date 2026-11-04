@@ -77,7 +77,10 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   assert.equal(named(folded, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
   assert.equal(named(folded, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
   const h = await cbOk(m, ["history", "--limit", "10"]);
-  assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["partial-revert", "merge"], "a merge, then an inverse change that lists what was kept out");
+  // UI audit P1-3: the fold and the inverse change that keeps the logo out are stored as two changes, but History
+  // (log(), cb history) lists them as one version: a merge that says what it left out, then main's own edit
+  assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["merge", "edit"], "one version for the partial fold: " + JSON.stringify(h.versions.slice(0, 2)));
+  assert.deepEqual(h.versions[0].leftOut, [`timelineItems/${ids.logo}`], "it says what it left out");
   assert.equal((await cbOk(m, ["credits", SAMPLE.title])).by.id, "director/chat2/turn1", "the folded edit keeps its author");
 
   // later: fold in the rest (R2-14: "Accept the rest later reverts that inverse"): `cb fold <cut>` again (B4, fixed by
@@ -88,7 +91,8 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   const rest2 = await untilShown(m, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
   const top = (await cbOk(m, ["history", "--limit", "3"])).versions[0];
   t.diagnostic(JSON.stringify({ afterRest: top }));
-  assert.equal(top.kind, "revert", `folding in the rest reverts the inverse change: ${JSON.stringify(top)}`);
+  // it reverts the inverse change, and `cb history` lists it as the fold it finishes (regress prod3: it read `revert`)
+  assert.deepEqual([top.kind, top.rest, String(top.change).endsWith(".rest")], ["merge", true, true], `folding in the rest: ${JSON.stringify(top)}`);
   assert.equal(named(rest2, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
   assert.equal((await cbOk(m, ["fold", CUT, "--check"])).status, "up-to-date");
 });

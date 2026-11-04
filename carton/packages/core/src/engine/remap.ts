@@ -158,9 +158,12 @@ export const composeLineage = (...ls: (Lineage | null | undefined)[]): Lineage =
  * What changes that landed in order did, as merge3 takes one side of `remaps` and `kinds`: their recorded maps and
  * split lineage composed, their edit kinds merged (the remap undefined when nothing is recorded: merge3 infers). One
  * definition for a local commit's rebase, the queue's and a shared cut's stale base (review SF4-4, SF4-5).
+ * A change that reverts others (an undo, redo or revert: `reverts`) records all it moves by remap, so with one among
+ * them the side is recorded, as none if nothing else is: the undo of a plain drag pulls the clip back over the gap it
+ * left, and merge3 inferred that as a ripple delete, pulling a clip placed later on that track left (laptop #2, bug 6).
  */
-export const sideOf = (cs: readonly { intent?: { maps?: RemapMaps; lineage?: Lineage } | null; kinds?: EditKinds | null }[]): { remap: ReturnType<typeof intentRemap>; kinds: EditKinds } => ({
-  remap: intentRemap({ maps: composeMaps(...cs.map((c) => c.intent?.maps)), lineage: composeLineage(...cs.map((c) => c.intent?.lineage)) }),
+export const sideOf = (cs: readonly { intent?: { maps?: RemapMaps; lineage?: Lineage } | null; kinds?: EditKinds | null; reverts?: unknown }[]): { remap: ReturnType<typeof intentRemap>; kinds: EditKinds } => ({
+  remap: intentRemap({ maps: composeMaps(...cs.map((c) => c.intent?.maps)), lineage: composeLineage(...cs.map((c) => c.intent?.lineage)) }) ?? (cs.some((c) => c.reverts !== undefined) ? { maps: {} } : undefined),
   kinds: Object.assign({}, ...cs.map((c) => c.kinds)),
 });
 /**

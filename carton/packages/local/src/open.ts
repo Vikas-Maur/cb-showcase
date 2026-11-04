@@ -21,10 +21,11 @@ import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
 import { destCut, IDEMPOTENT, runWrite, tellBusy, WAIT_MS, withRaceRetry } from "./writes.ts";
 import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
-import { followStore } from "./follow.ts";
+import { followStore, noteGuiWrite } from "./follow.ts";
 import { forwardSettles } from "./sidecars.ts";
 import type { Follower } from "./follow.ts";
 import { nudgeHolder } from "./client.ts";
@@ -143,6 +144,8 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
     actor,
     async write(op, o = {}) {
       const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS, ...(o.gui === true ? { gui: true } : {}) };
+      // whichever holder serves it, this process's follower knows its change as the person's own (no freeze)
+      if (o.gui === true) noteGuiWrite(req.id);
       // a caller with no factory of its own starts what the app recorded (its materializer, its sync server: B3, B7);
       // its own helperConfig (`carton --server`) goes over the recipe's config
       const recipe = opts.helperFactory ? null : await readHelperRecipe(store).catch(() => null);
@@ -219,7 +222,9 @@ export class CartonHolderEngine implements HolderEngine {
         intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
         exclusive: (f) => this.cutLock(f),
         onHead: async (cut, authors) => {
-          await tellBusy(mz, authors ?? []);
+          // no authors: only the person's own actions in the app, served by another holder (nobody at work); unknown
+          // authors (undefined) count as someone at work
+          if (!authors || authors.length) await tellBusy(mz, authors ?? []);
           if (mz?.onExternalHeadChange) await mz.onExternalHeadChange();
           else mz?.onHeadChange?.("local");
           opts.onExternal?.({ type: "head", cut });
@@ -281,6 +286,26 @@ export class CartonHolderEngine implements HolderEngine {
   /** Look at carton.db now (a `cb` wrote without this holder). */
   async nudge(): Promise<void> {
     await this.follower?.check();
+  }
+
+  /**
+   * `carton.shown` (apply-ryw): the shared timeline.tsx shows `target` (a `cb` write), answered once it does or within
+   * `waitMs`. A write another process committed is looked for first, as a nudge would (the follower tells the
+   * materializer who is at work, then that head moved), so the freeze takes in the writer's own change; then the
+   * materializer's rewrite is made at once and the answer comes with the print that shows it. Null: no materializer.
+   */
+  async show(target: ShowTarget, waitMs: number): Promise<Showing | null> {
+    const mz = this.materializer;
+    if (!mz?.showChange) return null;
+    // one deadline: the look at carton.db comes out of the wait, not on top of it (review #4)
+    const t0 = Date.now(), end = t0 + waitMs;
+    if (this.follower) {
+      let timer: NodeJS.Timeout | null = null;
+      await Promise.race([this.follower.check(), new Promise<void>((r) => { timer = setTimeout(r, waitMs); timer.unref?.(); })]);
+      if (timer) clearTimeout(timer);
+    }
+    // (how long that look took goes with a slow answer's report: perf/apply-tail)
+    return mz.showChange(target, Math.max(0, end - Date.now()), { beforeMs: Date.now() - t0 });
   }
 
   /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a

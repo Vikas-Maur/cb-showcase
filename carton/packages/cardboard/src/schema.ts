@@ -26,7 +26,16 @@ const TL: TimelineConfig = {
   source: "trimStart",
   sourceEnd: "trimEnd",
   speed: "playbackSpeed",
+  // What the editor's split leaves off its parts: its splitter (`dt` in 1.4.0's renderer) clears the transitions and the
+  // fades on the cut's side, and the parts are new clips its save writes through `fm`, which has no `autoReframe` or
+  // `autoReframeFallback` (laptop re-check P3: "…, cleared auto reframe on its left part, … on its right part")
+  splitDrops: ["transitionIn", "transitionOut", "audioFadeIn", "audioFadeOut", "autoReframe", "autoReframeFallback"],
 };
+
+/** What a timeline item is called when it isn't a clip (`nounOf`). */
+const ITEM_NOUNS: ReadonlyMap<unknown, string> = new Map([["text", "title"], ["code", "code graphic"], ["caption", "caption"]]);
+/** Media kinds that are an item's own record, not a file (1.4.0's `td`: a title's text, a code graphic's source). */
+const OWN_MEDIA: ReadonlySet<unknown> = new Set(["text", "code"]);
 
 /** `$.type` in 1.4.0. */
 export const ITEM_TYPES: ReadonlySet<string> = new Set(["video", "audio", "image", "text", "code", "adjustment", "caption", "shader"]);
@@ -265,6 +274,12 @@ const MEDIA_LABELS: Record<string, string> = {
   "shared.t1": "small files",
 };
 
+// Carton's own media fields in an editor's words, never their values (UI audit P1-2: sharing footage wrote a version
+// titled `Set 'clip.mp4' content to "8291f1d9…"`, a content hash): sharing links the file for teammates, and the
+// facts, proxy and small files added later update it.
+const SHARING = { set: "Linked %s for sharing", changed: "Updated %s for sharing", cleared: "Unlinked %s from sharing" };
+const MEDIA_PHRASES = { contentHash: { ...SHARING, changed: "Linked %s for sharing" }, shared: SHARING };
+
 /** The T1 kinds of PLAN §11 (`@carton/media`'s `T1_KINDS`): poster, filmstrip, peaks, transcript, analysis, LUT, .context, recipe. */
 export const SHARED_T1_KINDS = ["poster", "filmstrip", "peaks", "transcript", "analysis", "lut", "context", "recipe"] as const;
 /**
@@ -301,9 +316,23 @@ const sharedMedia = object(
   { only: true },
 );
 
+const none = (v: unknown): boolean => !Array.isArray(v) || !v.length;
+/**
+ * A state Cardboard can't open as a project though it has a name (`Schema.empty`, laptop, final candidate P2-1): no
+ * aspect ratio, tracks, clips or media. What an earlier build's Restore of the empty root left, named again when the
+ * library listed it; the editor's layouts read the aspect ratio, so the tab that showed it crashed ("This tab hit a
+ * snag"). Every project Cardboard makes has an aspect ratio (its new project's default is 16:9), so a blank project
+ * (main@1 of one just made) is never empty.
+ */
+export function emptyProject(doc: Doc): boolean {
+  const ar = doc.aspectRatio;
+  return !(typeof ar === "string" && ar) && none(doc[TRACKS]) && none(doc[ITEMS]) && none(doc[MEDIA]);
+}
+
 export const cardboardSchema: Schema = defineSchema({
   root: {}, // name, description, aspectRatio: scalars (undeclared root fields are leaves)
   labels: ROOT_LABELS,
+  empty: emptyProject,
   collections: {
     [TRACKS]: {
       key: "id",
@@ -316,6 +345,9 @@ export const cardboardSchema: Schema = defineSchema({
       key: "id",
       parent: { field: "trackId", collection: TRACKS },
       noun: "clip",
+      // a title is no clip (laptop re-check P3-8, P3-10: "7 clips" for 1 clip and 6 titles), nor a code graphic or a
+      // caption
+      nounOf: (r) => ITEM_NOUNS.get(r.type),
       labels: ITEM_LABELS,
       groups: [{ name: "time", fields: [...TIME_FIELDS], algebra: timeAlgebra(TL) }],
       fields: itemFields,
@@ -324,7 +356,12 @@ export const cardboardSchema: Schema = defineSchema({
       key: "id",
       only: true, // the versioned subset: data.code.source (text), data.content, data.fileName, data.type, contentHash, shared
       noun: "media",
+      // a title's or a code graphic's own entry (1.4.0 adds one per title, "Text: W1") is no media file: part of it
+      nounOf: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) ? null : undefined),
+      // whose it is: the item that names it, `mediaItemId` (laptop, merge/prod-2 N-1; regress prod3 P3-C)
+      partOf: { collection: ITEMS, field: "mediaItemId" },
       labels: MEDIA_LABELS,
+      phrases: MEDIA_PHRASES,
       fields: {
         contentHash: { kind: "leaf" },
         shared: sharedMedia,

@@ -10,7 +10,8 @@
 //   POST /api/projects/:p/create             {account, installKey}  → owner session  (open creation: a host that lets
 //                                            anyone make a project, `openCreate`; once per project id, never one in
 //                                            use, a few a day per network; 403 when the host doesn't, 409, 429)
-//   GET  /api/host                                                         → {openCreate, perDay?, maxUploadBytes}
+//   GET  /api/host                                                         → {openCreate, perDay?, maxUploadBytes, streams?}
+//                                            (streams: the host's proxy-stream batch limits, StreamLimits)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   GET  /api/projects/:p/session            any valid session → {role}  (the transport's probe after a failed handshake)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
@@ -30,6 +31,11 @@
 //   GET|HEAD|PUT /blob/:p/<key>?exp=…&sig=…  a signed URL (ranges)         → bytes  (a PUT may send If-None-Match: *
 //                                            for create-only, and X-Carton-Sha256 for a checked, recorded digest;
 //                                            it answers the stored BlobInfo, 412 when If-None-Match: * found the key)
+//   POST /api/projects/:p/streams/:id/append  a batch of a proxy stream's parts (bytes, manifests, entries) and maybe
+//                                            its end, editor → {stored}  (streams.ts: one request, where the part-by-
+//                                            part path took ten per segment)
+//   GET  /api/projects/:p/streams/:id/read?from=&init=&bytes=&parts=&wait=  a batch of entries, manifests and bytes, held
+//                                            at the live edge up to `wait` ms (streams.ts)
 //   PUT  /api/projects/:p/messages/<key>     an oversized message, editor  → {}   (key messages/c/<hour>/<sha>-<nonce>)
 //   GET  /api/projects/:p/messages/<key>     the server's oversized message → bytes (key messages/s/<hour>/<sha>)
 //   GET  /api/health
@@ -48,6 +54,7 @@ import { BlobError, MAX_PARTS, checkKey, checksKeys } from "@carton/blob-memory/
 import { eachLimit } from "./pool.ts";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
 import { isTeamMediaStore, mediaLockScope } from "./team.ts";
+import { streamRoutes, type StreamLimits } from "./streams.ts";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -80,6 +87,12 @@ export interface HttpDeps {
   clientOf?(req: Request): string;
   // the largest file one upload may store (a multipart object, or a signed PUT); none by default
   maxUploadBytes?: number;
+  // the project's media store for one request's writes of about `bytes` in `ops` calls (a stream append): a host whose
+  // write cap reserves per call (a Worker's: a Durable Object request each) reserves them in one go. Default: blobsFor.
+  blobsForWrites?(projectId: string, bytes: number, ops: number): Promise<BlobStore | undefined>;
+  // what this host asks of a proxy stream's batches (streams.ts StreamLimits): advertised in GET /api/host and every
+  // append's answer, and reads clamped to it. None: the client's own defaults (a host with no CPU budget per request).
+  streamLimits?: StreamLimits;
 }
 
 /** A host's open creation (HttpDeps.openCreate): its record of project ids in use, and its daily limit. */
@@ -109,6 +122,7 @@ const ACCOUNT = /^[A-Za-z0-9._~-]{1,128}$/;
 const mb = (n: number) => `${Math.round(n / (1024 * 1024))} MB`;
 
 export { teamMediaStore, projectMediaStore, isTeamMediaStore, mediaLockScope, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
+export type { StreamLimits } from "./streams.ts";
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const err = (status: number, message: string) => json({ error: message }, status);
@@ -167,7 +181,7 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
   if (url.pathname === "/api/health") return json({ ok: true });
   // what a client needs to know before it creates or uploads (the web app's New project, the desktop Share form)
   if (url.pathname === "/api/host" && req.method === "GET")
-    return json({ openCreate: !!deps.openCreate, ...(deps.openCreate ? { perDay: deps.openCreate.perDay } : {}), maxUploadBytes: deps.maxUploadBytes ?? null });
+    return json({ openCreate: !!deps.openCreate, ...(deps.openCreate ? { perDay: deps.openCreate.perDay } : {}), maxUploadBytes: deps.maxUploadBytes ?? null, ...(deps.streamLimits ? { streams: deps.streamLimits } : {}) });
   const m = PROJECT.exec(url.pathname);
   if (!m) return url.pathname.startsWith("/api/") ? err(404, "no such route") : null;
   const projectId = m[1]!, rest = m[2] ?? "";
@@ -243,6 +257,21 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     }
     if (rest.startsWith("/messages/")) return await messageRoutes(req, rest.slice("/messages/".length), ctx, deps, projectId);
     const store = deps.blobsFor(projectId);
+    if (rest.startsWith("/streams/")) {
+      if (!store) return err(404, "this host has no blob store");
+      const routed = await streamRoutes(req, url, rest, {
+        ctx,
+        store,
+        storeForWrites: async (bytes, ops) => (deps.blobsForWrites ? ((await deps.blobsForWrites(projectId, bytes, ops)) ?? store) : store),
+        mayRead: (k) => mayRead(ctx, k),
+        lock: (k, fn) => withMediaLock(mediaLockScope(store, projectId), k, fn),
+        maxBodyBytes: deps.maxBodyBytes ?? 100 * 1024 * 1024,
+        ...(deps.maxUploadBytes !== undefined ? { maxUploadBytes: deps.maxUploadBytes } : {}),
+        maxEntries: Math.max(1, Math.min(MAX_BLOB_HEADS, Math.floor(deps.maxBlobHeads ?? MAX_BLOB_HEADS))),
+        ...(deps.streamLimits ? { limits: deps.streamLimits } : {}),
+      });
+      if (routed) return routed;
+    }
     if (rest.startsWith("/blobs/") || rest.startsWith("/uploads")) {
       if (!store) return err(404, "this host has no blob store");
       return await blobRoutes(req, url, rest, ctx, store, deps, projectId);
@@ -443,6 +472,18 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   const handle = await store.resumeMultipart(key, decodeURIComponent(id));
   if (req.method === "PUT" && sub && sub !== "complete") {
     const max = deps.maxBodyBytes ?? 100 * 1024 * 1024;
+    // A store that takes a stream gets the request body as it arrives, never read into a buffer here: on a Worker,
+    // reading an 8 to 64 MiB part in JavaScript cost 60 to 360 ms of CPU (the Free plan allows 10, and Cloudflare
+    // killed such requests, error 1102) and held the part in a 128 MB isolate (cf-lab). It needs the declared length.
+    const declared = Number(req.headers.get("content-length") ?? NaN);
+    if (handle.uploadPartStream && req.body && Number.isSafeInteger(declared) && declared >= 0) {
+      if (declared > max) return err(413, "part too large");
+      if (deps.maxUploadBytes !== undefined && Number(sub) * declared > deps.maxUploadBytes) {
+        await handle.abort().catch(() => {});
+        return err(413, `This file is bigger than this host takes (${mb(deps.maxUploadBytes)}).`);
+      }
+      return json(await handle.uploadPartStream(Number(sub), req.body as ReadableStream<Uint8Array>, declared));
+    }
     let data: Uint8Array;
     try {
       data = await readBody(req, max);

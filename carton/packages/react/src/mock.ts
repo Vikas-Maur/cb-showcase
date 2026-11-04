@@ -305,7 +305,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
         const v = all.find((x) => x.ref === ref);
         return { label: v?.name ?? label, ref, at: v?.at ?? Date.now(), author: v?.author ?? people.alice, clipCount: shots.length + 6, length: shots.length ? shots[shots.length - 1]!.end : 0 };
       };
-      const c: Comparison = { a: side(a, d.a, d.aLabel), b: side(b, d.b, d.bLabel), diff: diffSummary(d) };
+      const between = all.filter((x) => x.ref !== a && x.ref !== b).slice(-7).map((x) => x.summary);
+      const c: Comparison = { a: side(a, d.a, d.aLabel), b: side(b, d.b, d.bLabel), diff: diffSummary(d), changes: between };
       return c;
     },
 

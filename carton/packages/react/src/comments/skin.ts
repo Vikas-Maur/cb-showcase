@@ -17,6 +17,11 @@ export const commentsSkin = `
 :where(${S}) :where(.carton-comments){height:100%;background:var(--cb-panel);color:var(--cb-fg)}
 :where(${S}) :where(.carton-comments-head){display:flex;align-items:center;gap:8px;padding:10px 12px 6px}
 :where(${S}) :where(.carton-comments-title){margin:0;font-size:13px;font-weight:600;color:var(--cb-fg-1)}
+/* in Cardboard's side panel its tab already says "Comments" (UI audit P2-20) */
+:where(${S}) :where(.carton-sidebar .carton-comments-title){display:none}
+/* a disabled send button as Cardboard's own: a quiet grey, not the white primary at half strength */
+:where(${S}) :where(.carton-comment-box .carton-btn[data-variant=primary]:disabled){background:var(--cb-secondary);color:var(--cb-fg-4);opacity:1}
+:where(${S}) :where(.carton-comment-esc){margin:0;font-size:11.5px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-comments-tabs){display:flex;gap:2px;margin-left:auto}
 :where(${S}) :where(.carton-comments-tab){height:24px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--cb-fg-3);font:inherit;font-size:12px;cursor:pointer;
   transition:background-color var(--cb-fast),color var(--cb-fast)}
@@ -33,7 +38,9 @@ export const commentsSkin = `
 :where(${S}) :where(.carton-comments-list){padding:0 8px 12px;scrollbar-width:thin;scrollbar-color:#ffffff1f transparent}
 
 :where(${S}) :where(.carton-comment-box){display:flex;flex-direction:column;gap:6px}
-:where(${S}) :where(.carton-comment-text){height:auto;min-height:52px;padding:7px 10px;line-height:18px;resize:vertical;field-sizing:content;max-height:200px}
+/* no resize grip: the box grows with its text, up to 160 px (TextBox), then scrolls (UI audit P2-20; regress 2026-11-02 #5:
+   a resize:vertical here, after a resize:none of the same weight, won and showed the grip) */
+:where(${S}) :where(.carton-comment-text){height:auto;min-height:52px;max-height:160px;padding:7px 10px;line-height:18px;resize:none;overflow-y:auto;field-sizing:content}
 :where(${S}) :where(.carton-comment-box-actions){display:flex;justify-content:flex-end;gap:6px}
 
 :where(${S}) :where(.carton-thread){position:relative;margin-top:6px;padding:8px 10px;border-radius:10px;background:var(--cb-card);
@@ -50,7 +57,7 @@ export const commentsSkin = `
 :where(${S}) :where(.carton-comment-name){font-size:12.5px;font-weight:500;color:var(--cb-fg-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 :where(${S}) :where(.carton-comment-when){font-size:11.5px;color:var(--cb-fg-3);white-space:nowrap}
 :where(${S}) :where(.carton-comment-at){height:18px;padding:0 6px;border:0;border-radius:4px;background:#ffffff0f;color:var(--cb-fg-2);font:inherit;
-  font-family:var(--cb-mono);font-size:10.5px;white-space:nowrap;cursor:pointer}
+  font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
 :where(${S}) :where(.carton-comment-at:hover:not(:disabled)){background:#ffffff1a;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-comment-at:disabled),:where(${S}) :where(span.carton-comment-at){cursor:default}
 :where(${S}) :where(.carton-comment-at[data-status=general]){font-family:inherit;font-size:11px}

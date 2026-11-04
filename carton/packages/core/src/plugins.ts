@@ -202,10 +202,22 @@ export interface ByteRange {
   length?: number;
 }
 
+/** `BlobStore.getWithInfo`'s answer: the object's info, and its bytes in `range` (none for a range past the end). */
+export type BlobWithInfo =
+  | { info: BlobInfo; range: { offset: number; length: number }; body: ReadableStream<Uint8Array> }
+  | { info: BlobInfo; range: null; body: null };
+
 export interface MultipartUpload {
   readonly key: string;
   readonly uploadId: string;
   uploadPart(partNumber: number, data: Uint8Array): Promise<{ partNumber: number; etag: string }>;
+  /**
+   * The same, from a stream of exactly `size` bytes, never held whole in memory (optional). A host whose requests have
+   * a small CPU and memory budget (a Worker: 10 ms of CPU on the Free plan, 128 MB) passes a part's request body
+   * straight through instead of reading it into a buffer first: reading 8 to 64 MiB in JavaScript took 60 to 360 ms of
+   * CPU per part, and Cloudflare killed such requests (error 1102) until a 1 GB upload could not finish (cf-lab).
+   */
+  uploadPartStream?(partNumber: number, body: ReadableStream<Uint8Array>, size: number): Promise<{ partNumber: number; etag: string }>;
   /** Parts already stored (resume after a cut link). */
   listParts(): Promise<{ partNumber: number; etag: string; size: number }[]>;
   complete(parts: { partNumber: number; etag: string }[]): Promise<BlobInfo>;
@@ -225,6 +237,9 @@ export interface MultipartUpload {
  * - Multipart: parts are numbered 1..10,000; all parts but the last have the same size (R2 requires it; S3 needs
  *   ≥ 5 MiB); `complete` concatenates in part-number order; an upload can be resumed by id after a restart.
  * - `delete` of an absent key is a no-op.
+ * - A write the store refuses for a while (a host's daily write cap) throws an error with `retryAt`: when it takes
+ *   writes again, in ms since the epoch (`sync.writeLimitOf` reads it). The sequencer tells the client, which keeps its
+ *   edits and sends them again after that time.
  */
 export interface BlobStore {
   readonly kind: string;
@@ -232,6 +247,14 @@ export interface BlobStore {
   get(key: string, range?: ByteRange): Promise<Uint8Array | null>;
   /** Streaming read for large media (optional). */
   getStream?(key: string, range?: ByteRange): Promise<ReadableStream<Uint8Array> | null>;
+  /**
+   * A streaming read that also gives the object's info and the range it covers (optional): one storage request where
+   * `head` then `getStream` is two. A host serving a signed URL needs the size and type before the bytes; R2 bills each
+   * call, so its signed reads cost half as much with this (cf-lab). Same answers as `head` and `getStream`: `null` when
+   * the key is absent; `range` is the bytes the body holds, clipped at the end; a range starting at or past the end of a
+   * non-empty object, or any range of an empty one, answers `range: null` with no body (HTTP 416).
+   */
+  getWithInfo?(key: string, range?: ByteRange): Promise<BlobWithInfo | null>;
   head(key: string): Promise<BlobInfo | null>;
   delete(key: string): Promise<void>;
   list(prefix: string, opts?: { cursor?: string; limit?: number }): Promise<{ blobs: BlobInfo[]; cursor?: string }>;
