@@ -179,6 +179,8 @@ export interface Credit {
  */
 export const PERSON = "person";
 const withoutOwner = ({ owner: _o, ...a }: Actor): Actor => a;
+/** A landmark's time: a moment a Date can say (the server refuses others; a row from elsewhere is checked again). */
+const landmarkTime = (at: unknown): at is number => typeof at === "number" && Number.isFinite(at) && at >= 0 && at <= 8.64e15;
 /** A recorded Exported or Sent as the sync server keeps it (`LandmarkRow` with its `id`). */
 const sharedMark = (r: LandmarkRow, seq: number): SharedLandmark => ({ id: r.id!, kind: r.kind as SharedLandmark["kind"], seq, at: r.at, by: r.by ?? { kind: "human", id: PERSON }, ...(r.label ? { label: r.label } : {}) });
 /** The recorded author of a project's import (its hash covers it: never changed). `log()` tells it as the person. */
@@ -1948,7 +1950,9 @@ class CartonImpl implements Carton {
       for (const { key, value } of await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] })) {
         const seq = Number(key[2]);
         if (!value || !Number.isInteger(seq) || !RECORDED_KINDS.includes(value.kind)) continue;
-        add(value.kind, seq, value.at, value.id ? this.#who(value.by ?? null, value.id) : value.by ?? null, value.label ? { label: value.label } : {}, true, value.shared !== undefined);
+        if (!landmarkTime(value.at)) continue;
+        // (a teammate's, under its id too: two people can mark one version at the same moment)
+        add(value.kind, seq, value.at, value.id ? this.#who(value.by ?? null, value.id) : value.by ?? null, { ...(value.label ? { label: value.label } : {}), ...(key.length > 5 && value.id ? { id: `${value.kind}:${cut}@${seq}:${value.at}:${value.id}` } : {}) }, true, value.shared !== undefined);
       }
     }
     // read from the history: agent turns (a turn's newest version), named versions, safety points
@@ -2401,28 +2405,44 @@ class CartonImpl implements Carton {
   #takeLandmarks(cut: string, m: LandmarksReplyMsg): Promise<void> {
     return this.#landmarkStep(cut, async () => {
       const sc = this.#shared.get(cut)!;
-      const at = (await this.store.get<number>(LANDMARK_TABLE, [LANDMARK_AT, cut])) ?? 0;
+      // where this store read to in the server's stream, and that stream's generation (a number alone: none told yet)
+      const pos = (await this.store.get<number | { n: number; gen?: string }>(LANDMARK_TABLE, [LANDMARK_AT, cut])) ?? 0;
+      const at = typeof pos === "number" ? pos : pos.n, gen = typeof pos === "number" ? undefined : pos.gen;
       const head = Number.isInteger(m.head) ? m.head : 0;
-      // a server that lost them (its storage started over) is behind this store: catch up from its start
-      if (m.reply && head < at) {
-        await this.store.write([{ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: 0 }]);
+      const all = await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] });
+      // this computer's own are under mark()'s 5-part keys; a teammate's under 6, its id last (two people can mark one
+      // version at the same moment: review of fix/ux2-open #6)
+      const mine = (key: StoreKey) => key.length === 5;
+      // the server's landmarks started over (its storage lost or replaced: behind this store, or another generation):
+      // this computer's own go again, with the ids they keep, and the stream is read from its start (review #2)
+      if ((m.reply && head < at) || (gen !== undefined && typeof m.gen === "string" && m.gen !== gen)) {
+        const again: StoreWrite[] = [{ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: 0 }];
+        for (const { key, value } of all)
+          if (value && mine(key) && value.shared !== undefined) {
+            const { shared: _was, ...rest } = value;
+            again.push({ table: LANDMARK_TABLE, key, value: rest });
+          }
+        await this.store.write(again);
         sc.sendLandmarks({ type: "landmarks", branchId: cut, since: 0 });
         return;
       }
+      const byId = new Map<string, { key: StoreKey; value: LandmarkRow }>();
+      for (const e of all) if (e.value?.id) byId.set(e.value.id, e as { key: StoreKey; value: LandmarkRow });
       const writes: StoreWrite[] = [];
       let next = at, gap = false;
       for (const r of Array.isArray(m.rows) ? m.rows : []) {
-        if (!r || !SHARED_KINDS.includes(r.kind) || !Number.isInteger(r.seq) || r.seq < 0 || !Number.isFinite(r.at) || typeof r.id !== "string" || !Number.isInteger(r.n) || typeof r.by?.kind !== "string" || typeof r.by.id !== "string") continue;
-        const row: LandmarkRow = { kind: r.kind, at: r.at, by: r.by, ...(typeof r.label === "string" && r.label ? { label: r.label.slice(0, 120) } : {}), id: r.id, shared: r.n! };
-        writes.push({ table: LANDMARK_TABLE, key: [LANDMARK_PREFIX, cut, r.seq, r.kind, r.at], value: row });
+        if (!r || !SHARED_KINDS.includes(r.kind) || !Number.isInteger(r.seq) || r.seq < 0 || !landmarkTime(r.at) || typeof r.id !== "string" || !Number.isInteger(r.n) || typeof r.by?.kind !== "string" || typeof r.by.id !== "string") continue;
+        const had = byId.get(r.id);
+        const row: LandmarkRow = had ? { ...had.value, shared: r.n! } : { kind: r.kind, at: r.at, by: r.by, ...(typeof r.label === "string" && r.label ? { label: r.label.slice(0, 120) } : {}), id: r.id, shared: r.n! };
+        writes.push({ table: LANDMARK_TABLE, key: had?.key ?? [LANDMARK_PREFIX, cut, r.seq, r.kind, r.at, r.id], value: row });
         if (!m.reply && r.n! > next + 1) gap = true; // one told live before one we never got: read the stream again
         else next = Math.max(next, r.n!);
       }
       if (m.reply) next = m.more ? next : Math.max(next, head);
       const refused = new Set(Array.isArray(m.refused) ? m.refused : []);
-      const own = refused.size || (m.reply && !m.more) ? await this.store.range<LandmarkRow>(LANDMARK_TABLE, { prefix: [LANDMARK_PREFIX, cut] }) : [];
-      for (const { key, value } of own) if (value?.id && refused.has(value.id) && value.shared === undefined) writes.push({ table: LANDMARK_TABLE, key, value: { ...value, refused: true } });
-      if (next !== at) writes.push({ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: next });
+      for (const { key, value } of all) if (value?.id && refused.has(value.id) && mine(key) && value.shared === undefined) writes.push({ table: LANDMARK_TABLE, key, value: { ...value, refused: true } });
+      const nowGen = typeof m.gen === "string" ? m.gen : gen;
+      if (next !== at || nowGen !== gen) writes.push({ table: LANDMARK_TABLE, key: [LANDMARK_AT, cut], value: nowGen !== undefined ? { n: next, gen: nowGen } : next });
       if (writes.length) await this.store.write(writes);
       if (writes.some((w) => w.key[0] === LANDMARK_PREFIX)) {
         this.#marks++;
@@ -2434,9 +2454,9 @@ class CartonImpl implements Carton {
       // before ids, and stored first, so a retry is the same landmark)
       const send: SharedLandmark[] = [], ids: StoreWrite[] = [];
       const got = new Set<string>(m.rows.map((r) => r?.id));
-      for (const { key, value } of own) {
+      for (const { key, value } of all) {
         const seq = Number(key[2]);
-        if (!value || !SHARED_KINDS.includes(value.kind) || value.shared !== undefined || value.refused || (value.id !== undefined && got.has(value.id)) || !Number.isInteger(seq)) continue;
+        if (!value || !mine(key) || !SHARED_KINDS.includes(value.kind) || value.shared !== undefined || value.refused || (value.id !== undefined && got.has(value.id)) || !Number.isInteger(seq)) continue;
         const row = value.id ? value : { ...value, id: this.#landmarkId() };
         if (!value.id) ids.push({ table: LANDMARK_TABLE, key, value: row });
         send.push(sharedMark(row, seq));

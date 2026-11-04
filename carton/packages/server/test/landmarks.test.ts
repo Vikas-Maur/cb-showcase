@@ -80,6 +80,9 @@ test("what the server won't keep is told to its writer as `refused`, never as an
     [a, mark(RID_A, { by: { kind: "human", id: "alice", name: "x".repeat(2000) } }), "an author over 1 KB"],
     [a, { ...mark(RID_A), id: "no-rid-here" }, "an id without its rid"],
     [a, { ...mark(RID_A), at: Number.NaN }, "no time"],
+    // (a time no Date can say would make every teammate's History throw formatting it: review of fix/ux2-open #4)
+    [a, { ...mark(RID_A), at: Number.MAX_VALUE }, "a time past what a date can say"],
+    [a, { ...mark(RID_A), at: -1 }, "a time before 1970"],
   ];
   for (const [c, m, what] of bad) {
     c.inbox.length = 0;
@@ -151,6 +154,32 @@ test("landmarks outlive archiving and a restart: a joiner after both reads them,
   assert.deepEqual(page(b).rows.map((r) => [r.id, r.kind, r.seq, r.label ?? null]), [[early.id, "exported", 3, "1080p for the client"], [late.id, "sent", 30, "Shared with Leo"]]);
   again.cancelShare(BRANCH);
   assert.equal(Number(storage.db.prepare("SELECT COUNT(*) AS n FROM landmarks").get()!.n), 0, "gone with the cut");
+});
+
+test("a cut's landmark stream has a generation, made with its first landmark, told with every page and fan-out; the cap never takes it; a cancelled share's next stream is another", async () => {
+  const storage = sqliteStorage();
+  const { seq } = await world(d0(), { storage });
+  const a = fakeConn("alice/dev1"), b = fakeConn("bob/dev1");
+  for (const c of [a, b]) await seq.handle(c, hello());
+  await ask(seq, b);
+  assert.equal(page(b).gen, undefined, "none before its first landmark");
+  await send(seq, a, mark(RID_A));
+  const gen = told(b).length ? replies(b).at(-1)!.gen : undefined;
+  assert.match(String(gen), /^[0-9a-f]{16}$/);
+  await ask(seq, b);
+  assert.equal(page(b).gen, gen);
+  assert.deepEqual(page(b).rows.map((r) => r.n), [1], "the generation is no landmark");
+  for (let i = 0; i < MAX_PER_CUT + 2; i++) await send(seq, a, mark(RID_A));
+  await ask(seq, b, MAX_PER_CUT);
+  assert.equal(page(b).gen, gen, "kept past the cap");
+  // the cut shared again from scratch: a new stream, another generation
+  seq.cancelShare(BRANCH);
+  await seq.createBranch({ id: BRANCH, name: "main", forkOf: null, owner: "alice", kind: "main", sequencer: { kind: "server", since: 0 } }, { doc0: d0() as never, stateHash: "h0" });
+  const c = fakeConn("carol/dev1");
+  await seq.handle(c, hello());
+  await ask(seq, c);
+  await send(seq, a, mark(RID_A));
+  assert.notEqual(replies(c).at(-1)!.gen, gen);
 });
 
 test("a landmark costs one row written", async () => {

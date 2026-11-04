@@ -485,6 +485,11 @@ export interface LandmarksReplyMsg {
   reply?: true;
   more?: true;
   refused?: string[];
+  /**
+   * The cut's landmark stream's generation, made with its first landmark: another one than a client read means the
+   * stream started over (the server's storage lost or replaced), and the client reads it again and offers its own.
+   */
+  gen?: string;
 }
 
 export type ServerMessage =

@@ -1400,8 +1400,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   function onLandmarks(c: HostConnection, m: sync.LandmarksMsg): void {
     if (!seesPeople(c) || !tables.branch(m.branchId)) return send(c, { type: "landmarks", branchId: m.branchId, rows: [], head: 0, reply: true });
     stateOf(c).landmarks = true;
-    const page = marks.after(m.branchId, Number(m.since) || 0);
-    send(c, { type: "landmarks", branchId: m.branchId, rows: page.rows, head: marks.head(m.branchId), reply: true, ...(page.more ? { more: true } : {}) });
+    const page = marks.after(m.branchId, Number(m.since) || 0), gen = marks.gen(m.branchId);
+    send(c, { type: "landmarks", branchId: m.branchId, rows: page.rows, head: marks.head(m.branchId), reply: true, ...(page.more ? { more: true } : {}), ...(gen ? { gen } : {}) });
   }
   /**
    * `landmark`: an editor's Exported or Sent, kept once (a retry under its id is answered with the one kept, to the
@@ -1417,7 +1417,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       return;
     }
     const { row, fresh } = marks.keep(b, mark);
-    const msg: sync.LandmarksReplyMsg = { type: "landmarks", branchId: b, rows: [row], head: row.n! };
+    const gen = marks.gen(b);
+    const msg: sync.LandmarksReplyMsg = { type: "landmarks", branchId: b, rows: [row], head: row.n!, ...(gen ? { gen } : {}) };
     const told = (o: HostConnection) => !!stateOf(o).landmarks && stateOf(o).subs.includes(b);
     if (fresh) for (const o of conns.values()) if (o !== c && told(o)) send(o, msg);
     send(c, msg);

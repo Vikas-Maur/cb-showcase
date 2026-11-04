@@ -45,7 +45,8 @@ async function until<T>(f: () => T | Promise<T>, what: string, ms = 8000): Promi
 function world() {
   const tokens = new Map<string, AuthContext>();
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
-  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  const storage = sqliteStorage();
+  const host = createInProcessHost({ storage, auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
   const sent: string[] = [];
   /** The host's own transport, recording what the client sends; `drop()` closes its live connection (a network drop). */
   let live: { close(): void } | null = null;
@@ -91,7 +92,7 @@ function world() {
     tokens.set(`tok-${name}`, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
     return { transport, url: host.url, token: `tok-${name}`, autoConnect: true };
   };
-  return { host, sync, old, watched, sent, drop: () => live?.close() };
+  return { host, storage, sync, old, watched, sent, drop: () => live?.close() };
 }
 
 /** Bob's computer joins: Alice's history as the server has it (her own replica ids, identity and landmarks stay hers). */
@@ -218,5 +219,54 @@ test("against an older server nothing new is sent; what waited goes once the ser
   } finally {
     await a2.close();
     await b.close();
+  }
+});
+
+test("the server lost its landmarks (review of fix/ux2-open #2): Alice's go again, a new teammate has them; also when the new stream is already past where she read; two people's at one moment stay two (#6)", { timeout: 60_000 }, async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const first = await Carton.open({ adapter, store: sa, init: { doc: doc0(), projectId: "p" }, actor: alice, sync: w.sync("alice") });
+  await first.share();
+  await until(async () => (await first.cuts())[0]!.sequencer.kind === "server", "the hand-off");
+  await first.close();
+  const a = await Carton.open({ adapter, store: sa, actor: alice, sync: w.sync("alice", w.watched) });
+  const b = await Carton.open({ adapter, store: await join(sa), actor: bob, sync: w.sync("bob") });
+  const open = [a, b];
+  try {
+    await until(() => a.sync!.status === "up-to-date" && b.sync!.status === "up-to-date", "both connected");
+    // two people export one version at the same moment: two landmarks, everywhere
+    const at = Date.now();
+    await a.mark("exported", { by: alice, label: "Alice's 1080p", at });
+    await b.mark("exported", { by: bob, label: "Bob's 4K", at });
+    const both = (l: Landmark[]) => l.filter((x) => x.kind === "exported").map((x) => `${x.by?.name}: ${x.label}`).sort();
+    for (const k of [a, b]) await until(async () => both(await k.landmarks()).length === 2, "both exports at each");
+    for (const k of [a, b]) assert.deepEqual(both(await k.landmarks()), ["Alice: Alice's 1080p", "Bob: Bob's 4K"]);
+    assert.equal(new Set((await a.landmarks()).map((x) => x.id)).size, (await a.landmarks()).length, "each its own id");
+    await a.mark("sent", { by: alice, label: "Shared with Leo" });
+    await until(async () => shared(await b.landmarks()).length === 3, "Alice's send at Bob's");
+    const ids = () => w.storage.exec<{ id: string }>("SELECT id FROM landmarks WHERE n > 0").map((r) => r.id);
+    const alices = (await a.landmarks()).filter((x) => x.kind === "exported" || x.kind === "sent").length;
+    assert.equal(alices, 3);
+    // 1. the server's landmark storage is lost, and nothing happens until Alice's connection drops: her next catch-up
+    // finds the stream behind where she read, and her own go again
+    w.storage.exec("DELETE FROM landmarks");
+    w.sent.length = 0;
+    w.drop();
+    await until(() => w.sent.filter((t) => t === "landmark").length >= 2, "Alice's own offered again", 10_000);
+    const c = await Carton.open({ adapter, store: await join(sa), actor: { kind: "human", id: "carol", name: "Carol", group: "carol@pc" }, sync: w.sync("carol") });
+    open.push(c);
+    const at_c = async () => shared(await c.landmarks()).map((x) => `${x.by}: ${x.label}`).sort();
+    await until(async () => (await at_c()).filter((x) => x.startsWith("Alice")).length === 2, "Alice's at Carol's, who joined after");
+    assert.deepEqual((await at_c()).filter((x) => x.startsWith("Alice")), ["Alice: Alice's 1080p", "Alice: Shared with Leo"]);
+    // 2. lost again, and this time the new stream moves past where everyone read before anyone reconnects (Bob sends
+    // four): only its generation says it is another; everyone's own go again, live
+    w.storage.exec("DELETE FROM landmarks");
+    for (let i = 0; i < 4; i++) await b.mark("sent", { by: bob, label: `Bob's link ${i + 1}` });
+    await until(() => ids().length >= 4 + 2 + 1, "Alice's two and Bob's export back on the new stream, beside Bob's four links", 10_000);
+    await until(async () => (await at_c()).length === 2 + 1 + 4, "everything at Carol's");
+    assert.deepEqual(await at_c(), ["Alice: Alice's 1080p", "Alice: Shared with Leo", "Bob: Bob's 4K", "Bob: Bob's link 1", "Bob: Bob's link 2", "Bob: Bob's link 3", "Bob: Bob's link 4"]);
+    assert.equal(new Set(ids()).size, ids().length, "each once");
+  } finally {
+    for (const k of open) await k.close();
   }
 });

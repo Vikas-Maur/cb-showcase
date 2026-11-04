@@ -162,3 +162,66 @@ test(name("nothing today: the newest day folds into runs between its landmarks, 
   assert.ok(firstRun > 1, "the runs come below the kept rows: " + list.join(","));
   await m.unmount();
 });
+
+// ------------------------------------------------------------------ the review of fix/ux2-open: #5, #7, #8
+
+test(name("Back to Fold in…: a change left out that can't be left out now (the plan comes in whole, or it is locked) is ticked again, and the dialog says so"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const plan = await ui.planFold("cut-ig", "cut-main");
+  const first = plan.changes.find((c) => !c.locked)!;
+  const seen: Record<string, string> = {};
+  for (const c of plan.changes) seen[c.id] = [c.summary, c.author.key, c.locked ? 1 : 0, c.leftOut ?? ""].join("|");
+  const ticks: FoldTicks = { from: "cut-ig", into: "cut-main", left: [first.id], picks: {}, allCards: false, seen };
+  const button = (m: { container: HTMLElement }) => $$($(m.container, "[role=dialog]")!, ".carton-dialog-foot button").at(-1)!.textContent;
+  // all or nothing now (a ripple): no boxes, and nothing hidden stays left out
+  const whole = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {}, ticks, plan: { ...plan, partial: false } })));
+  await flush();
+  assert.equal($(whole.container, ".carton-fold-change input"), null, "no boxes: it comes in whole");
+  assert.equal($(whole.container, ".carton-fold-reticked")!.textContent, "Some changes are different since you compared: 1 change you left out can't be left out now. Check the ticks before you fold in.");
+  assert.equal($(whole.container, ".carton-fold-change[data-left]"), null, "nothing left out unseen");
+  const all = button(whole);
+  await whole.unmount();
+  // that change is locked now
+  const locked = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {}, ticks, plan: { ...plan, changes: plan.changes.map((c) => (c.id === first.id ? { ...c, locked: true } : c)) } })));
+  await flush();
+  assert.match($(locked.container, ".carton-fold-reticked")!.textContent ?? "", /1 change you left out can't be left out now/);
+  assert.equal($(locked.container, ".carton-fold-change[data-left]"), null);
+  assert.equal(button(locked), all, "it comes in, and the button counts it");
+  await locked.unmount();
+});
+
+test(name("a group's words that couldn't be had read “Several edits”, never its newest's sentence; History opened again asks again"), async () => {
+  const ui = createMockUi({ versions: 8, now: noon48(), netWords: true });
+  const net = ui.netWords!.bind(ui);
+  let fail = true, asks = 0;
+  ui.netWords = async (a, b) => {
+    asks++;
+    if (fail) throw new Error("offline");
+    return net(a, b);
+  };
+  const title = (m: { container: HTMLElement }) => $(m.container, ".carton-version[data-group] .carton-version-title")?.textContent;
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 1400 })));
+  await waitFor(() => asks > 0, "asked");
+  await flush();
+  assert.equal(title(m), "Several edits");
+  await m.unmount();
+  fail = false;
+  const again = await render(wrap(ui, h(HistoryPanel, { initialHeight: 1400 })));
+  await waitFor(() => title(again) !== undefined && title(again) !== "Several edits", "its words, asked again");
+  assert.ok(asks >= 2);
+  await again.unmount();
+});
+
+test(name("the newest version's landmark shows when it happened, not Now"), async () => {
+  const ui = createMockUi({ versions: 8, now: noon48(), landmarks: true });
+  const own = ui.landmarks!.bind(ui);
+  const newest = () => ui.history().all!().at(-1)!;
+  const at = Date.now() - 5 * 60_000;
+  ui.landmarks = async (o) => [{ id: "exported:newest", kind: "exported", versionId: newest().id, ref: newest().ref, at, by: newest().author, label: "Final 4K", personal: false, local: false, picture: newest().ref } as Landmark, ...(await own(o))];
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 1400 })));
+  await waitFor(() => !!$(m.container, ".carton-version[data-landmark=exported][data-now]"), "the newest row, an export");
+  const when = $(m.container, ".carton-version[data-landmark=exported][data-now] .carton-version-when")!;
+  assert.ok(when.textContent!.startsWith(clockOfDay(at)), when.textContent!);
+  assert.equal(when.getAttribute("datetime"), new Date(at).toISOString());
+  await m.unmount();
+});

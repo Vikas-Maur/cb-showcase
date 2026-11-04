@@ -138,11 +138,14 @@ export function FoldInDialog(p: FoldInDialogProps) {
     checked.current = true;
     const ids = new Map(plan.changes.map((c) => [c.id, c]));
     const gone = kept.left.filter((id) => !ids.has(id));
-    const changed = kept.left.filter((id) => ids.has(id) && kept.seen[id] !== undefined && kept.seen[id] !== changeSig(ids.get(id)!));
+    // left out before, but now it can't be: the plan comes in whole (partial: false), or that change is locked now. Its
+    // box is gone, so it must not stay left out unseen (review of fix/ux2-open #5)
+    const stuck = kept.left.filter((id) => ids.has(id) && (plan.partial === false || !!ids.get(id)!.locked));
+    const changed = kept.left.filter((id) => ids.has(id) && !stuck.includes(id) && kept.seen[id] !== undefined && kept.seen[id] !== changeSig(ids.get(id)!));
     const added = plan.changes.filter((c) => kept.seen[c.id] === undefined).length;
     const repick = Object.entries(kept.picks).filter(([id, pk]) => !plan.conflicts.some((c) => c.id === id && sigOf(c) === pk.sig)).length;
-    if (gone.length) setLeft((s) => new Set([...s].filter((id) => ids.has(id))));
-    const parts = words.foldTicksLost({ gone: gone.length, changed: changed.length, added, repick });
+    if (gone.length || stuck.length) setLeft((s) => new Set([...s].filter((id) => ids.has(id) && !stuck.includes(id))));
+    const parts = words.foldTicksLost({ gone: gone.length, stuck: stuck.length, changed: changed.length, added, repick });
     setReticked(parts);
   }, [plan, kept, words]);
   const total = plan?.changes.length ?? 0;

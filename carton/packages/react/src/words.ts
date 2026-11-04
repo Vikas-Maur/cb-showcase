@@ -736,9 +736,10 @@ export const words = {
    * Back to Fold in…, when the changes to fold in changed while the person compared (an agent, a teammate): what of
    * their ticks and picks couldn't be kept as they were, in one plain sentence; null when everything was kept.
    */
-  foldTicksLost: (n: { gone: number; changed: number; added: number; repick: number }): string | null => {
+  foldTicksLost: (n: { gone: number; stuck?: number; changed: number; added: number; repick: number }): string | null => {
     const parts = [
       n.gone ? `${plural(n.gone, "change", "changes")} you left out ${n.gone === 1 ? "isn't" : "aren't"} there any more` : "",
+      n.stuck ? `${plural(n.stuck, "change", "changes")} you left out can't be left out now` : "",
       n.changed ? `${plural(n.changed, "change", "changes")} you left out ${n.changed === 1 ? "is" : "are"} different now (still left out)` : "",
       n.added ? `${plural(n.added, "new change is", "new changes are")} ticked` : "",
       n.repick ? `${plural(n.repick, "conflict", "conflicts")} to pick again` : "",

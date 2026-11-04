@@ -171,9 +171,9 @@ function Meta({ v, count, ui }: { v: Version; count?: number; ui: CartonUi }) {
 const NEWEST_KEPT = 3;
 /**
  * Groups' words per view model (a project), by `<base>|<newest>` (confirmed versions never change): at most 200 each.
- * null: the view model couldn't say (the newest's sentence then).
+ * A failed ask is never kept: the group reads "Several edits" until one succeeds (the next time its row is shown).
  */
-const netKept = new WeakMap<CartonUi, Map<string, string | null>>();
+const netKept = new WeakMap<CartonUi, Map<string, string>>();
 /**
  * What a person's group of edits came to, in one line (the view model's `netWords`: the changes from before its oldest
  * to its newest, said as a turn's are), or "No change in the end"; undefined without a base or the call (its newest's
@@ -185,7 +185,7 @@ function useNetWords(from: string | undefined, to: string): string | undefined {
   const key = from && /@\d+$/.test(from) && /@\d+$/.test(to) && typeof ui.netWords === "function" ? `${from}|${to}` : null;
   let kept = netKept.get(ui);
   if (!kept) netKept.set(ui, (kept = new Map()));
-  const [got, setGot] = useState<{ key: string; text: string | null } | null>(null);
+  const [got, setGot] = useState<{ key: string; text: string } | null>(null);
   useEffect(() => {
     if (!key || kept.has(key)) return;
     let live = true;
@@ -196,17 +196,14 @@ function useNetWords(from: string | undefined, to: string): string | undefined {
         kept.set(key, text);
         if (live) setGot({ key, text });
       },
-      () => {
-        kept.set(key, null);
-        if (live) setGot({ key, text: null });
-      },
+      // (never its newest's sentence instead: that is the one step a group may have undone, review of fix/ux2-open #7)
+      () => {},
     );
     return () => void (live = false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, kept]);
   if (!key) return undefined;
-  const text = kept.has(key) ? kept.get(key) : got?.key === key ? got.text : words.groupLoading;
-  return text ?? undefined;
+  return kept.get(key) ?? (got?.key === key ? got.text : words.groupLoading);
 }
 
 /**
@@ -375,7 +372,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
           h(Icon, { name: "x", size: 11 }),
         ),
       )
-    : p.now
+    : p.now && !mark
       ? h("span", { className: "carton-version-when", "data-now": "" }, words.nowRow)
       : h(HoverMore, { as: "time", className: "carton-version-when", dateTime: new Date(at).toISOString(), short, more: exactTime(at, locale) });
   return h(
