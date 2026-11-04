@@ -154,17 +154,23 @@ function keepPicture(key: string, url: string) {
   pictures.set(key, url);
   for (const f of shown.get(key) ?? []) f(url);
 }
-/** Keys a picture was tried for in this page (made or not): each is tried once. */
+/** Keys a picture was made for in this page: never taken again. */
 const tried = new Set<string>();
 
 /** How long the stage shows a version before its picture is taken (it has drawn by then). */
 export const PICTURE_SETTLE_MS = 600;
+/** After a try that found no picture (the stage black, or comparing): again after these, the last one repeating. */
+export const PICTURE_RETRY_MS: readonly number[] = [2000, 5000, 15000, 30000];
 
 /**
  * Pictures for landmarks (DESIGN-V2 §2.2), made in the page, never on the save path: when the stage shows a landmark's
  * version (held to peek, viewed, or your edit while it is that version) and it has none yet, the host's `capture`
- * (one small JPEG of what the stage shows) runs once, PICTURE_SETTLE_MS after it showed, and never while something
- * plays. Each version is tried once a page. A host without `capture`, or without `saveLandmarkPicture`, makes none.
+ * (one small JPEG of what the stage shows) runs PICTURE_SETTLE_MS after it showed, and never while something plays.
+ * A try that finds no picture to take (the stage still black, a dropped canvas, comparing) is tried again while the
+ * landmark is still on screen: after PICTURE_RETRY_MS, and as soon as Compare ends (laptop: tried once a page, a
+ * landmark due while the stage was black never got one). Only while History is open (this runs in its panel): nothing
+ * while it is closed; opening it again tries again. Each version is made once a page. A host without `capture`, or
+ * without `saveLandmarkPicture`, makes none.
  */
 export function useStagePictures(o: { marks: LandmarkIndex; shownId: string | null; busy: boolean; capture?: (() => Promise<string | null>) | undefined }) {
   const ui = useCartonUi();
@@ -173,21 +179,36 @@ export function useStagePictures(o: { marks: LandmarkIndex; shownId: string | nu
   const key = l?.picture ?? null;
   useEffect(() => {
     if (!key || busy || !capture || typeof ui.saveLandmarkPicture !== "function" || tried.has(key) || typeof pictures.get(key) === "string") return;
-    let live = true;
-    const t = setTimeout(() => {
-      if (!live) return;
-      tried.add(key);
-      capture().then(
+    let live = true, running = false, n = 0;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const again = (ms: number) => {
+      clearTimeout(t);
+      t = setTimeout(attempt, ms);
+    };
+    function attempt() {
+      if (!live || running || tried.has(key!)) return;
+      running = true;
+      capture!().then(
         (url) => {
-          if (!url || !url.startsWith("data:image/jpeg")) return;
-          return ui.saveLandmarkPicture!(key, url).then(() => keepPicture(key, url));
+          running = false;
+          if (url && url.startsWith("data:image/jpeg")) {
+            tried.add(key!);
+            return ui.saveLandmarkPicture!(key!, url).then(() => keepPicture(key!, url));
+          }
+          // nothing to take yet: again in a while, while it is still on screen
+          if (live) again(PICTURE_RETRY_MS[Math.min(n++, PICTURE_RETRY_MS.length - 1)]!);
+          return undefined;
         },
-        () => {},
+        () => { running = false; },
       ).catch(() => {});
-    }, PICTURE_SETTLE_MS);
+    }
+    again(PICTURE_SETTLE_MS);
+    // Compare ended (it shows two pictures, none taken meanwhile): the stage shows this one again
+    const off = typeof ui.onCompare === "function" ? ui.onCompare(() => { if (live && !running && !ui.comparing?.()) again(PICTURE_SETTLE_MS); }) : undefined;
     return () => {
       live = false;
       clearTimeout(t);
+      off?.();
     };
   }, [ui, key, busy, capture]);
 }

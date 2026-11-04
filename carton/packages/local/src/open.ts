@@ -16,7 +16,7 @@ import { NO_HELPER, submit } from "./client.ts";
 import { HOOK_NO_HELPER, hookUndelivered } from "./hook-send.ts";
 import { readProjectId } from "./project-id.ts";
 import { spawnHelper } from "./helper.ts";
-import { Lease, fence as leaseFence, readHelperRecipe } from "./lease.ts";
+import { Lease, LEASE_EXPIRY_MS, fence as leaseFence, readHelperRecipe } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
 import { destCut, IDEMPOTENT, runWrite, tellBusy, WAIT_MS, withRaceRetry } from "./writes.ts";
@@ -29,6 +29,12 @@ import { followStore, noteGuiWrite } from "./follow.ts";
 import { forwardSettles } from "./sidecars.ts";
 import type { Follower } from "./follow.ts";
 import { nudgeHolder } from "./client.ts";
+
+/**
+ * How long `cb compare --show` asks again when the app holds the project but its holder didn't answer, or a helper
+ * holds it for a moment (open.ts `write`): the app's patient pings, then a lease taken back, fit in it.
+ */
+export const SHOW_ASK_MS = 4000;
 
 export interface LocalOptions {
   /** The project bundle directory (holds project.json). */
@@ -158,7 +164,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       // opening a view in the editor needs the app's holder: never a helper (it has no pages to tell), and with no
       // holder answering, no window has the project open (Carton UX v2, `cb compare --show`)
       const show = op.kind === "open";
-      const r = await submit("carton.commit", req, {
+      const send = () => submit("carton.commit", req, {
         lease,
         // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
         // sharing starts the pusher, so it always runs on a lease holder (a helper when the app is closed)
@@ -167,8 +173,26 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
         idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory: recipe?.factory ?? factory, config: { name, ...recipe?.config, projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
+      let r = await send();
       if (hook && r.via === "error" && r.code === NO_HELPER) return hookUndelivered(op.event);
-      if (show && r.via !== "holder") return { status: "confirmed", seq: 0, ref: null, notices: [], opened: 0 };
+      if (show) {
+        // Only the app's holder (the library worker, whose pages show the project) can open a view. While the lease says
+        // the app holds this project but it didn't answer (busy a moment), or a helper holds it for the moment (the app
+        // takes it back within ~2 s; a helper has no pages), it is asked again for a while: never "no editor window"
+        // for an editor that has the project open (laptop: one ask in three said so)
+        const appHolds = async () => {
+          const row = (await lease.snapshot()).row;
+          return !!row && row.kind === "worker" && Date.now() - row.heartbeat <= LEASE_EXPIRY_MS;
+        };
+        let busy = false;
+        for (const end = Date.now() + SHOW_ASK_MS; !(r.via === "holder" && r.holder.kind === "worker") && Date.now() < end; ) {
+          busy = r.via !== "holder" && (await appHolds());
+          if (!busy && r.via !== "holder") break;
+          await new Promise((ok) => setTimeout(ok, 200));
+          r = await send();
+        }
+        if (r.via !== "holder") return { status: "confirmed", seq: 0, ref: null, notices: [], opened: 0, ...(busy ? { unanswered: true } : {}) };
+      }
       if (r.via === "error") return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
       const out = r.via === "holder" ? (r.result as CbResult) : await withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
       // written without the holder the probe found (it didn't answer, or its lease had expired): if it is alive after

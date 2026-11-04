@@ -279,6 +279,10 @@ const MEDIA_LABELS: Record<string, string> = {
 // facts, proxy and small files added later update it.
 const SHARING = { set: "Linked %s for sharing", changed: "Updated %s for sharing", cleared: "Unlinked %s from sharing" };
 const MEDIA_PHRASES = { contentHash: { ...SHARING, changed: "Linked %s for sharing" }, shared: SHARING };
+// A clip's or a track's mute in an editor's words, as cb says it (laptop: "Set the mute of “Intro” to on" for an
+// unmute): "Muted “Intro”", "Unmuted “Intro”". A switch (`off`): off and not set are the same, so a mute undone by an
+// unmute is no change (core's quietSwitch).
+const MUTE = { set: "Muted %s", off: "Unmuted %s", cleared: "Unmuted %s" };
 
 /** The T1 kinds of PLAN §11 (`@carton/media`'s `T1_KINDS`): poster, filmstrip, peaks, transcript, analysis, LUT, .context, recipe. */
 export const SHARED_T1_KINDS = ["poster", "filmstrip", "peaks", "transcript", "analysis", "lut", "context", "recipe"] as const;
@@ -339,6 +343,7 @@ export const cardboardSchema: Schema = defineSchema({
       seq: true, // ordered by "#pos"; `order` is materialized (B12)
       noun: "track",
       labels: TRACK_LABELS,
+      phrases: { muted: MUTE },
       fields: { captionGenerationSettings: object({ excludeTrackIds: atomic, excludeMediaIds: atomic }), order: ephemeral },
     },
     [ITEMS]: {
@@ -351,6 +356,7 @@ export const cardboardSchema: Schema = defineSchema({
       // Find (Carton UX v2): what a person typed into a clip: a title's text, a caption's words, a voiceover's script
       words: itemWords,
       labels: ITEM_LABELS,
+      phrases: { muted: MUTE },
       groups: [{ name: "time", fields: [...TIME_FIELDS], algebra: timeAlgebra(TL) }],
       fields: itemFields,
     },

@@ -136,3 +136,16 @@ test("cb compare --show: the Compare event reaches the editor's pages with who a
     await mcp.close();
   }
 });
+
+test("cb compare --show typed in the person's own terminal: the editor is told it's You, never “Terminal” (laptop P3-12)", t, async () => {
+  const versions = cbJson(["history", "Demo", "--limit", "50"]).versions;
+  const from = versions[versions.length - 2].version;
+  const seen = pc.events().length;
+  // (nobody answers here: cb waits out the page's answer, then says it was sent)
+  const r = pc.cb(["compare", "Demo", from, "--show"]);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal(r.json().opened, 1, "the page has the project open");
+  const ev = await S.until(() => pc.events().slice(seen).map((e) => e.change).find((c) => c?.kind === "carton" && c.topic === "compare"), 10_000, "the Compare event");
+  assert.equal(ev.compare.by.kind, "external", JSON.stringify(ev.compare.by));
+  assert.equal(ev.compare.byName, "You");
+});

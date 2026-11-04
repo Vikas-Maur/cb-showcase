@@ -244,10 +244,9 @@ export function CompareStageView(p: CompareStageViewProps) {
       h("div", { className: "carton-compare-col" },
         unit(h("div", { className: "carton-compare-box", "data-hole": "", ref: p.holeRef ?? undefined, style: boxStyle },
             // the side shown has no shot here (Play both): its slate over the picture
-            showing.slate ? h(Slate, { slate: showing.slate }) : null,
-            h("div", { className: "carton-compare-tag", "data-left": p.flipped ? "" : undefined, role: "status" },
-              h("span", null, words.showing), h("b", null, showing.title), showing.detail ? h("span", { className: "carton-compare-when" }, showing.detail) : null)),
-          h(FlipPill, { left: p.left, right: p.right, flipped: !!p.flipped, onFlip: p.onFlip, at: (p.flipped ? p.left : p.right).at }))));
+            showing.slate ? h(Slate, { slate: showing.slate }) : null),
+          // which side shows is said under the picture, never over it (laptop: the tag covered its top-left corner)
+          h(FlipPill, { left: p.left, right: p.right, flipped: !!p.flipped, onFlip: p.onFlip, at: showing.at }))));
   }
   return h(
     "section",
@@ -331,10 +330,15 @@ function FlipPill(p: { left: CompareSideInfo; right: CompareSideInfo; flipped: b
     if (Date.now() - t < 250) p.onFlip?.("left", true);
     else p.onFlip?.("right", false);
   };
+  const shown = p.flipped ? p.left : p.right;
+  const whole = (side: CompareSideInfo) => (side.detail ? `${side.title} · ${side.detail}` : side.title);
   return h("div", { className: "carton-compare-flipbar" },
-    h("div", { className: "carton-compare-modes", role: "group" },
-      h("button", { type: "button", className: "carton-compare-mode", "aria-pressed": p.flipped, onPointerDown: down, onPointerUp: up, onPointerLeave: () => { if (pressed.current != null) { pressed.current = null; p.onFlip?.("right", false); } }, onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); p.onFlip?.(p.flipped ? "right" : "left", true); } } }, p.left.title),
-      h("button", { type: "button", className: "carton-compare-mode", "aria-pressed": !p.flipped, onClick: () => p.onFlip?.("right", true) }, p.right.title)),
+    // "Showing" and the side shown, pressed (blue while it's the left side): the tag that sat over the picture's corner
+    h("span", { className: "carton-compare-showing", "aria-hidden": true }, words.showing),
+    h("span", { className: "carton-sr", role: "status" }, `${words.showing} ${whole(shown)}`),
+    h("div", { className: "carton-compare-modes carton-compare-flippill", role: "group", "aria-label": words.showing, "data-left": p.flipped ? "" : undefined },
+      h("button", { type: "button", className: "carton-compare-mode", title: whole(p.left), "aria-pressed": p.flipped, onPointerDown: down, onPointerUp: up, onPointerLeave: () => { if (pressed.current != null) { pressed.current = null; p.onFlip?.("right", false); } }, onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); p.onFlip?.(p.flipped ? "right" : "left", true); } } }, p.left.title),
+      h("button", { type: "button", className: "carton-compare-mode", title: whole(p.right), "aria-pressed": !p.flipped, onClick: () => p.onFlip?.("right", true) }, p.right.title)),
     h("span", { className: "carton-compare-hint" }, words.holdBToFlip),
     h("span", { className: "carton-compare-tc" }, p.at != null ? timecode(p.at) : ""));
 }
@@ -542,10 +546,11 @@ ${SK} .carton-compare-corner{position:absolute;top:8px;max-width:calc(50% - 16px
 ${SK} .carton-compare-corner[data-side=left]{left:8px}
 ${SK} .carton-compare-corner[data-side=right]{right:8px}
 ${SK} .carton-compare-corner .carton-compare-label{height:22px}
-${SK} .carton-compare-tag{position:absolute;top:8px;left:8px;display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:6px;background:#121212d9;color:var(--cb-fg-1);font-size:12px;font-weight:500;white-space:nowrap;pointer-events:none}
-${SK} .carton-compare-tag[data-left]{background:#8ab4ff;color:#0b1730}
-${SK} .carton-compare-tag[data-left] .carton-compare-when{color:#0b1730b3}
-${SK} .carton-compare-flipbar{display:flex;align-items:center;gap:10px;height:32px;pointer-events:auto}
+${SK} .carton-compare-flipbar{display:flex;align-items:center;gap:10px;height:32px;min-width:0;pointer-events:auto}
+${SK} .carton-compare-showing{color:var(--cb-fg-3);font-size:12px;white-space:nowrap;margin-right:-4px}
+${SK} .carton-compare-flippill{min-width:0;flex:none;max-width:70%}
+${SK} .carton-compare-flippill>.carton-compare-mode{min-width:0;overflow:hidden;text-overflow:ellipsis;display:block;line-height:24px}
+${SK} .carton-compare-flippill[data-left]>.carton-compare-mode[aria-pressed=true]{background:#8ab4ff;color:#0b1730}
 ${SK} .carton-compare-hint{color:var(--cb-fg-3);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 ${SK} .carton-compare-area[data-mode=wipe] .carton-compare-hint{height:26px;line-height:26px;text-align:center;pointer-events:auto}
 ${SK} .carton-compare-transport{flex:none;display:flex;align-items:center;gap:10px;height:40px;padding:0 12px 4px;font-size:12px;color:var(--cb-fg-3)}
@@ -588,7 +593,9 @@ ${SK} .carton-compare-foot{border-top:1px solid var(--cb-line);padding:10px 12px
 .carton-tl-seam[data-selected]>span{box-shadow:0 0 0 2px #fff}
 .carton-tl-strip{position:absolute;left:0;right:0;top:0;border-bottom:1px solid #ffffff0d;background:#ffffff05;pointer-events:none;z-index:4}
 .carton-tl-strip-bar{position:absolute;top:7px;height:12px;border-radius:3px;background:#4b6487}
-.carton-tl-strip-bar[data-kind=change]{background:transparent;box-shadow:inset 0 0 0 1.5px #e37878}
+.carton-tl-strip-bar[data-kind=changed]{box-shadow:inset 0 0 0 1.5px #fbbd23}
+.carton-tl-strip-bar[data-kind=removed]{box-sizing:border-box;border:1.5px dashed #e37878;background:repeating-linear-gradient(135deg,#e3787826 0 3px,transparent 3px 7px)}
+.carton-tl-strip-bar[data-kind=gap]{background:transparent;box-shadow:inset 0 0 0 1px #ffffff1f}
 .carton-tl-strip-ph{position:absolute;top:2px;bottom:2px;width:0;border-left:2px dotted #ffffffb3}
 .carton-tl-strip-name{position:absolute;left:0;right:0;top:0;padding:5px 12px 0;font:11.5px var(--font-sans,system-ui);color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid #ffffff0d;pointer-events:none;z-index:4}
 .carton-tl-legend{display:inline-flex;align-items:center;gap:12px;margin-right:12px;font:11.5px var(--font-sans,system-ui);color:#999;white-space:nowrap}

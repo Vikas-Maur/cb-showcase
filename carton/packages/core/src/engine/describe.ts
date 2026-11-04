@@ -8,6 +8,25 @@ import { EMPTY, deepEqual, pathKey, unescapeSegment } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
 
 type PlainOp = Exclude<Op, RemapOp>;
+/**
+ * A switch field (its phrase has `off`: CollectionDef.phrases) moved between off and absent, which mean the same: no
+ * change to tell or count (muted false where it wasn't set, as an unmute after a mute leaves it).
+ */
+function quietSwitch(op: PlainOp, base: Doc, schema: Schema): boolean {
+  if (op.path.length !== 3) return false;
+  const p = schema.collections[op.path[0] as string]?.phrases?.[op.path[2] as string];
+  if (!p?.off) return false;
+  const was = getIn(base, op.path, schema);
+  if (op.op === "set") return op.value === false && was === undefined;
+  return (op.op === "unset" || op.op === "remove") && was === false;
+}
+/** The sentence a field's phrase says for `op` (CollectionDef.phrases): cleared, turned off (a switch), set or changed. */
+function phraseFor(p: { set: string; changed?: string; cleared: string; off?: string }, op: PlainOp, doc: Doc, schema: Schema): string {
+  const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
+  if (gone) return p.cleared;
+  if (p.off && op.path.length === 3 && op.op === "set" && op.value === false) return p.off;
+  return op.path.length === 3 && getIn(doc, op.path, schema) === undefined ? p.set : (p.changed ?? p.set);
+}
 /** A field's words: its label (by dotted path, keyed-array element keys left out), else the path as before. */
 function fieldWords(schema: Schema, path: Path): { words: string; labelled: boolean } {
   const cs = schema.collections[path[0] as string];
@@ -281,7 +300,7 @@ export function splits(ops: readonly Op[], base: Doc, schema: Schema): { collect
  * left-out paths): only the records those paths name, a split among them still one.
  */
 export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, among?: readonly PathKey[]): number {
-  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap" && !quietSwitch(op, base, schema));
   const groups = groupOps(plain, schema);
   let keys: ReadonlySet<string> = new Set(groups.keys());
   if (among) {
@@ -370,7 +389,7 @@ const PART = ["first", "second", "third", "fourth", "fifth"];
 function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: Doc): Line[] {
   const tl = schema.timeline,
     out: Line[] = [];
-  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap" && !quietSwitch(op, base, schema));
   const { nameDoc, label } = labeller(plain, base, schema, names);
   // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
@@ -417,9 +436,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     for (const op of ops) {
       const p = phrases[op.path[2] as string];
       if (!p) continue;
-      const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
-      const fresh = op.path.length === 3 && op.op !== "unset" && op.op !== "remove" && getIn(doc, op.path, schema) === undefined;
-      const t = gone ? p.cleared : fresh ? p.set : (p.changed ?? p.set);
+      const t = phraseFor(p, op, doc, schema);
       if (!parts.length) verb = t;
       if (!said.has(t)) parts.push(t.replace("%s", name));
       said.add(t);
@@ -619,7 +636,7 @@ export interface ChangeWordsOptions {
  */
 export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: ChangeWordsOptions = {}): ChangeRow[] {
   const tl = schema.timeline;
-  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap" && !quietSwitch(op, base, schema));
   const { nameDoc, label } = labeller(plain, base, schema, opts.names);
   const groups = groupOps(plain, schema);
   const K = tl ? schema.collections[tl.collection]?.key : undefined;
@@ -699,9 +716,7 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
       for (const op of ops) {
         const p = phrases[op.path[2] as string];
         if (!p) continue;
-        const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
-        const fresh = op.path.length === 3 && !gone && getIn(doc, op.path, schema) === undefined;
-        const t = gone ? p.cleared : fresh ? p.set : (p.changed ?? p.set);
+        const t = phraseFor(p, op, doc, schema);
         if (!said.has(t)) say(t.replace("%s", name), lower(t.replace("%s", "it")), t);
         said.add(t);
       }

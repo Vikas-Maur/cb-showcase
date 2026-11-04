@@ -149,6 +149,18 @@ const cap = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
 const isAgent = (a: Actor) => a.kind === "agent" || a.kind === "subagent";
 
 /**
+ * Straight quotation marks in what someone typed (a prompt, a version's name), as the curly ones Compare and History
+ * use everywhere (laptop: Director's “Make the title say "Summer launch"” mixed them). Shown inside the panel's own
+ * “…”, so its quotes become single ones: ‘Summer launch’. An apostrophe inside a word (Leo's) stays as typed.
+ */
+export function curlyQuotes(text: string): string {
+  if (!/["']/.test(text)) return text;
+  return text
+    .replace(/"([^"\n]*)"/g, "‘$1’")
+    .replace(/(^|[\s([{“‘—–-])'([^'\n]*?)'(?=$|[\s.,;:!?)\]}”’—–-])/g, "$1‘$2’");
+}
+
+/**
  * A version named by what it is (PLAN 0.9, DESIGN §2.5), the one label the chip, the row, the frame, the toasts and
  * the Changes title use: its name ("“Sent to client”"), an agent's prompt ("Director's “Add captions…”"), or "your
  * edit from 12:41 pm" ("Leo's edit from 12:41 pm" for a teammate's). A History start reads "the start of History".
@@ -157,8 +169,8 @@ export function versionLabel(v: Version, ctx: LabelContext = {}): string {
   const done = (s: string) => (ctx.start ? cap(s) : s);
   const who = actorLabel(v.author, ctx.actor, "You");
   const prompt = v.turn?.label || (isAgent(v.author) ? v.name : undefined);
-  if (isAgent(v.author) && prompt) return done(`${who}'s “${shortPrompt(prompt)}”`);
-  if (v.name) return `“${v.name}”`;
+  if (isAgent(v.author) && prompt) return done(`${who}'s “${shortPrompt(curlyQuotes(prompt))}”`);
+  if (v.name) return `“${curlyQuotes(v.name)}”`;
   if (v.start) return done("the start of History");
   const at = clock(v.at, { ...(ctx.now !== undefined ? { now: ctx.now } : {}), ...(ctx.locale ? { locale: ctx.locale } : {}), ...(ctx.clockWords ? { words: ctx.clockWords } : {}) });
   if (v.author.kind === "system" || !who) return done(`the version from ${at}`);

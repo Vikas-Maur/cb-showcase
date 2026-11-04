@@ -498,6 +498,23 @@ test("QA G4: the chip is what gives way in a narrow window; below 1000 px while 
   assert.doesNotMatch(idle, /data-mark-only/);
 });
 
+test("laptop P2-3: comparing at 960 px, the chip's second part is “⇆ Comparing ✕” (the whole label in its tooltip and to screen readers), so the tabs keep their room", opt, () => {
+  const label = "Comparing “Sent to client” with your edit now";
+  const report = { panel: "history", cut: { name: "Main cut", dot: null }, viewing: null, comparing: { label } };
+  const tight = strip({ width: 960 }).chip(report);
+  assert.match(tight, new RegExp(`data-carton-comparing="" title="${label}"`), "the whole label in the tooltip");
+  assert.match(tight, /<span aria-hidden="true">Comparing<\/span><span class="sr-only">Comparing “Sent to client” with your edit now<\/span>/);
+  assert.match(tight, /data-carton-back=""/, "its ✕ stays");
+  assert.match(tight, /data-mark-only=""/, "the cut its mark only");
+  // wider: the label itself, as before
+  const narrow = strip({ width: 1100 }).chip(report);
+  assert.match(narrow, />Comparing “Sent to client” with your edit now<\/span>/);
+  assert.doesNotMatch(narrow, /<span aria-hidden="true">Comparing<\/span>/);
+  // viewing has no short form: its label stays at 100 px
+  const viewing = strip({ width: 960 }).chip({ ...report, comparing: null, viewing: { label: "Director's “Add captions…”" } });
+  assert.match(viewing, /<span class="sr-only">Looking at <\/span>Director&#x27;s “Add captions…”/);
+});
+
 test("PLAN 2.1, 2.2: the chip's click asks for the cuts menu, its ✕ for your edit", opt, async () => {
   const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
   const w = new Window({ url: "http://localhost/" });

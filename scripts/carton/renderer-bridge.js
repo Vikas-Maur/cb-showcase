@@ -592,6 +592,9 @@ module.exports = String.raw`window.__carton = (() => {
     // The editor's clip selection, as its store holds it (a new array when it changes): Esc clears it in the editor
     // without saying so, and the preview banner's Esc leaves that Esc to it (regress 2026-11-02 #4).
     selection: () => (on && store ? store.state().selectedTimelineItemIds ?? null : null),
+    // Compare's Esc (Carton UX v2): comparing is for looking, so Esc ends it even with a clip selected, and clears that
+    // selection as Cardboard's own Esc would
+    clearSelection() { if (on && store) store.state().clearTimelineSelection?.(); },
     // History's "Only “clip”" filter (docs/carton-ux PLAN 3.2, 0.8): the one clip selected on the timeline, by id and by
     // the name the change sentences give it (its own name or text, else its media's file name), or null when none or
     // several are selected. Read when the filter menu opens, never on a timer.

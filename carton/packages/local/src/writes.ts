@@ -457,14 +457,19 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes: a hooked agent's until its Stop, anyone
     // else's for a while (§6.4 freeze triggers; tellBusy); a hook event isn't one (a Stop would freeze the file again
     // just as the turn ends), nor is the person's own action in the app (`gui`: an undo would hide itself for a minute)
-    if (op.kind !== "hook" && req.gui !== true) await tellBusy(opts.materializer, [author]);
+    // Nor is opening a view in the editor (`cb compare --show`): it changes nothing, so it waits for no materializer job
+    // and holds no freeze (laptop: a third of the asks answered "No editor window has this project open" with the
+    // project open, when the freeze's turn behind the materializer's file work failed or ran past the ask)
+    const asks = op.kind === "hook" || op.kind === "open";
+    if (!asks && req.gui !== true) await tellBusy(opts.materializer, [author]);
     let result = await run();
     // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
     if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
       result = { ...result, head: await carton.head(into ?? destCut(op)) } as CbResult;
     }
     // a hook's answer goes to the hook process, never to the agent: its notices stay for its next `cb` call
-    if (op.kind !== "hook") notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
+    // (and `open`'s answer is never shown with notices: cb prints the comparison, so the asker's next call gets them)
+    if (!asks) notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
     return result;
   } finally {
     outcomes.close();

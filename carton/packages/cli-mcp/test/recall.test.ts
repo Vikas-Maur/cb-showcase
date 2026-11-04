@@ -3,6 +3,8 @@
 // name, a cut's name), in DESIGN-V2 §5's words.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Actor } from "@carton/core";
 import { runCb } from "../src/cb.ts";
 import type { CbProject } from "../src/commands.ts";
@@ -116,6 +118,12 @@ test("cb compare across cuts by name, and --show with no editor open: plain word
     const one = await cb(local, ["compare", "main@1", "now", "--show", "--json"]);
     assert.equal(one.json().between, "versions");
     assert.equal(one.json().opened, 0);
+    // the app holds the project (its lease fresh) but doesn't answer: asked again for a while, then said as it is, never
+    // "no editor window" (laptop: one ask in three said so with the project open)
+    await local.lease.take(null, { pid: process.pid, socketPath: join(tmpdir(), "carton-no-such-holder.sock"), kind: "worker" });
+    const busy = await cb(local, ["compare", "main@1", "now", "--show"]);
+    assert.equal(busy.code, 0, busy.err);
+    assert.equal(busy.out.split("\n")[0], "The editor didn't answer in time, so nothing opened. Here is the comparison:");
   } finally {
     await local.close();
   }

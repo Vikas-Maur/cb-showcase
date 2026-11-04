@@ -701,6 +701,8 @@ export const words = {
   sameShot: "same shot",
   waiting: "waiting",
   notInSide: (clip: string, side: string) => `${clip} isn't in ${side}`,
+  // a clip moved past others: that side has it too, earlier or later (Play both's slate; laptop: "isn't in" was false)
+  elsewhereInSide: (clip: string, side: string, where?: "earlier" | "later") => `${clip} is ${where ?? "elsewhere"} in ${side}`,
   itsShotPlays: "Its shot plays on the other side.",
   playBoth: "Play both",
   inStepByShot: "In step by shot",
@@ -722,7 +724,7 @@ export const words = {
   openedComparison: (who: string) => `${who} opened a comparison.`,
   openedComparisonAnnounce: (who: string, left: string, right: string, n: string) => `${who} opened a comparison: ${left} with ${right}. ${n}. Esc to go back.`,
   escToGoBack: "Esc to go back",
-  comparisonReady: (who: string, left: string, right: string) => `${who} has a comparison ready: ${left} with ${right}.`,
+  comparisonReady: (who: string, left: string, right: string) => `${who} ${who === "You" ? "have" : "has"} a comparison ready: ${left} with ${right}.`,
   sideBySideFailed: (left: string) => `Couldn't show ${left} side by side here. Showing it as a flip.`,
   compareCountLength: (n: string, length: string) => `${n} · ${length}`,
   compareStage: (left: string, right: string) => `Comparing ${left} with ${right}`,

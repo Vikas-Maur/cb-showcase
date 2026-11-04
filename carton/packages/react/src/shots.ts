@@ -10,14 +10,17 @@ export type Row =
 
 /**
  * Walk the matched pairs and emit alternating rows, exactly as a text diff interleaves context and hunks. Matched
- * pairs that are adjacent on both sides join one "same" row.
+ * pairs that are adjacent on both sides join one "same" row, while each side's shots are as long as the other's: a
+ * pair matched by clip identity (compare.ts clipDiff) may differ in length (a trimmed clip), and keeps a row of its own
+ * so the next shot starts on both sides together.
  */
 export function alignRows(d: ShotDiff): Row[] {
   const rows: Row[] = [];
   let i = 0, j = 0;
+  const even = (r: Row) => Math.abs(span(d.a, r.a0, r.a1) - span(d.b, r.b0, r.b1)) <= 1e-3;
   const push = (r: Row) => {
     const prev = rows[rows.length - 1];
-    if (prev && prev.kind === "same" && r.kind === "same" && prev.a1 === r.a0 && prev.b1 === r.b0) {
+    if (prev && prev.kind === "same" && r.kind === "same" && prev.a1 === r.a0 && prev.b1 === r.b0 && even(prev) && even(r)) {
       rows[rows.length - 1] = { kind: "same", a0: prev.a0, a1: r.a1, b0: prev.b0, b1: r.b1 };
     } else rows.push(r);
   };

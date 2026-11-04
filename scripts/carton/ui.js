@@ -821,6 +821,26 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsA
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
+  // Compare ended (Esc, Done comparing, the chip's ✕) and the focus went with its list, to the page: back in History,
+  // so the next Esc closes it (laptop: the second Esc did nothing). Only when nothing else has the focus; nothing runs
+  // while not comparing but this one listener
+  useEffect(() => {
+    if (typeof ui.onCompare !== "function") return undefined;
+    let was = !!ui.comparing?.(), timer = 0;
+    const off = ui.onCompare(() => {
+      const now = !!ui.comparing?.();
+      if (was && !now) {
+        clearTimeout(timer);
+        // after the panel has drawn its list again (the change list, and the focus in it, are gone by then)
+        timer = setTimeout(() => {
+          const el = ref.current, a = document.activeElement;
+          if (el?.isConnected && !ui.comparing?.() && (!a || a === document.body || a === document.documentElement || !a.isConnected)) el.focus({ preventScroll: true });
+        }, 0);
+      }
+      was = now;
+    });
+    return () => { clearTimeout(timer); off?.(); };
+  }, [ui]);
   // Below 1180 px the title bar has no Share icon: it joins this head, beside Close (PLAN 2.3). Two labelled tabs, it and
   // Close fit at the panel's 300 px minimum (regress 2026-11-02 P3-3 was three tabs there).
   const narrowWindow = useNarrowWindow();
