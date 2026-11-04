@@ -13,7 +13,7 @@
 import { createElement as h, Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Button, CompareList, CompareMarks, CompareStageView, CompareStrip, CompareStripLabel, CompareLegend, COMPARE_CSS, alignRows,
-  actorLabel, clock, clipDiff, compareMarks, compareModeShown, compareModesFor, SIDE_MIN, cutColor, cutRef, followTime, isMainCut, removedAt, stillAt, stripOf, timecode,
+  actorLabel, clock, clipDiff, compareMarks, compareModeShown, compareModesFor, SIDE_MIN, FLIP_ONLY_UNDER, cutColor, cutRef, followTime, isMainCut, removedAt, stillAt, stripOf, timecode,
   playLength, playSchedule, sidesAt, storyAt, CompareRowDetail, fromBringBack, bringBackLine, homeCut,
   useCartonUi, versionLabel, words,
 } from "@carton/react";
@@ -403,7 +403,17 @@ export function attachCompare(ui, o) {
     const playing = !!bridge.playing;
     if (both.expect && playing) both.saw = true;
     // the person paused the editor (its toolbar, its own Space) while its side played: theirs; Play both pauses here
-    if (both.expect && both.saw && !playing) return stopBoth({ keep: true, editor: false });
+    if (both.expect && both.saw && !playing) {
+      // the editor stopped by itself at the end of its shot (Cardboard stops at the end of the timeline): no pause of
+      // the person's; the story goes on from that shot's end, and ends there when it was the last (laptop P3: it was
+      // kept as a pause, so the first Play both after the end played its last moment and the second one restarted)
+      const s0 = stretch ? (side === "a" ? stretch.a0 : stretch.b0) : NaN, len = stretch ? (side === "a" ? stretch.aLen : stretch.bLen) : 0;
+      const clock = bridge.clock?.() ?? NaN;
+      if (!(stretch && cur && !cur.hold && !cur.slate && Number.isFinite(clock) && clock - s0 >= len - 0.15)) return stopBoth({ keep: true, editor: false });
+      both.expect = false;
+      both.saw = false;
+      both.T = Math.max(both.T, stretch.start + len);
+    }
     // while its side's shot plays, the editor's clock leads the story (never seeked back to it). Asked to play and not
     // playing yet (its audio starting), the story waits for it; once it plays, a story a moment ahead of it waits for it
     // to catch up rather than going back (laptop: the timecode jumped back once at the start)
@@ -676,7 +686,16 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast, ope
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const told = useRef(false);
-  const avail = compareModesFor(width, !!Player);
+  // Side by side greyed for the width (§1.9): what would make the room, read from what is open beside the stage. When
+  // closing History is enough, a click on it closes History (Compare stays on) and shows Side by side; else its
+  // tooltip names what to close, or says to widen the window. Under 360 px the stage is Flip only, but when closing
+  // History alone makes the room, Side by side is offered greyed all the same, its click making it (laptop P3)
+  const base = compareModesFor(width, !!Player);
+  const narrowest = !!Player && width > 0 && width < FLIP_ONLY_UNDER;
+  const [room, setRoom] = useState(null);
+  useLayoutEffect(() => { setRoom(base.sideOff || narrowest ? roomBeside() : null); }, [base.sideOff, narrowest, width, panel]);
+  const fix = (base.sideOff || narrowest) && room ? roomFix(SIDE_MIN - width, room) : null;
+  const avail = narrowest && fix?.click && openPanel ? { modes: ["side", "flip"], sideOff: true, compact: true } : base;
   const mode = failed ? "flip" : compareModeShown(c.mode, avail);
   const needsPlayer = mode === "side" || mode === "wipe";
   const [ready, setReady] = useState(false);
@@ -689,16 +708,6 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast, ope
   }, [ui]);
   // the edit-attempt line goes with Compare
   useEffect(() => () => toast?.clearViewing?.(), [toast]);
-  useEffect(() => {
-    if (!needsPlayer || ready || failed || !Player) return undefined;
-    return readyCountdown(() => setFailed(true));
-  }, [needsPlayer, ready, failed, Player, attempt]);
-  // Side by side greyed for the width (§1.9): what would make the room, read from what is open beside the stage. When
-  // closing History is enough, a click on it closes History (Compare stays on) and shows Side by side; else its
-  // tooltip names what to close, or says to widen the window
-  const [room, setRoom] = useState(null);
-  useLayoutEffect(() => { setRoom(avail.sideOff ? roomBeside() : null); }, [avail.sideOff, width, panel]);
-  const fix = avail.sideOff && room ? roomFix(SIDE_MIN - width, room) : null;
   const sideTip = fix ? (fix.click ? words.sideNeedsRoomClick : words.sideNeedsRoomClose(fix.parts.map((k) => words.roomParts[k]))) : null;
   const makeRoom = useCallback(() => { openPanel?.(null, "history"); pickMode("side"); }, [openPanel, pickMode]);
   useEffect(() => {
@@ -748,6 +757,15 @@ function CompareOn({ ui, c, projectId, bridge, Player, portal, panel, toast, ope
     else if (still.slate) slate = slateOf(still.slate.shot, c.left.label, still.slate.elsewhere);
     else if (leftAt >= still.aEnd - 0.001) leftStep = "waiting";
   }
+  // The second player's 2 s to start count only while the left side is a picture: under a slate (a shot it hasn't,
+  // an empty version such as the start of History) the player isn't on the stage at all, so it can't say it's ready
+  // (laptop P2: such a comparison fell to Flip with its toast, and Try again failed the same way). Nothing more runs
+  // for it; a comparison that moves from a slate to a picture counts then
+  const leftPicture = !slate;
+  useEffect(() => {
+    if (!needsPlayer || ready || failed || !Player || !leftPicture) return undefined;
+    return readyCountdown(() => setFailed(true));
+  }, [needsPlayer, ready, failed, Player, attempt, leftPicture]);
   const length = bridge.editLength?.() ?? 0;
   const n = data?.changes?.length ?? null;
   const count = n == null ? null : c.acrossCuts ? words.differences(n) : words.changes(n);

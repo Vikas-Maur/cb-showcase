@@ -86,7 +86,13 @@ async function mount(o = {}) {
   window.__cartonStageMode = (v) => { did.stage = v; };
   // the editor's clock: it advances while playing, as Cardboard's does
   let playing = false, t = 2, since = Date.now();
-  const now = () => (playing ? t + Math.max(0, Date.now() - since) / 1000 : t);
+  // (`stopAt`: the end of the timeline, where Cardboard's player stops by itself)
+  const now = () => {
+    if (!playing) return t;
+    const x = t + Math.max(0, Date.now() - since) / 1000;
+    if (o.stopAt != null && x >= o.stopAt) { t = o.stopAt; playing = false; return t; }
+    return x;
+  };
   const bridge = {
     projectId: PROJECT,
     projectName: "Weekend reel",
@@ -114,7 +120,7 @@ async function mount(o = {}) {
     libraryAside: (on) => did.aside.push(on),
     togglePlay: () => { if (playing) { t = now(); playing = false; } else { since = Date.now() + (o.startLag ?? 0); playing = true; } did.plays++; for (const f of [...timeline]) f(); },
     pause: () => { if (playing) { t = now(); playing = false; for (const f of [...timeline]) f(); } },
-    get playing() { return playing; },
+    get playing() { now(); return playing; },
     clock: () => now(),
     seek: (x) => { did.seeks.push(x); t = x; since = Date.now(); for (const f of [...timeline]) f(); },
     timelineScale: () => ({ pps: 10, tracks: TRACKS }),
@@ -1147,5 +1153,81 @@ test("review of fix/ux2-laptop #3: Play both started before the timelines arrive
     const at = m.page().compareBoth().at;
     assert.equal(at.stretch.kind, "same", "the intro in step by the clips now: " + JSON.stringify(at));
     assert.equal(at.b.hold, true, "the right side's shorter intro waits");
+  } finally { await m.done(); }
+});
+
+
+// ---------------------------------------------------------------- the real app's re-check of 15a9b352
+test("laptop re-check P2: the second player's 2 s count only while the left side is a picture: a slate there never fails it", opt, async () => {
+  // a new shot at 0:00 on the right (the left has none there: its slate), then the clip both have
+  const v = (id, s0, e) => ({ id, trackId: "v", type: "video", name: id, startTime: s0, endTime: e, trimStart: 0, trimEnd: 0 });
+  const docs = { left: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("A", 0, 5)] }, right: { tracks: TRACKS, aspectRatio: "16:9", media: [], timelineItems: [v("N", 0, 3), v("A", 3, 8)] } };
+  const ui = createMockUi({ versions: 8 });
+  ui.changes = async () => [{ key: "timelineItems/N", itemId: "N", kind: "add", clip: "video", text: "Added “N”", at: 0, end: 3 }];
+  ui.shotDiff = async () => ({ a: [{ start: 0, end: 5, sig: 1 }], b: [{ start: 0, end: 3, sig: 2 }, { start: 3, end: 8, sig: 1 }], matches: [[0, 1]], aLabel: "a", bLabel: "b" });
+  const m = await mount({ ui, rows: false, docs });
+  try {
+    await m.cmd("carton-history");
+    await act(async () => { m.bridge.seek(1); await sleep(10); });
+    await m.open(m.older().ref);
+    await m.settle(80);
+    assert.ok(m.compare().querySelector('[data-side="left"] .carton-compare-slate'), "the left side's slate");
+    assert.equal(!!m.stage.querySelector("[data-test-player]"), false, "no second player under it");
+    await act(async () => { await sleep(2600); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "still Side by side: a slate is no failed player");
+    assert.doesNotMatch(m.toast()?.textContent ?? "", /Couldn't show/, "no “Couldn't show … side by side” toast");
+    // the playhead on the shot both have: the second player shows it and says it's ready
+    await act(async () => { m.bridge.seek(4); await sleep(30); });
+    await m.settle(60);
+    assert.ok(m.stage.querySelector("[data-test-player]"), "the second player on the stage");
+    await act(async () => { await sleep(2300); });
+    await m.settle();
+    assert.equal(m.compare().getAttribute("data-mode"), "side");
+  } finally { await m.done(); }
+});
+
+test("laptop re-check P3: a stage under 360 px still offers Side by side greyed, a click making the room, when closing History is enough", opt, async () => {
+  // a ~1060 px window with History open: a 340 px stage; closing History (380) gives it 720
+  const sizes = { ".carton-compare-root": 340, "[data-carton-stage-host]": 340, ".carton-sidebar": 380, '[data-testid="local-agent-panel"]': 0 };
+  const L = layout(sizes);
+  const m = await mount();
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await L.relayout(m, {});
+    const side = () => m.compare().querySelector('[role=radio][data-mode="side"]');
+    assert.equal(m.compare().getAttribute("data-mode"), "flip");
+    assert.ok(side(), "Side by side offered");
+    assert.ok(side().hasAttribute("data-off"), "greyed");
+    assert.equal(side().getAttribute("data-carton-tip"), "Side by side needs a wider stage. Click to close History and make room.");
+    await m.click(side());
+    assert.equal(!!m.side.querySelector("aside"), false, "History closed");
+    assert.equal(m.page().comparing().mode, "side");
+    await L.relayout(m, { ".carton-compare-root": 720, "[data-carton-stage-host]": 720 });
+    assert.equal(m.compare().getAttribute("data-mode"), "side", "Side by side on the wider stage");
+    // not enough from History alone: Flip only, as before
+    await m.click(m.compare().querySelector(".carton-compare-frame-open"));
+    await L.relayout(m, { ".carton-compare-root": 300, "[data-carton-stage-host]": 300, ".carton-sidebar": 300 });
+    assert.equal(!!side(), false, "Flip only");
+  } finally { L.restore(); await m.done(); }
+});
+
+test("laptop re-check P3: Play both run to its end: one click plays it again from 0:00 (the editor stopping at the timeline's end is no pause)", opt, async () => {
+  // your edit ends at 0:25, where Cardboard's player stops by itself
+  const m = await mountLaptop({ stopAt: 25 });
+  try {
+    await m.cmd("carton-history");
+    await m.open(m.older().ref);
+    await m.settle(60);
+    await act(async () => { m.bridge.seek(23.2); await sleep(10); });
+    await act(async () => { m.page().comparePlayBoth(); await sleep(2600); });
+    await m.settle();
+    assert.equal(m.page().compareBoth(), null, "ended, not paused near the end: " + JSON.stringify(m.page().compareBoth()));
+    // one click: from 0:00
+    await act(async () => { m.page().comparePlayBoth(); await sleep(400); });
+    const b = m.page().compareBoth();
+    assert.ok(b && !b.paused, "playing again");
+    assert.ok(b.T < 1, `from the start: ${b.T}`);
   } finally { await m.done(); }
 });
