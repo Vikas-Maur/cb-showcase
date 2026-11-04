@@ -96,13 +96,16 @@ export function CompareBar(p: CompareBarProps) {
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    const open = list.filter((m) => !narrow(m));
-    const i = open.indexOf(p.mode);
+    // a greyed Side by side the host can make the room for takes the focus too, from where the focus is: Enter or Space
+    // is its click (it closes History), never an arrow passing over it
+    const open = list.filter((m) => !narrow(m) || !!p.onSideOff);
+    const at = (e.target as HTMLElement | null)?.getAttribute?.("data-mode") as CompareMode | null;
+    const i = open.indexOf(at && open.includes(at) ? at : p.mode);
     const next = open[(i + (e.key === "ArrowRight" ? 1 : -1) + open.length) % open.length];
     e.preventDefault();
     e.stopPropagation();
     if (next) {
-      pick(next);
+      if (!narrow(next)) pick(next);
       (e.currentTarget.querySelector(`[data-mode="${next}"]`) as HTMLElement | null)?.focus();
     }
   };

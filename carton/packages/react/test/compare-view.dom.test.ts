@@ -80,6 +80,14 @@ test(name("a greyed Side by side the host can make room for: clickable, its word
   await click(radios[0]);
   assert.equal(made, 1, "the host makes the room");
   assert.deepEqual(s.calls, [], "and no mode is picked here");
+  // the keyboard reaches it (review): → from Flip wraps onto it and only focuses it (its click is Enter or Space,
+  // never an arrow passing over it); → again picks Wipe
+  await key(radios[2], "ArrowRight");
+  assert.ok(document.activeElement === radios[0], "Side by side focused");
+  assert.equal(made, 1, "an arrow doesn't close History");
+  assert.deepEqual(s.calls, []);
+  await key(radios[0], "ArrowRight");
+  assert.deepEqual(s.calls, [["mode", "wipe"]], "from it, → picks Wipe");
   // the host's own words without a click: disabled, as before
   await m.rerender(stage({ sideOff: true, mode: "flip", sideTip: "Side by side needs a wider stage. Close History and the chat, or widen the window." }).el);
   radios = $$(m.container, "[role=radio]");
