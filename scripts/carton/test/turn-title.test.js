@@ -1,9 +1,9 @@
 // Item 4 (laptop, 2026-11-05): an agent turn's short title comes from Cardboard 1.4.0's own naming call, the one that
-// names its chats (hke), handed to main-bridge by patch-carton.js at UKt. These tests run that call as 1.4.0 has it
-// (its hke, HWt, qWt and zWt, read out of the pristine dist/main.js) through the namer our patch hands over (read out of
-// a staged, patched main.js), against fake agent binaries: one that answers, one that fails, one that never answers
-// in time, one whose answer is too long for a title. Needs CARDBOARD_PRISTINE (Cardboard's unpacked app); the fakes are
-// shell scripts, so not on Windows.
+// names its chats (hke), handed to main-bridge by patch-carton.js at UKt. These tests run that call as the build ships
+// it (1.4.0's hke, HWt, qWt and zWt, read out of a staged, patched dist/main.js) through the namer our patch hands over,
+// against fake agent binaries: one that answers, one that fails, one that never answers in time, one whose answer is
+// too long for a title, and one the locator found that has since gone (review of a2725f9c #1: an uncaught spawn error
+// in main). Needs CARDBOARD_PRISTINE (Cardboard's unpacked app); the fakes are shell scripts, so not on Windows.
 //   CARDBOARD_PRISTINE=… node --test scripts/carton/test/turn-title.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -15,17 +15,21 @@ const skip = process.platform === "win32" ? "the fake binaries are shell scripts
 const TMP = fs.mkdtempSync(path.join(process.env.CARTON_TEST_DIR ?? os.tmpdir(), "turn-title-"));
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
-// 1.4.0's naming code, whole, from its declaration list (OWt=6 … hke=…), with its codex stream parser stubbed
-const naming = () => {
-  const src = fs.readFileSync(path.join(PRISTINE, "app-asar", "dist", "main.js"), "utf8");
+// the staged, patched main.js (staged once)
+let staged = null;
+const stagedMain = () => (staged ??= fs.readFileSync(stage(PRISTINE, path.join(TMP, "stage"), { carton: true }).main, "utf8"));
+// 1.4.0's naming code as the build ships it, whole, from its declaration list (OWt=6 … hke=…)
+const namingSource = () => {
+  const src = stagedMain();
   const a = src.indexOf("OWt=6,RWt=40"), b = src.indexOf("});var VWt,QA,bke");
   assert.ok(a > 0 && b > a, "1.4.0's naming code where 1.4.0 has it");
-  return new Function("Dg", "var OWt,RWt,lke,DWt,MWt,dke,LWt,NWt,$Wt,jWt,UWt,uke,fke,FWt,pke,mke,zWt,BWt,HWt,qWt,hke;" + src.slice(a, b) + ";return {hke,HWt,zWt,$Wt,uke};")(class { parse() { return []; } });
+  return "var OWt,RWt,lke,DWt,MWt,dke,LWt,NWt,$Wt,jWt,UWt,uke,fke,FWt,pke,mke,zWt,BWt,HWt,qWt,hke;" + src.slice(a, b);
 };
+// (its codex stream parser stubbed)
+const naming = () => new Function("Dg", namingSource() + ";return {hke,HWt,zWt,$Wt,uke};")(class { parse() { return []; } });
 // the namer our patch hands to main-bridge, as the staged build has it
 const patchedNamer = (n, LEe) => {
-  const out = stage(PRISTINE, path.join(TMP, "stage"), { carton: true });
-  const main = fs.readFileSync(out.main, "utf8");
+  const main = stagedMain();
   const from = main.indexOf("UKt=(__cartonMain.namer(") + "UKt=(__cartonMain.namer(".length, to = main.indexOf("),async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null})", from);
   assert.ok(from > 30 && to > from, "the namer handed over where 1.4.0 defines its chat namer");
   const oe = { app: { getPath: () => TMP } };
@@ -68,4 +72,22 @@ test("a binary that fails, one that never answers in time, one whose answer is n
   assert.equal(await namer(PROMPT, INSTRUCTION, 5000), null, "over 6 words: no title");
   bin = fake("claude-silent", "exit 0");
   assert.equal(await namer(PROMPT, INSTRUCTION, 5000), null, "empty");
+});
+
+test("a binary the locator found but that has since gone: null, nothing thrown in main, nothing of the prompt said (review #1)", { skip, timeout: 300_000 }, async () => {
+  // In a child process, as main runs it: an 'error' event with no listener (Node's ChildProcess, ENOENT) is thrown
+  // there, past every Promise.catch, and in Electron's main process brings up an error dialog. Its spawnargs hold the
+  // prompt. Cardboard's own chat and project names go through the same call.
+  const gone = path.join(TMP, "claude-gone");
+  const code = namingSource() + `;
+    const cp = require("node:child_process");
+    hke({ binary: { path: ${JSON.stringify(gone)}, provider: "claude" }, prompt: "SECRET-REQUEST", instruction: "x", env: process.env, cwd: process.cwd(), spawn: cp.spawn, timeoutMs: 20000, warn: (m) => console.error("warn:" + m) })
+      .then((r) => { console.log(JSON.stringify({ r, ms: Math.round(performance.now()) })); }, (e) => console.log(JSON.stringify({ rejected: String(e && e.code) })));`;
+  const r = cp.spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(r.status, 0, "no uncaught error: " + r.stderr.slice(0, 400));
+  assert.doesNotMatch(r.stderr, /Unhandled 'error' event|SECRET-REQUEST/, "nothing thrown, the prompt never written out");
+  assert.doesNotMatch(r.stdout, /SECRET-REQUEST/);
+  const out = JSON.parse(r.stdout.trim().split("\n").at(-1));
+  assert.equal(out.r, null, "no title: the person's words stay");
+  assert.ok(out.ms < 15_000, "at once, not at its 20 s timeout");
 });

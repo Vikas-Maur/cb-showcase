@@ -701,5 +701,18 @@ replace(
 );
 replace(`he.createWindow({quiet:r});let a=`, `he.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(he.window);let a=`);
 
+// 17. A naming binary that is gone no longer throws in the main process. Cardboard names chats and projects (and
+// Carton titles agent turns) by running the person's Claude Code or Codex once (hke). The binary is looked up first,
+// and if it went away before the call (uninstalled, an update swapping it, a shim pointing at nothing), spawn emits
+// 'error' (ENOENT) with no listener: Node throws that event, no Promise.catch catches it, and in Electron's main
+// process it brings up an error dialog. The error's spawnargs hold the prompt, the person's own words. Now a spawn
+// error, or an error on its pipes (a write to a process already gone), ends the call with no name, at once, and says
+// nothing: the chat keeps its first words, the project its file names, the turn the person's message (review of
+// a2725f9c #1). Its exit, its output and its timeout are as they were.
+replace(
+  `d.stdout?.on("data",b=>g(String(b))),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(zWt(f))})`,
+  `d.stdout?.on("data",b=>g(String(b))),d.on("error",()=>{clearTimeout(h),c(null)}),d.stdin?.on("error",()=>{}),d.stdout?.on("error",()=>{}),d.stderr?.on("error",()=>{}),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(zWt(f))})`,
+);
+
 fs.writeFileSync(file, src);
 console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);

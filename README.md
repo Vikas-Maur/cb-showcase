@@ -160,6 +160,12 @@ they are Cardboard's software, not ours to redistribute.
     Cardboard's user data folder records that it's done, and it doesn't run again. A copy from since Windows started,
     one it couldn't delete (in use) or a stop at 20 seconds leave it for the next start, for at most 20 starts. The
     activity log says how many files went.
+17. A naming call whose binary has gone no longer shows an error dialog. Cardboard names a new chat and a new project
+    (and, with Carton, an agent's turn) by running your Claude Code or Codex once. If the binary it found was removed
+    before the call (an update swapping it, an uninstall), the process failed to start with an error nothing caught,
+    which in the main process shows Electron's error dialog, and the error carried your words. Now the call just ends
+    with no name: the chat keeps its first words, the project its file names, the turn your message. Nothing is
+    logged.
 
 `scripts\patch-worker.js` (applied to `asar-src\dist\library-worker.js`) uses the NVIDIA GPU
 (NVENC) for converting imported media and making preview copies, where macOS uses VideoToolbox.
