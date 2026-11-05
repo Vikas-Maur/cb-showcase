@@ -7,6 +7,7 @@
 // - Playback starts without waiting on muted audio, and at once on a second press.
 // - Graphics with a video inside play without waiting on the video's frames ("speed").
 // - The editor stops measuring the preview's place on every frame while nothing moves ("speed").
+// - What is drawn over the preview (graphics…) keeps the preview's scale in full screen with the preview zoomed.
 // - Badges in prompt boxes are one unit and open on a click; clicking the timeline takes the keyboard.
 // - The editor rail's tooltips show.
 // - The pages' part of the activity log (see __cbLog in patch-main.js).
@@ -578,6 +579,23 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
     );
     replace(`n.stop=()=>{r!==null&&window.cancelAnimationFrame(r),r=null,i.disconnect(),`, `n.stop=()=>{__cbRest(),r!==null&&window.cancelAnimationFrame(r),r=null,i.disconnect(),`);
   }
+
+  // 21. What is drawn over the preview is drawn at the preview's own scale, also in full screen. The preview's
+  // zoom (Ctrl+wheel or a pinch over it, undone by its "Reset" button) is a CSS scale on a wrapper around the
+  // stage, and the tracker (l8) took that zoom from the store as the scale its overlays are drawn at: a graphic's
+  // page, the background-removal shimmer, a pending item's placeholder, a clip's proxy progress ring. Their box is
+  // the canvas's box on screen divided by it (Nl). Full screen shows the stage on its own (the browser's top layer), outside
+  // the wrapper and its scale, so with the preview zoomed to 0.9 a graphic was drawn 1/0.9 = 1.11 times too large
+  // from the frame's top-left corner and cut off at its right and bottom, over a picture drawn right. This is
+  // Cardboard's own bug: at any screen scale (no device pixels are involved), so on a Mac too, and 1.4.1 has the
+  // same code. The zoom is now the scale the canvas is drawn at, its width on screen over its width in the
+  // layout, whatever is around the stage (Carton's Compare, for one, turns the wrapper's scale off too). It is
+  // read when the canvas's box changes, as the zoom was; a canvas that isn't laid out keeps the store's zoom.
+  replace(`t.rect=n,t.zoom=U.getState().canvasTransform.scale,t.version+=1;`, `t.rect=n,t.zoom=__cbDrawnScale(e,n),t.version+=1;`);
+  replace(
+    `const Hc=new WeakMap,l8=(e,t)=>{`,
+    `const __cbDrawnScale=(e,r)=>{const w=parseFloat(getComputedStyle(e).width);return w>0&&r.width>0?r.width/w:U.getState().canvasTransform.scale};const Hc=new WeakMap,l8=(e,t)=>{`,
+  );
 });
 
 patch(storeFile, "installErrorTelemetry.orig.js", (replace) => {

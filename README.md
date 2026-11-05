@@ -297,6 +297,15 @@ The timeline and playback, found by playing real projects in a separate copy of 
   and rests half a second after it stops. A check once a second catches anything else. On the test laptop an
   idle editor took about a fifth of a CPU core with one project open and about two thirds with four; now about
   1% and 2% (see "An idle editor" under Benchmarks). Left out of `--baseline`.
+- Graphics stay on the picture in full screen. With the preview zoomed in or out (Ctrl+scroll or a pinch over it,
+  undone by its "Reset" button), full screen drew a graphic (a `<code>` clip) scaled by one over the zoom from the
+  frame's top-left corner, while the video under it was right: zoomed out to 90%, 1.11 times too large and cut off
+  at its right and bottom; zoomed in to 110%, too small, its right and bottom edges inside the picture. At the
+  preview's own zoom it was right. The background-removal shimmer, a pending item's placeholder and a clip's proxy
+  progress ring were off the same way. They were scaled by the zoom setting, but full screen shows the preview on
+  its own, without the zoom; now they're scaled by the size the preview is actually drawn at. This is Cardboard's
+  own bug, on a Mac too and at any display scale, and Cardboard 1.4.1 still has it. The normal view, exports and
+  frame renders were right. `scripts\carton\test\browser\fullscreen-graphic.js` checks it in Cardboard's editor.
 - The activity log notes the waits: Play waiting on audio over half a second, a second press forcing it,
   slow video frames for a graphic, graphics rebuilt, canvases given back.
 - Clicking the timeline, or a clip in the preview, takes the keyboard from the agent's prompt box (or any other
