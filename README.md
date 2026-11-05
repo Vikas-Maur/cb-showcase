@@ -519,9 +519,14 @@ What changes with it on:
     its own, so nothing was heard and the picture stepped. Play, ▶ and Play all now play each stretch through
     Cardboard's own playback, as Space does, with the sound and at full frame rate, and follow its clock. There is no
     seek per frame. Between stretches Play stops, jumps and plays on (back-to-back stretches play straight through),
-    and at the end it stops. Pause and Space still pause and go on. Pausing in the editor itself pauses Play too, but
-    Cardboard's own stop at the end of the timeline doesn't count as a pause. Before, Esc, a row's ✕ and closing the
-    card or the panel work as they did, and Play never stops playback you started yourself. A viewed version plays its
+    and at the end it stops. Like Space, it waits for the sound where it starts to load, and it never asks again while
+    it loads (a second Play forces playback before the sound is in; that stays yours to press). Pause and Space still
+    pause and go on. Pausing in the editor itself pauses Play too, but Cardboard's own stop at the end of the timeline
+    doesn't count as a pause. Pause, Esc, a row's ✕ and closing the card or the panel stop what Play started, a start
+    still waiting for its sound included, so nothing starts playing afterwards. Holding Before on an older version
+    that ends sooner waits at its end, and the rest plays once you let go. Play only ever stops playback it started: if
+    the editor is already playing when you press Play, Play replaces it with its own (as pressing Play anywhere would),
+    and playback you start yourself afterwards is never stopped by Play. A viewed version plays its
     own timeline, so clips only it has (an agent's detached "1.mp4 audio") play from the project's media. A media file
     deleted from the project since is neither seen nor heard in a viewed version, as before: the editor takes media
     from the project as it is now.
