@@ -188,6 +188,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       <h3>Playback and editing</h3>
       <ul>
         <li><a href="#cb-fullscreen"><span>With the preview zoomed in or out, full screen draws code graphics at the wrong size, off the video.</span><span class="ref">#7</span></a></li>
+        <li><a href="#cb-names"><span>A clip that starts just off the timeline’s left edge shows its name twice, on top of itself.</span><span class="ref">#7</span></a></li>
         <li><a href="#cb-play"><span>After a seek, Play can wait for unloaded audio from clips on muted tracks, and pressing it again doesn’t skip the wait.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a></li>
@@ -207,15 +208,20 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <div class="tags"><a class="tag" href="#7" aria-label="Link to update 7">#7</a></div>
   </aside>
   <div>
-    <h2 class="display">Full screen keeps graphics on the video</h2>
-    <p class="lead">Zoom the preview in or out, then go full screen, and code graphics were drawn at the wrong size, pinned to the top-left corner and off the footage. Now they sit on the video in full screen at any zoom.</p>
+    <h2 class="display">Graphics stay on the video, and clip names stay readable</h2>
+    <p class="lead">Two drawing bugs from Cardboard itself, found while editing on a Windows laptop: code graphics drifting off the footage in full screen, and clip names drawn on top of each other on the timeline.</p>
     <section class="also" id="cb-fullscreen">
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Code graphics in full screen</h3>
       <p>In Cardboard, if the preview is zoomed in or out (⌘ or Ctrl with the scroll wheel, or a pinch) when you go full screen, every code graphic is drawn at the wrong size from the top-left corner: too large and cut off at the right and bottom when the preview was zoomed out, too small with its edges inside the picture when it was zoomed in. The video is drawn right, so the graphic no longer lines up with it. Full screen shows the picture unzoomed, but the graphics were still sized for the zoom. At the default zoom, and in exports, it was always right.</p>
       <p>Now what’s drawn over the preview takes the size the picture is actually shown at, in full screen and out of it, and stays in place when you zoom inside full screen or leave it.</p>
     </section>
-    <p class="how">Found when a graphic drifted off the footage in full screen on a Windows laptop. Checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Cardboard’s code for this is the same on a Mac and in 1.4.1, and screen scaling plays no part in it.</p>
+    <section class="also" id="cb-names">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Clip names drawn once</h3>
+      <p>In Cardboard, when a clip starts just off the timeline’s left edge, its name is drawn twice on top of itself: once at the clip’s start, cut by the edge, and once pinned at the edge, so neither can be read. It happens on any screen, while scrolling or at rest. Now each name shows once: it scrolls off with its clip, then appears at the edge.</p>
+    </section>
+    <p class="how">Full screen: checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Clip names: checked frame by frame while scrolling, in Cardboard’s own timeline and ours, at 1×, 1.25× and 2× screen scaling. Cardboard’s code for both is the same on a Mac and in 1.4.1.</p>
   </div>
 </article>
 
