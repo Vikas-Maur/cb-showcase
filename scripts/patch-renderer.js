@@ -429,40 +429,48 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // at the edge, the two overlapping ("…verie (light score)" over "Arctic Reverie (light score)") whenever the
   // clip started less than its name's width off screen. Cardboard's own code, on any screen and scale (seen at
   // 1, 1.25 and 2 in its pristine 1.4.0 pages, and unchanged in 1.4.1); not ours, and only the drawing of names.
-  // Now the base canvas draws the names of the clips that aren't sticky at the scroll position it is drawn at, and
-  // the scroll hands a name over between the two when its clip's start crosses the view's edge: just before the
-  // sticky names are drawn (Ie), a clip that went past the edge has its name taken off the base canvas (its pixels
-  // put back from a copy of the name rows made before the names were drawn), and one that came back has it drawn
-  // there again. The names that move with the clips stay on the canvas that moves with them; moving them all to
-  // the fixed canvas would have made them trail their clips by a frame while scrolling (it is redrawn in the frame
-  // after the scroll). Without a usable copy (rows that overlap, a lost GPU context) a crossing redraws the base
-  // canvas instead. A drag's base canvas (the draft) draws every name, as Cardboard did; the next redraw after it
-  // goes back to this. Same code on a Mac and on Windows: it isn't a Windows difference.
+  // Now each name is on one canvas at a time. The base canvas draws the names of the clips that aren't sticky at the
+  // scroll position it is drawn at, and the fixed canvas never draws a name the base canvas still shows. Each scroll
+  // hands a name over when its clip's start crosses the view's edge, just before the sticky names are drawn (Ie): a
+  // clip that went past the edge has its name taken off the base canvas (its pixels put back from a copy of the name
+  // rows made before the names were drawn), and one that came back has it drawn there again. The names that move
+  // with the clips stay on the canvas that moves with them; moving them all to the fixed canvas would have made
+  // them trail their clips by a frame while scrolling (it is redrawn in the frame after the scroll).
+  // The copy is made only by a redraw while the view scrolls (the scroll position changed in the last 0.6 s): taking
+  // it makes the canvas flush its drawing at once, which slowed every redraw in headless Chromium, however little
+  // was copied, and most redraws (hover, selection, a clip's animation) happen with the view still. A
+  // crossing without a usable copy (none taken, rows that overlap, a lost GPU context) redraws the base canvas once,
+  // which takes one; until then the name stays at its clip's start, cut by the edge, never drawn twice. A drag's base
+  // canvas (the draft) draws every name, as Cardboard did; the next redraw after it goes back to this. Same code on
+  // a Mac and on Windows: it isn't a Windows difference.
   const labels = String.raw`__cbLbl={
-base(c,x,dpr,w,list,sl,draw,redraw){const s=c.__cbLbl??={};Object.assign(s,{list,x,dpr,ox:w.offsetX,draw,redraw,W:c.width,H:c.height,ok:!1,asked:!1,stale:!1,on:new Set});
+base(c,x,dpr,w,list,sl,draw,redraw){const s=c.__cbLbl??={},t=performance.now(),moving=sl!==s.sl||t-(s.at??-1e9)<600;sl!==s.sl&&(s.sl=sl,s.at=t);Object.assign(s,{list,x,dpr,ox:w.offsetX,draw,redraw,W:c.width,H:c.height,ok:!1,asked:!1,stale:!1,on:new Set});
 const now=[];for(const e of list)sl>e.clipLeft||(s.on.add(e.itemId),now.push(e));
-const rows=new Map;let h=0,end=-1,bad=!1;for(const y of [...new Set(list.map(e=>e.textY))].sort((a,b)=>a-b)){const y0=Math.max(0,Math.floor((y-9)*dpr)),y1=Math.min(c.height,Math.ceil((y+9)*dpr));if(y1<=y0||y0<end){bad=!0;break}end=y1,rows.set(y,{y0,h:y1-y0,r:h}),h+=y1-y0}s.rows=rows;
-if(h&&!bad&&!x.isContextLost?.()){s.k||(s.k=document.createElement("canvas"),s.k.addEventListener("contextrestored",()=>s.redraw?.()));const k=s.k,H=Math.max(h,64);(k.width!==c.width||k.height!==H)&&(k.width=c.width,k.height=H);const g=s.g??=k.getContext("2d",{alpha:!1});if(g&&!g.isContextLost?.()){for(const r of rows.values())g.drawImage(c,0,r.y0,c.width,r.h,0,r.r,c.width,r.h);s.ok=!0}}
+if(moving&&now.length&&!x.isContextLost?.()){const rows=new Map;let h=0,end=-1,bad=!1;for(const y of [...new Set(list.map(e=>e.textY))].sort((a,b)=>a-b)){const y0=Math.max(0,Math.floor((y-9)*dpr)),y1=Math.min(c.height,Math.ceil((y+9)*dpr));if(y1<=y0||y0<end){bad=!0;break}end=y1,rows.set(y,{y0,h:y1-y0,r:h}),h+=y1-y0}s.rows=rows;
+if(h&&!bad){s.k||(s.k=document.createElement("canvas"),s.k.addEventListener("contextrestored",()=>s.redraw?.()));const k=s.k,H=Math.max(h,64);(k.width!==c.width||k.height!==H)&&(k.width=c.width,k.height=H);const g=s.g??=k.getContext("2d",{alpha:!1});if(g&&!g.isContextLost?.()){for(const r of rows.values())g.drawImage(c,0,r.y0,c.width,r.h,0,r.r,c.width,r.h);s.ok=!0}}}
 x.save(),x.setTransform(dpr,0,0,dpr,-s.ox*dpr,0),draw(now),x.restore()},
 off(c){const s=c?.__cbLbl;s&&(s.list=null,s.stale=!0)},
-sync(c,sl,redraw){const s=c?.__cbLbl;if(!s)return;if(!s.list){s.stale&&(s.stale=!1,redraw());return}if(c.width!==s.W||c.height!==s.H)return;
+sync(c,sl,redraw){const s=c?.__cbLbl;if(!s)return;sl!==s.sl&&(s.sl=sl,s.at=performance.now());if(!s.list){s.stale&&(s.stale=!1,redraw());return}if(c.width!==s.W||c.height!==s.H)return;
 let off=null,add=null;for(const e of s.list){const want=!(sl>e.clipLeft);want!==s.on.has(e.itemId)&&(want?add??=[]:off??=[]).push(e)}if(!off&&!add)return;
-const x=s.x;if(!s.ok||x.isContextLost?.()||s.g.isContextLost?.()){s.asked||(s.asked=!0,redraw());return}
-x.save();if(off){x.setTransform(1,0,0,1,0,0),x.imageSmoothingEnabled=!1;for(const e of off){const r=s.rows.get(e.textY),a=Math.max(0,Math.floor((e.x-4-s.ox)*s.dpr)),b=Math.min(c.width,Math.ceil((e.x+e.maxWidth+4-s.ox)*s.dpr));r&&b>a&&x.drawImage(s.k,a,r.r,b-a,r.h,a,r.y0,b-a,r.h),s.on.delete(e.itemId)}}
-if(add){for(const e of add)s.on.add(e.itemId);x.setTransform(s.dpr,0,0,s.dpr,-s.ox*s.dpr,0),s.draw(add)}x.restore()}},`;
+const x=s.x;if(x.isContextLost?.())return;x.save();
+if(off)if(s.ok&&!s.g.isContextLost?.()){x.setTransform(1,0,0,1,0,0),x.imageSmoothingEnabled=!1;for(const e of off){const r=s.rows.get(e.textY),a=Math.max(0,Math.floor((e.x-4-s.ox)*s.dpr)),b=Math.min(c.width,Math.ceil((e.x+e.maxWidth+4-s.ox)*s.dpr));r&&b>a&&x.drawImage(s.k,a,r.r,b-a,r.h,a,r.y0,b-a,r.h),s.on.delete(e.itemId)}}else s.asked||(s.asked=!0,redraw());
+if(add){for(const e of add)s.on.add(e.itemId);x.setTransform(s.dpr,0,0,s.dpr,-s.ox*s.dpr,0),s.draw(add)}x.restore()},
+shown(c,list){const s=c?.__cbLbl;return s?.list&&list.some(e=>s.on.has(e.itemId))?list.filter(e=>!s.on.has(e.itemId)):list}},`;
   // The helpers, beside the names' own functions (v1 lays them out, b1 draws them).
   replace(`,NU=8,jU=28,DU=(`, `,${labels}NU=8,jU=28,DU=(`);
-  // The base canvas's redraw (pt): the names of the clips that aren't sticky now, the name rows kept first.
+  // The base canvas's redraw (pt): the names of the clips that aren't sticky now (the name rows kept first, while
+  // the view scrolls).
   replace(
     `A1(mn),We(ie,ne,Q);Ie(ne);`,
     `A1(mn),__cbLbl.base(de,ie,_e,Q,v1({clips:ne.clips,viewportLeft:Q.offsetX,viewportRight:Q.offsetX+Q.width,mode:"natural"}),mn.scrollLeft,E=>b1({ctx:ie,entries:E,xOffset:0,theme:D.current,textCache:z.current}),()=>ee.current());Ie(ne);`,
   );
   // A drag's redraw of it draws every name, as Cardboard does.
   replace(`A1({...mn,draft:null,excludedItemIds:Y}),We(ie,ne,Q,Y))`, `A1({...mn,draft:null,excludedItemIds:Y}),__cbLbl.off(de),We(ie,ne,Q,Y))`);
-  // The sticky names' redraw (Ie, on every scroll): the hand-over first, at the same scroll position.
+  // The sticky names' redraw (Ie, on every scroll): the hand-over first, at the same scroll position, then the
+  // sticky names but those the base canvas still shows.
   replace(
     `N.current=!1,me.clearRect(0,0,ie,He);const Qe=v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"});`,
-    `N.current=!1,me.clearRect(0,0,ie,He),__cbLbl.sync(I.current,_e,()=>ee.current());const Qe=v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"});`,
+    `N.current=!1,me.clearRect(0,0,ie,He),__cbLbl.sync(I.current,_e,()=>ee.current());const Qe=__cbLbl.shown(I.current,v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"}));`,
   );
 
   // 12. Starting playback waits only for audio that will be heard. After a seek, Play waits (up to 8 s,

@@ -10,19 +10,21 @@
 // - still: the timeline scrolled so the music clips start 20, 53 and 90 px left of the view, as screenshots
 //   (Chromium's own compositing): each music track's name row against the same row with the clips' starts far off
 //   screen (one name, at the edge). Pristine is expected to differ (Cardboard's bug), patched to be the same.
-// - sweep: the scroll moved 4 px a frame, from 40 px before the clips' start to 300 px past it and back, near the start
-//   and near 70 s. Each frame the base canvas and the fixed names canvas are composed as the page shows them, both
-//   right after the scroll (the names not handed over yet: that frame is on screen too) and once the editor has
-//   redrawn: a music row must then be one name, the same pixels as the row with one name at the edge, or the name at
-//   its clip's start (the row at 40 px before, moved by the scroll). Every 8th frame the whole view is compared with
+// - sweep: the scroll moved 4 px a step, from 40 px before the clips' start to 300 px past it and back, near the start
+//   and near 70 s. At each step the base canvas and the fixed names canvas are composed as the page shows them, both
+//   right after the scroll (the names not handed over yet: that frame is on screen too), where a music row must be one
+//   name, and once the editor has redrawn, where it must be the same pixels as the row with one name at the edge, or
+//   the name at its clip's start (the row at 40 px before, moved by the scroll). Every 8th frame the whole view is compared with
 //   a full redraw of the base canvas at the same scroll position (patch-renderer 11's contextrestored redraw): the
 //   names handed over a crossing at a time must leave exactly what drawing them all again draws, on every track.
 // - wheel: real sideways wheel notches, Cardboard's own horizontal scroll (its wheel handler moves the view in a frame),
 //   20 each way: once a notch settles with the clips' start off screen, a music row is the one name at the edge.
 // Pixels count as different 16 levels apart in a channel (the clips' gradient is dithered by where it lands on the
 // canvas; a name's letters are some 150 levels off the clip's colour), and a clip's own rounded edge isn't compared.
-// It exits 1 if a patched build fails anything, or if pristine 1.4.0 doesn't show the overlap (then this test no
-// longer tests the fix).
+// Each sweep and wheel run starts with a redraw of the base canvas with the view still (as a hover makes), after which
+// the patched build keeps no copy of the name rows: the first crossing of each run takes the redraw way, the later
+// ones the copy that redraw makes. It exits 1 if a patched build fails anything (or kept a copy then), or if pristine
+// 1.4.0 doesn't show the overlap (then this test no longer tests the fix).
 //
 // Usage: CARDBOARD_PRISTINE=<_inspect/cardboard-1.4.0> [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>]
 //        node scripts/carton/test/browser/timeline-labels.js [out dir]
@@ -50,7 +52,7 @@ const builds = () => {
   fs.cpSync(path.join(pristine, "app-asar", "dist", "renderer"), shipped, { recursive: true });
   const patched = path.dirname(stage(pristine, path.join(OUT, "patched")).assets);
   const editor = fs.readFileSync(path.join(patched, "assets", "EditorRoute-CuIqwZKP.js"), "utf8");
-  for (const hook of ["__cbLbl={", "__cbLbl.base(de,ie,_e,Q,", "__cbLbl.off(de),We(ie,ne,Q,Y)", "__cbLbl.sync(I.current,_e,"])
+  for (const hook of ["__cbLbl={", "__cbLbl.base(de,ie,_e,Q,", "__cbLbl.off(de),We(ie,ne,Q,Y)", "__cbLbl.sync(I.current,_e,", "__cbLbl.shown(I.current,v1("])
     if (editor.split(hook).length !== 2) throw new Error(`the patched editor should have ${hook} once`);
   return { pristine: expose(shipped), patched: expose(patched) };
 };
@@ -139,6 +141,9 @@ const probes = () => {
   // Cardboard puts off loading thumbnails and waveforms while the view scrolls (180 ms, 1 s after it stops) and redraws
   // when they come: let that happen before a sweep, so that the base canvas only changes by the names handed over
   const settle = () => new Promise((r) => setTimeout(r, 1500));
+  // then a redraw of the base canvas with the view still, as a hover or a selection makes: the patched build keeps no
+  // copy of the name rows then, so the first crossing after it takes the other way (a redraw); true if it kept one
+  const idleRedraw = async () => { els().base.dispatchEvent(new Event("contextrestored")); await frame(); await frame(); await frame(); return els().base.__cbLbl?.ok ?? null; };
   // each music track's name row (device rows of the surface): where the fixed canvas has ink with the names stuck
   const rows = () => {
     const { ov, base } = els(), dpr = devicePixelRatio, top = base.getBoundingClientRect().top, d = ov.getContext("2d").getImageData(0, 0, Math.min(ov.width, Math.round(300 * dpr)), ov.height).data, w = Math.min(ov.width, Math.round(300 * dpr));
@@ -167,8 +172,9 @@ const probes = () => {
       const band = rows(), sticky = band.map(([a, z]) => compose(a, z));
       await scrollTo(start + from);
       await settle();
+      const copy = await idleRedraw();
       const natural = band.map(([a, z]) => compose(a, z));
-      const res = { frames: 0, overlap: 0, settledBad: 0, betweenBad: 0, full: 0, fullBad: 0, examples: [] };
+      const res = { copy, frames: 0, overlap: 0, settledBad: 0, betweenBad: 0, full: 0, fullBad: 0, examples: [] };
       // a row is right if it shows one name: at the edge, or at the clip's start (the row at `from`, moved)
       const one = (k, img, d) => {
         if (d >= 0 && diff(img, sticky[k], 0, from0(d)) === 0) return true;
@@ -182,7 +188,9 @@ const probes = () => {
         const sc = els().sc;
         sc.scrollLeft = start + d;
         const between = band.map(([a, z]) => compose(a, z));
-        await frame(); await frame();
+        // settled: the editor redraws the names in the frame after the scroll (Ie), or, when its base canvas has to
+        // be redrawn for a crossing (no copy of the name rows yet), in the frame after that
+        await frame(); await frame(); await frame();
         const settled = band.map(([a, z]) => compose(a, z));
         res.frames++;
         let bad = false;
@@ -222,8 +230,13 @@ const probes = () => {
       this.wheelRef = { start, band, sticky: band.map(([a, z]) => compose(a, z)) };
       await scrollTo(start - 60);
       await settle();
+      return idleRedraw();
     },
-    wheelNow() {
+    // once the notch's scroll has stopped (3 frames at the same place) and the editor has drawn after it: the
+    // names are handed over the frame after the scroll, or a frame later when the base canvas is redrawn for it
+    async wheelNow() {
+      for (let same = 0, at = NaN; same < 3;) { await frame(); const s = els().sc.scrollLeft; same = s === at ? same + 1 : 0; at = s; }
+      await frame(); await frame();
       const { start, band, sticky } = this.wheelRef, d = els().sc.scrollLeft - start;
       return { d, bad: d > 0 ? band.map(([a, z], k) => diff(compose(a, z), sticky[k], 0, from0(d))) : [] };
     },
@@ -271,13 +284,12 @@ const runCase = async (browser, name, renderer, dpr) => {
   // wheel: real wheel notches (sideways) with the pointer on the SFX row (its clips light up under the pointer, the
   // music rows don't), right then left, each settled music row against the edge's name
   for (const at of [4, 70]) {
-    await page.evaluate((s) => window.__cbProbe.wheelStart(s), at * pps);
+    const copy = await page.evaluate((s) => window.__cbProbe.wheelStart(s), at * pps);
     const v = await page.evaluate(() => window.__cbProbe.view());
     await page.mouse.move(v.left + v.width / 2, v.sfx);
-    const res = { notches: 0, stuckAndWrong: 0, examples: [] };
+    const res = { copy, notches: 0, stuckAndWrong: 0, examples: [] };
     for (const dir of [1, -1]) for (let i = 0; i < 20; i++) {
       await page.mouse.wheel(dir * 25, 0);
-      await page.waitForTimeout(80);
       // with the clips' start off screen the name is stuck at the edge: the same pixels as the reference
       const { d, bad } = await page.evaluate(() => window.__cbProbe.wheelNow());
       res.notches++;
@@ -329,6 +341,10 @@ const compareShots = async (browser, files) => {
     const stillBad = Object.values(r.still).some((x) => Object.values(x).some((n) => n > 0));
     const sweepBad = Object.values(r.sweep).some((x) => x.overlap > 0 || x.fullBad > 0);
     const wheelBad = Object.values(r.wheel).some((x) => x.stuckAndWrong > 0);
+    // each sweep and wheel run starts after a still redraw: the patched build must have kept no copy then, so that
+    // the first crossing of each run is handed over by a redraw (and the later ones by the copy that redraw makes)
+    const kept = [...Object.values(r.sweep), ...Object.values(r.wheel)].map((x) => x.copy);
+    if (r.name === "patched" && kept.some((k) => k !== false)) { failed = true; console.log(`  FAIL: a still redraw kept a copy of the name rows at x${r.dpr} (${kept.join(", ")})`); }
     if (r.name === "patched" && (stillBad || sweepBad || wheelBad)) { failed = true; console.log(`  FAIL: the patched build drew a name twice (or not as a full redraw does) at x${r.dpr}`); }
     // pristine 1.4.0 overlaps in the still cases (each of them) and in the sweep: else this test tests nothing
     if (r.name === "pristine" && !(Object.values(r.still).every((x) => Object.values(x).every((n) => n > 0)) && Object.values(r.sweep).every((x) => x.settledBad > 0))) { failed = true; console.log(`  FAIL: pristine 1.4.0 didn't overlap at x${r.dpr}: the test no longer shows the bug`); }

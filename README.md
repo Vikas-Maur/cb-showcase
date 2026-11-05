@@ -275,7 +275,11 @@ The timeline and playback, found by playing real projects in a separate copy of 
   A clip that started off screen but inside that wide canvas had its name on both. Now each name is on one
   of them at a time. When a clip's start crosses the edge, its name moves to the other canvas in the frame
   that redraws the names at the edge. Only that name's spot is redrawn, from a copy of the name rows kept
-  before the names went on, not the whole timeline. A drag draws the names as Cardboard did.
+  before the names went on, not the whole timeline. The copy is taken only by redraws while the timeline
+  scrolls, so a redraw for a hover or a selection costs what it did. The first crossing after a pause
+  redraws the timeline once instead. Until then the name stays at the clip's start, cut by the edge,
+  never twice. The edge canvas never draws a name the scrolling one still shows. A drag draws the names
+  as Cardboard did.
   `scripts/carton/test/browser/timeline-labels.js` checks it in Cardboard's real pages, at scales 1, 1.25
   and 2:
   - frame by frame while scrolling, and with the wheel;
