@@ -139,6 +139,12 @@ export interface CartonUiHandle extends CartonUi {
    */
   reportConflicts(cards: readonly ConflictCard[], by?: CoreActor): void;
   /**
+   * Show the name core has for a version now: one the app gave it elsewhere (the worker's name for an agent turn, then
+   * its title). Never writes it, and never shows over a name given since (review of a2725f9c #4: telling the panel by
+   * its own nameVersion wrote the title back over the person's rename).
+   */
+  showName?(versionId: string): Promise<void>;
+  /**
    * The core card behind a Conflict, exactly as it was reported or raised (fields a host added, such as its own card
    * id, included). `Conflict.id` is opaque: map a resolved card back with this, never by parsing the id.
    */
@@ -403,6 +409,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // ------------------------------------------------------------ history
   let cutId = carton.cut;
+  // Each version's newest naming step (nameVersion, showName): an older one that answers later shows nothing.
+  const nameSteps = new Map<string, number>();
+  const nameStep = (id: string) => {
+    const n = (nameSteps.get(id) ?? 0) + 1;
+    nameSteps.set(id, n);
+    return n;
+  };
   // Oldest first, changed in place. The indexes are kept incrementally, so an append costs O(rows after it), not
   // O(History): a burst of confirmations on a 100k History stays cheap.
   const rows: Row[] = [];
@@ -667,6 +680,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const next = group(span.map((r) => r.core!), new Map(span.map((r) => [r.v.id, r])));
     rows.splice(a, span.length, ...next);
     return a;
+  };
+
+  /**
+   * A version's name as it is now on its row (`stored`: core's, undefined for none; shown as people see it), with what
+   * its turn was asked; its run of versions grouped again (a name ends an agent's turn).
+   */
+  const rowNamed = (id: string, stored: string | undefined, asked: string | undefined) => {
+    const j = pos.get(id);
+    const row = j === undefined ? undefined : rows[j];
+    if (!row?.core) return;
+    const without = <T extends object>(x: T) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== "name" && k !== "asked")) as T;
+    const shown = nameShown(schema, stored);
+    row.core = { ...without(row.core), ...(stored ? { name: stored } : {}), ...(stored && asked ? { asked } : {}) };
+    row.v = { ...without(row.v), ...(shown ? { name: shown } : {}), ...(shown && asked ? { asked } : {}), ...(row.v.turn ? { turn: { ...row.v.turn, label: shown ?? "" } } : {}) };
+    reindexFrom(Math.min(j!, regroupAt(j!)));
+    hub.notify("history");
   };
 
   /** A confirmed row that is no version (the fold half of a fold-some, once its partial revert arrives). */
@@ -2400,15 +2429,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(id);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core) return;
+      const gen = nameStep(id);
       // (a rename keeps what an agent turn was asked: core carries it)
       await carton.name(r.v.ref, name, { author: opts.me, ...(o?.asked ? { asked: o.asked } : {}) });
-      const j = pos.get(id);
-      if (j === undefined) return;
-      const row = rows[j]!, asked = o?.asked ?? row.v.asked;
-      row.core = { ...row.core!, name, ...(asked ? { asked } : {}) };
-      row.v = { ...row.v, name, ...(asked ? { asked } : {}), ...(row.v.turn ? { turn: { ...row.v.turn, label: name } } : {}) };
-      reindexFrom(Math.min(j, regroupAt(j)));
-      hub.notify("history");
+      if (nameSteps.get(id) === gen) rowNamed(id, name, o?.asked ?? rows[pos.get(id) ?? -1]?.v.asked);
+    },
+    async showName(id) {
+      const i = pos.get(id);
+      const r = i === undefined ? undefined : rows[i];
+      if (!r?.core) return;
+      const gen = nameStep(id), ref = r.core.ref;
+      const v = (await carton.log({ cut: ref.branchId, before: ref.seq + 1, limit: 1 }))[0];
+      if (!v || v.ref.seq !== ref.seq || nameSteps.get(id) !== gen) return;
+      rowNamed(id, v.name, v.asked);
     },
     async undo(turnId) {
       if (undo?.id !== turnId) return { ok: false, error: "Something changed. Try again." };

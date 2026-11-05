@@ -381,9 +381,11 @@ export interface Carton {
   /** Name a version; `author`: who named it (default: this handle's actor). */
   /**
    * Names a version. `asked`: the request an agent turn's title was made from (`Version.asked`); a rename without it
-   * keeps the one the version has.
+   * keeps the one the version has. `ifName`: only while the version's name is still this one (null: while it has none),
+   * checked in the same step as the write, so a name someone gives meanwhile is never written over (the app's agent
+   * turn names and titles: review of a2725f9c #4). True when it wrote.
    */
-  name(ref: StateRef | string, name: string, opts?: { author?: Actor; asked?: string }): Promise<void>;
+  name(ref: StateRef | string, name: string, opts?: { author?: Actor; asked?: string; ifName?: string | null }): Promise<boolean>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
@@ -2837,18 +2839,26 @@ class CartonImpl implements Carton {
     return out as FoldResult;
   }
   /** Name a version; `author`: who named it (default: this handle's actor). */
-  async name(ref: StateRef | string, name: string, opts: { author?: Actor; asked?: string } = {}): Promise<void> {
+  async name(ref: StateRef | string, name: string, opts: { author?: Actor; asked?: string; ifName?: string | null } = {}): Promise<boolean> {
     await this.#whole();
     const by = this.#actor(opts.author);
-    let node!: NodeId, asked: string | undefined;
+    let node!: NodeId, asked: string | undefined, skip = false;
     const at = this.#opts.clock?.() ?? Date.now();
     await this.#mutate(undefined, () => {
       node = this.#node(ref);
+      // (the name it has, read in the queued step after its refresh: every rename of this store's versions runs here,
+      // a cb's through the lease holder, so none lands between this read and the write)
+      if (opts.ifName !== undefined) {
+        const canon = this.#h.canon(node);
+        skip = (this.#h.names().find(([n]) => n === canon)?.[1].name ?? null) !== opts.ifName;
+        if (skip) return;
+      }
       // what an agent turn was asked stays with its version through a rename (the panel's own rename writes again)
       asked = opts.asked || this.#asked.get(this.#h.canon(node));
       this.#named(this.#h, node, { name, at, by, ...(asked ? { asked } : {}) });
     }, {
       extra: () => {
+        if (skip) return {};
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
@@ -2856,6 +2866,7 @@ class CartonImpl implements Carton {
       },
       idempotent: true,
     });
+    return !skip;
   }
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;

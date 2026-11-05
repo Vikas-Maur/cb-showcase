@@ -73,3 +73,21 @@ test("a name the host hides: log keeps it; Find, landmarks and undo's words read
     assert.ok(top && !/Earlier messages/.test(top.label ?? ""), JSON.stringify(top));
   } finally { await c.close(); }
 });
+
+test("a conditional name (ifName): written only while the name is still the one given; says whether it wrote", async () => {
+  const c = await open();
+  try {
+    await c.commit({ ops: [set("end", 4)], author: director });
+    assert.equal(await c.name(at(c, 1), "Tighter intro", { ifName: null }), true, "unnamed: written");
+    assert.equal(await c.name(at(c, 1), "Someone else's", { ifName: null }), false, "named since: not written");
+    assert.equal(await c.name(at(c, 1), "Shorter intro", { ifName: "Tighter intro", asked: "make it shorter" }), true);
+    assert.equal(await c.name(at(c, 1), "Stale title", { ifName: "Tighter intro" }), false, "renamed since: kept");
+    const v = (await c.log({ limit: 1 }))[0]!;
+    assert.equal(v.name, "Shorter intro");
+    assert.equal(v.asked, "make it shorter");
+    // concurrent: a person's rename queued before the conditional one wins over it
+    const [a, b] = await Promise.all([c.name(at(c, 1), "Person's own"), c.name(at(c, 1), "Agent's title", { ifName: "Shorter intro" })]);
+    assert.deepEqual([a, b], [true, false]);
+    assert.equal((await c.log({ limit: 1 }))[0]!.name, "Person's own");
+  } finally { await c.close(); }
+});

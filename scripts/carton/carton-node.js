@@ -1934,11 +1934,14 @@ export const cardboard14 = {
           const v = log[i];
           if (!ours(v)) continue;
           if (v.name) return { status: "named" };
-          await lc.carton.name(v.ref, label);
-          // Core tells no one of a name: the History panels open on this project show it through their own
-          // nameVersion (a row keyed as fromCarton keys it; core's name is idempotent, so the repeat writes nothing new).
+          // only while it still has no name (review of a2725f9c #4: a name the person gave since this read stays; core
+          // checks it in the same step as the write), and no title is made for a version someone named
+          const wrote = await lc.carton.name(v.ref, label, { ifName: null });
+          // Core tells no one of a name: the History panels open on this project show the name core has now (showName:
+          // a row keyed as fromCarton keys it; it reads, never writes, so it can't put this name back over a newer one)
           const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
-          for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, label).catch(() => {});
+          for (const h of panels.get(bundleOf(projectId)) ?? []) await h.showName?.(row).catch(() => {});
+          if (!wrote) return { status: "named" };
           // (asked without `changes`, the answer is as it always was)
           if (!changes) return { status: "named" };
           const ref = `${v.ref.branchId}@${v.ref.seq}`;
@@ -1960,10 +1963,12 @@ export const cardboard14 = {
         const seq = Number(m[2]), v = (await lc.carton.log({ cut: m[1], before: seq + 1, limit: 1 }))[0];
         if (!v || v.ref.seq !== seq || v.name !== was) return { status: "kept" };
         const words = typeof asked === "string" && asked.trim() ? asked.trim().slice(0, 400) : undefined;
-        await lc.carton.name(v.ref, name, words ? { asked: words } : {});
+        // review of a2725f9c #4: written only if the name is still the label, checked by core in the same step as the
+        // write, so a rename landing after the read above stays; the panels then show what core has (never write it)
+        const wrote = await lc.carton.name(v.ref, name, { ifName: was, ...(words ? { asked: words } : {}) });
         const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
-        for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, name, words ? { asked: words } : undefined).catch(() => {});
-        return { status: "named" };
+        for (const h of panels.get(bundleOf(projectId)) ?? []) await h.showName?.(row).catch(() => {});
+        return { status: wrote ? "named" : "kept" };
       },
       notices: async ({ bundlePath, actor, take }) => {
         const lc = await open(bundlePath);
