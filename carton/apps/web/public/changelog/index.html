@@ -170,30 +170,30 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       <h3>Saving and history</h3>
       <ul>
         <li><a href="#cb-saves"><span>Two saves at nearly the same moment, yours and an agent’s, can quietly undo one, even on different clips.</span><span class="ref">#4</span></a></li>
-        <li><a href="#cb-history"><span>Only the newest 20 versions of a timeline are kept, and every timeline save adds one.</span><span class="ref">#4</span></a></li>
-        <li><a href="#cb-stale"><span>An agent’s edit to a copy 20 or more saves old is merged against the current timeline, and can quietly undo newer edits.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-history"><span>Only the newest 20 snapshots of a timeline are kept, one for each save that changes it.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-stale"><span>Once an agent’s copy is older than the history Cardboard keeps, its edit can quietly undo newer edits, with no conflict shown.</span><span class="ref">#4</span></a></li>
       </ul>
       <h3>Speed</h3>
       <ul>
-        <li><a href="#cb-idle"><span>With nothing moving, the editor still measures the preview on every screen refresh.</span><span class="ref">#3</span></a></li>
+        <li><a href="#cb-idle"><span>While the editor is on screen, it measures the preview’s position every frame, even with nothing moving.</span><span class="ref">#3</span></a></li>
         <li><a href="#cb-filmstrip"><span>Timeline thumbnails decode every frame of a video, then keep one every half second or second.</span><span class="ref">#1</span></a></li>
       </ul>
       <h3>Importing</h3>
       <ul>
-        <li><a href="#cb-folder"><span>A folder dropped on the editor imports nothing, and no picker can choose a folder.</span><span class="ref">#1</span></a></li>
+        <li><a href="#cb-folder"><span>A folder dropped on the editor imports no media, and the media import pickers can’t choose a folder.</span><span class="ref">#1</span></a></li>
         <li><a href="#cb-thumbs"><span>A video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest.</span><span class="ref">#1</span></a></li>
       </ul>
     </div>
     <div>
       <h3>Playback and editing</h3>
       <ul>
-        <li><a href="#cb-play"><span>After a seek, Play waits for audio from muted tracks, and pressing it again doesn’t make it start sooner.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-play"><span>After a seek, Play can wait for unloaded audio from clips on muted tracks, and pressing it again doesn’t skip the wait.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a></li>
         <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a></li>
         <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a></li>
-        <li><a href="#cb-gpu"><span>When the graphics process restarts, the timeline stays black until something redraws it.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-gpu"><span>If the timeline’s drawing surfaces are lost and restored, it can stay black until something redraws it.</span><span class="ref">#2</span></a></li>
       </ul>
     </div>
   </div>
@@ -277,7 +277,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   <div>
     <figure class="media card"><img src="/changelog/img/conflict-card.webp" width="680" height="476" alt="A conflict card: you set a clip's opacity to 90% while the Director set it to 50%. Both edits are kept, with buttons Keep yours and Keep Director's."></figure>
     <h2 class="display">Carton: version history for video</h2>
-    <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
+    <p class="lead">Cardboard keeps a short recent history of a project’s timeline. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
 
     <section class="also" id="cb-saves">
       <span class="tag also">Also in Cardboard 1.4.1</span>
@@ -288,13 +288,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <section class="also" id="cb-history">
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Every version, and who made it</h3>
-      <p>Cardboard keeps only the newest 20 versions of a timeline, and every timeline save adds one. Carton’s History keeps every version. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+      <p>Cardboard keeps only the newest 20 snapshots of a timeline, one for each save that changes it. Carton’s History keeps every version. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
     </section>
 
     <section class="also" id="cb-stale">
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>An agent’s old copy can’t undo newer edits</h3>
-      <p>An agent edits a copy of the timeline. In Cardboard, once that copy is 20 or more saves old, its edit is merged against the current timeline instead of the version it came from, so its old values can quietly replace newer edits, with no conflict shown. Now an edit is always merged against the version it came from.</p>
+      <p>An agent edits a copy of the timeline. In Cardboard, once the version that copy came from has dropped out of its history (the newest 20 changed versions), its edit is merged against the current timeline instead, so its old values can quietly replace newer edits, with no conflict shown. Now an edit is always merged against the version it came from.</p>
     </section>
 
     <h3>Undo only what’s yours</h3>
@@ -335,10 +335,10 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   </aside>
   <div>
     <h2 class="display">An idle editor that stays idle</h2>
-    <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab. Now the editor rests when nothing moves.</p>
+    <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab of our Windows build. Now the editor rests when nothing moves.</p>
     <section class="also" id="cb-idle">
       <span class="tag also">Also in Cardboard 1.4.1</span>
-      <p>This is Cardboard’s own editor code, not our port. In Cardboard on a Mac, a project’s editor measures where the preview sits on screen on every screen refresh for as long as it’s open, even when nothing moves.</p>
+      <p>This is Cardboard’s own editor code, not our port. In Cardboard on a Mac, while a project’s editor is on screen, it measures where the preview sits on every frame, even when nothing moves.</p>
     </section>
     <div class="stats">
       <div class="stat"><b><s>20.3% →</s> 0.7%</b><span>of a CPU core, one project open, window on screen, nothing moving</span></div>
@@ -373,7 +373,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <section class="also" id="cb-play">
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Play means play</h3>
-      <p>In Cardboard, Play after a seek waits for the sound of clips on muted tracks, which will never be heard, and pressing Play again doesn’t make it start any sooner. Now it waits only for sound you’ll hear, and a second press starts at once.</p>
+      <p>In Cardboard, Play after a seek can wait for sound that hasn’t loaded yet from clips on muted tracks, which will never be heard, and pressing Play again while it waits doesn’t skip the wait. Now it waits only for sound you’ll hear, and a second press starts at once.</p>
     </section>
 
     <section class="also" id="cb-badges">
@@ -389,7 +389,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
         <li id="cb-playhead"><b>The playhead stays in view.</b> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
         <li id="cb-focus"><b>Clicking the timeline takes the keyboard.</b> In Cardboard, it stays in the prompt box, so Space types a space instead of playing.</li>
         <li id="cb-tooltips"><b>The left rail shows its tooltips.</b> In Cardboard, its icons never show their names.</li>
-        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> In Cardboard, when the graphics process restarts, the timeline stays black until something else redraws it.</li>
+        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> In Cardboard, if the timeline’s drawing surfaces are lost and restored, which can happen when the graphics process restarts, the timeline can stay black until something else redraws it.</li>
       </ul>
     </section>
 
@@ -434,7 +434,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <section class="also" id="cb-folder">
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Import a whole folder</h3>
-      <p>In Cardboard, a folder dropped on the editor imports nothing, and none of its pickers can choose a folder. Now use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+      <p>In Cardboard, a folder dropped on the editor imports no media, and its media import pickers can’t choose a folder. Now use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
     </section>
 
     <section class="also" id="cb-fixes-1">
