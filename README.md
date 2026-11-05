@@ -267,6 +267,20 @@ The timeline and playback, found by playing real projects in a separate copy of 
   Chromium gives them back blank, which shows as black, and says so with a `contextrestored` event nothing
   listened to. They stayed black until something else redrew them: still 99% black 10 s after the GPU
   process restarted, against redrawn within 1.5 s now.
+- A clip's name shows once on the timeline. Scrolled so that a clip started just off the left edge,
+  Cardboard drew its name twice, overlapping: once at the clip's start, cut by the edge ("…verie (light
+  score)"), and once stuck at the edge ("Arctic Reverie (light score)"). That is Cardboard's own drawing,
+  on a Mac too, at any display scale, and still in 1.4.1. The names are drawn on two canvases: one scrolls
+  with the clips and covers up to three screens' width around the view, the other stays at the view's edge.
+  A clip that started off screen but inside that wide canvas had its name on both. Now each name is on one
+  of them at a time. When a clip's start crosses the edge, its name moves to the other canvas in the frame
+  that redraws the names at the edge. Only that name's spot is redrawn, from a copy of the name rows kept
+  before the names went on, not the whole timeline. A drag draws the names as Cardboard did.
+  `scripts/carton/test/browser/timeline-labels.js` checks it in Cardboard's real pages, at scales 1, 1.25
+  and 2:
+  - frame by frame while scrolling, and with the wheel;
+  - against a full redraw at the same place;
+  - and that pristine 1.4.0 shows the overlap.
 - Play waits only for audio that will be heard. After a seek, Play holds ("Loading audio...", up to 8 s)
   until the sound of the clips ahead is loaded, and that included clips on muted tracks and muted,
   hidden or reversed clips, which are never played. With a slow disk (every extracted-audio read 3 s
