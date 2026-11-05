@@ -1022,9 +1022,11 @@ so two people, each with their own agents, edit it at once. Nothing here runs fo
 with Carton off none of it runs at all.
 
 - **Share** (the "Share" icon in the title bar; in a window under 1180 px wide, the Share button in the History panel's
-  head) opens a dialog over the editor, "Share “Weekend reel”" (it was a tab of the side panel). Not shared yet: enter
-  the sharing server's address (as people say it, "share.example.com" is enough; once used it is remembered and shown
-  as one line with Change) and your name (asked once, then shown as "Teammates see you as …" with Change), then Share
+  head) opens a dialog over the editor, "Share “Weekend reel”" (it was a tab of the side panel). Not shared yet: the
+  sharing server is already filled in, shown as one line with Change: this build's own server
+  (`cardboard-showcase.vikasmaur10.workers.dev`, open to anyone, so nobody has to know an address). Change takes
+  another (as people say it, "share.example.com" is enough; once used it is remembered and shown the same way). Then
+  your name (asked once, then shown as "Teammates see you as …" with Change), then Share
   project; Enter in a field does the same. A host with open creation (the free web demo's) needs nothing else:
   you become the project's owner. Any other host asks for the invite you were given (the host's owner gets one with its
   admin token); the form shows that "Invite code" field only when the host asks for it. An address that can't be
