@@ -272,18 +272,20 @@ The timeline and playback, found by playing real projects in a separate copy of 
   score)"), and once stuck at the edge ("Arctic Reverie (light score)"). That is Cardboard's own drawing,
   on a Mac too, at any display scale, and still in 1.4.1. The names are drawn on two canvases: one scrolls
   with the clips and covers up to three screens' width around the view, the other stays at the view's edge.
-  A clip that started off screen but inside that wide canvas had its name on both. Now each name is on one
-  of them at a time. When a clip's start crosses the edge, its name moves to the other canvas in the frame
-  that redraws the names at the edge. Only that name's spot is redrawn, from a copy of the name rows kept
-  before the names went on, not the whole timeline. The copy is taken only by redraws while the timeline
-  scrolls, so a redraw for a hover or a selection costs what it did. The first crossing after a pause
-  redraws the timeline once instead. Until then the name stays at the clip's start, cut by the edge,
-  never twice. The edge canvas never draws a name the scrolling one still shows. A drag draws the names
-  as Cardboard did.
-  `scripts/carton/test/browser/timeline-labels.js` checks it in Cardboard's real pages, at scales 1, 1.25
-  and 2:
-  - frame by frame while scrolling, and with the wheel;
+  A clip that started off screen but inside that wide canvas had its name on both. Now the edge canvas
+  shows a clip's name only once the clip's own name has left the view. Until then that name scrolls off
+  with its clip, cut by the edge; then it reappears at the edge. The scrolling canvas is Cardboard's,
+  untouched. The edge canvas, already redrawn on every scroll, only leaves out the names still in view, so
+  the timeline's redraws do no more work than before and nothing extra is kept in memory. Drags, marquees
+  and export draw as Cardboard does. Cardboard's wheel and touchpad scrolling also redrew the names a frame
+  after the view moved. Each wheel notch showed one frame with the edge names of the old place: Cardboard's
+  own edge names hid it, but at the switch it showed as a frame with no name, or two. The wheel's frame now
+  redraws them, and the redraw the scroll event asks for next is skipped, so they are redrawn as often as
+  before. `scripts/carton/test/browser/timeline-labels.js` checks it in Cardboard's real pages, at scales
+  1, 1.25 and 2:
+  - every scrolling frame, and with real wheel notches;
   - against a full redraw at the same place;
+  - drags, a marquee, a moved keyframe, jumps and export, pixel for pixel against pristine 1.4.0;
   - and that pristine 1.4.0 shows the overlap.
 - Play waits only for audio that will be heard. After a seek, Play holds ("Loading audio...", up to 8 s)
   until the sound of the clips ahead is loaded, and that included clips on muted tracks and muted,

@@ -422,55 +422,66 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
 
   // 22. A clip's name is drawn once on the timeline. Cardboard draws the names on two canvases (D$): the tracks'
   // base canvas, which scrolls with the clips and spans up to three screens around the view (wv) so that it is
-  // redrawn only every half screen of scrolling, holds each name at its clip's start ("natural", v1 with the base's
-  // own left edge); a fixed canvas over the view (the "titles" layer) holds the names of clips that start left of
+  // redrawn only every half screen of scrolling, holds each name at its clip's start ("natural", We: v1 with the base's
+  // own left edge); a fixed canvas over the view (the "titles" layer, Ie) holds the names of clips that start left of
   // the view at its left edge ("sticky", v1 with the scroll position), redrawn on every scroll. A clip that starts
   // left of the view but on the base canvas was on both: its name at its start, cut by the view's edge, and again
   // at the edge, the two overlapping ("…verie (light score)" over "Arctic Reverie (light score)") whenever the
   // clip started less than its name's width off screen. Cardboard's own code, on any screen and scale (seen at
   // 1, 1.25 and 2 in its pristine 1.4.0 pages, and unchanged in 1.4.1); not ours, and only the drawing of names.
-  // Now each name is on one canvas at a time. The base canvas draws the names of the clips that aren't sticky at the
-  // scroll position it is drawn at, and the fixed canvas never draws a name the base canvas still shows. Each scroll
-  // hands a name over when its clip's start crosses the view's edge, just before the sticky names are drawn (Ie): a
-  // clip that went past the edge has its name taken off the base canvas (its pixels put back from a copy of the name
-  // rows made before the names were drawn), and one that came back has it drawn there again. The names that move
-  // with the clips stay on the canvas that moves with them; moving them all to the fixed canvas would have made
-  // them trail their clips by a frame while scrolling (it is redrawn in the frame after the scroll).
-  // The copy is made only by a redraw while the view scrolls (the scroll position changed in the last 0.6 s): taking
-  // it makes the canvas flush its drawing at once, which slowed every redraw in headless Chromium, however little
-  // was copied, and most redraws (hover, selection, a clip's animation) happen with the view still. A
-  // crossing without a usable copy (none taken, rows that overlap, a lost GPU context) redraws the base canvas once,
-  // which takes one; until then the name stays at its clip's start, cut by the edge, never drawn twice. A drag's base
-  // canvas (the draft) draws every name, as Cardboard did; the next redraw after it goes back to this. Same code on
-  // a Mac and on Windows: it isn't a Windows difference.
-  const labels = String.raw`__cbLbl={
-base(c,x,dpr,w,list,sl,draw,redraw){const s=c.__cbLbl??={},t=performance.now(),moving=sl!==s.sl||t-(s.at??-1e9)<600;sl!==s.sl&&(s.sl=sl,s.at=t);Object.assign(s,{list,x,dpr,ox:w.offsetX,draw,redraw,W:c.width,H:c.height,ok:!1,asked:!1,stale:!1,on:new Set});
-const now=[];for(const e of list)sl>e.clipLeft||(s.on.add(e.itemId),now.push(e));
-if(moving&&now.length&&!x.isContextLost?.()){const rows=new Map;let h=0,end=-1,bad=!1;for(const y of [...new Set(list.map(e=>e.textY))].sort((a,b)=>a-b)){const y0=Math.max(0,Math.floor((y-9)*dpr)),y1=Math.min(c.height,Math.ceil((y+9)*dpr));if(y1<=y0||y0<end){bad=!0;break}end=y1,rows.set(y,{y0,h:y1-y0,r:h}),h+=y1-y0}s.rows=rows;
-if(h&&!bad){s.k||(s.k=document.createElement("canvas"),s.k.addEventListener("contextrestored",()=>s.redraw?.()));const k=s.k,H=Math.max(h,64);(k.width!==c.width||k.height!==H)&&(k.width=c.width,k.height=H);const g=s.g??=k.getContext("2d",{alpha:!1});if(g&&!g.isContextLost?.()){for(const r of rows.values())g.drawImage(c,0,r.y0,c.width,r.h,0,r.r,c.width,r.h);s.ok=!0}}}
-x.save(),x.setTransform(dpr,0,0,dpr,-s.ox*dpr,0),draw(now),x.restore()},
-off(c){const s=c?.__cbLbl;s&&(s.list=null,s.stale=!0)},
-sync(c,sl,redraw){const s=c?.__cbLbl;if(!s)return;sl!==s.sl&&(s.sl=sl,s.at=performance.now());if(!s.list){s.stale&&(s.stale=!1,redraw());return}if(c.width!==s.W||c.height!==s.H)return;
-let off=null,add=null;for(const e of s.list){const want=!(sl>e.clipLeft);want!==s.on.has(e.itemId)&&(want?add??=[]:off??=[]).push(e)}if(!off&&!add)return;
-const x=s.x;if(x.isContextLost?.())return;x.save();
-if(off)if(s.ok&&!s.g.isContextLost?.()){x.setTransform(1,0,0,1,0,0),x.imageSmoothingEnabled=!1;for(const e of off){const r=s.rows.get(e.textY),a=Math.max(0,Math.floor((e.x-4-s.ox)*s.dpr)),b=Math.min(c.width,Math.ceil((e.x+e.maxWidth+4-s.ox)*s.dpr));r&&b>a&&x.drawImage(s.k,a,r.r,b-a,r.h,a,r.y0,b-a,r.h),s.on.delete(e.itemId)}}else s.asked||(s.asked=!0,redraw());
-if(add){for(const e of add)s.on.add(e.itemId);x.setTransform(s.dpr,0,0,s.dpr,-s.ox*s.dpr,0),s.draw(add)}x.restore()},
-shown(c,list){const s=c?.__cbLbl;return s?.list&&list.some(e=>s.on.has(e.itemId))?list.filter(e=>!s.on.has(e.itemId)):list}},`;
+  // Now the fixed canvas draws a clip's name at the edge only once the name on the base canvas has wholly left the
+  // view: until then that name scrolls off with its clip, cut by the edge, and then it shows at the edge. The base
+  // canvas is Cardboard's, untouched (its redraws cost what they did, it keeps nothing); the fixed canvas, which
+  // already draws the sticky names on every scroll, leaves out those whose clip's name the base canvas still
+  // shows in the view: its letters' right edge as b1 draws them (__cbNameEnd, measureText's ink box, once per name
+  // per redraw of the base canvas), so the edge name comes once no more than 2 px of the last letter is left (a faint
+  // sliver, 6 px clear of the edge name: no frame without a name).
+  // Rejected after review: handing each name over between the two canvases at the edge (a copy of the base
+  // canvas's name rows taken on redraws while scrolling, to take a name off it) made those redraws slower and kept
+  // the copy's memory, and a separate canvas for the names would cost its own memory and compositing. The name
+  // can't move to the fixed canvas before then either: that canvas is redrawn in the frame after a scroll, so a name
+  // that moves with its clip would trail it. This also stops the edge name of a graphic with a poster being drawn
+  // over its own name (Cardboard counts it sticky while it still sits at the clip's start, right of the poster).
+  // Drags and marquees draw what Cardboard draws (the fixed canvas is cleared during them).
+  // The switch must be drawn in the frame the view moves. Cardboard's wheel and touchpad scrolling (a non-passive wheel
+  // handler) moves the view inside an animation frame, but the timeline redraws its names on the scroll event, which
+  // comes a frame later: each wheel notch, and the first frame of a touchpad stroke, was shown with the fixed canvas
+  // still drawn for where the view had been. Cardboard's own edge names hide it (they stay put); at the switch it
+  // showed as a frame with no name (scrolling right) or with the clip's name coming back under the edge one
+  // (scrolling left). Now the wheel's frame runs the timeline's own scroll update (X: the base canvas's window, and the
+  // fixed canvas) at once, and the update the scroll event then asks for at the same place is skipped, once (K's
+  // unchanged-window branch), so the names are drawn as many times as before, a frame sooner on a notch. Scrolling
+  // the timeline's scrollbar or with the keyboard still updates a frame late, as in Cardboard.
+  // Same code on a Mac and on Windows: it isn't a Windows difference.
+  const labels = String.raw`__cbNameEnd=(g,n,cache)=>{g.save(),g.font=fm;let r=n.x;if(n.kind){const d=PU(g,n.kind);if(d-Eu<=n.maxWidth){const u=d-Eu+MU,m=n.maxWidth-u;let h="";g.measureText(n.label).width<=m?h=n.label:m>=_U&&(h=x1(g,n.label,m,cache)),r=Math.max(n.x-Eu+d,h?n.x+u+g.measureText(h).actualBoundingBoxRight:0)}}else{const l=x1(g,n.label,n.maxWidth,cache);l&&(r=n.x+g.measureText(l).actualBoundingBoxRight)}return g.restore(),r},
+__cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.length)return list;const by=nat.by??=new Map(nat.map(n=>[n.itemId,n])),on=e=>{const n=by.get(e.itemId);return!!n&&(n.end??=__cbNameEnd(g,n,cache))>sl+2};return list.some(on)?list.filter(e=>!on(e)):list},`;
   // The helpers, beside the names' own functions (v1 lays them out, b1 draws them).
   replace(`,NU=8,jU=28,DU=(`, `,${labels}NU=8,jU=28,DU=(`);
-  // The base canvas's redraw (pt): the names of the clips that aren't sticky now (the name rows kept first, while
-  // the view scrolls).
+  // The base canvas's names (We), as drawn, kept on the canvas for the fixed canvas to look up.
   replace(
-    `A1(mn),We(ie,ne,Q);Ie(ne);`,
-    `A1(mn),__cbLbl.base(de,ie,_e,Q,v1({clips:ne.clips,viewportLeft:Q.offsetX,viewportRight:Q.offsetX+Q.width,mode:"natural"}),mn.scrollLeft,E=>b1({ctx:ie,entries:E,xOffset:0,theme:D.current,textCache:z.current}),()=>ee.current());Ie(ne);`,
+    `b1({ctx:Q,entries:me?ie.filter(_e=>!me.has(_e.itemId)):ie,`,
+    `b1({ctx:Q,entries:Q.canvas.__cbNat=me?ie.filter(_e=>!me.has(_e.itemId)):ie,`,
   );
-  // A drag's redraw of it draws every name, as Cardboard does.
-  replace(`A1({...mn,draft:null,excludedItemIds:Y}),We(ie,ne,Q,Y))`, `A1({...mn,draft:null,excludedItemIds:Y}),__cbLbl.off(de),We(ie,ne,Q,Y))`);
-  // The sticky names' redraw (Ie, on every scroll): the hand-over first, at the same scroll position, then the
-  // sticky names but those the base canvas still shows.
+  // The fixed canvas's names (Ie, on every scroll): not those still shown on the base canvas.
   replace(
-    `N.current=!1,me.clearRect(0,0,ie,He);const Qe=v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"});`,
-    `N.current=!1,me.clearRect(0,0,ie,He),__cbLbl.sync(I.current,_e,()=>ee.current());const Qe=__cbLbl.shown(I.current,v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"}));`,
+    `const Qe=v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"});b1({ctx:me,entries:Qe,`,
+    `const Qe=__cbEdgeNames(I.current,v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"}),_e,me,z.current);b1({ctx:me,entries:Qe,`,
+  );
+  // The timeline's scroll update, callable from the wheel's frame (X, leaving a scroll event's pending frame as it was).
+  replace(
+    `j.current=Q,D.current=j3(e.current);const ne=()=>ae.current(),`,
+    `j.current=Q,D.current=j3(e.current),Q.__cbSync=()=>{const f=F.current;ae.current(),F.current=f};const ne=()=>ae.current(),`,
+  );
+  // The scroll event's update at the place the wheel's frame already drew: skipped, once. Whatever update comes next
+  // uses the skip up, so it can't hold back a later one (after a resize, say).
+  replace(
+    `const K=o.useCallback(Q=>{if(ci(Se.current,Q)){Ie(R.current);return}`,
+    `const K=o.useCallback(Q=>{const __s=j.current,__k=!!__s&&__s.__cbSkip===__s.scrollLeft;__s&&(__s.__cbSkip=null);if(ci(Se.current,Q)){__k||Ie(R.current);return}`,
+  );
+  // Cardboard's wheel frame (horizontal wheel and touchpad scrolling): the update at once when the view moved.
+  replace(
+    `(Je.scrollLeft+=st,Ae.current=Je.scrollLeft)`,
+    `(Je.__cbWas=Je.scrollLeft,Je.scrollLeft+=st,Ae.current=Je.scrollLeft,Je.__cbSync&&Je.scrollLeft!==Je.__cbWas&&(Je.__cbSkip=null,Je.__cbSync(),Je.__cbSkip=Je.scrollLeft))`,
   );
 
   // 12. Starting playback waits only for audio that will be heard. After a seek, Play waits (up to 8 s,
