@@ -960,3 +960,29 @@ test("QA G24: the pages' projectName is the editor store's, renamed with it", as
   t.setState({ projectName: "Weekend reel v2" });
   assert.equal(t.c.projectName, "Weekend reel v2", "a rename shows at the next opening");
 });
+
+// Item 5 (laptop, 2026-11-05: "the audio doesn't play"): History's Play plays through Cardboard's own playback.
+// playFrom(t): the playhead to t, then Cardboard's own toggle (its Space: the audio at the playhead loaded first), never
+// from a hover scrubber's time; nothing while it plays. shownLength: where the shown timeline ends (its own stop).
+test("Play in History: Cardboard's own playback from a place, never the hover scrubber's; the shown timeline's end", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const did = [];
+  t.setState({
+    isPlaying: false, isHoverScrubberVisible: true, hoverTime: 30, playheadTime: 0, currentTime: 0, timelineItems: [{ id: "a", endTime: 4 }, { id: "b", endTime: 9.5 }],
+    setHoverScrubberVisible: (v) => (did.push(["hover", v]), t.setState({ isHoverScrubberVisible: v, hoverTime: v ? 30 : null })),
+    setPlaybackPosition: (x) => (did.push(["seek", x]), t.setState({ playheadTime: x, currentTime: x })),
+    toggleTimelinePlayback: () => { const s = t.state(); did.push(["toggle", s.isHoverScrubberVisible && s.hoverTime !== null ? s.hoverTime : s.playheadTime]); t.setState({ isPlaying: true }); },
+    setIsPlaying: (v) => (did.push(["playing", v]), t.setState({ isPlaying: v })),
+  });
+  t.c.playFrom(3);
+  assert.deepEqual(did, [["hover", false], ["seek", 3], ["toggle", 3]], "from 3 s, not from the pointer's 30 s");
+  assert.equal(t.c.playing, true);
+  t.c.playFrom(7);
+  assert.equal(did.length, 3, "nothing while it plays: Play stops it before a jump");
+  t.c.pause();
+  assert.deepEqual(did.at(-1), ["playing", false]);
+  assert.equal(t.c.shownLength(), 9.5);
+  t.c.playFrom(Number.NaN);
+  assert.equal(did.length, 4);
+});

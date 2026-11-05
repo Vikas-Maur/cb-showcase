@@ -185,6 +185,52 @@ module.exports = String.raw`var __cartonMain = (() => {
     for (const id of hooked.get(chat.chatId) ?? []) out.add(id);
     return [...out];
   };
+  // Laptop, 2026-11-05: a turn's text (recordTurn's, Cardboard's s.text) is the prompt Cardboard composes for the agent,
+  // not what the person typed. After a message that didn't reach an agent, a switch of agent or a fresh session it
+  // starts with Cardboard's preamble and the earlier conversation (its KTe: "[Earlier messages in this conversation did
+  // not reach an agent…" … "[End of earlier conversation. The user's next message follows.]"), and the message's
+  // references and attached files follow it. History titled turns "[Earlier messages in this conver…". The person's
+  // own words are the chat's user event with the turn's id (recordTurn records it just before it returns the turn):
+  // the Working row and the version are titled from that. Without one, the composed prompt after Cardboard's preamble.
+  // U+2007 marks a mention in Cardboard's text (its p5 strips it for the agent). Never logged: it is the person's text.
+  const PREAMBLE_END = "[End of earlier conversation. The user's next message follows.]";
+  const ownWords = (chat, turn) => {
+    const evs = Array.isArray(chat?.events) ? chat.events : [];
+    for (let i = evs.length - 1; i >= 0; i--) {
+      const e = evs[i];
+      if (e && e.type === "user" && e.id === turn?.id && typeof e.text === "string") return e.text.replaceAll("\u2007", "");
+    }
+    const t = String(turn?.text ?? "");
+    const at = t.startsWith("[") ? t.indexOf(PREAMBLE_END) : -1;
+    return at >= 0 ? t.slice(at + PREAMBLE_END.length).trim() : t;
+  };
+  // Item 4 (laptop, 2026-11-05: "a title/summary would be more appropriate than raw messages"): once a turn that changed
+  // the edit has ended, its version is titled in a few words saying what was done ("Split audio for J/L cuts"), made
+  // the way Cardboard names its chats: one call to the person's own signed-in Claude Code (else Codex), the cheap
+  // model, no tools, no hooks, no session kept (Cardboard's hke, through namer(); patch-carton.js). Built from the
+  // person's request and the turn's worded changes (facts), so it says what actually changed. Until it comes, and
+  // whenever it doesn't (no signed-in binary, offline, a failure, the timeout, an empty or long answer: Cardboard's zWt
+  // gives null), the person's own words stay. Nothing waits for it. Neither the request nor the title is logged.
+  let summarize = null;
+  const TITLE_MS = 12000;
+  const TITLE_INSTRUCTION = "Title this change to a video edit in 2 to 6 words, sentence case, saying what was done, built from what changed and what the editor asked for, so they recognise it in their edit history. Reply with the title alone: no quotes, no punctuation, no explanation.";
+  const clip = (x, n) => (x.length > n ? x.slice(0, n - 1) + "…" : x);
+  const titlePrompt = (asked, changes) => {
+    const lines = changes.slice(0, 12).map((c) => "- " + clip(String(c).replace(/\s+/g, " ").trim(), 140));
+    if (changes.length > 12) lines.push("- and " + (changes.length - 12) + " more changes");
+    return "The editor asked: " + clip(String(asked).replace(/\s+/g, " ").trim(), 400) + "\n\nWhat changed in the edit:\n" + lines.join("\n");
+  };
+  const titleTurn = (t, named) => {
+    if (!summarize || !library || named?.status !== "named" || !named.ref || typeof named.label !== "string" || !Array.isArray(named.changes) || !named.changes.length) return;
+    Promise.resolve()
+      .then(() => summarize(titlePrompt(t.prompt, named.changes), TITLE_INSTRUCTION, TITLE_MS))
+      .then((title) => {
+        if (typeof title !== "string" || !title.trim() || title.trim() === named.label || !library) return;
+        // the worker keeps a name someone gave meanwhile (the person's rename): only its own label is replaced
+        return library.call("carton.retitleTurn", { projectId: t.projectId, ref: named.ref, was: named.label, title: title.trim(), asked: t.prompt });
+      })
+      .catch(() => {});
+  };
   const handlers = new Map();
   const forward = (method, args) => {
     if (!library) throw new Error("The library is not open yet");
@@ -194,8 +240,8 @@ module.exports = String.raw`var __cartonMain = (() => {
     on,
     turnStarted(chat, projectId, bundlePath, turn, provider) {
       if (!on || !provider) return;
-      const since = Date.now();
-      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since });
+      const since = Date.now(), prompt = ownWords(chat, turn);
+      running.set(chat, { projectId, bundlePath, turn: turn.id, prompt, provider, since });
       hooked.delete(chat.chatId);
       nextGen(chat.chatId);
       endHolds(chat.chatId);
@@ -203,7 +249,7 @@ module.exports = String.raw`var __cartonMain = (() => {
       // UX redesign 0.7: the project's History panels show the agent working while its turn holds the timeline, by the
       // ids its edits are recorded by (actorsOf); the prompt only goes to the worker, never logged
       const actors = actorsOf(chat, { provider, turn: turn.id });
-      if (library) library.call("carton.working", { projectId, chat: chat.chatId, provider, actor: actors[0], actors, prompt: turn.text, since }).catch(() => {});
+      if (library) library.call("carton.working", { projectId, chat: chat.chatId, provider, actor: actors[0], actors, prompt, since }).catch(() => {});
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
@@ -221,7 +267,9 @@ module.exports = String.raw`var __cartonMain = (() => {
       for (const actor of actors) void agentHook({ project: { bundlePath: t.bundlePath } }, actor, "endTurn");
       // Another provider's turn is told by its actors and its time, from its start to now (review P2: until): the request
       // can reach the worker after the next turn's edits, by the same actors.
-      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt, ...(director ? {} : { actors, since: t.since, until: Date.now() }) }).catch(() => {});
+      // (the person's own words name it at once; with a namer, the worker answers the turn's worded changes, and a
+      // short title replaces them when it comes: titleTurn)
+      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt, ...(summarize ? { changes: true } : {}), ...(director ? {} : { actors, since: t.since, until: Date.now() }) }).then((r) => titleTurn(t, r)).catch(() => {});
     },
     time(p) {
       if (!timing) return p;
@@ -229,6 +277,9 @@ module.exports = String.raw`var __cartonMain = (() => {
       return p.finally(() => require("node:fs").appendFile(timing, JSON.stringify({ at: Date.now(), ms: +(performance.now() - t0).toFixed(2), carton: on }) + "\n", () => {}));
     },
     library(lib) { library = lib; },
+    // Item 4: Cardboard's own naming call (patch-carton.js hands it over where 1.4.0 defines its chat namer):
+    // fn(prompt, instruction, timeoutMs) answers a cleaned title or null. With Carton off nothing is kept.
+    namer(fn) { if (on && typeof fn === "function") summarize = fn; },
     call(method, args) {
       // The pages ask once, at start, whether to take Carton's paths.
       if (method === "enabled") return on;

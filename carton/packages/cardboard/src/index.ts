@@ -53,7 +53,7 @@ export const cardboardFilesHost = {
   diagnose,
 };
 
-export { cardboardSchema, emptyProject, mediaName, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY, CARTON_MEDIA_FIELDS, SHARED_T1_KINDS } from "./schema.ts";
+export { cardboardSchema, emptyProject, mediaName, PROMPT_PREAMBLE, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY, CARTON_MEDIA_FIELDS, SHARED_T1_KINDS } from "./schema.ts";
 export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProject, mediaDetails, lacksDetails, completeMedia, completeEntry, projectDate, SEQ_FIELDS, ROOT_FIELDS } from "./host.ts";
 export type { CardboardProject, ItemProjection, KnownMedia } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";

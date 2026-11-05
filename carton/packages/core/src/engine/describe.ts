@@ -27,27 +27,61 @@ function phraseFor(p: { set: string; changed?: string; cleared: string; off?: st
   if (p.off && op.path.length === 3 && op.op === "set" && op.value === false) return p.off;
   return op.path.length === 3 && getIn(doc, op.path, schema) === undefined ? p.set : (p.changed ?? p.set);
 }
+/** A field's dotted path in its record (a root field's from the root), keyed-array element keys left out: how `labels` and `code` key it. */
+function dottedOf(schema: Schema, path: Path): string {
+  const cs = schema.collections[path[0] as string];
+  let spec: FieldSpec | undefined = cs ? cs.record : schema.root;
+  const parts: string[] = [];
+  for (let i = cs ? 2 : 0; i < path.length; i++) {
+    if (spec?.kind === "keyed") {
+      spec = spec.elem; // this segment is an element key: not part of the field's name
+      continue;
+    }
+    parts.push(String(path[i]));
+    spec = spec?.kind === "object" ? spec.fields[path[i] as string] : undefined;
+  }
+  return parts.join(".");
+}
 /** A field's words: its label (by dotted path, keyed-array element keys left out), else the path as before. */
 function fieldWords(schema: Schema, path: Path): { words: string; labelled: boolean } {
   const cs = schema.collections[path[0] as string];
-  const from = cs ? 2 : 0;
   const labels = cs ? cs.labels : schema.labels;
-  if (labels) {
-    let spec: FieldSpec | undefined = cs ? cs.record : schema.root;
-    const parts: string[] = [];
-    for (let i = from; i < path.length; i++) {
-      if (spec?.kind === "keyed") {
-        spec = spec.elem; // this segment is an element key: not part of the field's name
-        continue;
-      }
-      parts.push(String(path[i]));
-      spec = spec?.kind === "object" ? spec.fields[path[i] as string] : undefined;
-    }
-    const l = labels[parts.join(".")];
-    if (l) return { words: l, labelled: true };
-  }
-  return { words: path.slice(from).join("."), labelled: false };
+  const l = labels?.[dottedOf(schema, path)];
+  return l ? { words: l, labelled: true } : { words: path.slice(cs ? 2 : 0).join("."), labelled: false };
 }
+
+/**
+ * The program code a set op changes (CollectionDef.code: a code graphic's source, a shader's): the code field's path,
+ * and its source before and after. An op on the field itself, or on a structure holding it (a code graphic's whole
+ * `data.code`). Null when the op sets no code, or sets it to what it was.
+ */
+function codeOf(schema: Schema, op: PlainOp, doc: Doc): { path: Path; was: unknown; now: unknown } | null {
+  const code = schema.collections[op.path[0] as string]?.code;
+  if (!code?.length || op.op !== "set" || op.path.length < 3) return null;
+  const at = dottedOf(schema, op.path);
+  for (const c of code) {
+    if (c !== at && !c.startsWith(at + ".")) continue;
+    const tail = c === at ? [] : c.slice(at.length + 1).split(".");
+    const pick = (v: unknown) => tail.reduce<unknown>((x, k) => (isObj(x) ? x[k] : undefined), v);
+    const was = pick(getIn(doc, op.path, schema)), now = pick(op.value);
+    if (was !== now) return { path: [...op.path, ...tail], was, now };
+  }
+  return null;
+}
+/**
+ * How many lines a change of program code rewrote, in one pass: the lines between the two sides' common first and last
+ * lines, on the longer side (a whole new source: all of its lines). Two edits far apart count the lines between them.
+ */
+export function codeLines(was: unknown, now: unknown): number {
+  const a = typeof was === "string" && was ? was.split("\n") : [], b = typeof now === "string" && now ? now.split("\n") : [];
+  const n = Math.min(a.length, b.length);
+  let i = 0, j = 0;
+  while (i < n && a[i] === b[i]) i++;
+  while (j < n - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+  return Math.max(a.length, b.length) - i - j;
+}
+/** " (3 lines)", or nothing when no line changed (a source cleared: "Cleared the code of…" says it). */
+const linesWords = (n: number) => (n > 0 ? ` (${n} line${n === 1 ? "" : "s"})` : "");
 
 /** A root name field set for the first time: "Named the project 'Dragon short'" (its label is "<what> name"). */
 function namedAs(f: { words: string; labelled: boolean }, v: unknown): string | null {
@@ -320,23 +354,13 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
   return n;
 }
 
-/**
- * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) whose change is their
- * holder's, as a split's parts are the split's (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted
- * media 'Text: W6'"; regress prod3 P3-C: a setup row's "15 changes" listed every title's entry). The holder is the one
- * record of the part's `partOf` collection whose declared field names it, in base or among the records the change
- * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
- * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
- * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
- * is still told. Who names what is read once per call (a restore of many titles stays linear), and once per `names`
- * doc (describe's, `namingDoc(base, allOps)`: base plus all of a larger set's inserts) for the rows of one Fold plan,
- * so a duplicate another row inserts counts too (review of the merge: each row rebuilt it). Part's key → holder's.
- */
 // by `names` doc, then "collection\0field": the value → the keys of every record whose field holds it
 const NAMERS = new WeakMap<Doc, Map<string, Map<unknown, Set<unknown>>>>();
-function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, names?: Doc): Map<string, string> {
-  const out = new Map<string, string>();
-  const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
+/** Who names what (`partOf`): a collection's field's value → the keys of the records holding it, built once per field. */
+type Namers = (coll: string, field: string, hk: string) => Map<unknown, Set<unknown>>;
+const wholeOp = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
+function namersOf(groups: ReadonlyMap<string, Group>, base: Doc, names?: Doc): Namers {
+  const whole = wholeOp;
   let index = names && NAMERS.get(names);
   if (!index) {
     index = new Map();
@@ -357,16 +381,40 @@ function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema
     }
     return m;
   };
+  return namers;
+}
+/**
+ * The records holding `r`, when it is a part (`partOf`, `nounOf` null: a title's text entry, a code graphic's source):
+ * the holders' collection and the keys of every record of it that names `r` (none: null).
+ */
+function holdersOf(schema: Schema, namers: Namers, coll: string, r: Rec | undefined): { coll: string; ids: unknown[] } | null {
+  const cs = schema.collections[coll], of = cs?.partOf, hk = of && schema.collections[of.collection]?.key;
+  if (!hk || !r || cs!.nounOf?.(r) !== null) return null;
+  const ids = namers(of!.collection, of!.field, hk).get(r[cs!.key]);
+  return ids?.size ? { coll: of!.collection, ids: [...ids] } : null;
+}
+/**
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) whose change is their
+ * holder's, as a split's parts are the split's (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted
+ * media 'Text: W6'"; regress prod3 P3-C: a setup row's "15 changes" listed every title's entry). The holder is the one
+ * record of the part's `partOf` collection whose declared field names it, in base or among the records the change
+ * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
+ * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
+ * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
+ * is still told. Who names what is read once per call (a restore of many titles stays linear), and once per `names`
+ * doc (describe's, `namingDoc(base, allOps)`: base plus all of a larger set's inserts) for the rows of one Fold plan,
+ * so a duplicate another row inserts counts too (review of the merge: each row rebuilt it). Part's key → holder's.
+ */
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, names?: Doc, namers: Namers = namersOf(groups, base, names)): Map<string, string> {
+  const out = new Map<string, string>();
+  const whole = wholeOp;
   for (const [k, g] of groups) {
-    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf;
-    if (!of || !cs?.nounOf) continue;
+    if (!g.coll || !schema.collections[g.coll]?.partOf) continue;
     const w = whole(g);
-    const r = (w?.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
-    if (!r || cs!.nounOf(r) !== null) continue;
-    const hk = schema.collections[of.collection]?.key;
-    const names = hk ? namers(of.collection, of.field, hk).get(r[cs!.key]) : undefined;
-    if (names?.size !== 1) continue;
-    const hkey = of.collection + "/" + [...names][0], hw = whole(groups.get(hkey));
+    const r = (w?.op === "insert" ? w.value : getIn(base, [g.coll, g.id as string], schema)) as Rec | undefined;
+    const h = holdersOf(schema, namers, g.coll, r);
+    if (h?.ids.length !== 1) continue;
+    const hkey = h.coll + "/" + h.ids[0], hw = whole(groups.get(hkey));
     // the holder touched too; added or deleted together, or both edited
     if (groups.has(hkey) && (w || hw ? w?.op === hw?.op : true)) out.set(k, hkey);
   }
@@ -491,9 +539,11 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
     else if (op.op === "unset") parts.push(`cleared ${field}`);
     else {
-      const old = getIn(doc, op.path, schema);
+      const old = getIn(doc, op.path, schema), prog = codeOf(schema, op, doc);
+      // program code is never quoted: how many of its lines changed ("Changed 'Intro' code (3 lines)"; laptop, 2026-11-05)
+      if (prog) parts.push(`${prog.was === undefined ? "set" : "changed"} ${fieldWords(schema, prog.path).words}${linesWords(codeLines(prog.was, prog.now))}`);
       // never an id or a hash (UI audit P1-2): the field is named alone
-      if (opaque(op.path[2], op.value) || opaque(op.path[2], old) || opaque(op.path.at(-1), op.value)) parts.push(`changed ${field}`);
+      else if (opaque(op.path[2], op.value) || opaque(op.path[2], old) || opaque(op.path.at(-1), op.value)) parts.push(`changed ${field}`);
       else parts.push(old === undefined ? `set ${field} to ${short(op.value)}` : `${field} ${short(old)} → ${short(op.value)}`);
     }
   }
@@ -639,6 +689,7 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
   const plain = ops.filter((op): op is PlainOp => op.op !== "remap" && !quietSwitch(op, base, schema));
   const { nameDoc, label } = labeller(plain, base, schema, opts.names);
   const groups = groupOps(plain, schema);
+  const namers = namersOf(groups, base, opts.names);
   const K = tl ? schema.collections[tl.collection]?.key : undefined;
   // tracks this change adds: a clip moved onto one went "to a new track"
   const addedLanes = new Set<unknown>();
@@ -691,13 +742,39 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
     const s = rec[tl.start], e = rec[tl.end];
     return typeof s === "number" && Number.isFinite(s) ? { at: s, ...(typeof e === "number" && Number.isFinite(e) ? { end: e } : {}) } : {};
   };
+  /** A record as these ops leave it (as it was, for one they delete): its own field sets and clears applied. */
+  const afterOf = (coll: string, id: unknown): Rec | undefined => {
+    const g = groups.get(coll + "/" + id), w = wholeOp(g);
+    if (w?.op === "insert") return w.value as Rec;
+    const r = getIn(base, [coll, String(id)], schema) as Rec | undefined;
+    if (!r || !g || w) return r;
+    const out: Rec = { ...r };
+    for (const op of g.ops) if (op.path.length === 3 && (op.op === "set" || op.op === "unset")) out[op.path[2] as string] = op.op === "set" ? op.value : undefined;
+    return out;
+  };
+  /**
+   * A part told on its own (`partOf`: a code graphic's source, a title's text entry, its holder left alone): where its
+   * holder is in the edit (the earliest, when several hold it), and its holder when there is one (laptop, 2026-11-05: a
+   * code graphic's code change had no time, "—", and Play all did nothing). `{}` for any other record.
+   */
+  const heldAt = (coll: string, rec: Rec | undefined): { at?: number; end?: number; of?: NonNullable<ChangeRow["of"]> } => {
+    const h = holdersOf(schema, namers, coll, rec);
+    if (!h) return {};
+    let best: { at?: number; end?: number } = {};
+    for (const id of h.ids) {
+      const p = place(h.coll, afterOf(h.coll, id));
+      if (p.at !== undefined && (best.at === undefined || p.at < best.at)) best = p;
+    }
+    const one = h.ids.length === 1 ? afterOf(h.coll, h.ids[0]) : undefined;
+    return { ...best, ...(one ? { of: { coll: h.coll, id: String(h.ids[0]), rec: one } } : {}) };
+  };
 
   /**
    * A record's field changes as one sentence: the first part names it ("Moved “Intro” 2 s later (now starts at
    * 0:02)"), the others are its ("changed its volume to 80%"); `name` is how it is called (a split's part: "its right
    * part"). `after` gets the changed values.
    */
-  const fieldSentence = (coll: string, ops: readonly PlainOp[], before: Rec | undefined, doc: Doc, name: string, after: Rec): { text: string; verb: string } | null => {
+  const fieldSentence = (coll: string, ops: readonly PlainOp[], before: Rec | undefined, doc: Doc, name: string, after: Rec, full = name): { text: string; verb: string } | null => {
     const cs = schema.collections[coll]!;
     const f = new Map<string, PlainOp>();
     for (const op of ops) if (op.path.length === 3) f.set(op.path[2] as string, op);
@@ -776,6 +853,15 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
       else if (op.op === "unset") say(`Cleared the ${field} of ${name}`, `cleared its ${field}`, `Cleared the ${field} of %s`);
       else {
         const old = getIn(doc, op.path, schema), v = op.value;
+        // program code (CollectionDef.code) is never quoted as a value: what has code, and how many of its lines
+        // changed ("Changed the code of code graphic “Intro” (3 lines)"; laptop, 2026-11-05: the row quoted the first
+        // 37 characters of the source)
+        const prog = codeOf(schema, op, doc);
+        if (prog) {
+          const f = editorField(schema, prog.path), n = linesWords(codeLines(prog.was, prog.now)), set = prog.was === undefined;
+          say(`${set ? "Set" : "Changed"} the ${f} of ${full}${n}`, `${set ? "set" : "changed"} its ${f}${n}`, `${set ? "Set" : "Changed"} the ${f} of %s`);
+          continue;
+        }
         if (opaque(op.path[2], v) || opaque(op.path[2], old) || opaque(op.path.at(-1), v)) {
           // an id or a hash is never shown: its field alone, or the host's words for it (a media's file name)
           const host = opts.value?.(key, v, doc);
@@ -884,20 +970,23 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
     const id = String(g.id);
     if (whole?.op === "insert") {
       const r = whole.value as Rec;
-      out.push({ key, text: `Added ${called(g.coll, r)}`, kind: "add", coll: g.coll, id, rec: r, ...place(g.coll, r), verb: "Added %s", one: called(g.coll, r) });
+      out.push({ key, text: `Added ${called(g.coll, r)}`, kind: "add", coll: g.coll, id, rec: r, ...place(g.coll, r), ...heldAt(g.coll, r), verb: "Added %s", one: called(g.coll, r) });
       continue;
     }
     if (whole) {
-      out.push({ key, text: `Removed ${called(g.coll, before)}`, kind: "remove", coll: g.coll, id, ...(before ? { rec: before } : {}), ...place(g.coll, before), verb: "Removed %s", one: called(g.coll, before) });
+      out.push({ key, text: `Removed ${called(g.coll, before)}`, kind: "remove", coll: g.coll, id, ...(before ? { rec: before } : {}), ...place(g.coll, before), ...heldAt(g.coll, before), verb: "Removed %s", one: called(g.coll, before) });
       continue;
     }
-    // the record as it is after: its place in the edit is where it is now
-    const after: Rec = { ...(before ?? {}) };
-    for (const op of g.ops) if (op.path.length === 3 && (op.op === "set" || op.op === "unset")) after[op.path[2] as string] = op.op === "set" ? op.value : undefined;
-    const name = tl && g.coll === tl.lanes ? called(g.coll, before) : quoted(g.coll, before);
-    const l = fieldSentence(g.coll, g.ops, before, base, name, after);
+    // the record as it is after: its place in the edit is where it is now (a part's: its holder's)
+    const after = afterOf(g.coll, g.id) ?? {};
+    const held = heldAt(g.coll, before);
+    // a part with one holder is named as it ("code graphic “Intro”"), never as its entry ("“Intro”" media)
+    const name = held.of ? called(held.of.coll, held.of.rec) : tl && g.coll === tl.lanes ? called(g.coll, before) : quoted(g.coll, before);
+    // (a part held by several: its own name alone, never "media “Intro”")
+    const part = !!before && schema.collections[g.coll]?.nounOf?.(before) === null;
+    const l = fieldSentence(g.coll, g.ops, before, base, name, after, held.of || part || !before ? name : called(g.coll, before));
     // a record whose ops say nothing an editor reads (a field nobody labels): still a change, so the counts agree
-    out.push({ key, text: l?.text ?? `Changed ${name}`, kind: "change", coll: g.coll, id, rec: after, ...place(g.coll, after), verb: l?.verb ?? "Changed %s", one: name });
+    out.push({ key, text: l?.text ?? `Changed ${name}`, kind: "change", coll: g.coll, id, rec: after, ...place(g.coll, after), ...held, verb: l?.verb ?? "Changed %s", one: name });
   }
   // a track added only for the clips moved onto it is said by their rows ("Moved “W6” to a new track")
   if (movedOnto.size) for (const r of out) if (r.kind === "add" && tl && r.coll === tl.lanes && movedOnto.has(r.id)) r.minor = true;
@@ -912,7 +1001,9 @@ export function changeList(ops: readonly Op[], base: Doc, schema: Schema, opts: 
 export function changeSummary(rows: readonly ChangeRow[], schema: Schema): string {
   const ls = rows.some((r) => !r.minor) ? rows.filter((r) => !r.minor) : rows;
   if (ls.length <= 1) return ls[0]?.text ?? "";
-  const nounOf = (r: ChangeRow) => {
+  const nounOf = (row: ChangeRow) => {
+    // a part by what holds it: "Changed the code of 2 code graphics"
+    const r = row.of ?? row;
     if (!r.coll) return "change";
     const cs = schema.collections[r.coll];
     const own = cs?.nounOf && r.rec ? cs.nounOf(r.rec) : undefined;

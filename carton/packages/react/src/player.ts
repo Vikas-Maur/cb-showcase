@@ -12,6 +12,27 @@ export interface Clock {
   cancel(id: number): void;
 }
 
+/**
+ * The host's own player (Cardboard's: its playback, with sound and at the display's frame rate). Given one, Play plays
+ * each stretch through it and follows its clock, with no seek per frame (laptop, 2026-11-05: Play moved Cardboard's
+ * playhead at most 10 times a second from a clock of its own and never started Cardboard's playback, so no change was
+ * heard and the picture stepped).
+ */
+export interface Transport {
+  /** Play from `t` (seconds). It may take a moment to start (its audio loading). */
+  play(t: number): void;
+  /** Stop playing; the playhead stays where it stopped. */
+  pause(): void;
+  playing(): boolean;
+  /** Where it is: its playback clock while it plays, else its playhead (seconds). */
+  time(): number;
+  /** Where the timeline it shows ends, where it stops by itself (Cardboard does), when known. */
+  length?(): number | undefined;
+}
+/** A stretch's host still not playing this long after it was asked (its audio loading): asked again; at most this many times. */
+export const PLAY_ASK_MS = 1500;
+export const PLAY_ASKS = 4;
+
 const browserClock = (): Clock => ({
   now: () => performance.now(),
   request: (fn) => requestAnimationFrame(fn),
@@ -58,6 +79,15 @@ export interface StepOptions {
 export const PLAY_CONTEXT = 1;
 export const PLAY_MAX_SPAN = 8;
 export const PLAY_FLASH_MS = 700;
+
+/** A change with a place in the edit (`at`): ▶ and Play all can play it. */
+export const hasPlace = (c: Change): boolean => c.at != null && Number.isFinite(c.at);
+/**
+ * Nothing in the list has a place in the edit (a frame rate's change alone, the aspect ratio's): Play all would only
+ * light each row for a moment, which looks like nothing happened (laptop, 2026-11-05). Its button is off then, saying
+ * why, and no row offers ▶.
+ */
+export const nothingToPlay = (changes: readonly Change[] | null | undefined): boolean => !!changes?.length && !changes.some(hasPlace);
 
 /** Where one change plays: [start, end) with its context, or null when it has no place in the edit. Pure. */
 export function changeSpan(c: Change, o: StepOptions = {}): [number, number] | null {
@@ -140,6 +170,14 @@ const IDLE: SpanState = { playing: false, step: -1, rows: [], done: false };
 /**
  * Plays a list of steps, outside React. Frame listeners get the time in the edit (null while a step with no place is
  * lit) and the lit row's progress through its own spot (0–1); state listeners get only coarse changes.
+ *
+ * With a host `transport`, each stretch plays through it: from the stretch's start it asks the host to play, then each
+ * frame reads the host's clock (the lit row and the progress follow it); at a stretch's end it goes straight on when the
+ * next one starts there, else it stops the host and, two frames later (once the host has seen it stop), plays the next
+ * one from its start; at the last one's end it stops the host. A host that stops by itself at its timeline's end has
+ * ended the stretch; one that stops anywhere else was paused by the person (Cardboard's own Space): Play pauses too,
+ * and goes on from there. A step with no place stops the host while it is lit. Pause and stop stop the host only while
+ * this player is playing it, never the person's own playback.
  */
 export class SpanPlayer {
   #steps: readonly PlayStep[] = [];
@@ -151,9 +189,21 @@ export class SpanPlayer {
   #last = 0;
   #onFrame = new Set<(t: number | null, progress: number) => void>();
   #onState = new Set<(s: SpanState) => void>();
+  #transport: () => Transport | null | undefined;
+  /** The host played through, while a session plays (null: Play's own clock). */
+  #drive: Transport | null = null;
+  /** Frames to wait before asking the host to play the step (it was stopped for a jump); -1: none waiting. */
+  #cue = -1;
+  #asked = 0;
+  #asks = 0;
+  /** The host has been seen playing since it was last asked. */
+  #saw = false;
+  /** The step starts at or past the end of what the host shows: nothing of it to play (Cardboard would start over at 0:00). */
+  #skip = false;
 
-  constructor(opts: { clock?: Clock } = {}) {
+  constructor(opts: { clock?: Clock; transport?: () => Transport | null | undefined } = {}) {
     this.#clock = opts.clock ?? browserClock();
+    this.#transport = opts.transport ?? (() => null);
   }
 
   get state(): SpanState {
@@ -195,17 +245,20 @@ export class SpanPlayer {
   pause(): void {
     if (!this.#state.playing) return;
     this.#cancel();
+    this.#halt();
     this.#set({ ...this.#state, playing: false });
   }
 
   /** Back to nothing lit. */
   stop(): void {
     this.#cancel();
+    if (this.#state.playing) this.#halt();
     this.#set(IDLE);
   }
 
   dispose(): void {
     this.#cancel();
+    if (this.#state.playing) this.#halt();
     this.#onFrame.clear();
     this.#onState.clear();
   }
@@ -213,8 +266,51 @@ export class SpanPlayer {
   #run() {
     this.#set({ ...this.#state, playing: true, done: false });
     this.#last = this.#clock.now();
+    this.#drive = this.#transport() ?? null;
+    this.#cueStep();
     this.#emit();
     this.#frame = this.#clock.request(this.#tick);
+  }
+
+  /** The host stops, if this player has it playing. */
+  #halt() {
+    const d = this.#drive;
+    this.#drive = null;
+    this.#cue = -1;
+    if (d?.playing()) d.pause();
+  }
+
+  /** The step just entered, on the host: a place plays from its start (after a stop, if it plays elsewhere); none stops it. */
+  #cueStep() {
+    const d = this.#drive;
+    if (!d) return;
+    const s = this.#steps[this.#state.step];
+    this.#asks = 0;
+    const shown = d.length?.();
+    this.#skip = !!s && s.start != null && shown !== undefined && this.#t >= shown - 0.05;
+    if (!s || s.start == null || this.#skip) {
+      this.#cue = -1;
+      if (d.playing()) d.pause();
+      return;
+    }
+    // (a stretch that starts where the host plays now: straight on, no stop)
+    if (d.playing() && Math.abs(d.time() - this.#t) < 0.1) {
+      this.#cue = -1;
+      this.#saw = true;
+      return;
+    }
+    if (d.playing()) {
+      d.pause();
+      this.#cue = 2;
+    } else this.#ask();
+  }
+
+  #ask() {
+    this.#cue = -1;
+    this.#saw = false;
+    this.#asks++;
+    this.#asked = this.#clock.now();
+    this.#drive!.play(this.#t);
   }
 
   #cancel() {
@@ -246,9 +342,42 @@ export class SpanPlayer {
     const s = this.#steps[this.#state.step];
     if (!s) return this.stop();
     let over: boolean;
+    const d = this.#drive;
     if (s.start == null) {
       this.#lit += dt * 1000;
       over = this.#lit >= (s.ms ?? PLAY_FLASH_MS);
+    } else if (d) {
+      const end = s.end!, shown = d.length?.();
+      if (this.#skip) this.#t = end;
+      else if (this.#cue > 0) this.#cue--;
+      else if (this.#cue === 0) {
+        if (!d.playing()) this.#ask();
+      } else if (d.playing()) {
+        this.#saw = true;
+        this.#t = Math.max(s.start, Math.min(d.time(), end));
+      } else if (!this.#saw) {
+        // not started yet (its audio loading): asked again, and given up on after a few tries
+        if (now - this.#asked > PLAY_ASK_MS) {
+          if (this.#asks < PLAY_ASKS) this.#ask();
+          else this.#t = end;
+        }
+      } else {
+        // stopped: at the end of the timeline it shows (Cardboard stops there by itself), this stretch is over; anywhere
+        // else the person paused it (Cardboard's own Space, its toolbar): Play pauses there too (a trap from
+        // fix/ux2-laptop: the stop at the timeline's end is no pause)
+        const t = d.time();
+        if (t >= Math.min(end, shown ?? Infinity) - 0.05) this.#t = end;
+        else {
+          this.#t = Math.max(s.start, Math.min(t, end));
+          this.#drive = null;
+          this.#set({ ...this.#state, playing: false });
+          this.#emit();
+          return;
+        }
+      }
+      over = this.#t >= end - 1e-3;
+      const row = s.rows[litAt(s, this.#t)]!;
+      if (!over && row !== this.#state.rows[0]) this.#set({ ...this.#state, rows: [row] });
     } else {
       this.#t = Math.min(this.#t + dt, s.end!);
       over = this.#t >= s.end!;
@@ -260,10 +389,12 @@ export class SpanPlayer {
       const i = this.#state.step + 1;
       if (i >= this.#steps.length) {
         this.#emit();
+        this.#halt();
         this.#set({ playing: false, step: -1, rows: [], done: true });
         return;
       }
       this.#enter(i);
+      this.#cueStep();
     }
     this.#emit();
     this.#frame = this.#clock.request(this.#tick);

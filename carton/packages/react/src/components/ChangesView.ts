@@ -16,6 +16,7 @@ import { VirtualList } from "../virtual.ts";
 import { ChangeList, ChangeRow } from "./ChangeRow.ts";
 import { ChangeMap, mapLength } from "./ChangeMap.ts";
 import { BeforeButton, PlayAllButton, playKeys, usePlayChanges, type PlayHost, type PlayTarget } from "./Play.ts";
+import { hasPlace } from "../player.ts";
 import { Button, cx } from "./ui.ts";
 
 export interface ChangesViewProps {
@@ -163,7 +164,8 @@ export function ChangesView(p: ChangesViewProps) {
       playing: lit && play.status === "playing",
       active: (lit && play.status !== "playing") || (virtual && i === active),
       tabIndex: !virtual && i === 0 ? 0 : -1,
-      onPlay,
+      // (no ▶ on a change with no place in the edit: it would play nothing)
+      onPlay: hasPlace(changes![i]!) ? onPlay : undefined,
       onPause: pause,
       onSelect,
       onHover: setHover,

@@ -66,6 +66,11 @@ export interface Version {
   readonly run?: string;
   /** A name the user gave it: "Sent to client, Monday". */
   readonly name?: string;
+  /**
+   * An agent turn titled from what it was asked and what it changed ("Split audio for J/L cuts"): the request, as the
+   * person typed it. The open card says it ("You asked: …"). Absent: the name is the person's own words, or theirs.
+   */
+  readonly asked?: string;
   /** A Director turn: its label (the prompt, shortened) and how many edits it made. */
   readonly turn?: { readonly label: string; readonly edits: number };
   /** Still waiting for the server: its version number is provisional (L5). */
@@ -809,7 +814,8 @@ export interface CartonUi {
   foldRest(versionId: string): Promise<FoldResult>;
   /** Restore a version as a new one on top. Says what it made (`made`). */
   restore(ref: string): Promise<ActionResult | void>;
-  nameVersion(versionId: string, name: string): Promise<void>;
+  /** Name a version; `asked`: the request an agent turn's title was made from (`Version.asked`). */
+  nameVersion(versionId: string, name: string, opts?: { asked?: string }): Promise<void>;
   undo(turnId: string): Promise<FoldResult>;
   publish(cutId: string): Promise<void>;
   /**

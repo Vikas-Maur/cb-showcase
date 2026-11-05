@@ -130,6 +130,13 @@ export interface CollectionDef {
    * sharing"}}`. Ops under one field read once.
    */
   phrases?: Record<string, FieldPhrase>;
+  /**
+   * Fields whose value is program code (a code graphic's source, a shader's), by dotted path as `labels` keys them:
+   * descriptions never quote one ("Changed the code of code graphic “Intro” to “export default function…”" told nobody
+   * anything; laptop, 2026-11-05); they say how many lines changed ("Changed the code of code graphic “Intro” (3
+   * lines)"). Not part of the schema's fingerprint.
+   */
+  code?: readonly string[];
 }
 
 /** A field's phrase in descriptions (`CollectionDef.phrases`). */
@@ -154,6 +161,7 @@ export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly words?: (record: Rec) => readonly string[];
   readonly labels?: Readonly<Record<string, string>>;
   readonly phrases?: Readonly<Record<string, FieldPhrase>>;
+  readonly code?: readonly string[];
   readonly parent?: { field: string; collection: string };
   readonly seq?: boolean;
   readonly only?: boolean;
@@ -248,6 +256,14 @@ export interface SchemaDef {
    * never make one from a state that isn't one.
    */
   empty?: ((doc: Doc) => boolean) | null;
+  /**
+   * A stored version name as people see it (History, `cb history`, Find, landmarks, undo's words): undefined for a name
+   * the host no longer shows, which then reads as unnamed. Cardboard: an agent turn named, before 2026-11-05, from the
+   * prompt Cardboard composed for the agent ("[Earlier messages in this conversation did not reach an agent…"), not
+   * from what the person typed. The stored name stays as it is: it still ends an agent's run of versions (History's
+   * turns), and `nameTurn` still sees the version as named. Not part of the schema's fingerprint.
+   */
+  shownName?: ((name: string) => string | undefined) | null;
 }
 
 export interface Schema {
@@ -260,10 +276,16 @@ export interface Schema {
   readonly labels: Readonly<Record<string, string>> | null;
   /** `SchemaDef.empty` (absent or null: core's own rule only). */
   readonly empty?: ((doc: Doc) => boolean) | null;
+  /** `SchemaDef.shownName` (absent or null: every stored name shows as it is). */
+  readonly shownName?: ((name: string) => string | undefined) | null;
 }
 
+/** A stored version name as `schema` shows it (`SchemaDef.shownName`): undefined for none, or one the host hides. */
+export const nameShown = (schema: Pick<Schema, "shownName">, name: string | null | undefined): string | undefined =>
+  !name ? undefined : schema.shownName ? schema.shownName(name) : name;
+
 /** Builds a schema: indexes field groups and the record spec of every collection. Undeclared fields are atomic. */
-export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null, labels = null, empty = null }: SchemaDef): Schema {
+export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null, labels = null, empty = null, shownName = null }: SchemaDef): Schema {
   const colls: Record<string, CollectionSpec> = {};
   for (const [name, c] of Object.entries(collections)) {
     const groups = (c.groups ?? []).map((g) => ({ ...g, set: new Set(g.fields) }));
@@ -272,5 +294,5 @@ export function defineSchema({ root = {}, collections = {}, timeline = null, har
     const key = c.key ?? "id";
     colls[name] = { ...c, key, groups, groupOf, record: { kind: "object", fields: { [key]: scalar, ...(c.fields ?? {}) }, deep: false, only: !!c.only } };
   }
-  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label, labels, empty };
+  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label, labels, empty, shownName };
 }

@@ -477,10 +477,48 @@ What changes with it on:
   editor (it used to stay out of the editor, and your next save undid it).
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
   `cb history` shows who made each version, and each turn of an agent in the app (the Director, your own Claude Code,
-  Codex, the others) is named from your prompt ("Make the intro tighter"); its hold on `timeline.tsx` ends with the
+  Codex, the others) is named from what you typed ("Make the intro tighter"), then from a short title of what it did
+  (below); its hold on `timeline.tsx` ends with the
   turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). Your
   own Claude Code's edits are credited to "Claude Code" (they used to read "Director (chat …)", and its turns went
   unnamed). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one agent turn.
+- **History's words and Play, from the laptop (2026-11-05).**
+  - **A turn is titled with what you typed.** After a message that never reached an agent (a stopped or failed turn),
+    a switch of agent or a fresh agent session, Cardboard sends the agent your message behind a preamble and the earlier
+    conversation ("[Earlier messages in this conversation did not reach an agent…"). History used to title the turn
+    with that preamble. Now the Working row and the version take your own message. Versions already named that way show
+    in their default words ("Claude Code · 1 change") in History, `cb history`, Find, landmarks and Undo's words. The
+    stored name stays, so one turn's run of versions still ends where it did.
+  - **Then a short title of what was done.** Once a turn that changed the edit ends, its version is titled in a few
+    words ("Split audio for J/L cuts"). Cardboard names its chats the same way: one call to your own signed-in Claude
+    Code (else Codex), with the cheap model, no tools, no hooks and no session kept. The call is built from your request
+    and the turn's changes as History words them, so the title says what actually changed. Nothing waits for it. Until
+    it comes, and whenever it doesn't (offline, not signed in, a failure, no answer in 12 s, an answer that isn't a
+    title), your words stay. A version you renamed meanwhile keeps your name, and a turn that changed nothing isn't
+    titled. The open card shows what you asked in one quiet line ("You asked: “…”", whole on hover), and Find still
+    finds the turn by your words. Titles are kept on this computer; they reach a teammate with the cut when you share
+    it, as other names do. Neither your message nor the title is logged.
+  - **Program code is never quoted.** A change to a code graphic's code read "Changed the code of “Cardboard on
+    Windows” to “export default function Graphic({ tim…”". It now reads "Changed the code of code graphic “Cardboard on
+    Windows” (3 lines)": what holds the code, and how many lines changed (counted in one pass, from the first changed
+    line to the last). The same goes for a shader's code and a code graphic's code kept on its clip, in History, its
+    cards, Compare, the Fold dialog and `cb history`.
+  - **A change to a clip's own part plays where the clip is.** A code graphic's code and a title's text entry are
+    their clip's own media entries, which had no place in the edit: the row's time read "—" and Play all lit it for a
+    moment and did nothing. Such a change now takes its clip's place (the earliest, if several clips share it), so its
+    row shows the time, ▶ plays it and Play all plays it with the rest. When nothing in a version has a place (an
+    aspect ratio or frame rate change alone), Play all is off and its tooltip says "Nothing to play: these changes
+    aren't on the timeline", and those rows have no ▶.
+  - **Play plays with sound.** History's Play used to move Cardboard's playhead up to 10 times a second from a clock of
+    its own, so nothing was heard and the picture stepped. Play, ▶ and Play all now play each stretch through
+    Cardboard's own playback, as Space does, with the sound and at full frame rate, and follow its clock. There is no
+    seek per frame. Between stretches Play stops, jumps and plays on (back-to-back stretches play straight through),
+    and at the end it stops. Pause and Space still pause and go on. Pausing in the editor itself pauses Play too, but
+    Cardboard's own stop at the end of the timeline doesn't count as a pause. Before, Esc, a row's ✕ and closing the
+    card or the panel work as they did, and Play never stops playback you started yourself. A viewed version plays its
+    own timeline, so clips only it has (an agent's detached "1.mp4 audio") play from the project's media. A media file
+    deleted from the project since is neither seen nor heard in a viewed version, as before: the editor takes media
+    from the project as it is now.
 - **Finding a version, and bringing back one clip** (Carton UX v2). Every change is a version, so a long history
   needs finding, by you or your agent:
   - `cb history <project> --find <words>` finds versions by a clip's name (before or after the change), title and
@@ -821,7 +859,9 @@ run below.
    own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it
    as a process with `--settings`), so those hooks tell the two apart: your Claude Code's `cb` calls and reads of
    `timeline.tsx` are `claude-code/<session>` ("Claude Code"), and its turn's end lets go of exactly those and names its
-   last version from your prompt. That id is the same in every turn of a session, so the turn's end draws the line: a
+   last version from your message (the chat's own record of what you typed, never the prompt Cardboard composes with its
+   preamble), then from a short title made by Cardboard's own naming call (`UKt`'s `hke`, handed to `main-bridge.js` by
+   `patch-carton.js`; the worker's `retitleTurn` keeps a name given meanwhile). That id is the same in every turn of a session, so the turn's end draws the line: a
    hook still waiting when you stop a turn (its `Stop`, a credit question) does nothing once it's answered, rather than
    letting go of the next turn's hold on `timeline.tsx`; and a turn is named only from a version made between its start
    and its end, never the next turn's, however late the naming runs. Codex, which Cardboard does start as a process, is

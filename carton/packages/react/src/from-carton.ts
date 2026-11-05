@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, betweenCuts, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, betweenCuts, changeList, changeSummary, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, merge3, nameShown, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   BroughtPlace as CoreBroughtPlace,
@@ -505,6 +505,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     // the whole turn's words while it is a turn of several versions from this base; else its own
     const tb = kind === "turn" && base && base !== baseOf(c) ? base : undefined;
     const w = tb ? (prev?.turn?.base === tb ? prev.turn : undefined) : prev;
+    // its name as people see it (Schema.shownName: a turn named from Cardboard's composed prompt reads in its default
+    // words); a run's end (`ends`) still reads the stored one
+    const name = nameShown(schema, c.name);
     return {
       id,
       seq: c.ref.seq,
@@ -520,8 +523,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       ...(base ? { base } : {}),
       ...(run ? { run } : {}),
       ...(start ? { start } : {}),
-      ...(c.name ? { name: c.name } : {}),
-      ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
+      ...(name ? { name } : {}),
+      ...(name && c.asked ? { asked: c.asked } : {}),
+      ...(kind === "turn" ? { turn: { label: name ?? "", edits: turnEdits ?? 1 } } : {}),
       ...(rest ? { foldRest: true } : {}),
       ...(c.blank ? { empty: true } : {}),
     };
@@ -1353,7 +1357,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     key: r.key,
     text: r.text,
     kind: r.kind,
-    clip: clipKindOf(r),
+    // a part (a code graphic's source) is the kind of clip that holds it: its row shows the code graphic's mark
+    clip: clipKindOf(r.of ? { ...r, coll: r.of.coll, rec: r.of.rec } : r),
     ...(tl && r.coll === tl.collection && r.id !== undefined ? { itemId: r.id } : {}),
     ...(r.at !== undefined ? { at: r.at } : {}),
     ...(r.end !== undefined ? { end: r.end } : {}),
@@ -2391,16 +2396,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // the version it made (PLAN 5.3: its toast's Undo); a restore of what head already is makes one too (allowEmpty)
       return madeOn(onCut, [madeBy(res as Parameters<typeof madeBy>[0])]);
     },
-    async nameVersion(id, name) {
+    async nameVersion(id, name, o) {
       const i = pos.get(id);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core) return;
-      await carton.name(r.v.ref, name, { author: opts.me });
+      // (a rename keeps what an agent turn was asked: core carries it)
+      await carton.name(r.v.ref, name, { author: opts.me, ...(o?.asked ? { asked: o.asked } : {}) });
       const j = pos.get(id);
       if (j === undefined) return;
-      const row = rows[j]!;
-      row.core = { ...row.core!, name };
-      row.v = { ...row.v, name, ...(row.v.turn ? { turn: { ...row.v.turn, label: name } } : {}) };
+      const row = rows[j]!, asked = o?.asked ?? row.v.asked;
+      row.core = { ...row.core!, name, ...(asked ? { asked } : {}) };
+      row.v = { ...row.v, name, ...(asked ? { asked } : {}), ...(row.v.turn ? { turn: { ...row.v.turn, label: name } } : {}) };
       reindexFrom(Math.min(j, regroupAt(j)));
       hub.notify("history");
     },

@@ -685,8 +685,17 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
     openCutsMenu(ui, { within: 2000 }).then(() => { if (live) onCutsAsked?.(); });
     return () => { live = false; };
   }, [cutsAsk, onCutsAsked, ui]);
-  // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: its playhead
-  // follows Play's, real frames there, at most 10 seeks a second while it plays, and always the last one.
+  // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: each stretch
+  // plays through Cardboard's own playback, with its sound and at full frame rate, and Play follows its clock (item 5,
+  // laptop 2026-11-05: Play moved the playhead from a clock of its own and nothing was heard). The seeker below is for
+  // a bridge without playback only (an older page): the playhead follows Play's, at most 10 seeks a second.
+  const transport = useMemo(() => (typeof bridge.playFrom === "function" ? {
+    play: (t) => bridge.playFrom(t),
+    pause: () => bridge.pause?.(),
+    playing: () => !!bridge.playing,
+    time: () => bridge.clock?.() ?? 0,
+    length: () => bridge.shownLength?.(),
+  } : undefined), [bridge]);
   const seeker = useMemo(() => {
     let last = 0, timer = null, at = 0;
     const go = () => { timer = null; last = performance.now(); bridge.seek?.(at); };
@@ -709,13 +718,14 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   // change), Before's side checked out ahead so the flip doesn't wait (the bridge keeps it), and your edit's length.
   // Play never selects a clip: Cardboard's own Esc clears a selection first and would swallow the person's Esc.
   const play = useMemo(() => ({
+    ...(transport ? { transport } : {}),
     onFrame: seeker.onFrame,
     seek: (t) => { seeker.stop(); bridge.seek?.(t); },
     prefetch: (ref) => bridge.prefetch?.(projectId, ref),
     length: () => bridge.editLength?.(),
     // a landmark's picture from the stage (Carton UX v2): History takes one when the stage shows a landmark's version
     picture: stagePicture,
-  }), [seeker, bridge, projectId]);
+  }), [transport, seeker, bridge, projectId]);
   // Compare in the editor (N1, DESIGN-V2 §1.2): every way into the Changes view opens Compare; while comparing,
   // History is its change list
   const comparing = useComparing(ui);

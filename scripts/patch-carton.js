@@ -318,6 +318,13 @@ if (mode === "--cli") {
     // carries its end (a late one never takes the next turn's version).
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
+    // Item 4 (laptop, 2026-11-05): an agent turn's version is titled in a few words once it ends, the way 1.4.0 names its
+    // chats (UKt, its chat namer): the person's signed-in Claude Code, else Codex (LEe), through its own naming call
+    // (hke: haiku with a system prompt, no tools, no hooks, no MCP, no slash commands, no session kept; codex exec
+    // read-only; the answer's first line, at most 6 words and 40 characters, else null). Handed to main-bridge's namer()
+    // where UKt is defined; UKt itself is unchanged. hke gets NEe's own arguments and a longer timeout than its 3 s, as
+    // nothing waits for a title and a cold start of the agent's binary on Windows can take that long.
+    replace('UKt=async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null}', 'UKt=(__cartonMain.namer((e,r,o)=>LEe().then(t=>t?hke({binary:t,prompt:e,instruction:r,env:lV(t),cwd:oe.app.getPath("temp"),spawn:(n,i,s)=>(0,aV.spawn)(n,i,{...s,stdio:["pipe","pipe","pipe"],windowsHide:!0}),timeoutMs:o,warn:n=>console.warn(`[naming] ${n}`)}):null)),async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null})');
     // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude
     // Code through the Agent SDK transport instead (the hooks above), so this reaches it only if a build spawns it.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');

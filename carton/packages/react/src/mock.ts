@@ -653,10 +653,10 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
       const v = all.find((x) => x.ref === ref);
       return { made: madeHere(addVersion({ author: people.alice, kind: "restore", summary: v?.name ? `Restored “${v.name}”` : `Restored the ${clock(v?.at ?? Date.now(), { now: Date.now() })} version` })) };
     },
-    async nameVersion(id, name) {
+    async nameVersion(id, name, o) {
       const p = pos.get(id);
       if (p == null) return;
-      const v = { ...all[p]!, name };
+      const v = { ...all[p]!, name, ...(o?.asked ? { asked: o.asked } : {}) };
       all[p] = v;
       if (isNamed(v) && !named.includes(p)) {
         named.push(p);

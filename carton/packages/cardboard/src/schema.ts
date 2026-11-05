@@ -34,6 +34,15 @@ const TL: TimelineConfig = {
 
 /** What a timeline item is called when it isn't a clip (`nounOf`). */
 const ITEM_NOUNS: ReadonlyMap<unknown, string> = new Map([["text", "title"], ["code", "code graphic"], ["caption", "caption"]]);
+/**
+ * How the prompt Cardboard 1.4.0 composes for an agent starts when the turn carries the conversation before it (its
+ * `KTe`: after a message that didn't reach an agent, a switch of agent mid-conversation, or a fresh agent session).
+ * The person's own message comes after it. Before 2026-11-05 an agent turn was named from that prompt, so a project can
+ * hold versions named "[Earlier messages in this conversation did…" (laptop): such a name shows as none
+ * (`Schema.shownName`), and the turn reads in its default words. Matched on its first words only: names were cut to six.
+ */
+export const PROMPT_PREAMBLE = /^\[(?:Earlier messages in this|The user is switching to|This is a fresh agent)\b/;
+
 /** Media kinds that are an item's own record, not a file (1.4.0's `td`: a title's text, a code graphic's source). */
 const OWN_MEDIA: ReadonlySet<unknown> = new Set(["text", "code"]);
 
@@ -254,7 +263,11 @@ const ITEM_LABELS: Record<string, string> = {
   keyframeTracks: "keyframes",
   "keyframeTracks.keyframes": "keyframes",
   codeComposition: "code graphic",
+  // the source a code graphic or a shader holds itself (1.4.0 moves a code graphic's into its media entry; an agent's
+  // write or an older project can keep it here): program code, never quoted (`code` below)
+  "codeComposition.source": "code",
   shaderComposition: "shader",
+  "shaderComposition.source": "shader code",
   "shaderComposition.params": "shader settings",
   voiceoverText: "voiceover text",
   autoReframe: "auto reframe",
@@ -356,6 +369,8 @@ export const cardboardSchema: Schema = defineSchema({
       // Find (Carton UX v2): what a person typed into a clip: a title's text, a caption's words, a voiceover's script
       words: itemWords,
       labels: ITEM_LABELS,
+      // program code: History says how many lines changed, never the code (laptop, 2026-11-05)
+      code: ["codeComposition.source", "shaderComposition.source"],
       phrases: { muted: MUTE },
       groups: [{ name: "time", fields: [...TIME_FIELDS], algebra: timeAlgebra(TL) }],
       fields: itemFields,
@@ -371,6 +386,9 @@ export const cardboardSchema: Schema = defineSchema({
       // a title's own entry holds its text too (`data.content`)
       words: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) && typeof (r.data as Rec | undefined)?.content === "string" ? [(r.data as Rec).content as string] : []),
       labels: MEDIA_LABELS,
+      // a code graphic's source (its own entry's): program code, told by how many lines changed, never quoted (laptop,
+      // 2026-11-05: "Changed the code of “Cardboard on Windows” to “export default function Graphic({ tim…”")
+      code: ["data.code.source"],
       phrases: MEDIA_PHRASES,
       fields: {
         contentHash: { kind: "leaf" },
@@ -381,6 +399,8 @@ export const cardboardSchema: Schema = defineSchema({
   },
   hard,
   soft,
+  // a turn named from the prompt Cardboard composed for its agent (before 2026-11-05) shows as unnamed (`PROMPT_PREAMBLE`)
+  shownName: (name) => (PROMPT_PREAMBLE.test(name) ? undefined : name),
   timeline: { ...TL, shots },
   // A record's name for people (History, cards): its own name or text; a clip without one is named after its media's
   // file name (looked up in `doc`, when given); media by its file name, else its text, else its kind. Never

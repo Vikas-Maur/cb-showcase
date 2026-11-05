@@ -548,6 +548,21 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // Play both (Compare): the editor's own play and pause (Space's), and whether it plays
     togglePlay() { if (on && store) store.state().toggleTimelinePlayback?.(); },
+    // Play in History (item 5, laptop 2026-11-05: "the audio doesn't play"): Cardboard's own playback from t, with its
+    // sound, as its Space starts it (toggleTimelinePlayback: the audio at the playhead loaded first). Never from where a
+    // pointer rests over the timeline (its toggle starts from the hover scrubber's time when that shows). Nothing while
+    // it plays: @carton/react's player stops it before a jump, so Cardboard's loop starts again from the new place.
+    playFrom(t) {
+      if (!on || !store || !Number.isFinite(t)) return;
+      const st = store.state();
+      if (st.isPlaying) return;
+      if (st.isHoverScrubberVisible) st.setHoverScrubberVisible?.(false);
+      st.setPlaybackPosition?.(Math.max(0, t));
+      store.state().toggleTimelinePlayback?.();
+    },
+    // Where the timeline the editor shows ends (your edit's, or a viewed version's): Cardboard's playback stops there by
+    // itself, which Play in History tells from the person's pause.
+    shownLength() { return on && store ? duration(store.state().timelineItems ?? []) : undefined; },
     pause() { if (on && store && store.state().isPlaying) store.state().setIsPlaying?.(false); },
     get playing() { return !!(on && store && store.state().isPlaying); },
     // The playhead as the stage shows it (the playback clock while playing), and its moves: Compare's list follows it

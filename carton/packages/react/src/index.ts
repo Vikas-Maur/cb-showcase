@@ -70,7 +70,7 @@ export { cardSentences, conflictWords, keptText, pickUndoneText, type CardSenten
 export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner, ViewingFrame, useEscapeBack } from "./components/status.ts";
 export type { ViewingFrameProps } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
-export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, PLAY_CONTEXT, PLAY_MAX_SPAN, PLAY_FLASH_MS, type PlayStep, type StepOptions, type SpanState, type Clock } from "./player.ts";
+export { SpanPlayer, playSteps, stepFor, changeSpan, litAt, hasPlace, nothingToPlay, PLAY_CONTEXT, PLAY_MAX_SPAN, PLAY_FLASH_MS, PLAY_ASK_MS, PLAY_ASKS, type PlayStep, type StepOptions, type SpanState, type Clock, type Transport } from "./player.ts";
 // The Changes view, Play and Before (docs/carton-ux PLAN 4): in place of History's list, and for a version's card.
 export { ChangesView, longLabel, CHANGES_VIRTUAL_OVER, type ChangesViewProps } from "./components/ChangesView.ts";
 export { usePlayChanges, PlayAllButton, BeforeButton, playKeys, HOLD_MS, type PlayHost, type PlayTarget, type PlayOptions, type Playback, type PlayStatus, type BeforeControl } from "./components/Play.ts";

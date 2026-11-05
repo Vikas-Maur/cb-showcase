@@ -9,22 +9,29 @@
 //   come back. A click latches it (keyboards, screen readers). The older side is loaded ahead when playing starts
 //   (`host.prefetch`), so the flip doesn't wait for it.
 // - Per frame, nothing goes through React: the player moves the lit row's progress line (ChangeRow's
-//   setChangeProgress) and the change map's playhead (ChangeMap's moveMapPlayhead) by transform, and calls the host's
-//   `onFrame` (Cardboard: the editor's playhead, ≤ 10 seeks a second). React hears
-//   only which spot is lit and play/pause.
+//   setChangeProgress) and the change map's playhead (ChangeMap's moveMapPlayhead) by transform. React hears only which
+//   spot is lit and play/pause.
+// - With the host's own player (`transport`: Cardboard's playback), each stretch plays there, with its sound and at the
+//   display's frame rate, and Play follows its clock: no seek per frame (laptop, 2026-11-05: "the audio doesn't play").
+//   Without one, Play runs its own clock and the host's `onFrame` follows it (a playhead seek per frame, throttled there).
 // - Play never selects a clip (Cardboard's own Esc would clear the selection first and swallow the person's Esc).
 
 import { createElement as h, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type MouseEvent } from "react";
 import { useCartonUi, useTopic, useWords } from "../hooks.ts";
 import type { Change, Viewing, ViewTarget } from "../model.ts";
-import { SpanPlayer, playSteps, stepFor, type Clock, type SpanState, type StepOptions } from "../player.ts";
+import { SpanPlayer, hasPlace, nothingToPlay, playSteps, stepFor, type Clock, type SpanState, type StepOptions, type Transport } from "../player.ts";
 import { Button, cx } from "./ui.ts";
 import { setChangeProgress } from "./ChangeRow.ts";
 import { moveMapPlayhead } from "./ChangeMap.ts";
 
 /** What a host gives Play: its player's playhead, a way to load a version ahead, and the edit's length. */
 export interface PlayHost {
-  /** Every frame while a spot plays: the time in the edit. Cardboard's editor playhead follows it (throttled there). */
+  /**
+   * The host's own player: each stretch plays through it, with sound, and Play follows its clock (`onFrame` then goes
+   * unused). Cardboard's: its playback (renderer-bridge's playFrom, pause, playing, clock).
+   */
+  transport?: Transport;
+  /** Every frame while a spot plays, without a `transport`: the time in the edit. The host's playhead follows it. */
   onFrame?: (t: number) => void;
   /** A click on a change row: the editor's playhead goes to its place, without playing. */
   seek?: (t: number) => void;
@@ -66,6 +73,8 @@ export interface Playback {
   readonly error: string | null;
   /** A play session is on (playing, or paused partway): the map shows its playhead, the transport shows Before. */
   readonly active: boolean;
+  /** No change in the list has a place in the edit: Play all is off, and says why (`nothingToPlay`). */
+  readonly nothing: boolean;
   playAll(): void;
   /** ▶ on a row: its spot; again while it plays: pause. */
   playRow(row: number): void;
@@ -111,7 +120,7 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const words = useWords();
   const host = useRef(o.host);
   host.current = o.host;
-  const player = useMemo(() => new SpanPlayer(o.host?.clock ? { clock: o.host.clock } : {}), [o.host?.clock]);
+  const player = useMemo(() => new SpanPlayer({ ...(o.host?.clock ? { clock: o.host.clock } : {}), transport: () => host.current?.transport }), [o.host?.clock]);
   const [st, setSt] = useState<SpanState>(player.state);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,7 +199,8 @@ export function usePlayChanges(o: PlayOptions): Playback {
           if (m.head.hidden) m.head.hidden = false;
           m.head.style.transform = `translateX(${Math.max(0, Math.min(100, (t / m.len) * 100))}%)`;
         }
-        host.current?.onFrame?.(t);
+        // (a host playing it itself is already there: no seek)
+        if (!host.current?.transport) host.current?.onFrame?.(t);
       }),
     [player],
   );
@@ -293,7 +303,8 @@ export function usePlayChanges(o: PlayOptions): Playback {
   const begin = useCallback(
     async (row: number | null) => {
       const { changes, newer, older, steps: so } = opts.current;
-      if (!changes?.length) return;
+      // nothing with a place to play (Play all on a frame rate's change; ▶ on a row with no place): no play at all
+      if (!changes?.length || (row == null ? nothingToPlay(changes) : !changes[row] || !hasPlace(changes[row]!))) return;
       const steps = row == null ? playSteps(changes, { ...so, length: lengthRef.current || undefined }) : [stepFor(changes, row, { ...so, length: lengthRef.current || undefined })].filter((x) => x != null);
       const id = ++run.current;
       began.current = id;
@@ -410,17 +421,18 @@ export function usePlayChanges(o: PlayOptions): Playback {
 
   const status: PlayStatus = error ? "failed" : loading ? "loading" : st.playing ? "playing" : st.step >= 0 ? "paused" : "idle";
   const lit = useMemo(() => new Set(st.rows), [st.rows]);
-  return { status, lit, one: st.step >= 0 ? one : null, error, active: sessionOn, playAll, playRow, toggle, stop, before, rootRef };
+  return { status, lit, one: st.step >= 0 ? one : null, error, active: sessionOn, nothing: nothingToPlay(o.changes), playAll, playRow, toggle, stop, before, rootRef };
 }
 
-/** Play all / Pause, with the spinner a load past 300 ms shows (CSS). */
+/** Play all / Pause, with the spinner a load past 300 ms shows (CSS); off, saying why, when nothing has a place to play. */
 export function PlayAllButton({ play, className }: { play: Playback; className?: string }) {
   const words = useWords();
   const playing = play.status === "playing";
+  const off = play.nothing && !playing;
   return h(
     "span",
     { className: cx("carton-play-all", className), "data-loading": play.status === "loading" ? "" : undefined },
-    h(Button, { icon: playing ? "pause" : "play", onClick: play.toggle, keys: "Space", busy: play.status === "loading" }, playing ? words.pause : words.playAll),
+    h(Button, { icon: playing ? "pause" : "play", onClick: play.toggle, keys: "Space", busy: play.status === "loading", disabled: off, ...(off ? { title: words.nothingToPlay, description: words.nothingToPlay, tipStart: true } : {}) }, playing ? words.pause : words.playAll),
     play.status === "loading" ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
   );
 }

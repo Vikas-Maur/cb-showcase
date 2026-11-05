@@ -659,3 +659,112 @@ test("UX redesign 0.7: an in-app turn shows its agent working on the project whi
   off.turnStarted({ chatId: "c3", turn: { state: "running" } }, "p1", "/b", { id: "t2", text: "x" }, "director");
   assert.deepEqual(offAsked, []);
 });
+
+// Laptop, 2026-11-05: a turn's text is the prompt Cardboard composes for its agent. After a message that didn't reach an
+// agent (a failed or stopped turn), a switch of agent or a fresh session, it starts with Cardboard's preamble and the
+// earlier conversation, and the message's references and files follow it; History read "[Earlier messages in this
+// conver…". The Working row and the version are titled from what the person typed: the chat's user event with the
+// turn's id (Cardboard's recordTurn records it just before it returns the turn).
+const PREAMBLE = "[Earlier messages in this conversation did not reach an agent. Continue from them; do not ask the user to repeat them.]\n\nUser: make it pop\n\n[End of earlier conversation. The user's next message follows.]";
+const composed = (own) => PREAMBLE + "  " + own + "\n\nFiles attached to the message above. They are on disk and not in the project yet; add one with `cb media add` if the request needs it:\n- video \"b.mp4\" at /tmp/b.mp4";
+const turnCalls = (m) => {
+  const calls = [];
+  m.library({ call: async (method, arg) => (calls.push([method, arg]), method === "carton.nameTurn" ? (calls.answer ?? { status: "none" }) : {}) });
+  return calls;
+};
+const settleAll = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+
+test("a turn after a preamble is titled with what the person typed: the Working row and the version", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const calls = turnCalls(m);
+  const own = "Okay in this edit, I have the J and L cuts wrong: split the audio so each one leads";
+  const chat = { chatId: "c1", sessionIds: {}, events: [{ type: "user", id: "t0", text: "make it pop" }, { type: "error", message: "stopped" }, { type: "user", id: "t1", text: own, at: 1 }, { type: "switched", provider: "claude" }], turn: { id: "t1", state: "running", text: composed(own) } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  m.turnEnded(chat, "result");
+  await settleAll();
+  const working = calls.find(([method, a]) => method === "carton.working" && !a.done)[1];
+  assert.equal(working.prompt, own, "the Working row: the person's own words");
+  const named = calls.find(([method]) => method === "carton.nameTurn")[1];
+  assert.equal(named.prompt, own, "the version: the person's own words");
+  for (const [, a] of calls) assert.doesNotMatch(JSON.stringify(a), /Earlier messages|Files attached/);
+  // Cardboard's mention mark (U+2007) goes, as its own p5 strips it for the agent
+  const marked = { chatId: "c2", sessionIds: {}, events: [{ type: "user", id: "t2", text: "Trim \u2007@Intro\u2007 to 3 s" }], turn: { id: "t2", state: "running", text: "Trim @Intro to 3 s" } };
+  m.turnStarted(marked, "p1", "/b", marked.turn, "director");
+  assert.equal(calls.filter(([method]) => method === "carton.working").at(-1)[1].prompt, "Trim @Intro to 3 s");
+});
+
+test("no user event for the turn: the composed prompt after Cardboard's preamble; a plain prompt as it is", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const calls = turnCalls(m);
+  const chat = { chatId: "c1", sessionIds: {}, events: [], turn: { id: "t1", state: "running", text: PREAMBLE + "  Bigger titles" } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  assert.equal(calls.at(-1)[1].prompt, "Bigger titles");
+  const plain = { chatId: "c3", sessionIds: {}, turn: { id: "t3", state: "running", text: "Tighten the intro." } };
+  m.turnStarted(plain, "p1", "/b", plain.turn, "claude");
+  assert.equal(calls.at(-1)[1].prompt, "Tighten the intro.", "a chat without events (an older build) too");
+});
+
+// Item 4: once a turn that changed the edit ends, its version gets a short title from Cardboard's own naming call (the
+// namer patch-carton.js hands main-bridge), built from the request and the turn's worded changes; until it comes and
+// whenever it doesn't, the person's words stay.
+test("a turn's title: asked once with the request and what changed; on an answer the worker retitles it, keeping theirs if renamed", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const calls = turnCalls(m);
+  const asks = [];
+  m.namer((prompt, instruction, ms) => (asks.push({ prompt, instruction, ms }), Promise.resolve("Split audio for J/L cuts")));
+  calls.answer = { status: "named", ref: "main@4", label: "Okay in this edit, I have…", changes: ["Added “1.mp4 audio”", "Muted “1.mp4”", "Added “2.mp4 audio (J/L)”"] };
+  const own = "Okay in this edit, I have the J and L cuts wrong";
+  const chat = { chatId: "c1", sessionIds: {}, events: [{ type: "user", id: "t1", text: own }], turn: { id: "t1", state: "running", text: composed(own) } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  m.turnEnded(chat, "result");
+  await settleAll();
+  assert.equal(calls.find(([method]) => method === "carton.nameTurn")[1].changes, true, "the worker is asked for the turn's changes");
+  assert.equal(asks.length, 1, "one call per turn");
+  assert.match(asks[0].prompt, /^The editor asked: Okay in this edit, I have the J and L cuts wrong\n\nWhat changed in the edit:\n- Added “1\.mp4 audio”\n- Muted “1\.mp4”\n- Added “2\.mp4 audio \(J\/L\)”$/);
+  assert.doesNotMatch(asks[0].prompt, /Earlier messages|Files attached/);
+  assert.match(asks[0].instruction, /2 to 6 words, sentence case/);
+  assert.ok(asks[0].ms >= 3000, "longer than Cardboard's 3 s chat-name timeout: nothing waits for it");
+  const re = calls.find(([method]) => method === "carton.retitleTurn")[1];
+  assert.deepEqual(re, { projectId: "p1", ref: "main@4", was: "Okay in this edit, I have…", title: "Split audio for J/L cuts", asked: own });
+});
+
+test("a turn's title: a failure, a timeout (null), an empty answer or the same words keep the person's; no changes, no call", async () => {
+  for (const [what, answer] of [["fails", () => Promise.reject(new Error("offline"))], ["times out", () => Promise.resolve(null)], ["empty", () => Promise.resolve("  ")], ["same", () => Promise.resolve("Okay in this edit, I have…")], ["throws", () => { throw new Error("no binary"); }]]) {
+    const m = load({ CARDBOARD_CARTON: "1" });
+    const calls = turnCalls(m);
+    let asked = 0;
+    m.namer((...a) => (asked++, answer(...a)));
+    calls.answer = { status: "named", ref: "main@4", label: "Okay in this edit, I have…", changes: ["Muted “1.mp4”"] };
+    const chat = { chatId: "c1", sessionIds: {}, events: [{ type: "user", id: "t1", text: "Okay in this edit, I have this" }], turn: { id: "t1", state: "running", text: "x" } };
+    m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+    m.turnEnded(chat, "result");
+    await settleAll();
+    assert.equal(asked, 1, what);
+    assert.ok(!calls.some(([method]) => method === "carton.retitleTurn"), `${what}: the person's words stay`);
+  }
+  // a turn that changed nothing, or a version already named (the worker says so): never asked
+  for (const answer of [{ status: "none" }, { status: "named" }, { status: "named", ref: "main@2", label: "x", changes: [] }]) {
+    const m = load({ CARDBOARD_CARTON: "1" });
+    const calls = turnCalls(m);
+    let asked = 0;
+    m.namer(() => (asked++, Promise.resolve("Title")));
+    calls.answer = answer;
+    const chat = { chatId: "c1", sessionIds: {}, turn: { id: "t1", state: "running", text: "Do nothing" } };
+    m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+    m.turnEnded(chat, "result");
+    await settleAll();
+    assert.equal(asked, 0, JSON.stringify(answer));
+  }
+  // without a namer (Carton's patch missing, or off): nameTurn as before, no changes asked for
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const calls = turnCalls(m);
+  const chat = { chatId: "c1", sessionIds: {}, turn: { id: "t1", state: "running", text: "Do it" } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  m.turnEnded(chat, "result");
+  await settleAll();
+  assert.equal(calls.find(([method]) => method === "carton.nameTurn")[1].changes, undefined);
+  const off = load({});
+  let kept = false;
+  off.namer(() => (kept = true));
+  assert.equal(kept, false);
+});

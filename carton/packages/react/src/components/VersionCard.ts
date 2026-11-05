@@ -16,6 +16,7 @@ import { Icon } from "../icons.ts";
 import type { CartonUi, Change, Version } from "../model.ts";
 import { ChangeList, ChangeRow } from "./ChangeRow.ts";
 import { ChangeMap } from "./ChangeMap.ts";
+import { hasPlace, nothingToPlay } from "../player.ts";
 import { Button, cx } from "./ui.ts";
 import { GoBack, type ClipChoice, type GoBackChoice } from "./GoBack.ts";
 
@@ -170,8 +171,10 @@ export function VersionCard(p: VersionCardProps) {
   const playRef = useRef(play);
   playRef.current = play;
   useEffect(() => {
-    if (p.autoPlay && changes && changes.length && !waiting && !v.empty) playRef.current();
+    if (p.autoPlay && changes && changes.length && !nothingToPlay(changes) && !waiting && !v.empty) playRef.current();
   }, [p.autoPlay, changes, waiting, v.empty]);
+  // no change has a place in the edit (a frame rate's alone): Play all is off and says why, and no row offers ▶
+  const nothing = nothingToPlay(changes);
   const act = (run: () => Promise<unknown>, failed: string) => {
     setError(null);
     setBusy(true);
@@ -260,7 +263,7 @@ export function VersionCard(p: VersionCardProps) {
                     showAuthor,
                     playing: playing?.key === c.key,
                     active: lit === c.key,
-                    onPlay: p.onPlay && !waiting && !v.empty ? (x: Change) => play(x) : undefined,
+                    onPlay: p.onPlay && !waiting && !v.empty && hasPlace(c) ? (x: Change) => play(x) : undefined,
                     onPause: p.onPause,
                     onSelect: p.onSeek ? (x: Change) => x.at !== undefined && p.onSeek!(x.at) : undefined,
                     onHover: setLit,
@@ -320,7 +323,7 @@ export function VersionCard(p: VersionCardProps) {
               ? null
               : playing
                 ? h(Button, { icon: "pause", onClick: () => p.onPause?.() }, words.pause)
-                : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting, description: waiting ? words.availableOnceSent : undefined, onClick: () => play() }, words.playAll),
+                : h(Button, { icon: "play", disabled: !changes?.length || !p.onPlay || waiting || nothing, description: waiting ? words.availableOnceSent : nothing ? words.nothingToPlay : undefined, ...(nothing && !waiting ? { title: words.nothingToPlay, tipStart: true } : {}), onClick: () => play() }, words.playAll),
             p.loading ? h("span", { className: "carton-spinner", role: "progressbar", "aria-label": words.loading }) : null,
             v.empty ? null : (p.before ?? null),
             playing && !p.newest && !v.empty && p.onSideBySide && oldest.base ? h(Button, { variant: "ghost", icon: "compare", className: "carton-card-side", onClick: () => p.onSideBySide!(oldest.base!, v.ref) }, words.sideBySideBtn) : null,
@@ -354,6 +357,9 @@ export function VersionCard(p: VersionCardProps) {
       onKeyDown,
     },
     sinceLine,
+    // an agent turn titled from what it was asked and what it changed: the person's own words, one quiet line (its whole
+    // text on hover when cut; laptop, 2026-11-05)
+    v.asked && !mode ? h("p", { className: "carton-card-asked", title: v.asked }, words.youAsked(v.asked.replace(/\s+/g, " ").trim())) : null,
     rows,
     error ? h("p", { className: "carton-error carton-card-error", role: "alert", title: error.why }, error.text) : p.playError ? h("p", { className: "carton-error carton-card-error", role: "alert" }, p.playError) : null,
     footer,

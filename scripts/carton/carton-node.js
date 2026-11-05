@@ -1915,7 +1915,10 @@ export const cardboard14 = {
         showWorking(bundlePath);
         return { status: "ok" };
       },
-      nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until }) => {
+      // Item 4 (laptop, 2026-11-05): with `changes`, a version named now also answers what the whole turn changed, in
+      // the change rows' words (from before its oldest version here to its last), so main can title it (main-bridge's
+      // titleTurn); `ref` and `label` say which version and the name it got. A turn that changed nothing is "none".
+      nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until, changes }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
@@ -1926,18 +1929,41 @@ export const cardboard14 = {
           const who = String((v.authoredAs ?? v.author)?.id ?? "").replace(/\/sub-[^/]*$/, "");
           return by.has(who) && typeof v.at === "number" && v.at >= (Number(since) || 0) && v.at <= end;
         };
-        for (const v of await lc.carton.log({ limit: 200 })) {
+        const log = await lc.carton.log({ limit: 200 });
+        for (let i = 0; i < log.length; i++) {
+          const v = log[i];
           if (!ours(v)) continue;
-          if (!v.name) {
-            await lc.carton.name(v.ref, label);
-            // Core tells no one of a name: the History panels open on this project show it through their own
-            // nameVersion (a row keyed as fromCarton keys it; core's name is idempotent, so the repeat writes nothing new).
-            const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
-            for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, label).catch(() => {});
-          }
-          return { status: "named" };
+          if (v.name) return { status: "named" };
+          await lc.carton.name(v.ref, label);
+          // Core tells no one of a name: the History panels open on this project show it through their own
+          // nameVersion (a row keyed as fromCarton keys it; core's name is idempotent, so the repeat writes nothing new).
+          const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
+          for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, label).catch(() => {});
+          // (asked without `changes`, the answer is as it always was)
+          if (!changes) return { status: "named" };
+          const ref = `${v.ref.branchId}@${v.ref.seq}`;
+          // the turn's oldest version among these: what it changed is from the version before that one to this one
+          let first = v;
+          for (let j = i + 1; j < log.length; j++) if (ours(log[j]) && log[j].ref.branchId === v.ref.branchId) first = log[j];
+          const rows = first.ref.seq > 0 ? await lc.carton.diff(`${first.ref.branchId}@${first.ref.seq - 1}`, ref, { rows: true }).then((d) => d.rows ?? [], () => []) : [];
+          return { status: "named", ref, label, changes: rows.slice(0, 40).map((r) => r.text) };
         }
         return { status: "none" };
+      },
+      // Item 4: a turn's short title (main's titleTurn) in place of the label nameTurn gave it, with what the person
+      // asked kept beside it (core's `asked`: the open card says it). Only while the version still has that label: a
+      // name someone gave meanwhile (the person's rename) stays, as Cardboard keeps a chat title the person changed.
+      retitleTurn: async ({ projectId, ref, was, title, asked }) => {
+        const lc = await lcOf(projectId), m = /^(.+)@(\d+)$/.exec(String(ref ?? ""));
+        const name = typeof title === "string" ? title.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+        if (!lc || !m || !name || typeof was !== "string") return { status: "unavailable" };
+        const seq = Number(m[2]), v = (await lc.carton.log({ cut: m[1], before: seq + 1, limit: 1 }))[0];
+        if (!v || v.ref.seq !== seq || v.name !== was) return { status: "kept" };
+        const words = typeof asked === "string" && asked.trim() ? asked.trim().slice(0, 400) : undefined;
+        await lc.carton.name(v.ref, name, words ? { asked: words } : {});
+        const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
+        for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, name, words ? { asked: words } : undefined).catch(() => {});
+        return { status: "named" };
       },
       notices: async ({ bundlePath, actor, take }) => {
         const lc = await open(bundlePath);

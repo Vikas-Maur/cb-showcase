@@ -2,7 +2,7 @@
 // `cb compare … --show`, in DESIGN-V2 §5's words. Plain lines an agent can repeat to the person in its own words; each
 // line ends with the reference the agent passes back to `cb` (`main@41`), which it never shows the person. The person
 // is "the user"; everyone else by name.
-import { betweenCuts, timecode, type Actor, type Carton, type CutRecord, type FindMatch, type Landmark, type StateRef, type Version } from "@carton/core";
+import { betweenCuts, nameShown, timecode, type Actor, type Carton, type CutRecord, type FindMatch, type Landmark, type StateRef, type Version } from "@carton/core";
 import type { CbResult } from "@carton/local";
 import type { CbContext, Output } from "./commands.ts";
 import { exitCodeOf, noticeLines, resultText, shellWord, table } from "./format.ts";
@@ -43,16 +43,18 @@ const refOf = (cuts: Map<string, CutRecord>, r: StateRef) => versionName(cuts.ge
 async function versionWords(carton: Carton, ref: StateRef, now: number): Promise<{ words: string; v: Version | undefined }> {
   const v = (await carton.log({ cut: ref.branchId, before: ref.seq + 1, limit: 1 }))[0];
   const at = v?.ref.seq === ref.seq ? v.at : undefined;
-  if (v?.ref.seq === ref.seq && v.name) return { words: `${quote(v.name)} (${at !== undefined ? whenAt(at, now) : "an earlier version"})`, v };
+  // its name as people see it (Schema.shownName)
+  const name = nameShown(carton.schema, v?.name);
+  if (v?.ref.seq === ref.seq && name) return { words: `${quote(name)} (${at !== undefined ? whenAt(at, now) : "an earlier version"})`, v };
   return { words: at !== undefined ? `the version from ${whenAt(at, now)}` : "an earlier version", v };
 }
 /** One line of what a version did: its name or prompt, else its summary. */
 async function versionLine(carton: Carton, ref: StateRef): Promise<{ v: Version | undefined; what: string }> {
   const v = (await carton.log({ cut: ref.branchId, before: ref.seq + 1, limit: 1, summary: true, rows: true }))[0];
   if (!v || v.ref.seq !== ref.seq) return { v: undefined, what: "" };
-  const n = v.rows?.length ?? 0;
-  if (v.name && isAgent(v.author)) return { v, what: `${quote(v.name)}${n ? ` · ${n} change${n === 1 ? "" : "s"}` : ""}` };
-  if (v.name) return { v, what: quote(v.name) };
+  const n = v.rows?.length ?? 0, name = nameShown(carton.schema, v.name);
+  if (name && isAgent(v.author)) return { v, what: `${quote(name)}${n ? ` · ${n} change${n === 1 ? "" : "s"}` : ""}` };
+  if (name) return { v, what: quote(name) };
   return { v, what: v.rows?.length === 1 ? v.rows[0]!.text : v.summary ?? v.kind };
 }
 const LANDMARK_WORD: Record<string, string> = { exported: "Exported", sent: "Sent", named: "Named", start: "Start", before: "Before" };

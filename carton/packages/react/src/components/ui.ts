@@ -38,6 +38,8 @@ export interface ButtonProps {
   description?: string;
   /** The key that does the same (`aria-keyshortcuts`, "Escape"). */
   keys?: string;
+  /** Its tooltip starts at its left edge (a control at the panel's left: a centred tip would be cut off there). */
+  tipStart?: boolean;
 }
 
 export function Button(p: ButtonProps) {
@@ -55,6 +57,7 @@ export function Button(p: ButtonProps) {
       "aria-keyshortcuts": p.keys,
       "aria-busy": p.busy || undefined,
       "data-carton-tip": p.title,
+      "data-carton-tip-start": p.title && p.tipStart ? "" : undefined,
       disabled: p.disabled || p.busy,
       onClick: p.onClick,
     },

@@ -135,6 +135,8 @@ export const cardboardSkin = `
 /* a control in the panel's right third (a row's ✕, the filter): its tip ends at its right edge, inside the panel (design QA G6) */
 :where(${S}) :where([data-carton-tip-end]:hover)::after{left:auto;right:0;transform:none;animation-name:carton-tip-end}
 @keyframes carton-tip-end{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
+/* one at the panel's left (a card's Play all, off with nothing to play): its tip starts at its left edge, inside the panel */
+:where(${S}) :where([data-carton-tip-start]:hover)::after{left:0;transform:none;animation-name:carton-tip-end}
 
 /* ---------------------------------------------------------------- menus (Cardboard's dropdown menu) */
 :where(${S}) :where(.carton-menu){min-width:200px;max-width:320px;padding:4px;border:1px solid #ffffff12;border-radius:8px;background:var(--cb-popover);color:#e5e5e5;
@@ -360,6 +362,7 @@ export const cardboardSkin = `
 /* a panel under 340 px: no ⋯ in the card's footer, which would wrap onto a line of its own; the row's ⋯ has the same menu
    (design QA G19). The card is 36 px narrower than the panel. */
 @container carton-card (width < 304px){ :where(${S}) :where(.carton-card-menu){display:none} }
+:where(${S}) :where(.carton-card-asked){margin:-2px 0 8px;font-size:12px;line-height:16px;color:var(--cb-fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :where(${S}) :where(.carton-card-since){display:flex;align-items:center;gap:6px;margin:-2px 0 8px;padding:6px 8px;border-radius:7px;background:#ffffff08;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-card-since > .carton-icon){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-card-since b){font-weight:600;color:var(--cb-fg-1)}

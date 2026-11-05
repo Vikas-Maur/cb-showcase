@@ -391,9 +391,14 @@ export interface ChangeRow {
   id?: string;
   /** The record after the change (before it, for a removal): what the host calls it (`nounOf`, its type). */
   rec?: Rec;
-  /** Where it is in the edit (timeline records): its start after the change (before it, for a removal), and its end. */
+  /**
+   * Where it is in the edit: a timeline record's start after the change (before it, for a removal), and its end; a part
+   * of one (`partOf`: a code graphic's source, a title's text entry), its holder's (the earliest of several).
+   */
   at?: number;
   end?: number;
+  /** The one record a part (`partOf`) belongs to, as the change leaves it: the code graphic whose source this is. */
+  of?: { coll: string; id: string; rec: Rec };
   /** For a summary of several: the verb as a template ("Moved %s") and the record named alone ("“Intro”"). */
   verb?: string;
   one?: string;
@@ -411,6 +416,13 @@ export interface Version {
   authoredAs?: Actor;
   at: number;
   name?: string;
+  /**
+   * What the person asked the agent whose turn this version ends, as they typed it, when the version's name is a short
+   * title made from it and the turn's changes (`name(…, {asked})`; laptop, 2026-11-05: "a title/summary would be more
+   * appropriate than raw messages"). Absent: the name, if any, is the person's own words or a name someone gave.
+   * This store's own: a rename keeps it.
+   */
+  asked?: string;
   kind: ChangeKind | "root" | "fork";
   /**
    * What the version did in one line, when asked for (`log({summary: true})`): its name; a fold, a partial fold ("Folded

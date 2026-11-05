@@ -13,7 +13,7 @@
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
-import type { FieldSpec, Schema } from "./schema.ts";
+import { nameShown, type FieldSpec, type Schema } from "./schema.ts";
 import type { KeyframeData, LandmarksReplyMsg, Person, PersonRids, PresenceState, SharedLandmark } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
@@ -379,7 +379,11 @@ export interface Carton {
   bringBackChoices(ref: StateRef | string, opts?: { cut?: string }): Promise<BringBackChoices>;
   /** Name a version ("Sent to client, Monday"). */
   /** Name a version; `author`: who named it (default: this handle's actor). */
-  name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
+  /**
+   * Names a version. `asked`: the request an agent turn's title was made from (`Version.asked`); a rename without it
+   * keeps the one the version has.
+   */
+  name(ref: StateRef | string, name: string, opts?: { author?: Actor; asked?: string }): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
@@ -1115,7 +1119,7 @@ class CartonImpl implements Carton {
     };
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
-    for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) this.#named(h, nodeId(e.key[0] as string, e.key[1] as number), e.value);
+    for (const e of await s.range<{ name: string; at: number; by?: Actor; asked?: string }>(T.names)) this.#named(h, nodeId(e.key[0] as string, e.key[1] as number), e.value);
     const pins = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
@@ -1595,6 +1599,9 @@ class CartonImpl implements Carton {
     await this.#refresh(cut);
     const versions = this.#h.log(cut, opts).map((v) => {
       if (v.rejected) v.leftOutChanges = this.#leftOutChanges(cut, v);
+      // an agent turn's title: what it was asked
+      const asked = v.name ? this.#asked.get(this.#h.canon(nodeId(cut, v.ref.seq))) : undefined;
+      if (asked) v.asked = asked;
       // a redo is a revert of an undo: marked, so a list shows it as a redo (laptop: `cb history` listed it as `revert`)
       const c = v.kind === "revert" && v.change ? this.#h.findChange(v.change) : null;
       if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
@@ -1798,10 +1805,15 @@ class CartonImpl implements Carton {
     const limit = Math.max(1, Math.min(Math.floor(Number(opts.limit ?? 50)) || 50, 1000));
     const now = opts.now ?? this.#opts.clock?.() ?? Date.now();
     // per query, once: the cut's version names by seq, its landmarks' words, and who and which day, by key
-    const names = new Map<number, string>();
+    const names = new Map<number, string>(), askedAt = new Map<number, string>();
     for (const [node, n] of this.#h.names()) {
       const at = node.lastIndexOf("@");
-      if (node.slice(0, at) === cut) names.set(Number(node.slice(at + 1)), n.name);
+      if (node.slice(0, at) !== cut) continue;
+      const seq = Number(node.slice(at + 1)), a = this.#asked.get(this.#h.canon(node));
+      // as people see it: a name the host hides (Schema.shownName) finds nothing; a titled turn by its request too
+      const shown = nameShown(this.schema, n.name);
+      if (shown) names.set(seq, shown);
+      if (a) askedAt.set(seq, a);
     }
     const marks = await this.#landmarkKinds(cut);
     const markWords = new Map<string, Words>();
@@ -1848,14 +1860,16 @@ class CartonImpl implements Carton {
       const e = all[i]!, c = e.row;
       if (before !== undefined && e.seq >= before) continue;
       // the fast test: every word starts a word somewhere in what this version holds (one string search per place)
-      const name = names.get(e.seq), lm = marks.get(e.seq);
-      const turn = name !== undefined && isTurn(c);
+      const name = names.get(e.seq), lm = marks.get(e.seq), asked = askedAt.get(e.seq);
+      // a turn titled from its request (Version.asked): the request is its prompt, the title a name
+      const turn = name !== undefined && isTurn(c) && asked === undefined;
       const nameHay = name !== undefined && (turn ? wPrompt : wName) ? wordsOf(name).hay : "";
+      const askHay = asked !== undefined && wPrompt ? wordsOf(asked).hay : "";
       const markHay = lm && wName ? markOf(lm).hay : "";
       let ok = true;
       for (const nd of needles) {
         // one string per field: a clip's name never passes for text, nor text for a name (review N0 #3)
-        if ((wClip && e.clipHay.includes(nd)) || (wText && e.textHay.includes(nd)) || (nameHay && nameHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
+        if ((wClip && e.clipHay.includes(nd)) || (wText && e.textHay.includes(nd)) || (nameHay && nameHay.includes(nd)) || (askHay && askHay.includes(nd)) || (markHay && markHay.includes(nd)) || (wPerson && whoOf(e).hay.includes(nd)) || (wDay && dayOf(e).hay.includes(nd))) continue;
         ok = false;
         break;
       }
@@ -1868,6 +1882,7 @@ class CartonImpl implements Carton {
       if (want.has("clip")) for (const cl of e.clips) for (const w of cl.names) cands.push({ field: "clip", w, record: cl.key, recordName: w.text, ...(cl.span ? { span: cl.span } : {}) });
       if (want.has("text")) for (const t of e.texts) cands.push({ field: "text", w: t.text, record: t.key, ...(t.name ? { recordName: t.name } : {}) });
       if (nameHay) cands.push({ field: turn ? "prompt" : "name", w: wordsOf(name!) });
+      if (askHay) cands.push({ field: "prompt", w: wordsOf(asked!) });
       if (markHay) cands.push({ field: "name", w: markOf(lm!) });
       if (want.has("person")) for (const w of whoOf(e).w) cands.push({ field: "person", w });
       if (want.has("day")) cands.push({ field: "day", w: dayOf(e) });
@@ -1962,7 +1977,8 @@ class CartonImpl implements Carton {
     for (let s = log.length; s >= 1; s--) {
       const c = log[s - 1]!;
       if (c.withdrawn || c.squashedInto !== undefined || completedAt(log, s)) continue;
-      const name = names.get(nodeId(cut, s))?.name;
+      // as people see it (Schema.shownName): a turn named from the agent's composed prompt reads as unnamed
+      const name = nameShown(this.schema, names.get(nodeId(cut, s))?.name);
       const turn = c.author?.turn ? `${c.author.chat ?? ""}/${c.author.turn}` : null;
       if (turn && !turns.has(turn)) {
         turns.add(turn);
@@ -2374,9 +2390,12 @@ class CartonImpl implements Carton {
    * is loaded, so after a restart every name read as given then (a Named landmark's time, `cb history --landmarks`).
    */
   #nameAt = new Map<NodeId, number>();
-  #named(h: History, node: NodeId, n: { name: string; at?: number; by?: Actor }): void {
+  /** What each agent turn whose name is a title made from it was asked (`T.names`' `asked`; Version.asked). */
+  #asked = new Map<NodeId, string>();
+  #named(h: History, node: NodeId, n: { name: string; at?: number; by?: Actor; asked?: string }): void {
     h.nameVersion(node, n.name, n.by);
     if (typeof n.at === "number" && Number.isFinite(n.at)) this.#nameAt.set(h.canon(node), n.at);
+    if (typeof n.asked === "string" && n.asked) this.#asked.set(h.canon(node), n.asked);
   }
   /** A shared landmark's id (`sync.SharedLandmark.id`): this replica's rid, so a teammate tells it by person. */
   #landmarkId(): string {
@@ -2533,7 +2552,7 @@ class CartonImpl implements Carton {
     const at = (seq: number) => (seq > n ? tail!.states[seq - n - 1] : this.#h.stateOf(nodeId(cut, seq))) ?? {};
     return listed.map((e) => {
       const c = log[e.seq - 1]!;
-      const name = e.seq <= n ? names.get(nodeId(cut, e.seq))?.name : undefined;
+      const name = e.seq <= n ? nameShown(this.schema, names.get(nodeId(cut, e.seq))?.name) : undefined;
       if (name) return { ...e, label: undoLabel(c, name) };
       // P2-1: a fold-some's entry undoes its fold and partial revert together. It says what the fold kept, as its
       // version does (or, with a teammate's change between the two, what the fold brought, as a whole fold's says)
@@ -2818,17 +2837,22 @@ class CartonImpl implements Carton {
     return out as FoldResult;
   }
   /** Name a version; `author`: who named it (default: this handle's actor). */
-  async name(ref: StateRef | string, name: string, opts: { author?: Actor } = {}): Promise<void> {
+  async name(ref: StateRef | string, name: string, opts: { author?: Actor; asked?: string } = {}): Promise<void> {
     await this.#whole();
     const by = this.#actor(opts.author);
-    let node!: NodeId;
+    let node!: NodeId, asked: string | undefined;
     const at = this.#opts.clock?.() ?? Date.now();
-    await this.#mutate(undefined, () => this.#named(this.#h, (node = this.#node(ref)), { name, at, by }), {
+    await this.#mutate(undefined, () => {
+      node = this.#node(ref);
+      // what an agent turn was asked stays with its version through a rename (the panel's own rename writes again)
+      asked = opts.asked || this.#asked.get(this.#h.canon(node));
+      this.#named(this.#h, node, { name, at, by, ...(asked ? { asked } : {}) });
+    }, {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at, by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at, by, ...(asked ? { asked } : {}) } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });

@@ -251,6 +251,10 @@ export const words = {
   seeThem: "See them",
   andMore: (n: number) => `and ${n} more`,
   playAll: "Play all",
+  // an agent turn titled from its request (Version.asked): the request, in the person's own words
+  youAsked: (text: string) => `You asked: “${text}”`,
+  // Play all off: no change in the list has a place in the edit (a frame rate's change alone)
+  nothingToPlay: "Nothing to play: these changes aren't on the timeline",
   playThisChange: "Play this change",
   beforeHint: "Hold to see how it was before (or press B)",
   restoreEllipsis: "Restore…",
