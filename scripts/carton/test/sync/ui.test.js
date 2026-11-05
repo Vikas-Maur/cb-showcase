@@ -91,7 +91,6 @@ test("P2-8, P2-10: the Share form asks in editors' words, validates inline, and 
   assert.match(form, /role="dialog"/);
   assert.match(form, />Share “Weekend reel”</);
   assert.match(form, /Sharing server/);
-  assert.match(form, /The address whoever runs your sharing server gave you\./);
   assert.match(form, /Teammates see this beside your changes\./);
   assert.match(form, /class="carton-dialog-foot"[\s\S]*>Cancel<[\s\S]*>Share project</, "Cancel and Share project at the foot");
   assert.match(form, /novalidate/i, "inline messages, not the browser's 'Please fill out this field'");
@@ -120,6 +119,19 @@ test("PLAN 8.1: a sharing server once used is one line with Change; an address w
   assert.equal(ui.hostAddress("share.northlight.studio"), "https://share.northlight.studio");
   assert.equal(ui.hostAddress(" http://127.0.0.1:8787 "), "http://127.0.0.1:8787");
   assert.equal(ui.hostAddress(""), "");
+});
+
+test("the user, 2026-11-05: with no address used yet, the Share form shows this build's own sharing server, one line with Change; one used before wins", () => {
+  const bridge = { call: async () => ({}), onEvent: () => () => {} };
+  for (const stored of [null, ""]) {
+    globalThis.localStorage = { getItem: () => stored, setItem() {} };
+    const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge, onShared() {}, onClose() {} }));
+    assert.match(form, /<span class="carton-known-value">cardboard-showcase\.vikasmaur10\.workers\.dev<\/span> <button type="button" class="carton-link">Change<\/button>/, String(stored));
+    assert.doesNotMatch(form, /id="carton-share-host"/, "nothing to type");
+    assert.doesNotMatch(form, /The address whoever runs your sharing server gave you/, "no hint about an address nobody gave them");
+  }
+  globalThis.localStorage = { getItem: (k) => (k === "carton.host" ? "https://share.northlight.studio" : null), setItem() {} };
+  assert.match(render(React.createElement(ui.ShareForm, { projectId: "p", bridge, onShared() {}, onClose() {} })), /carton-known-value">share\.northlight\.studio</);
 });
 
 test("PLAN 8.1, QA G3, G11: People: You, then each teammate with what they're doing and their role, their agents under them", () => {

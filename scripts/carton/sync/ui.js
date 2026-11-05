@@ -37,6 +37,11 @@ export const hostAddress = (v) => {
   return !t || /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : "https://" + t;
 };
 const shownAddress = (v) => String(v ?? "").replace(/^https:\/\//i, "").replace(/\/$/, "");
+// The sharing server this build shares through until the person picks another with Change (the user, 2026-11-05: a
+// tester can't know an address to type): the showcase's own Carton server on Cloudflare, with open creation (no invite
+// needed) and its caps (new projects per address per day, the largest file). It's on the Workers Free plan with no R2,
+// so sharing through it can't run up a bill. An address the person used before wins.
+const DEFAULT_HOST = "https://cardboard-showcase.vikasmaur10.workers.dev";
 
 /**
  * What went wrong, in plain words, and which field it is about (`host`, `secret`, `link`, `name` or none). The
@@ -282,7 +287,9 @@ export function LiveStatus({ st }) {
  * (P1-8). The address once used is remembered, and shown as one line with Change.
  */
 export function ShareForm({ projectId, bridge, title, onClose, onShared }) {
-  const [saved] = useState(() => globalThis.localStorage?.getItem("carton.host") ?? "");
+  // No address used yet: this build's own sharing server, shown as the known one (one line with Change), so nobody has
+  // to know an address to share (DEFAULT_HOST).
+  const [saved] = useState(() => globalThis.localStorage?.getItem("carton.host") || DEFAULT_HOST);
   const [hostUrl, setHost] = useState(saved), [secret, setSecret] = useState("");
   const [editHost, setEditHost] = useState(!saved);
   const [name, setName, saveName] = useName();
