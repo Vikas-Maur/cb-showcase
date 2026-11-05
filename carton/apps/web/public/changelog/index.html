@@ -80,6 +80,36 @@ details li::before{content:"";position:absolute;left:2px;top:14px;width:5px;heig
 details li b{color:#fff;font-weight:500}
 .note{margin-top:24px;font-size:14px;line-height:1.6;color:var(--muted);letter-spacing:0}
 
+/* Also in Cardboard: what this build fixes that is also wrong in Cardboard's own code, and still is in its newest
+   Mac release (checked against 1.4.1). A mint pill, and a lightly tinted card around the whole section, or around a
+   list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.4.1</span>
+   <h3>…</h3><p>In Cardboard, … Now …</p></section>, and a line for it in the list at the top (.cbtoo). */
+:root{--also:#8fe3bf;--also-line:rgba(143,227,191,.28);--also-bg:rgba(143,227,191,.045)}
+.tag.also{color:var(--also);border-color:var(--also-line)}
+section.also{margin:36px 0 0;padding:20px 22px 4px;border:1px solid var(--also-line);border-radius:16px;background:var(--also-bg);scroll-margin-top:24px}
+.also>.tag:first-child{margin-bottom:12px}
+.also h3{margin-top:0}
+.also ul{margin:12px 0 16px;padding:0;list-style:none}
+.also li{position:relative;padding:6px 8px 6px 26px;margin-left:-8px;border-radius:8px;font-size:15px;line-height:1.6;color:#d9d9d9;letter-spacing:0;scroll-margin-top:24px}
+.also li::before{content:"";position:absolute;left:10px;top:16px;width:5px;height:5px;border-radius:50%;background:var(--also)}
+.also li b{color:#fff;font-weight:500}
+section.also:target{border-color:rgba(143,227,191,.6)}
+.also li:target{background:rgba(143,227,191,.09)}
+aside .tag.also{white-space:nowrap}
+
+.cbtoo{margin:8px 0 0;padding:32px 32px 22px;border:1px solid var(--also-line);border-radius:20px;background:radial-gradient(120% 150% at 0% 0%,rgba(143,227,191,.1) 0%,rgba(143,227,191,.025) 50%,rgba(143,227,191,0) 100%)}
+.cbtoo h2{margin:14px 0 12px;font-size:32px}
+.cbtoo>p{max-width:640px}
+.cbtoo .groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px;margin-top:8px}
+.cbtoo h3{margin:22px 0 4px;font-size:13px;line-height:1.4;font-weight:500;color:var(--muted);letter-spacing:.02em}
+.cbtoo ul{margin:0;padding:0;list-style:none}
+.cbtoo li{border-top:1px solid rgba(255,255,255,.07)}
+.cbtoo li a{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:9px 0;font-size:14px;line-height:1.5;color:#e0e0e0;text-decoration:none;letter-spacing:0}
+.cbtoo li a:hover{color:#fff}
+.cbtoo li a:hover span:first-child{text-decoration:underline;text-decoration-color:var(--also-line);text-underline-offset:3px}
+.cbtoo .ref{flex:none;font-family:var(--mono);font-size:12px;color:var(--also)}
+.cbtoo .how{margin:20px 0 0;max-width:720px}
+
 .signoff{max-width:968px;margin:0 auto;padding:8px 24px 0}
 .signoff p{margin:0 0 0 284px;font-size:18px;font-style:italic;line-height:1.6;color:#d4d4d4}
 footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px solid rgba(255,255,255,.06);font-size:13px;line-height:1.6;color:#6b6b6b;letter-spacing:0}
@@ -96,6 +126,10 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   .lead{font-size:17px}
   .media{margin-bottom:28px}
   .stat b{font-size:28px}
+  section.also{padding:18px 16px 2px}
+  .cbtoo{padding:24px 18px 18px;border-radius:16px}
+  .cbtoo h2{font-size:26px}
+  .cbtoo .groups{grid-template-columns:1fr}
   .signoff{padding:0 20px}
   .signoff p{margin-left:0;font-size:16px}
   footer{margin-top:64px;padding:24px 20px 40px}
@@ -124,6 +158,47 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 </section>
 
 <main>
+
+<!-- What we fixed that Cardboard itself still gets wrong: each item is in Cardboard's own code (not our port) and still
+     in 1.4.1, its newest Mac release when this was written. Each links to its entry, marked the same way there. -->
+<section class="cbtoo" id="cardboard-too" aria-labelledby="cardboard-too-title">
+  <span class="tag also">Also in Cardboard 1.4.1</span>
+  <h2 class="display" id="cardboard-too-title">Fixed here, still in Cardboard</h2>
+  <p>These don’t come from our Windows port. They’re in Cardboard’s own code, and still in 1.4.1, its newest release for Mac. Each one is fixed in this build and marked in its entry below.</p>
+  <div class="groups">
+    <div>
+      <h3>Saving and history</h3>
+      <ul>
+        <li><a href="#cb-saves"><span>Two saves at nearly the same moment, yours and an agent’s, can quietly undo one, even on different clips.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-history"><span>Only the newest 20 versions of a timeline are kept, and every timeline save adds one.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-stale"><span>An agent’s edit to a copy 20 or more saves old is merged against the current timeline, and can quietly undo newer edits.</span><span class="ref">#4</span></a></li>
+      </ul>
+      <h3>Speed</h3>
+      <ul>
+        <li><a href="#cb-idle"><span>With nothing moving, the editor still measures the preview on every screen refresh.</span><span class="ref">#3</span></a></li>
+        <li><a href="#cb-filmstrip"><span>Timeline thumbnails decode every frame of a video, then keep one every half second or second.</span><span class="ref">#1</span></a></li>
+      </ul>
+      <h3>Importing</h3>
+      <ul>
+        <li><a href="#cb-folder"><span>A folder dropped on the editor imports nothing, and no picker can choose a folder.</span><span class="ref">#1</span></a></li>
+        <li><a href="#cb-thumbs"><span>A video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest.</span><span class="ref">#1</span></a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Playback and editing</h3>
+      <ul>
+        <li><a href="#cb-play"><span>After a seek, Play waits for audio from muted tracks, and pressing it again doesn’t make it start sooner.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a></li>
+        <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-gpu"><span>When the graphics process restarts, the timeline stays black until something redraws it.</span><span class="ref">#2</span></a></li>
+      </ul>
+    </div>
+  </div>
+  <p class="how">Found by reading Cardboard’s code, 1.4.0 and today’s 1.4.1 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
+</section>
 
 <article id="6">
   <aside>
@@ -204,11 +279,23 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <h2 class="display">Carton: version history for video</h2>
     <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
 
-    <h3>Nothing gets overwritten</h3>
-    <p>Before, two saves at the same moment, say yours and the Director’s, could quietly undo one of them, even on different clips. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
+    <section class="also" id="cb-saves">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Nothing gets overwritten</h3>
+      <p>In Cardboard, two saves at nearly the same moment, say yours and the Director’s, can quietly undo one of them, even when they changed different clips: each save writes the whole project, with no check for a save in between. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
+    </section>
 
-    <h3>Every version, and who made it</h3>
-    <p>History keeps every version, where Cardboard 1.4.0 keeps only the newest 20. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+    <section class="also" id="cb-history">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Every version, and who made it</h3>
+      <p>Cardboard keeps only the newest 20 versions of a timeline, and every timeline save adds one. Carton’s History keeps every version. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+    </section>
+
+    <section class="also" id="cb-stale">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>An agent’s old copy can’t undo newer edits</h3>
+      <p>An agent edits a copy of the timeline. In Cardboard, once that copy is 20 or more saves old, its edit is merged against the current timeline instead of the version it came from, so its old values can quietly replace newer edits, with no conflict shown. Now an edit is always merged against the version it came from.</p>
+    </section>
 
     <h3>Undo only what’s yours</h3>
     <p>Ctrl+Z undoes your own edits and the agent turns you started, never a teammate’s. A whole Director turn can be undone at once.</p>
@@ -232,7 +319,6 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
-        <li>An agent’s edit to an old copy of the timeline is merged against the version it came from. Cardboard merged it against the current timeline and could undo newer edits.</li>
         <li>Exported <code>.cbproj</code> files never carry your history database or this computer’s paths.</li>
         <li>Opening a project on Windows retries when antivirus or the search indexer briefly holds a file.</li>
         <li>At final integration, all 24 test jobs passed (every test group on Linux and Windows, plus macOS): 6,844 tests, 0 failures.</li>
@@ -245,11 +331,15 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <article id="3">
   <aside>
     <time datetime="2026-10-31">October 31, 2026</time>
-    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a></div>
+    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a><a class="tag also" href="#cb-idle">Also in Cardboard 1.4.1</a></div>
   </aside>
   <div>
     <h2 class="display">An idle editor that stays idle</h2>
     <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab. Now the editor rests when nothing moves.</p>
+    <section class="also" id="cb-idle">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <p>This is Cardboard’s own editor code, not our port. In Cardboard on a Mac, a project’s editor measures where the preview sits on screen on every screen refresh for as long as it’s open, even when nothing moves.</p>
+    </section>
     <div class="stats">
       <div class="stat"><b><s>20.3% →</s> 0.7%</b><span>of a CPU core, one project open, window on screen, nothing moving</span></div>
       <div class="stat"><b><s>64.8% →</s> 2.0%</b><span>of a CPU core, four projects open, window on screen, nothing moving</span></div>
@@ -280,19 +370,32 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <h3>The fast GPU on laptops</h3>
     <p>On a laptop with two GPUs, Cardboard drew everything on the power-saving one, which borrows system memory, while the NVIDIA card sat idle. Plugged in, Cardboard now uses the NVIDIA card. On battery it stays on the power-saving one, and Windows’ own per-app setting still wins.</p>
 
-    <h3>Play means play</h3>
-    <p>After a seek, Play waited for audio from muted tracks and hidden clips that would never be heard. It now waits only for sound you’ll hear, and pressing Play a second time starts at once.</p>
+    <section class="also" id="cb-play">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Play means play</h3>
+      <p>In Cardboard, Play after a seek waits for the sound of clips on muted tracks, which will never be heard, and pressing Play again doesn’t make it start any sooner. Now it waits only for sound you’ll hear, and a second press starts at once.</p>
+    </section>
 
-    <h3>Prompt badges you can click</h3>
-    <p>Badges in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) are now one piece. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser. The arrow keys and Backspace treat a badge as a single character, so it can’t break into loose text.</p>
+    <section class="also" id="cb-badges">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Prompt badges stay whole, and open on a click</h3>
+      <p>In Cardboard, a badge in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) can be clicked or arrowed into, and typing there breaks it into loose text. Now a badge is one piece that the caret steps over. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser.</p>
+    </section>
+
+    <section class="also" id="cb-fixes-2">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Bugs Cardboard has too</h3>
+      <ul>
+        <li id="cb-playhead"><b>The playhead stays in view.</b> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
+        <li id="cb-focus"><b>Clicking the timeline takes the keyboard.</b> In Cardboard, it stays in the prompt box, so Space types a space instead of playing.</li>
+        <li id="cb-tooltips"><b>The left rail shows its tooltips.</b> In Cardboard, its icons never show their names.</li>
+        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> In Cardboard, when the graphics process restarts, the timeline stays black until something else redraws it.</li>
+      </ul>
+    </section>
 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
-        <li>The timeline redraws after a GPU reset. It used to stay black.</li>
-        <li>The playhead stays in view when you step frames or drag it past the edge; the timeline scrolls to follow.</li>
-        <li>Clicking the timeline takes the keyboard from the prompt box, so Space plays instead of typing a space.</li>
-        <li>The editor’s left rail shows its tooltips.</li>
         <li>A benchmark kit, and a “baseline” build of Cardboard’s own pipeline to compare against, so every speed claim can be re-run on the same machine.</li>
         <li>A study re-implementation of how Cardboard merges an edited timeline: the groundwork for Carton.</li>
       </ul>
@@ -317,20 +420,37 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p>The built-in Claude Code agent, its Python tools and the <code>cb</code> command line work from Git Bash, cmd and PowerShell. Cardboard also finds the Claude Code and Codex you installed yourself.</p>
 
     <h3>Your NVIDIA GPU does the heavy lifting</h3>
-    <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU. Timeline thumbnails come from keyframes instead of decoding every frame.</p>
+    <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU.</p>
+
+    <section class="also" id="cb-filmstrip">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Timeline thumbnails from keyframes</h3>
+      <p>To draw a video’s thumbnails along the timeline, Cardboard decodes every frame of it, then keeps one every half second or second. Now, when a video has a keyframe at least every 2 seconds, only the keyframes are decoded; otherwise every frame is, on the NVIDIA GPU when there is one.</p>
+    </section>
 
     <h3>A Windows keyboard</h3>
-    <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, Enter answers the Director’s questions, and a new shortcut that clashes with another one is caught.</p>
+    <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, and a new shortcut that clashes with another one is caught.</p>
 
-    <h3>Import a whole folder</h3>
-    <p>Use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+    <section class="also" id="cb-folder">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Import a whole folder</h3>
+      <p>In Cardboard, a folder dropped on the editor imports nothing, and none of its pickers can choose a folder. Now use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+    </section>
+
+    <section class="also" id="cb-fixes-1">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Bugs Cardboard has too</h3>
+      <ul>
+        <li id="cb-enter"><b>Enter answers the Director’s questions.</b> In Cardboard, clicking an option and then pressing Enter un-picks it, so nothing is sent. Now Enter on a picked option sends the answer.</li>
+        <li id="cb-thumbs"><b>Interrupted imports finish their thumbnails.</b> In Cardboard, a video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest, even when the project reopens. Now it gets them when the project reopens.</li>
+      </ul>
+    </section>
 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
         <li><b>Imports no longer lose clips.</b> Windows refuses to replace a file something is reading, so a save during an import could fail and drop a clip. Saves now retry.</li>
         <li>Closing the window quits Cardboard. After a failed import step it used to keep running with no window.</li>
-        <li>Clips left without thumbnails after quitting mid-import get them when the project reopens.</li>
         <li>Notifications show on Windows, and the taskbar button flashes when the Director needs you.</li>
         <li>Cardboard says “this PC” and “File Explorer” where it said “this Mac” and “Finder”.</li>
         <li>An activity log records how a session went: shortcuts, menus, waits and errors. Never what you type.</li>
