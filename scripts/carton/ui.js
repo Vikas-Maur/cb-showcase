@@ -689,13 +689,9 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   // plays through Cardboard's own playback, with its sound and at full frame rate, and Play follows its clock (item 5,
   // laptop 2026-11-05: Play moved the playhead from a clock of its own and nothing was heard). The seeker below is for
   // a bridge without playback only (an older page): the playhead follows Play's, at most 10 seeks a second.
-  const transport = useMemo(() => (typeof bridge.playFrom === "function" ? {
-    play: (t) => bridge.playFrom(t),
-    pause: () => bridge.pause?.(),
-    playing: () => !!bridge.playing,
-    time: () => bridge.clock?.() ?? 0,
-    length: () => bridge.shownLength?.(),
-  } : undefined), [bridge]);
+  // (the bridge's own transport: Cardboard's playback, its start while the sound loads, the shown timeline's end; review
+  // of a2725f9c #2, #3, #5)
+  const transport = useMemo(() => (typeof bridge.transport === "function" ? bridge.transport() : undefined), [bridge]);
   const seeker = useMemo(() => {
     let last = 0, timer = null, at = 0;
     const go = () => { timer = null; last = performance.now(); bridge.seek?.(at); };

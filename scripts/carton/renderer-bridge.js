@@ -106,6 +106,15 @@ module.exports = String.raw`window.__carton = (() => {
   const EXPORT_BACK_FAILED = "Export didn't open: your edit didn't come back. Press Esc, then try again.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
+  // The shown timeline's end, kept for its array (shownLength); History's start still loading its sound (playFrom)
+  let shownEnd = { items: null, end: 0 }, historyLoad = false;
+  // A start waiting for its sound, called off: its load numbered out of date (patch-renderer 12: only the newest load's
+  // end clears the flag and starts playback), and nothing left waiting
+  const retireLoad = (st) => {
+    window.__cbPreloadGen = (window.__cbPreloadGen || 0) + 1;
+    st.setPendingPlayback?.(false);
+    st.setIsAudioPreloading?.(false);
+  };
   // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
   // ("removedMediaIds:<id>" or "ownedMediaIds:<id>"), one per time an action made it, oldest first: { carrier }, null
   // while it waits for its action's timeline save, "boarding" while that save is being sent with it, then that save's
@@ -552,17 +561,53 @@ module.exports = String.raw`window.__carton = (() => {
     // sound, as its Space starts it (toggleTimelinePlayback: the audio at the playhead loaded first). Never from where a
     // pointer rests over the timeline (its toggle starts from the hover scrubber's time when that shows). Nothing while
     // it plays: @carton/react's player stops it before a jump, so Cardboard's loop starts again from the new place.
+    // Review of a2725f9c #3: nothing either while History's own start is still loading its sound. A second toggle then
+    // forces playback at once (patch-renderer 15, for the person's second press), so a History retry would have started
+    // it silent. A start the person asked for that is still loading (their Space) is History's to replace.
     playFrom(t) {
       if (!on || !store || !Number.isFinite(t)) return;
       const st = store.state();
       if (st.isPlaying) return;
+      if (st.pendingPlayback || st.isAudioPreloading) {
+        if (historyLoad) return;
+        retireLoad(st);
+      }
       if (st.isHoverScrubberVisible) st.setHoverScrubberVisible?.(false);
       st.setPlaybackPosition?.(Math.max(0, t));
       store.state().toggleTimelinePlayback?.();
+      const now = store.state();
+      historyLoad = !now.isPlaying && !!now.pendingPlayback;
+    },
+    // History stops its playback (review #2): playing, or its start still loading its sound, which is called off (its
+    // load retired, as patch-renderer 15 retires one, so its end neither starts playback nor clears a newer load's flag).
+    // Only History's own: @carton/react's player calls this only for playback it asked for.
+    stopPlay() {
+      if (!on || !store) return;
+      const st = store.state();
+      if (st.isPlaying) st.setIsPlaying?.(false);
+      else if (historyLoad && (st.pendingPlayback || st.isAudioPreloading)) retireLoad(st);
+      historyLoad = false;
+    },
+    // History's start is still loading its sound (it waits: asking again would force it)
+    loading() {
+      if (!on || !store || !historyLoad) return false;
+      const st = store.state();
+      if (st.isPlaying || !st.pendingPlayback) historyLoad = false;
+      return historyLoad;
     },
     // Where the timeline the editor shows ends (your edit's, or a viewed version's): Cardboard's playback stops there by
-    // itself, which Play in History tells from the person's pause.
-    shownLength() { return on && store ? duration(store.state().timelineItems ?? []) : undefined; },
+    // itself, which Play in History tells from the person's pause. Read every frame while History plays: computed once
+    // per timeline (its array changes with every edit and every swap), not per frame (review #5).
+    shownLength() {
+      if (!on || !store) return undefined;
+      const items = store.state().timelineItems ?? [];
+      if (items !== shownEnd.items) shownEnd = { items, end: duration(items) };
+      return shownEnd.end;
+    },
+    // What History's Play plays through (@carton/react's Transport), as ui.js hands it to the panel
+    transport() {
+      return { play: (t) => this.playFrom(t), pause: () => this.stopPlay(), playing: () => this.playing, loading: () => this.loading(), time: () => this.clock(), length: () => this.shownLength() };
+    },
     pause() { if (on && store && store.state().isPlaying) store.state().setIsPlaying?.(false); },
     get playing() { return !!(on && store && store.state().isPlaying); },
     // The playhead as the stage shows it (the playback clock while playing), and its moves: Compare's list follows it

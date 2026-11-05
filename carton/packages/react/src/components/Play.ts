@@ -225,18 +225,24 @@ export function usePlayChanges(o: PlayOptions): Playback {
       setBOn(on);
       const { older, newer } = opts.current;
       if (on && !older) return;
-      show(on ? older : newer).catch(() => {
+      // (the older side may end sooner: Play waits at its end while Before is held, and plays on once the newer side
+      // shows again: review of a2725f9c #6)
+      if (on) player.hold(true);
+      const back = () => {
+        if (!bOnRef.current) player.hold(false);
+      };
+      show(on ? older : newer).then(on ? undefined : back, () => {
         // the older side couldn't be shown: say so, and the stage stays (or goes back) where Play had it
-        if (!on) return;
+        if (!on) return back();
         bOnRef.current = false;
         latchedRef.current = false;
         setBOn(false);
         setLatched(false);
         setError(words.loadFailed);
-        void show(opts.current.newer).catch(() => {});
+        void show(opts.current.newer).then(back, back);
       });
     },
-    [show, words],
+    [show, words, player],
   );
   const sessionOn = st.step >= 0 || loading;
   const available = !!o.older && (sessionOn || bOn);
@@ -397,6 +403,7 @@ export function usePlayChanges(o: PlayOptions): Playback {
       latchedRef.current = false;
       setBOn(false);
       setLatched(false);
+      player.hold(false);
       return;
     }
     wanted.current = null;
@@ -405,7 +412,7 @@ export function usePlayChanges(o: PlayOptions): Playback {
     setBOn(false);
     setLatched(false);
     stop();
-  }, [viewing, stop]);
+  }, [viewing, stop, player]);
 
   // A session that ended with Before still held: the button stays until it is let go, then goes.
   // Leaving (the view closed, the card folded): Play stops, and Before, if on, lets go.

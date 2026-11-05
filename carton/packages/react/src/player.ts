@@ -28,6 +28,11 @@ export interface Transport {
   time(): number;
   /** Where the timeline it shows ends, where it stops by itself (Cardboard does), when known. */
   length?(): number | undefined;
+  /**
+   * The start it was asked for is still getting ready (Cardboard: the sound at the playhead loading). Play waits
+   * then: asking again would force a start before the sound is in (the Windows build's second Play does that).
+   */
+  loading?(): boolean;
 }
 /** A stretch's host still not playing this long after it was asked (its audio loading): asked again; at most this many times. */
 export const PLAY_ASK_MS = 1500;
@@ -176,8 +181,15 @@ const IDLE: SpanState = { playing: false, step: -1, rows: [], done: false };
  * next one starts there, else it stops the host and, two frames later (once the host has seen it stop), plays the next
  * one from its start; at the last one's end it stops the host. A host that stops by itself at its timeline's end has
  * ended the stretch; one that stops anywhere else was paused by the person (Cardboard's own Space): Play pauses too,
- * and goes on from there. A step with no place stops the host while it is lit. Pause and stop stop the host only while
- * this player is playing it, never the person's own playback.
+ * and goes on from there. A step with no place stops the host while it is lit.
+ *
+ * It owns only what it asked for (review of a2725f9c #7): from its play() until the host stops (or this player stops
+ * it), its start still loading included. Pause, stop and closing stop that (#2: a start whose sound is loading is called
+ * off, never left to start afterwards), never the person's own playback; Play replaces the person's playback only when
+ * it starts or jumps (stopped, then its own played from the stretch's start), as any player's Play would. While the host
+ * loads the sound for its start, it waits: no new ask, no giving up (#3). While Before is held (`hold`), the stage shows
+ * an older side, which may end sooner: a stop at its end, or a stretch past it, waits for Before to let go, and the
+ * newer side plays on from there (#6).
  */
 export class SpanPlayer {
   #steps: readonly PlayStep[] = [];
@@ -200,6 +212,12 @@ export class SpanPlayer {
   #saw = false;
   /** The step starts at or past the end of what the host shows: nothing of it to play (Cardboard would start over at 0:00). */
   #skip = false;
+  /** This player asked the host to play (playing, or its start still loading): the only playback it stops. */
+  #owned = false;
+  /** Before is held: the stage shows an older side (`hold`). */
+  #held = false;
+  /** Waiting, while Before is held, at the older side's end or before a stretch it doesn't reach. */
+  #waiting = false;
 
   constructor(opts: { clock?: Clock; transport?: () => Transport | null | undefined } = {}) {
     this.#clock = opts.clock ?? browserClock();
@@ -252,15 +270,28 @@ export class SpanPlayer {
   /** Back to nothing lit. */
   stop(): void {
     this.#cancel();
-    if (this.#state.playing) this.#halt();
+    this.#halt();
+    this.#held = false;
     this.#set(IDLE);
   }
 
   dispose(): void {
     this.#cancel();
-    if (this.#state.playing) this.#halt();
+    this.#halt();
     this.#onFrame.clear();
     this.#onState.clear();
+  }
+
+  /**
+   * Before held (the stage shows the older side) or let go (the newer side again, once it shows): a stop at the older
+   * side's end waits for this, and the newer side then plays on from where it waited.
+   */
+  hold(on: boolean): void {
+    if (this.#held === on) return;
+    this.#held = on;
+    if (on || !this.#waiting) return;
+    this.#waiting = false;
+    if (this.#state.playing && this.#drive) this.#cue = 2;
   }
 
   #run() {
@@ -272,12 +303,14 @@ export class SpanPlayer {
     this.#frame = this.#clock.request(this.#tick);
   }
 
-  /** The host stops, if this player has it playing. */
+  /** The host stops what this player asked of it (playing, or its start still loading); nothing else. */
   #halt() {
     const d = this.#drive;
     this.#drive = null;
     this.#cue = -1;
-    if (d?.playing()) d.pause();
+    this.#waiting = false;
+    if (d && this.#owned) d.pause();
+    this.#owned = false;
   }
 
   /** The step just entered, on the host: a place plays from its start (after a stop, if it plays elsewhere); none stops it. */
@@ -286,21 +319,29 @@ export class SpanPlayer {
     if (!d) return;
     const s = this.#steps[this.#state.step];
     this.#asks = 0;
+    this.#waiting = false;
     const shown = d.length?.();
-    this.#skip = !!s && s.start != null && shown !== undefined && this.#t >= shown - 0.05;
-    if (!s || s.start == null || this.#skip) {
+    // a stretch at or past the end of what is shown: nothing there to play (on Before's older side: wait for the newer)
+    const past = !!s && s.start != null && shown !== undefined && this.#t >= shown - 0.05;
+    this.#skip = past && !this.#held;
+    if (!s || s.start == null || past) {
       this.#cue = -1;
-      if (d.playing()) d.pause();
+      if (this.#owned) d.pause();
+      this.#owned = false;
+      this.#waiting = past && this.#held;
       return;
     }
-    // (a stretch that starts where the host plays now: straight on, no stop)
-    if (d.playing() && Math.abs(d.time() - this.#t) < 0.1) {
+    // (a stretch that starts where its own playback is now: straight on, no stop)
+    if (this.#owned && d.playing() && Math.abs(d.time() - this.#t) < 0.1) {
       this.#cue = -1;
       this.#saw = true;
       return;
     }
-    if (d.playing()) {
+    // playing elsewhere (its own, or the person's, which Play replaces), or its own start still loading: stopped, then
+    // played from here once the host has seen it stop
+    if (d.playing() || this.#owned) {
       d.pause();
+      this.#owned = false;
       this.#cue = 2;
     } else this.#ask();
   }
@@ -310,6 +351,7 @@ export class SpanPlayer {
     this.#saw = false;
     this.#asks++;
     this.#asked = this.#clock.now();
+    this.#owned = true;
     this.#drive!.play(this.#t);
   }
 
@@ -349,25 +391,35 @@ export class SpanPlayer {
     } else if (d) {
       const end = s.end!, shown = d.length?.();
       if (this.#skip) this.#t = end;
-      else if (this.#cue > 0) this.#cue--;
+      else if (this.#waiting) {
+        // Before held at the older side's end: waits for the newer side (hold)
+      } else if (this.#cue > 0) this.#cue--;
       else if (this.#cue === 0) {
         if (!d.playing()) this.#ask();
       } else if (d.playing()) {
         this.#saw = true;
         this.#t = Math.max(s.start, Math.min(d.time(), end));
       } else if (!this.#saw) {
-        // not started yet (its audio loading): asked again, and given up on after a few tries
-        if (now - this.#asked > PLAY_ASK_MS) {
+        // not started yet. While the host loads its sound it waits (asking again would force a start before the sound
+        // is in); a host neither playing nor loading is asked again, and given up on after a few tries
+        if (d.loading?.()) this.#asked = now;
+        else if (now - this.#asked > PLAY_ASK_MS) {
           if (this.#asks < PLAY_ASKS) this.#ask();
           else this.#t = end;
         }
       } else {
-        // stopped: at the end of the timeline it shows (Cardboard stops there by itself), this stretch is over; anywhere
-        // else the person paused it (Cardboard's own Space, its toolbar): Play pauses there too (a trap from
-        // fix/ux2-laptop: the stop at the timeline's end is no pause)
+        // stopped: at the end of the timeline it shows (Cardboard stops there by itself), this stretch is over (a trap
+        // from fix/ux2-laptop: the stop at the timeline's end is no pause), unless Before shows an older side ending
+        // before the stretch does: then it waits there; anywhere else the person paused it (Cardboard's own Space,
+        // its toolbar): Play pauses there too
         const t = d.time();
-        if (t >= Math.min(end, shown ?? Infinity) - 0.05) this.#t = end;
-        else {
+        this.#owned = false;
+        if (t >= Math.min(end, shown ?? Infinity) - 0.05) {
+          if (this.#held && shown !== undefined && shown < end - 0.05) {
+            this.#t = Math.max(s.start, Math.min(t, end));
+            this.#waiting = true;
+          } else this.#t = end;
+        } else {
           this.#t = Math.max(s.start, Math.min(t, end));
           this.#drive = null;
           this.#set({ ...this.#state, playing: false });

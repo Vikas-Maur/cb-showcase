@@ -986,3 +986,91 @@ test("Play in History: Cardboard's own playback from a place, never the hover sc
   t.c.playFrom(Number.NaN);
   assert.equal(did.length, 4);
 });
+
+// Review of a2725f9c #2, #3: History's Play while the audio at the playhead is still loading, on Cardboard's own toggle
+// as the Windows build patches it (patch-renderer 15: a second toggle while loading forces playback at once) and its
+// numbered loads (12: only the newest load's end clears the flag and starts playback). The toggle is read out of a
+// staged build; the load stands in for the editor's (its finish is 12's).
+const PRISTINE = process.env.CARDBOARD_PRISTINE;
+const fs = require("fs"), os = require("os"), path = require("path");
+const noStage = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app" : false;
+let stagedToggle = null;
+const toggleSource = () => {
+  if (stagedToggle) return stagedToggle;
+  const { stage } = require("./stage.js");
+  const out = stage(PRISTINE, fs.mkdtempSync(path.join(process.env.CARTON_TEST_DIR ?? os.tmpdir(), "rb-stage-")), { carton: true });
+  const src = fs.readFileSync(path.join(out.assets, "installErrorTelemetry-DxKId8tA.js"), "utf8");
+  const a = src.indexOf("toggleTimelinePlayback:()=>") + "toggleTimelinePlayback:".length, b = src.indexOf(",setIsAudioPreloading:", a);
+  return (stagedToggle = src.slice(a, b));
+};
+const loadingRig = async () => {
+  const window = {};
+  new Function("window", require("../renderer-bridge.js"))(window);
+  let load = null;
+  const st = {
+    projectId: "p", timelineItems: [{ id: "a", endTime: 20 }], duration: 20, previewMode: "timeline", isPlaying: false, isAudioPreloading: false, pendingPlayback: false, playheadTime: 0, currentTime: 0, hoverTime: null, isHoverScrubberVisible: false,
+    setPlaybackPosition(t) { st.playheadTime = st.currentTime = t; }, setIsPlaying(x) { st.isPlaying = x; }, setPendingPlayback(x) { st.pendingPlayback = x; }, setIsAudioPreloading(x) { st.isAudioPreloading = x; },
+    checkAudioReadyAtPlayhead: () => false,
+    // the editor's load (patch-renderer 12): numbered; only the newest one's end clears the flag and starts playback
+    triggerAudioPreloadAtPlayhead: () => {
+      const g = (window.__cbPreloadGen = (window.__cbPreloadGen || 0) + 1);
+      load = () => { if (g !== window.__cbPreloadGen) return; st.isAudioPreloading = false; if (st.pendingPlayback) { st.pendingPlayback = false; st.isPlaying = true; } };
+    },
+  };
+  st.toggleTimelinePlayback = new Function("e", "t", "hg", "window", "return " + toggleSource())(() => st, (p) => Object.assign(st, p), (items) => Math.max(...items.map((i) => i.endTime)), window);
+  window.__carton.store({ state: () => st, invoke: async () => true, on: () => () => {} });
+  await window.__carton.ready;
+  const b = window.__carton;
+  // as ui.js hands it to History (a2725f9c built it from these five)
+  const transport = typeof b.transport === "function" ? b.transport() : { play: (t) => b.playFrom(t), pause: () => b.pause(), playing: () => b.playing, time: () => b.clock(), length: () => b.shownLength() };
+  const { SpanPlayer } = await import("../../../carton/packages/react/src/player.ts");
+  let next = null, now = 0;
+  const player = new SpanPlayer({ clock: { now: () => now, request: (fn) => ((next = fn), 1), cancel: () => void (next = null) }, transport: () => transport });
+  const frames = (ms, n = 1) => { for (let i = 0; i < n; i++) { now += ms; const fn = next; next = null; fn?.(now); } };
+  return { st, b, player, frames, finish: () => load?.(), steps: [{ start: 1, end: 4, rows: [0], spans: [[1, 4]] }] };
+};
+
+test("History's Play stopped while its audio loads: Cardboard never starts it afterwards (Pause, Esc, closing History)", { skip: noStage, timeout: 300_000 }, async () => {
+  for (const how of ["pause", "stop", "dispose"]) {
+    const r = await loadingRig();
+    r.player.start(r.steps);
+    assert.equal(r.st.pendingPlayback, true, "the audio at 0:01 loading, playback waiting for it");
+    assert.equal(r.st.isPlaying, false);
+    r.player[how]();
+    r.finish();
+    assert.equal(r.st.isPlaying, false, `${how}: the load's end starts nothing`);
+    assert.equal(r.st.pendingPlayback, false, `${how}: nothing left waiting`);
+    assert.equal(r.st.isAudioPreloading, false, `${how}: no spinner left on`);
+  }
+});
+
+test("History's Play waits for its audio: never asks Cardboard again while it loads (that forces a silent start)", { skip: noStage, timeout: 300_000 }, async () => {
+  const r = await loadingRig();
+  r.player.start(r.steps);
+  r.frames(400, 20); // 8 s of frames while the audio loads
+  assert.equal(r.st.isPlaying, false, "not forced to play before the audio is in");
+  assert.equal(r.st.pendingPlayback, true, "still waiting for it");
+  assert.equal(r.player.state.playing, true, "and Play is still on it, not given up");
+  r.finish();
+  assert.equal(r.st.isPlaying, true, "playback starts once the audio is in");
+  // the person's own second press (Cardboard's Play while loading) still forces playback: that is theirs (15)
+  const p = await loadingRig();
+  p.st.toggleTimelinePlayback();
+  p.st.toggleTimelinePlayback();
+  assert.equal(p.st.isPlaying, true);
+});
+
+// Review #5: the shown timeline's end is read every frame while History plays; it is computed once per timeline.
+test("the shown timeline's end: read once per timeline, not once per frame", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let reads = 0;
+  const item = (end) => ({ id: "x", get endTime() { reads++; return end; } });
+  const items = Array.from({ length: 200 }, (_, i) => item(i / 10));
+  t.setState({ timelineItems: items });
+  for (let i = 0; i < 60; i++) assert.equal(t.c.shownLength(), 19.9);
+  assert.equal(reads, 200, "one pass for 60 frames");
+  t.setState({ timelineItems: [...items, item(30)] });
+  assert.equal(t.c.shownLength(), 30, "a new timeline: computed again");
+  assert.equal(reads, 401);
+});

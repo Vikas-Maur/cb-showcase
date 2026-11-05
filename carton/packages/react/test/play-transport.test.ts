@@ -131,3 +131,82 @@ test("without a transport: Play's own clock, as before", () => {
   for (let i = 0; i < 5; i++) { now += 100; const fn = next as ((t: number) => void) | null; next = null; fn?.(now); }
   assert.ok(Math.abs(seen.at(-1)! - 1.5) < 1e-9, "its own time: 1 s + 0.5 s");
 });
+
+// Review of a2725f9c #2, #3: a start still loading its sound is Play's own: stopping Play cancels it (the host's
+// playing() is still false then); and while the host says it is loading, Play neither asks again nor gives up.
+test("a start still loading its sound: Pause, stop and closing cancel it; no new ask and no giving up while it loads", () => {
+  for (const how of ["pause", "stop", "dispose"] as const) {
+    const r = rig({ startsAfter: 99_000 });
+    r.player.start(playSteps([c("a", 3, 4)]));
+    r.run(500);
+    r.player[how]();
+    assert.deepEqual(r.calls, ["play 2", "pause"], `${how}: the pending start is called off`);
+  }
+  const r = rig({ startsAfter: 9_000 });
+  r.tr.loading = () => !r.playing && r.calls.at(-1)!.startsWith("play");
+  r.player.start(playSteps([c("a", 3, 4)]));
+  r.run(8_000);
+  assert.deepEqual(r.calls, ["play 2"], "asked once: never again while it loads");
+  assert.equal(r.player.state.playing, true, "not given up");
+  r.run(1_500);
+  assert.ok(r.playing, "plays once its sound is in");
+});
+
+// Review #6: Before shows the older side, which may end sooner: Cardboard stops at its end. That is no end of the
+// stretch: Play waits there, and plays on when Before lets go.
+test("Before on a shorter older side: Play waits at its end and plays the rest of the stretch once Before lets go", () => {
+  const r = rig({ length: 20 });
+  r.player.start(playSteps([c("a", 5, 8)])); // [4, 9)
+  r.run(600);
+  r.player.hold(true);
+  // the older side ends at 5: Cardboard stops there by itself
+  r.tr.length = () => 5;
+  r.t = 5;
+  r.playing = false;
+  r.run(2_000);
+  assert.equal(r.player.state.done, false, "not over: the stretch goes to 9");
+  assert.equal(r.player.state.playing, true);
+  assert.equal(r.calls.filter((x) => x.startsWith("play")).length, 1, "and not asked to play the older side's end again");
+  r.tr.length = () => 20;
+  r.player.hold(false);
+  r.run(300);
+  assert.deepEqual(r.calls.slice(-1), ["play 5"], "the newer side plays on from there");
+  r.run(4_200);
+  assert.equal(r.player.state.done, true, "to the stretch's end");
+  // a later stretch past the older side's end waits too, rather than being skipped
+  const s = rig({ length: 20 });
+  s.player.start(playSteps([c("a", 2, 3), c("b", 12, 13)]));
+  s.player.hold(true);
+  s.tr.length = () => 6;
+  s.run(3_100);
+  s.run(1_000);
+  assert.equal(s.player.state.step, 1, "on the second stretch");
+  assert.ok(!s.calls.includes("play 11"), "not played on the older side, which has nothing there");
+  s.player.hold(false);
+  s.tr.length = () => 20;
+  s.run(300);
+  assert.deepEqual(s.calls.slice(-1), ["play 11"], "played once Before lets go");
+});
+
+// Review #7: Play stops only playback it started. The person's own playback, playing when Play starts, is replaced
+// (stopped, then Play plays its own from the stretch's start), never taken over as Play's; playback the person starts
+// while Play is paused or over is never stopped by Play's cleanup.
+test("Play owns only the playback it started: it replaces the person's at its start, and never stops theirs afterwards", () => {
+  const r = rig();
+  r.playing = true; // the person's own playback, near the stretch's start
+  r.t = 3.95;
+  r.player.start(playSteps([c("a", 5, 8)])); // [4, 9)
+  assert.deepEqual(r.calls, ["pause"], "the person's playback stopped, not taken over");
+  r.step(); r.step(); r.step();
+  assert.deepEqual(r.calls, ["pause", "play 4"], "Play plays its own, from the stretch's start");
+  // paused by the person in the editor, then their own playback: Play's stop and closing leave it alone
+  r.run(500);
+  r.playing = false;
+  r.step();
+  assert.equal(r.player.state.playing, false);
+  r.playing = true;
+  r.player.stop();
+  r.player.dispose();
+  assert.equal(r.playing, true, "theirs plays on");
+  assert.deepEqual(r.calls, ["pause", "play 4"]);
+});

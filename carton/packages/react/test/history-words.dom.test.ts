@@ -124,3 +124,51 @@ test(name("the card's Play all plays through the host's own playback, never a se
     assert.equal(playing, false);
   } finally { await m.unmount(); await carton.close(); }
 });
+
+// Review of a2725f9c #6: Before held during Play shows the older side, which may end sooner (Cardboard stops there).
+// Play waits there, and once Before lets go the newer side plays on: the rest of the stretch is never skipped.
+test(name("Before held on a shorter older side: Play waits at its end, then the newer side plays on from there"), async () => {
+  let now = 0, next: ((t: number) => void) | null = null;
+  const clock: Clock = { now: () => now, request: (fn) => ((next = fn), 1), cancel: () => void (next = null) };
+  const calls: string[] = [];
+  let playing = false, t = 0, len = 9;
+  const frames = async (n: number) => {
+    for (let i = 0; i < n; i++)
+      await act(() => {
+        now += 100;
+        if (playing) { t += 0.1; if (t >= len - 1e-9) { t = len; playing = false; } }
+        const fn = next as ((x: number) => void) | null;
+        next = null;
+        fn?.(now);
+      });
+  };
+  const transport: Transport = { play: (x) => (calls.push(`play ${x}`), (t = x), (playing = true)), pause: () => (calls.push("pause"), (playing = false)), playing: () => playing, time: () => t, length: () => len };
+  const { carton, m } = await panel(async (c) => {
+    await c.commit({ ops: [codeEdit("a3 = 3", "a3 = 33")], author: claude });
+    await c.name(at(c, 1), "Change the lines");
+  }, { clock, transport, length: () => 9 });
+  try {
+    const el = await openCard(m.container, "Change the lines");
+    await click(byText(el, "button", "Play all"));
+    await waitFor(() => calls.length > 0, "the host asked to play");
+    await frames(12); // 3 → 4.2
+    const before = $(el, ".carton-before")!;
+    assert.ok(!!before, "Before while it plays");
+    await act(() => void before.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true, cancelable: true, pointerId: 1 })));
+    await flush();
+    len = 5; // the older side: 5 s long, Cardboard stops at its end
+    await frames(15);
+    assert.equal(t, 5);
+    assert.ok(!!byText(el, "button", "Pause"), "Play still on: not over at the older side's end");
+    const real = Date.now;
+    Date.now = () => real() + 600;
+    len = 9;
+    await act(() => void before.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true, pointerId: 1 })));
+    Date.now = real;
+    await flush();
+    await frames(4);
+    assert.deepEqual(calls.slice(-1), ["play 5"], "Before let go: the newer side plays on from where it waited");
+    await frames(60);
+    assert.ok(!!byText(el, "button", "Play all"), "then to the stretch's end");
+  } finally { await m.unmount(); await carton.close(); }
+});
