@@ -105,6 +105,8 @@ export interface HistoryPanelProps {
 type Row = HistoryRow | { readonly kind: "working"; readonly key: "working" };
 type DayHistoryRow = Extract<HistoryRow, { kind: "day" }>;
 type RunHistoryRow = Extract<HistoryRow, { kind: "run" }>;
+/** A card's play: the card it came from (`key`), its row's versions then (`ids`, newest first), its oldest's `base`. */
+type PlayReq = { req: PlayRequest; key: string | null; ids: readonly string[]; base?: string; n: number };
 /** A past day's run of changes between two landmarks: one quiet line, a day header's height (DESIGN-V2 §2.5). */
 export const RUN_ROW_HEIGHT = 32;
 /**
@@ -862,8 +864,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   // Before shows how it was before the card's changes (a run of changes: before its oldest) at the same moment. The card
   // lights the row playing (`playing`); Play all again on the version paused in goes on from there.
   const onSeek = props.onSeek ?? props.play?.seek;
-  // (`key`: the card it came from; a play belongs to its card)
-  const [playReq, setPlayReq] = useState<{ req: PlayRequest; key: string | null; base?: string; n: number } | null>(null);
+  // (`key`: the card it came from; a play belongs to its card. `ids`: its row's versions then, newest first; `base`: the
+  // oldest's base, what Before shows)
+  const [playReq, setPlayReq] = useState<PlayReq | null>(null);
   const pv = playReq?.req.version;
   const yourLength = playReq?.req.newest ? props.play?.length?.() : undefined;
   const beforeRef = playReq?.base ?? pv?.base;
@@ -880,14 +883,31 @@ export function HistoryPanel(props: HistoryPanelProps) {
   playReqRef.current = playReq;
   const openKeyRef = useRef(openKey);
   openKeyRef.current = openKey;
+  // A play is its card's, not its version's (laptop B1): an edit of yours that joins the group it plays gives the row a
+  // new newest version, and the card, its spinner and Space on the row go by the version the row shows now (`owner`).
+  // The play carries on over the changes it started with (Pause, its lit row; Play all after a pause goes on from
+  // there) while the row still holds every version it started with, from the same base, and edits only joined at its
+  // newer end. A regroup that took one out (a version named in the middle splits the group: its older part keeps the
+  // card) or moved its base makes it another card: the play ends (review of 48fd9936), as it does when an edit turns a
+  // version into a group (the open card moved).
+  const owner = useMemo((): Version | undefined => {
+    if (!playReq || !rows) return playReq?.req.version;
+    const r = rowOf(playReq.key), v = versionOfRow(r);
+    if (!r || !v) return undefined;
+    const ids = r.kind === "group" ? r.ids : [v.id], k = ids.length - playReq.ids.length;
+    if (k < 0 || playReq.ids.some((id, i) => ids[k + i] !== id)) return undefined;
+    return find(ids[ids.length - 1]!)?.base === playReq.base ? v : undefined;
+  }, [playReq, rows, rowOf, versionOfRow, find]);
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
   const ownPlay = useCallback(
     (req: PlayRequest) => {
       const was = playReqRef.current, cp = cardPlayRef.current;
-      if (was && was.req.version.id === req.version.id && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
+      if (was && was.key === openKeyRef.current && ownerRef.current && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
       // a person's run of changes (a group row): Before is before its oldest version
       const r = rowOf(openKeyRef.current);
-      const oldest = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : undefined;
-      setPlayReq((p) => ({ req, key: openKeyRef.current, ...(oldest?.base ? { base: oldest.base } : {}), n: (p?.n ?? 0) + 1 }));
+      const first = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : req.version;
+      setPlayReq((p) => ({ req, key: openKeyRef.current, ids: r?.kind === "group" ? r.ids : [req.version.id], ...(first?.base ? { base: first.base } : {}), n: (p?.n ?? 0) + 1 }));
     },
     [rowOf, find],
   );
@@ -906,13 +926,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
     cardPlayRef.current.stop();
     setPlayReq(null);
   }, [openKey]);
+  // its card is no longer the play's (a regroup, above): it ends, Before lets go, and Play all starts afresh
+  useEffect(() => {
+    if (!playReqRef.current || owner) return;
+    cardPlayRef.current.stop();
+    setPlayReq(null);
+  }, [owner]);
   // a version that couldn't be loaded says so, in History's words (review #6), in its card (design QA G20)
   const playError = playReq ? cardPlay.error : null;
-  const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
+  const playId = owner?.id;
+  const playLoading = cardPlay.status === "loading" ? (playId ?? null) : null;
   let litKey: string | null = null;
   for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
   const playOn = !!playReq && (cardPlay.status === "playing" || cardPlay.status === "loading");
-  const ownPlaying = useMemo<PlayState | null>(() => (playOn && pv ? { versionId: pv.id, key: litKey } : null), [playOn, pv, litKey]);
+  const ownPlaying = useMemo<PlayState | null>(() => (playOn && playId ? { versionId: playId, key: litKey } : null), [playOn, playId, litKey]);
   const play = props.onPlay ?? ownPlay;
   const pause = props.onPlay ? props.onPause : cardPlay.toggle;
   const playing = props.onPlay ? (props.playing ?? null) : ownPlaying;

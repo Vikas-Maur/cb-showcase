@@ -98,6 +98,13 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-btn[aria-pressed=true][data-variant=primary]){box-shadow:0 0 0 1px var(--cb-primary)}
 :where(${S}) :where(.carton-btn:focus-visible){box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
 :where(${S}) :where(.carton-btn:disabled){opacity:.5;cursor:not-allowed}
+/* one with a tooltip (Play all with nothing to play) is dimmed by its parts: dimmed whole, its tooltip (its ::after) was
+   too, and the row below showed through it (laptop B2) */
+:where(${S}) :where(.carton-btn[data-carton-tip]:disabled){opacity:1}
+:where(${S}) :where(.carton-btn[data-carton-tip]:disabled) > *{opacity:.5}
+:where(${S}) :where(.carton-btn[data-carton-tip]:disabled[data-variant=secondary]){background:color-mix(in srgb, var(--cb-secondary) 50%, transparent)}
+:where(${S}) :where(.carton-btn[data-carton-tip]:disabled[data-variant=primary]){background:color-mix(in srgb, var(--cb-primary) 50%, transparent)}
+:where(${S}) :where(.carton-btn[data-carton-tip]:disabled[data-variant=danger]){background:color-mix(in srgb, var(--cb-danger-fill) 50%, transparent)}
 :where(${S}) :where(.carton-btn[aria-busy=true]){cursor:progress}
 :where(${S}) :where(.carton-icon){flex:none;display:block}
 

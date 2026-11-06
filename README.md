@@ -559,6 +559,21 @@ What changes with it on:
     own timeline, so clips only it has (an agent's detached "1.mp4 audio") play from the project's media. A media file
     deleted from the project since is neither seen nor heard in a viewed version, as before: the editor takes media
     from the project as it is now.
+  - **A group's Play keeps its Pause (laptop check, 2026-11-06).** An edit of yours that joined the group whose Play
+    all was playing (or still loading its sound) put the card back on "Play all" with no row lit, while the play went
+    on with no control: Cardboard played to the end, and a start still loading began once its sound came in. The play
+    now belongs to its card. It carries on over the changes it started with, with its Pause and its lit row; Pause and
+    Space stop it, and Play all after a pause goes on from there. Once it ends, Play all plays the new change too. That
+    holds only while edits are added to the group. When a version leaves it (naming a version in the middle splits
+    the group, and the card keeps the older part) or its start changes, the play ends: Cardboard stops, a start still
+    waiting for its sound is called off, and Play all plays what the card shows now. A paused play is let go the same
+    way. (The build the laptop checked also kept a paused play's Before on a card it no longer matched, and let a play
+    run on with no control when the group's newest version was named.) A single version that an edit turns into a
+    group gets the group's card, and its play ends as before. An undo is a version of its own, never in a group, so the
+    group keeps its versions and its play goes on.
+  - **Play all's "Nothing to play" tooltip reads clearly.** A button that is off is drawn faded, and its tooltip was
+    faded with it, so the next row's words showed through it. A button that is off and has a tooltip is now faded by
+    its icon, words and background, and its tooltip is drawn solid.
 - **Finding a version, and bringing back one clip** (Carton UX v2). Every change is a version, so a long history
   needs finding, by you or your agent:
   - `cb history <project> --find <words>` finds versions by a clip's name (before or after the change), title and
