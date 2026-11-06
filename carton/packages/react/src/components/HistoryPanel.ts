@@ -883,7 +883,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const ownPlay = useCallback(
     (req: PlayRequest) => {
       const was = playReqRef.current, cp = cardPlayRef.current;
-      if (was && was.req.version.id === req.version.id && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
+      // (its card's: a group grown since it paused goes on too, laptop B1)
+      if (was && (was.key === openKeyRef.current || was.req.version.id === req.version.id) && !req.only && !was.req.only && cp.status === "paused") return cp.toggle();
       // a person's run of changes (a group row): Before is before its oldest version
       const r = rowOf(openKeyRef.current);
       const oldest = r?.kind === "group" ? find(r.ids[r.ids.length - 1]!) : undefined;
@@ -908,11 +909,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
   }, [openKey]);
   // a version that couldn't be loaded says so, in History's words (review #6), in its card (design QA G20)
   const playError = playReq ? cardPlay.error : null;
-  const playLoading = cardPlay.status === "loading" ? (pv?.id ?? null) : null;
+  // A play is its card's, not its version's (laptop B1): an edit of yours that joins the group it plays gives the row a
+  // new newest version, and the card, its spinner and Space on the row go by the version the row shows now. The play
+  // carries on over the changes it started with (Pause, its lit row; Play all after a pause goes on from there); a
+  // version an edit turns into a group is another card, and its play ends (above: the open card moved).
+  const playId = (playReq && versionOfRow(rowOf(playReq.key))?.id) || pv?.id;
+  const playLoading = cardPlay.status === "loading" ? (playId ?? null) : null;
   let litKey: string | null = null;
   for (const k of cardPlay.lit) litKey = playReq?.req.changes[k]?.key ?? null;
   const playOn = !!playReq && (cardPlay.status === "playing" || cardPlay.status === "loading");
-  const ownPlaying = useMemo<PlayState | null>(() => (playOn && pv ? { versionId: pv.id, key: litKey } : null), [playOn, pv, litKey]);
+  const ownPlaying = useMemo<PlayState | null>(() => (playOn && playId ? { versionId: playId, key: litKey } : null), [playOn, playId, litKey]);
   const play = props.onPlay ?? ownPlay;
   const pause = props.onPlay ? props.onPause : cardPlay.toggle;
   const playing = props.onPlay ? (props.playing ?? null) : ownPlaying;
