@@ -644,20 +644,31 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   const d = document.getElementById("cbv"), body = d.querySelector(".cbv-body"), how = d.querySelector(".cbv-foot .cbv-how"), toggle = d.querySelector(".cbv-play");
   const calm = matchMedia("(prefers-reduced-motion: reduce)");
   const clips = () => [...body.querySelectorAll("video")];
-  let opener = null, downOutside = false;
+  let opener = null, downOutside = false, gen = 0, cancel = [];
+  // Each open, play, pause and close starts a new generation: an earlier play request still waiting (for its clips
+  // to load) loses its timer and listeners, and plays nothing when it would have fired.
+  const fresh = () => { gen++; for (const f of cancel.splice(0)) f(); return gen; };
   const label = (on) => { toggle.textContent = on ? "Pause" : "Play"; };
   // both sides from the start, together, once both can play (or after 4 s)
   const play = () => {
-    const vs = clips();
+    const g = fresh(), vs = clips();
     for (const v of vs) if (v.preload === "none") { v.preload = "auto"; v.load(); }
-    const ready = vs.map((v) => (v.readyState >= 3 ? null : new Promise((r) => v.addEventListener("canplay", r, { once: true }))));
     label(true);
-    Promise.race([Promise.all(ready), new Promise((r) => setTimeout(r, 4000))]).then(() => {
-      if (!d.open || toggle.textContent !== "Pause") return;
-      for (const v of vs) { v.currentTime = 0; v.play().catch(() => {}); }
+    const waits = vs.filter((v) => v.readyState < 3).map((v) => new Promise((r) => { v.addEventListener("canplay", r, { once: true }); cancel.push(() => v.removeEventListener("canplay", r)); }));
+    const timeout = new Promise((r) => { const t = setTimeout(r, 4000); cancel.push(() => clearTimeout(t)); });
+    Promise.race([Promise.all(waits), timeout]).then(() => {
+      if (g !== gen || !d.open) return;
+      for (const f of cancel.splice(0)) f();
+      for (const v of vs) if (v.isConnected) { v.currentTime = 0; v.play().catch(() => {}); }
     });
   };
-  const pause = () => { for (const v of clips()) v.pause(); label(false); };
+  const pause = () => { fresh(); for (const v of clips()) v.pause(); label(false); };
+  // the dialog's media out: paused, their sources dropped so they stop loading, the elements removed
+  const unload = () => {
+    fresh();
+    for (const v of clips()) { v.pause(); for (const s of v.querySelectorAll("source")) s.remove(); v.removeAttribute("src"); v.load(); }
+    body.replaceChildren();
+  };
   for (const b of document.querySelectorAll("button.cbi")) {
     const t = document.getElementById("see-" + b.dataset.see);
     if (!t) { b.remove(); continue; }
@@ -668,6 +679,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       how.textContent = h ? h.textContent : "";
       how.hidden = !h;
       h?.remove();
+      unload();
       body.replaceChildren(part);
       d.dataset.layout = t.dataset.layout || "side";
       toggle.hidden = clips().length === 0;
@@ -683,8 +695,8 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   d.addEventListener("pointerdown", (e) => { downOutside = e.target === d; });
   d.addEventListener("click", (e) => { if (e.target === d && downOutside) d.close(); });
   d.addEventListener("close", () => {
-    pause();
-    body.replaceChildren();
+    unload();
+    label(false);
     const b = opener;
     opener = null;
     b?.focus();

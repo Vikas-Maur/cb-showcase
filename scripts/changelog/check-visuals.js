@@ -5,38 +5,57 @@
 //   keyboard is back on the button. The close button and a click outside close it the same way.
 // - At 375 px the two sides stack; with reduced motion nothing plays until Play is pressed; without script no "i"
 //   shows.
+// - A dialog closed before its clips have loaded leaves nothing to play: with the names clips held back (as on a
+//   slow connection), names is opened and closed, playhead opened and closed; no video, in the page or removed
+//   from it, may be playing while playhead is open or after.
 // - Screenshots: the page at 1280 and 375 px wide, and every dialog open at both widths.
-// Usage: [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>] node scripts/changelog/check-visuals.js [out dir]
+// Usage: [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>] [CHANGELOG_ROOT=<a public/ folder to serve
+//        instead of carton/apps/web/public>] node scripts/changelog/check-visuals.js [out dir] [--only=closed-early]
 // Exits 1 on any failure.
 const fs = require("fs"), os = require("os"), path = require("path");
 const { chromium } = require(process.env.PLAYWRIGHT || "playwright");
-const ROOT = path.join(__dirname, "..", "..", "carton", "apps", "web", "public");
-const OUT = process.argv[2] || path.join(os.tmpdir(), "cb-changelog-check");
+const ROOT = path.resolve(process.env.CHANGELOG_ROOT || path.join(__dirname, "..", "..", "carton", "apps", "web", "public"));
+const OUT = process.argv.slice(2).find((a) => !a.startsWith("--")) || path.join(os.tmpdir(), "cb-changelog-check");
+// --only=closed-early runs just that test
+const ONLY = process.argv.find((a) => a.startsWith("--only="))?.slice(7);
 const TYPES = { ".html": "text/html", ".webp": "image/webp", ".mp4": "video/mp4", ".webm": "video/webm", ".woff2": "font/woff2", ".png": "image/png", ".svg": "image/svg+xml" };
 const ORIGIN = "http://changelog.test";
 
 let failed = false;
 const fail = (what) => { failed = true; console.log("  FAIL: " + what); };
 
-const open = async (browser, { width, height, dpr = 1, reducedMotion = "no-preference", mobile = false, script = true }) => {
+// every video the page makes or plays, kept even after it is removed from the page
+const trackVideos = () => {
+  const all = (window.__cbVideos = new Set());
+  const play = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (...a) { all.add(this); return play.apply(this, a); };
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { n.tagName === "VIDEO" && all.add(n); n.querySelectorAll?.("video").forEach((v) => all.add(v)); } }).observe(document, { childList: true, subtree: true });
+};
+const playing = (page) => page.evaluate(() => [...window.__cbVideos].filter((v) => !v.paused).map((v) => `${(v.currentSrc || v.querySelector("source")?.src || "?").split("/").pop()}${v.isConnected ? "" : " (removed from the page)"}`));
+
+// hold: paths whose answers are held back that many ms (a slow connection)
+const open = async (browser, { width, height, dpr = 1, reducedMotion = "no-preference", mobile = false, script = true, hold = null }) => {
   const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, reducedMotion, isMobile: mobile, hasTouch: mobile, javaScriptEnabled: script });
   const page = await context.newPage(), requests = [], errors = [];
+  await page.addInitScript(trackVideos);
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));
-  await page.route(`${ORIGIN}/**`, (route) => {
+  await page.route(`${ORIGIN}/**`, async (route) => {
     const u = new URL(route.request().url());
     requests.push(u.pathname);
+    if (hold && hold.test.test(u.pathname)) await new Promise((r) => setTimeout(r, hold.ms));
     let f = path.join(ROOT, decodeURIComponent(u.pathname));
     if (fs.existsSync(f) && fs.statSync(f).isDirectory()) f = path.join(f, "index.html");
-    if (!f.startsWith(ROOT) || !fs.existsSync(f)) return route.fulfill({ status: 404, body: "" });
+    if (!f.startsWith(ROOT) || !fs.existsSync(f)) return route.fulfill({ status: 404, body: "" }).catch(() => {});
     // ranges, as a static host answers them (video elements ask for them)
     const body = fs.readFileSync(f), range = route.request().headers().range, type = TYPES[path.extname(f)] ?? "application/octet-stream";
     const m = range && /bytes=(\d+)-(\d*)/.exec(range);
     if (m) {
       const a = +m[1], z = m[2] ? Math.min(+m[2], body.length - 1) : body.length - 1;
-      return route.fulfill({ status: 206, contentType: type, headers: { "content-range": `bytes ${a}-${z}/${body.length}`, "accept-ranges": "bytes" }, body: body.subarray(a, z + 1) });
+      return route.fulfill({ status: 206, contentType: type, headers: { "content-range": `bytes ${a}-${z}/${body.length}`, "accept-ranges": "bytes" }, body: body.subarray(a, z + 1) }).catch(() => {});
     }
-    return route.fulfill({ status: 200, contentType: type, headers: { "accept-ranges": "bytes" }, body });
+    // (a held-back request the page has since dropped can't be answered)
+    return route.fulfill({ status: 200, contentType: type, headers: { "accept-ranges": "bytes" }, body }).catch(() => {});
   });
   await page.goto(`${ORIGIN}/changelog/`, { waitUntil: "load" });
   await page.waitForTimeout(1500);
@@ -121,24 +140,61 @@ const run = async (browser, label, opts) => {
     await page.keyboard.press("Escape");
   }
   if (errors.length) fail(`${label}: console errors: ${errors.join("; ")}`);
+  const left = await playing(page);
+  if (left.length) fail(`${label}: videos still playing at the end: ${left.join(", ")}`);
   await context.close();
   return seen;
+};
+
+// A dialog closed before its clips load, then another opened: the first one's clips must never start. The names
+// clips are held back 6 s; the dialog gives up waiting for its clips after 4 s.
+const closedEarly = async (browser) => {
+  console.log("closed early (names clips held back 6 s)");
+  const { context, page, errors } = await open(browser, { width: 1280, height: 860, hold: { test: /\/img\/cb\/names-[a-z]+\.(mp4|webm)$/, ms: 6000 } });
+  const t0 = Date.now(), at = (ms) => page.waitForTimeout(Math.max(0, t0 + ms - Date.now()));
+  await page.locator('button.cbi[data-see="cb-names"]').last().click();
+  await at(500);
+  await page.keyboard.press("Escape");
+  await at(800);
+  await page.locator('button.cbi[data-see="cb-playhead"]').last().click();
+  // past the 4 s names would have waited
+  await at(5200);
+  const during = await playing(page);
+  const shown = await page.evaluate(() => [...document.querySelectorAll("dialog.cbv video")].map((v) => v.currentSrc.split("/").pop()));
+  await page.keyboard.press("Escape");
+  // past the held names clips' answers
+  await at(7500);
+  const after = await playing(page), tracked = await page.evaluate(() => window.__cbVideos.size);
+  console.log(`  while playhead is open, playing: ${during.join(", ") || "none"} | after it closed: ${after.join(", ") || "none"} (${tracked} videos tracked)`);
+  const stray = during.filter((v) => !shown.includes(v.split(" ")[0]) || v.includes("removed"));
+  if (stray.length) fail(`closed early: videos that aren't playhead's played while it was open: ${stray.join(", ")}`);
+  if (after.length) fail(`closed early: videos still playing after every dialog closed: ${after.join(", ")}`);
+  if (!during.length) fail("closed early: playhead's own clips didn't play");
+  if (errors.length) fail(`closed early: console errors: ${errors.join("; ")}`);
+  await context.close();
+};
+
+// without script: no "i" shows (it would do nothing), and nothing of the dialogs loads
+const noScript = async (browser) => {
+  const { context, page, requests } = await open(browser, { width: 1280, height: 860, script: false });
+  const shown = await page.$$eval("button.cbi", (bs) => bs.filter((b) => b.offsetWidth > 0).length);
+  console.log(`no script: ${shown} "i" shown, dialog media asked for: ${requests.filter((p) => p.startsWith("/changelog/img/cb/")).length}`);
+  if (shown || requests.some((p) => p.startsWith("/changelog/img/cb/"))) fail("without script, an \"i\" shows or dialog media load");
+  await context.close();
 };
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ ...(process.env.CHROME ? { executablePath: process.env.CHROME } : {}) });
   try {
-    await run(browser, "desktop", { width: 1280, height: 860, shots: true });
-    await run(browser, "phone", { width: 375, height: 812, dpr: 2, mobile: true, shots: true });
-    await run(browser, "reduced", { width: 1280, height: 860, reducedMotion: "reduce" });
-    // without script: no "i" shows (it would do nothing), and nothing of the dialogs loads
-    const { context, page, requests } = await open(browser, { width: 1280, height: 860, script: false });
-    const shown = await page.$$eval("button.cbi", (bs) => bs.filter((b) => b.offsetWidth > 0).length);
-    console.log(`no script: ${shown} "i" shown, dialog media asked for: ${requests.filter((p) => p.startsWith("/changelog/img/cb/")).length}`);
-    if (shown || requests.some((p) => p.startsWith("/changelog/img/cb/"))) fail("without script, an \"i\" shows or dialog media load");
-    await context.close();
+    if (ONLY !== "closed-early") {
+      await run(browser, "desktop", { width: 1280, height: 860, shots: true });
+      await run(browser, "phone", { width: 375, height: 812, dpr: 2, mobile: true, shots: true });
+      await run(browser, "reduced", { width: 1280, height: 860, reducedMotion: "reduce" });
+    }
+    await closedEarly(browser);
+    if (ONLY !== "closed-early") await noScript(browser);
   } finally { await browser.close(); }
-  console.log(failed ? "FAIL" : `PASS (screenshots in ${OUT})`);
+  console.log(failed ? "FAIL" : ONLY ? "PASS" : `PASS (screenshots in ${OUT})`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
