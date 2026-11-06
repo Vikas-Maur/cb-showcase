@@ -7,8 +7,10 @@
 <link rel="icon" href="data:,">
 <title>What's new · Cardboard showcase</title>
 <meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
-<!-- The changelog: one static page. Its only script opens the "See what happens" dialogs (at the end). Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
+<!-- The changelog: one static page. Its only script opens the "See what happens" dialogs (at the end; one line in
+     <head> marks the page as having script). Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
      beside the files in fonts/), the free faces closest to cardboard.ai/changelog's own. -->
+<script>document.documentElement.classList.add("js")</script>
 <link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
 <style>
@@ -112,16 +114,16 @@ aside .tag.also{white-space:nowrap}
 
 /* "See what happens": an "i" beside a bug that can be shown, opening a dialog with Cardboard's side (red) next to
    this build's. Each dialog's content is a <template id="see-cb-…">, so nothing in it loads until it opens. The
-   buttons start hidden and the script shows them, so a page without script has no dead buttons. */
+   buttons show only with script on (the "js" class, set in <head>), so a page without script has no dead buttons. */
 .cbi{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;margin:0 0 0 2px;padding:0;border:1px solid var(--also-line);border-radius:999px;background:rgba(248,113,113,.08);color:var(--also);font:600 14px/1 var(--display);font-variation-settings:"opsz" 72;letter-spacing:0;cursor:pointer;vertical-align:1px;transition:background-color .15s,border-color .15s}
 .cbi::after{content:"";position:absolute;inset:-8px}
 .cbi:hover{background:rgba(248,113,113,.18);border-color:rgba(248,113,113,.55)}
 .cbi:focus-visible{outline:2px solid var(--also);outline-offset:2px}
-.cbi[hidden]{display:none}
+html:not(.js) .cbi{display:none}
 .also .head{display:flex;align-items:center;gap:10px;margin:0 0 6px}
 .also .head h3{margin:0}
 .also li .cbi{margin:0 2px 0 4px;vertical-align:-5px}
-html.js .cbtoo li{display:grid;grid-template-columns:minmax(0,1fr) 34px;align-items:center}
+html.js .cbtoo ul:has(.cbi) li{display:grid;grid-template-columns:minmax(0,1fr) 34px;align-items:center}
 html.js .cbtoo li .cbi{justify-self:end}
 .cbi-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--also-line);border-radius:999px;color:var(--also);font:600 12px/1 var(--display);vertical-align:1px}
 html:not(.js) .js-only{display:none}
@@ -240,15 +242,15 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <div>
       <h3>Playback and editing</h3>
       <ul>
-        <li><a href="#cb-fullscreen"><span>With the preview zoomed in or out, full screen draws code graphics at the wrong size, off the video.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-names"><span>A clip that starts just off the timeline’s left edge shows its name twice, on top of itself.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
+        <li><a href="#cb-fullscreen"><span>With the preview zoomed in or out, full screen draws code graphics at the wrong size, off the video.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-names"><span>A clip that starts just off the timeline’s left edge shows its name twice, on top of itself.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></li>
         <li><a href="#cb-play"><span>After a seek, Play can wait for unloaded audio from clips on muted tracks, and pressing it again doesn’t skip the wait.</span><span class="ref">#2</span></a></li>
-        <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a><button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
-        <li><a href="#cb-gpu"><span>If the timeline’s drawing surfaces are lost and restored, it can stay black until something redraws it.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog" hidden>i</button></li>
+        <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a><button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-gpu"><span>If the timeline’s drawing surfaces are lost and restored, it can stay black until something redraws it.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog">i</button></li>
       </ul>
     </div>
   </div>
@@ -265,13 +267,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p class="lead">Two drawing bugs from Cardboard itself, found while editing on a Windows laptop: code graphics drifting off the footage in full screen, and clip names drawn on top of each other on the timeline.</p>
     <section class="also" id="cb-fullscreen">
       <span class="tag also">Also in Cardboard 1.4.1</span>
-      <div class="head"><h3>Code graphics in full screen</h3><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog" hidden>i</button></div>
+      <div class="head"><h3>Code graphics in full screen</h3><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, if the preview is zoomed in or out (⌘ or Ctrl with the scroll wheel, or a pinch) when you go full screen, every code graphic is drawn at the wrong size from the top-left corner: too large and cut off at the right and bottom when the preview was zoomed out, too small with its edges inside the picture when it was zoomed in. The video is drawn right, so the graphic no longer lines up with it. Full screen shows the picture unzoomed, but the graphics were still sized for the zoom. At the default zoom, and in exports, it was always right.</p>
       <p>Now what’s drawn over the preview takes the size the picture is actually shown at, in full screen and out of it, and stays in place when you zoom inside full screen or leave it.</p>
     </section>
     <section class="also" id="cb-names">
       <span class="tag also">Also in Cardboard 1.4.1</span>
-      <div class="head"><h3>Clip names drawn once</h3><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog" hidden>i</button></div>
+      <div class="head"><h3>Clip names drawn once</h3><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, when a clip starts just off the timeline’s left edge, its name is drawn twice on top of itself: once at the clip’s start, cut by the edge, and once pinned at the edge, so neither can be read. It happens on any screen, while scrolling or at rest. Now each name shows once: it scrolls off with its clip, then appears at the edge.</p>
     </section>
     <p class="how">Full screen: checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Clip names: checked frame by frame while scrolling, in Cardboard’s own timeline and ours, at 1×, 1.25× and 2× screen scaling. Cardboard’s code for both is the same on a Mac and in 1.4.1.</p>
@@ -456,7 +458,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 
     <section class="also" id="cb-badges">
       <span class="tag also">Also in Cardboard 1.4.1</span>
-      <div class="head"><h3>Prompt badges stay whole, and open on a click</h3><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog" hidden>i</button></div>
+      <div class="head"><h3>Prompt badges stay whole, and open on a click</h3><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, a badge in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) can be clicked or arrowed into, and typing there breaks it into loose text. Now a badge is one piece that the caret steps over. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser.</p>
     </section>
 
@@ -464,10 +466,10 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Bugs Cardboard has too</h3>
       <ul>
-        <li id="cb-playhead"><b>The playhead stays in view.</b> <button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog" hidden>i</button> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
-        <li id="cb-focus"><b>Clicking the timeline takes the keyboard.</b> <button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog" hidden>i</button> In Cardboard, it stays in the prompt box, so Space types a space instead of playing.</li>
-        <li id="cb-tooltips"><b>The left rail shows its tooltips.</b> <button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog" hidden>i</button> In Cardboard, its icons never show their names.</li>
-        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> <button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog" hidden>i</button> In Cardboard, if the timeline’s drawing surfaces are lost and restored, which can happen when the graphics process restarts, the timeline can stay black until something else redraws it.</li>
+        <li id="cb-playhead"><b>The playhead stays in view.</b> <button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
+        <li id="cb-focus"><b>Clicking the timeline takes the keyboard.</b> <button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, it stays in the prompt box, so Space types a space instead of playing.</li>
+        <li id="cb-tooltips"><b>The left rail shows its tooltips.</b> <button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, its icons never show their names.</li>
+        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> <button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, if the timeline’s drawing surfaces are lost and restored, which can happen when the graphics process restarts, the timeline can stay black until something else redraws it.</li>
       </ul>
     </section>
 
@@ -519,7 +521,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       <span class="tag also">Also in Cardboard 1.4.1</span>
       <h3>Bugs Cardboard has too</h3>
       <ul>
-        <li id="cb-enter"><b>Enter answers the Director’s questions.</b> <button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog" hidden>i</button> In Cardboard, clicking an option and then pressing Enter un-picks it, so nothing is sent. Now Enter on a picked option sends the answer.</li>
+        <li id="cb-enter"><b>Enter answers the Director’s questions.</b> <button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, clicking an option and then pressing Enter un-picks it, so nothing is sent. Now Enter on a picked option sends the answer.</li>
         <li id="cb-thumbs"><b>Interrupted imports finish their thumbnails.</b> In Cardboard, a video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest, even when the project reopens. Now it gets them when the project reopens.</li>
       </ul>
     </section>
@@ -656,11 +658,9 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     });
   };
   const pause = () => { for (const v of clips()) v.pause(); label(false); };
-  document.documentElement.classList.add("js");
   for (const b of document.querySelectorAll("button.cbi")) {
     const t = document.getElementById("see-" + b.dataset.see);
-    if (!t) continue;
-    b.hidden = false;
+    if (!t) { b.remove(); continue; }
     b.addEventListener("click", () => {
       const part = t.content.cloneNode(true), still = calm.matches;
       for (const v of part.querySelectorAll("video")) { v.muted = true; v.preload = still ? "none" : "auto"; }

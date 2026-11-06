@@ -3,7 +3,8 @@
 // - Loading the page makes no request for the dialogs' media (img/cb/), and logs no console error.
 // - Every "i" button opens its dialog, which loads its media then (and only its own); Esc closes it and the
 //   keyboard is back on the button. The close button and a click outside close it the same way.
-// - At 375 px the two sides stack; with reduced motion nothing plays until Play is pressed.
+// - At 375 px the two sides stack; with reduced motion nothing plays until Play is pressed; without script no "i"
+//   shows.
 // - Screenshots: the page at 1280 and 375 px wide, and every dialog open at both widths.
 // Usage: [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>] node scripts/changelog/check-visuals.js [out dir]
 // Exits 1 on any failure.
@@ -17,8 +18,8 @@ const ORIGIN = "http://changelog.test";
 let failed = false;
 const fail = (what) => { failed = true; console.log("  FAIL: " + what); };
 
-const open = async (browser, { width, height, dpr = 1, reducedMotion = "no-preference", mobile = false }) => {
-  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, reducedMotion, isMobile: mobile, hasTouch: mobile });
+const open = async (browser, { width, height, dpr = 1, reducedMotion = "no-preference", mobile = false, script = true }) => {
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: dpr, reducedMotion, isMobile: mobile, hasTouch: mobile, javaScriptEnabled: script });
   const page = await context.newPage(), requests = [], errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -70,7 +71,7 @@ const run = async (browser, label, opts) => {
   if (opts.shots) await page.screenshot({ path: path.join(OUT, `page-${opts.width}.png`), fullPage: true });
   const buttons = await page.$$eval("button.cbi", (bs) => bs.map((b, i) => ({ i, see: b.dataset.see, where: b.closest(".cbtoo") ? "top" : "entry", hidden: b.hidden, name: b.getAttribute("aria-label") })));
   console.log(`  ${buttons.length} buttons: ${buttons.map((b) => `${b.see}@${b.where}`).join(" ")}`);
-  if (buttons.some((b) => b.hidden)) fail(`${label}: a button is still hidden`);
+  if (!(await page.$$eval("button.cbi", (bs) => bs.every((b) => b.offsetWidth > 0)))) fail(`${label}: a button isn't shown`);
   if (buttons.some((b) => !/^See what happens/.test(b.name ?? ""))) fail(`${label}: a button has no "See what happens" name`);
   const seen = new Set();
   for (const b of buttons) {
@@ -131,6 +132,12 @@ const run = async (browser, label, opts) => {
     await run(browser, "desktop", { width: 1280, height: 860, shots: true });
     await run(browser, "phone", { width: 375, height: 812, dpr: 2, mobile: true, shots: true });
     await run(browser, "reduced", { width: 1280, height: 860, reducedMotion: "reduce" });
+    // without script: no "i" shows (it would do nothing), and nothing of the dialogs loads
+    const { context, page, requests } = await open(browser, { width: 1280, height: 860, script: false });
+    const shown = await page.$$eval("button.cbi", (bs) => bs.filter((b) => b.offsetWidth > 0).length);
+    console.log(`no script: ${shown} "i" shown, dialog media asked for: ${requests.filter((p) => p.startsWith("/changelog/img/cb/")).length}`);
+    if (shown || requests.some((p) => p.startsWith("/changelog/img/cb/"))) fail("without script, an \"i\" shows or dialog media load");
+    await context.close();
   } finally { await browser.close(); }
   console.log(failed ? "FAIL" : `PASS (screenshots in ${OUT})`);
   process.exit(failed ? 1 : 0);
