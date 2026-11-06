@@ -7,10 +7,12 @@
 <link rel="icon" href="data:,">
 <title>What's new · Cardboard showcase</title>
 <meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
-<!-- The changelog: one static page. Its only script opens the "See what happens" dialogs (at the end; one line in
-     <head> marks the page as having script). Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
-     beside the files in fonts/), the free faces closest to cardboard.ai/changelog's own. -->
-<script>document.documentElement.classList.add("js")</script>
+<!-- The changelog: one static page. Its scripts (at the end) run the "Still in Cardboard" filter bar and the "See what
+     happens" dialogs; the line below marks the page as having script and applies a linked view (?only=cardboard, or the
+     old #cardboard-too) before the first paint. Without script the whole page shows, with no bar and no "i" buttons.
+     Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses beside the files in fonts/), the free faces
+     closest to cardboard.ai/changelog's own. -->
+<script>(function(d){d.classList.add("js");if(new URLSearchParams(location.search).get("only")==="cardboard"||location.hash==="#cardboard-too")d.classList.add("only-cb")})(document.documentElement)</script>
 <link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
 <style>
@@ -85,7 +87,8 @@ details li b{color:#fff;font-weight:500}
 /* Also in Cardboard: what this build fixes that is also wrong in Cardboard's own code, and still is in its newest
    Mac release (checked against 1.4.1). A red pill (the user asked for red, 2026-11-06), and a lightly tinted card around the whole section, or around a
    list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.4.1</span>
-   <h3>…</h3><p>In Cardboard, … Now …</p></section>, and a line for it in the list at the top (.cbtoo). */
+   <h3>…</h3><p>In Cardboard, … Now …</p></section>. The filter bar finds and counts them (a card, or each li[id^=cb-]
+   of a card that lists several). */
 :root{--also:#f87171;--also-line:rgba(248,113,113,.28);--also-bg:rgba(248,113,113,.045)}
 .tag.also{color:var(--also);border-color:var(--also-line)}
 section.also{margin:36px 0 0;padding:20px 22px 4px;border:1px solid var(--also-line);border-radius:16px;background:var(--also-bg);scroll-margin-top:24px}
@@ -99,19 +102,6 @@ section.also:target{border-color:rgba(248,113,113,.6)}
 .also li:target{background:rgba(248,113,113,.09)}
 aside .tag.also{white-space:nowrap}
 
-.cbtoo{margin:8px 0 0;padding:32px 32px 22px;border:1px solid var(--also-line);border-radius:20px;background:radial-gradient(120% 150% at 0% 0%,rgba(248,113,113,.1) 0%,rgba(248,113,113,.025) 50%,rgba(248,113,113,0) 100%)}
-.cbtoo h2{margin:14px 0 12px;font-size:32px}
-.cbtoo>p{max-width:640px}
-.cbtoo .groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px;margin-top:8px}
-.cbtoo h3{margin:22px 0 4px;font-size:13px;line-height:1.4;font-weight:500;color:var(--muted);letter-spacing:.02em}
-.cbtoo ul{margin:0;padding:0;list-style:none}
-.cbtoo li{border-top:1px solid rgba(255,255,255,.07)}
-.cbtoo li a{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:9px 0;font-size:14px;line-height:1.5;color:#e0e0e0;text-decoration:none;letter-spacing:0}
-.cbtoo li a:hover{color:#fff}
-.cbtoo li a:hover span:first-child{text-decoration:underline;text-decoration-color:var(--also-line);text-underline-offset:3px}
-.cbtoo .ref{flex:none;font-family:var(--mono);font-size:12px;color:var(--also)}
-.cbtoo .how{margin:20px 0 0;max-width:720px}
-
 /* "See what happens": an "i" beside a bug that can be shown, opening a dialog with Cardboard's side (red) next to
    this build's. Each dialog's content is a <template id="see-cb-…">, so nothing in it loads until it opens. The
    buttons show only with script on (the "js" class, set in <head>), so a page without script has no dead buttons. */
@@ -123,8 +113,6 @@ html:not(.js) .cbi{display:none}
 .also .head{display:flex;align-items:center;gap:10px;margin:0 0 6px}
 .also .head h3{margin:0}
 .also li .cbi{margin:0 2px 0 4px;vertical-align:-5px}
-html.js .cbtoo ul:has(.cbi) li{display:grid;grid-template-columns:minmax(0,1fr) 34px;align-items:center}
-html.js .cbtoo li .cbi{justify-self:end}
 .cbi-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--also-line);border-radius:999px;color:var(--also);font:600 12px/1 var(--display);vertical-align:1px}
 html:not(.js) .js-only{display:none}
 .vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -165,6 +153,40 @@ html:has(.cbv[open]){overflow:hidden}
 }
 @media (prefers-reduced-motion:reduce){.cbi{transition:none}}
 
+/* "Still in Cardboard": a floating bar at the bottom switches the page between every update and only the bugs that are
+   also in Cardboard's own code: every section.also card, each under its update's date, number and title; updates
+   with none are hidden, and a note (#cardboard-too) says what the view is. The view is html.only-cb (set in <head>
+   from the URL, then by the bar). The page's end is padded so that the bar never covers it. */
+.cbonly{display:none;max-width:640px;margin:8px 0 0 284px;padding:0 0 30px;border-bottom:1px solid rgba(255,255,255,.08);scroll-margin-top:24px}
+html.only-cb .cbonly{display:block}
+.cbonly h2{position:relative;margin:0 0 10px;font-size:30px}
+.cbonly h2::before{content:"";position:absolute;left:-24px;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:var(--also);box-shadow:0 0 0 4px rgba(248,113,113,.14)}
+.cbonly p{margin:0;font-size:15.5px;line-height:1.65;color:#d4d4d4;letter-spacing:0}
+.cbonly p.how{margin:14px 0 0;font-size:13px;line-height:1.6;color:#737373}
+html.only-cb main article:not(:has(section.also)){display:none}
+html.only-cb main article>div>:not(h2):not(section.also){display:none}
+html.only-cb main article{padding:48px 0 56px}
+html.only-cb main article h2{margin-bottom:4px;font-size:30px}
+html.only-cb main article section.also{margin-top:20px}
+html.only-cb .signoff .cb-note{display:none}
+
+.cbf{display:none;position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));z-index:20;transform:translateX(-50%);animation:cbf-in .45s .2s both cubic-bezier(.2,.8,.2,1)}
+html.js .cbf{display:block}
+@keyframes cbf-in{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
+.cbf-group{position:relative;display:flex;align-items:center;gap:2px;padding:4px;border:1px solid rgba(255,255,255,.1);border-radius:999px;background:#121212;box-shadow:0 14px 44px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.07)}
+.cbf-thumb{position:absolute;top:4px;bottom:4px;left:0;width:0;border-radius:999px;background:rgba(255,255,255,.1);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 1px 3px rgba(0,0,0,.4)}
+.cbf.ready .cbf-thumb{transition:transform .3s cubic-bezier(.2,.8,.2,1),width .3s cubic-bezier(.2,.8,.2,1)}
+.cbf-opt{position:relative;display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 15px;border:0;border-radius:999px;background:transparent;color:#a3a3a3;font:500 13.5px/1 var(--sans);letter-spacing:0;white-space:nowrap;cursor:pointer;transition:color .2s}
+.cbf-opt:hover{color:#e5e5e5}
+.cbf-opt[aria-checked=true]{color:#fff}
+.cbf-opt:focus-visible{outline:2px solid rgba(255,255,255,.6);outline-offset:2px}
+.cbf-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--also);box-shadow:0 0 0 3px rgba(248,113,113,.15)}
+.cbf-n{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;margin-right:-5px;padding:0 6px;border-radius:999px;background:rgba(248,113,113,.12);color:var(--also);font:500 12px/1 var(--mono);font-variant-numeric:tabular-nums}
+html.js footer{padding-bottom:calc(48px + 76px + env(safe-area-inset-bottom))}
+@media (max-width:480px){.cbf-opt{height:34px;padding:0 12px;font-size:13px}}
+@media (prefers-reduced-motion:reduce){.cbf{animation:none}.cbf.ready .cbf-thumb,.cbf-opt{transition:none}}
+@media print{.cbf{display:none!important}}
+
 .signoff{max-width:968px;margin:0 auto;padding:8px 24px 0}
 .signoff p{margin:0 0 0 284px;font-size:18px;font-style:italic;line-height:1.6;color:#d4d4d4}
 footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px solid rgba(255,255,255,.06);font-size:13px;line-height:1.6;color:#6b6b6b;letter-spacing:0}
@@ -182,9 +204,12 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   .media{margin-bottom:28px}
   .stat b{font-size:28px}
   section.also{padding:18px 16px 2px}
-  .cbtoo{padding:24px 18px 18px;border-radius:16px}
-  .cbtoo h2{font-size:26px}
-  .cbtoo .groups{grid-template-columns:1fr}
+  .cbonly{margin-left:0}
+  .cbonly h2{display:flex;align-items:center;gap:12px;font-size:26px}
+  .cbonly h2::before{position:static;flex:none;margin:0}
+  html.only-cb main article{padding:36px 0 44px}
+  html.only-cb main article h2{font-size:24px}
+  html.js footer{padding-bottom:calc(40px + 76px + env(safe-area-inset-bottom))}
   .signoff{padding:0 20px}
   .signoff p{margin-left:0;font-size:16px}
   footer{margin-top:64px;padding:24px 20px 40px}
@@ -214,46 +239,11 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 
 <main>
 
-<!-- What we fixed that Cardboard itself still gets wrong: each item is in Cardboard's own code (not our port) and still
-     in 1.4.1, its newest Mac release when this was written. Each links to its entry, marked the same way there. -->
-<section class="cbtoo" id="cardboard-too" aria-labelledby="cardboard-too-title">
-  <span class="tag also">Also in Cardboard 1.4.1</span>
-  <h2 class="display" id="cardboard-too-title">Fixed here, still in Cardboard</h2>
-  <p>These don’t come from our Windows port. They’re in Cardboard’s own code, and still in 1.4.1, its newest release for Mac. Each one is fixed in this build and marked in its entry below.<span class="js-only"> Press <span class="cbi-mark" aria-hidden="true">i</span><span class="vh">the i button</span> beside one to watch it happen in Cardboard’s own editor, next to this build.</span></p>
-  <div class="groups">
-    <div>
-      <h3>Saving and history</h3>
-      <ul>
-        <li><a href="#cb-saves"><span>Two saves at nearly the same moment, yours and an agent’s, can quietly undo one, even on different clips.</span><span class="ref">#4</span></a></li>
-        <li><a href="#cb-history"><span>Only the newest 20 snapshots of a timeline are kept, one for each save that changes it.</span><span class="ref">#4</span></a></li>
-        <li><a href="#cb-stale"><span>Once an agent’s copy is older than the history Cardboard keeps, its edit can quietly undo newer edits, with no conflict shown.</span><span class="ref">#4</span></a></li>
-      </ul>
-      <h3>Speed</h3>
-      <ul>
-        <li><a href="#cb-idle"><span>While the editor is on screen, it measures the preview’s position every frame, even with nothing moving.</span><span class="ref">#3</span></a></li>
-        <li><a href="#cb-filmstrip"><span>Timeline thumbnails decode every frame of a video, then keep one every half second or second.</span><span class="ref">#1</span></a></li>
-      </ul>
-      <h3>Importing</h3>
-      <ul>
-        <li><a href="#cb-folder"><span>A folder dropped on the editor imports no media, and the media import pickers can’t choose a folder.</span><span class="ref">#1</span></a></li>
-        <li><a href="#cb-thumbs"><span>A video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest.</span><span class="ref">#1</span></a></li>
-      </ul>
-    </div>
-    <div>
-      <h3>Playback and editing</h3>
-      <ul>
-        <li><a href="#cb-fullscreen"><span>With the preview zoomed in or out, full screen draws code graphics at the wrong size, off the video.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-names"><span>A clip that starts just off the timeline’s left edge shows its name twice, on top of itself.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-play"><span>After a seek, Play can wait for unloaded audio from clips on muted tracks, and pressing it again doesn’t skip the wait.</span><span class="ref">#2</span></a></li>
-        <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a><button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog">i</button></li>
-        <li><a href="#cb-gpu"><span>If the timeline’s drawing surfaces are lost and restored, it can stay black until something redraws it.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog">i</button></li>
-      </ul>
-    </div>
-  </div>
+<!-- The "Still in Cardboard" view's note: shown only in that view (the bar at the bottom, ?only=cardboard, or a link to
+     #cardboard-too, which was the big list of these bugs that stood here). -->
+<section class="cbonly" id="cardboard-too" aria-labelledby="cbonly-title">
+  <h2 class="display" id="cbonly-title">Still in Cardboard</h2>
+  <p>Bugs in Cardboard’s own code, not from our Windows port, and still in 1.4.1, its newest release for Mac. Each one is fixed in this build, under the update it came in.<span class="js-only"> Where there’s an <span class="cbi-mark" aria-hidden="true">i</span><span class="vh">i button</span>, press it to watch the bug happen in Cardboard’s own editor, next to this build.</span></p>
   <p class="how">Found by reading Cardboard’s code, 1.4.0 and today’s 1.4.1 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
 </section>
 
@@ -543,9 +533,85 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 
 </main>
 
-<div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change. Every number here was checked independently before it went up.</p></div>
+<div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change. Every number here was checked independently before it went up.<span class="cb-note"> The bugs marked “Also in Cardboard” were found by reading Cardboard’s code; we have no Mac, so none of them was measured on one.</span></p></div>
 
 <footer>An independent project built on Cardboard&nbsp;1.4.0 for macOS. It isn’t made by, or affiliated with, the Cardboard team.</footer>
+
+<!-- The "Still in Cardboard" filter: a radio group of two, fixed at the bottom (the CSS above). The count is the page's
+     own: its section.also cards, each li[id^=cb-] counted for a card that lists several. -->
+<div class="cbf" id="cbf">
+  <div class="cbf-group" role="radiogroup" aria-label="Show">
+    <span class="cbf-thumb" aria-hidden="true"></span>
+    <button class="cbf-opt" type="button" role="radio" aria-checked="true" data-view="all">All updates</button>
+    <button class="cbf-opt" type="button" role="radio" aria-checked="false" data-view="cardboard" tabindex="-1"><span class="cbf-dot" aria-hidden="true"></span>Still in Cardboard<span class="cbf-n" aria-hidden="true"></span></button>
+  </div>
+</div>
+<p class="vh" id="cbf-live" aria-live="polite"></p>
+<script>
+// The filter bar. Its choice is html.only-cb (CSS does the rest) and ?only=cardboard in the address, so a view can be
+// linked; #cardboard-too, the old list's address, turns it on, and a link to something it hides turns it off.
+(() => {
+  const root = document.documentElement, main = document.querySelector("main"), note = document.getElementById("cardboard-too");
+  const bar = document.getElementById("cbf"), opts = [...bar.querySelectorAll(".cbf-opt")], thumb = bar.querySelector(".cbf-thumb"), live = document.getElementById("cbf-live");
+  const calm = matchMedia("(prefers-reduced-motion: reduce)");
+  const bugs = [...main.querySelectorAll("section.also")].reduce((n, s) => n + (s.querySelectorAll("li[id^='cb-']").length || 1), 0);
+  bar.querySelector(".cbf-n").textContent = bugs;
+  opts[1].setAttribute("aria-label", `Still in Cardboard: ${bugs} bugs`);
+  const on = () => root.classList.contains("only-cb");
+  const place = () => { const b = opts[on() ? 1 : 0]; thumb.style.width = `${b.offsetWidth}px`; thumb.style.transform = `translateX(${b.offsetLeft}px)`; };
+  const mark = () => { opts.forEach((b, i) => { const c = (i === 1) === on(); b.setAttribute("aria-checked", String(c)); b.tabIndex = c ? 0 : -1; }); place(); };
+  const shown = (e) => e.getClientRects().length > 0;
+  const set = (cb, { keep = true } = {}) => {
+    if (cb === on()) return;
+    // the reader's place: above the list (at the title), the page stays still. In it, the red card being read stays
+    // where it is on screen (the first whose top is on screen, or the one filling it), else the update being read, if
+    // it stays; otherwise the list starts at the top of the window.
+    const above = main.getBoundingClientRect().top > 0, cards = [...main.querySelectorAll("section.also")];
+    const topIn = (e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight - 100; };
+    const fills = (e) => { const r = e.getBoundingClientRect(); return r.top < 0 && r.bottom > innerHeight / 2; };
+    const hold = keep && !above && (cards.find(topIn) || cards.find(fills) || [...main.querySelectorAll("article")].find((a) => { const r = a.getBoundingClientRect(); return r.bottom > 80 && r.top < innerHeight - 100 && a.querySelector("section.also"); }));
+    const was = hold && hold.getBoundingClientRect().top;
+    root.classList.toggle("only-cb", cb);
+    mark();
+    // the address: ?only=cardboard for this view; a #… kept, but not the old list's when leaving the view
+    const u = new URL(location.href);
+    cb ? u.searchParams.set("only", "cardboard") : u.searchParams.delete("only");
+    history.replaceState(history.state, "", u.pathname + u.search + (cb || location.hash !== "#cardboard-too" ? location.hash : ""));
+    const start = (cb ? note : main).getBoundingClientRect().top + scrollY - 24;
+    if (hold && hold.tagName === "SECTION") scrollBy(0, hold.getBoundingClientRect().top - was);
+    else if (hold) scrollTo(0, Math.min(scrollY, hold.getBoundingClientRect().top + scrollY - 24));
+    else if (!above && scrollY > start) scrollTo(0, start);
+    if (!calm.matches) main.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 280, easing: "ease-out" });
+    live.textContent = cb ? `Showing the ${bugs} bugs still in Cardboard, under their updates` : "Showing all updates";
+  };
+  opts.forEach((b, i) => b.addEventListener("click", () => set(i === 1)));
+  // a radio group: the arrows (and Home, End) move the choice and the keyboard together
+  bar.addEventListener("keydown", (e) => {
+    const i = opts.indexOf(document.activeElement), k = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+    if (i < 0 || (k === undefined && e.key !== "Home" && e.key !== "End")) return;
+    e.preventDefault();
+    const j = e.key === "Home" ? 0 : e.key === "End" ? opts.length - 1 : (i + k + opts.length) % opts.length;
+    opts[j].focus();
+    set(j === 1);
+  });
+  const follow = () => {
+    if (location.hash === "#cardboard-too") { set(true, { keep: false }); note.scrollIntoView(); return; }
+    const t = location.hash.length > 1 && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if (t && on() && !shown(t)) {
+      set(false, { keep: false });
+      t.scrollIntoView();
+      // (when loading, again once the page is laid out in full)
+      if (document.readyState !== "complete") addEventListener("load", () => t.scrollIntoView(), { once: true });
+    }
+  };
+  addEventListener("hashchange", follow);
+  mark();
+  if (location.hash !== "#cardboard-too") follow();
+  addEventListener("resize", place);
+  document.fonts?.ready.then(place);
+  requestAnimationFrame(() => requestAnimationFrame(() => bar.classList.add("ready")));
+})();
+</script>
 <!-- "See what happens": what each bug looks like, captured with scripts/changelog/capture-visuals.js from Cardboard
      1.4.0's own editor pages as shipped (the same code in 1.4.1) and from this build's, in Chromium with a sample
      project. Only the red rings and labels named in a dialog are added afterwards. One <template> per bug: its media
