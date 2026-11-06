@@ -12,13 +12,19 @@
 // Cardboard's code; the only things added afterwards are clearly marked overlays (a red ring, a key label).
 // Nothing is drawn to look like Cardboard. Pictures in the sample projects are our own drawings (SVG).
 //
-// The cases (each one runs the same steps on both builds and checks that Cardboard shows the bug and ours doesn't,
-// else it stops):
+// The cases. Each one runs the same steps on both builds and checks, from the page itself, that Cardboard shows the
+// bug and ours doesn't; only then is anything encoded, else the case stops (and the run exits 1):
 // - fullscreen: the preview zoomed out a step (Ctrl+wheel), the Fullscreen button; a code graphic over a picture.
+//   Checked: the graphic's box over the canvas's, in the editor (both the same) and in full screen (Cardboard's
+//   1/zoom too large from the top-left corner, ours the same).
 // - names: the timeline's scroll moved 2 px a frame past two music clips' start; a screenshot after each move.
+//   Checked in every frame kept, on both music rows: the name at the clip's start (letters on the tracks' canvas in
+//   view) and the name at the edge (letters on the names canvas). Cardboard shows both at once in many frames; ours
+//   never, and never neither.
 // - playhead: → (next frame) pressed 45 times with the playhead near the right edge, real key presses.
 // - focus: text typed in the prompt box, a real click on the ruler, then Space.
-// - badges: a clip picked with @ in the prompt box, ← twice, then "the " typed.
+// - badges: a clip picked with @ in the prompt box, ← twice, then "the " typed. Checked from the box: its badge
+//   chips and its text (Cardboard's badge gone into loose text, ours whole after "Make the ").
 // - enter: an agent question in the chat (the fake main's transcript); a click on an option, then Enter. The fake
 //   main settles an answer when it gets one, as main does once it hands it to the agent.
 // - tooltips: the pointer on the left rail's Audio icon.
@@ -33,6 +39,8 @@
 //   CARDBOARD_PRISTINE=<_inspect/cardboard-1.4.0> CB_PATCHES=<checkout of 44152b44> \
 //   PLAYWRIGHT=<path to playwright> CHROME=<chromium binary> \
 //   node scripts/changelog/capture-visuals.js [--work=<scratch dir>] [--only=fullscreen,names,…]
+//   [--as-cardboard=ours | --as-ours=cardboard]: a test of the checks (the wrong build on one side; each case must
+//   stop, and nothing is written to the page's folder)
 // Writes the encoded media into carton/apps/web/public/changelog/img/cb/ (ffmpeg on PATH or FFMPEG=…), and the raw
 // screenshots into the work dir.
 const fs = require("fs"), os = require("os"), path = require("path"), { execFileSync } = require("child_process");
@@ -45,8 +53,13 @@ const FFMPEG = process.env.FFMPEG || "ffmpeg";
 const arg = (k) => process.argv.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3);
 const WORK = arg("work") || path.join(os.tmpdir(), "cb-changelog-visuals");
 const ONLY = arg("only")?.split(",");
-const DEST = path.join(__dirname, "..", "..", "carton", "apps", "web", "public", "changelog", "img", "cb");
 const SIDES = ["cardboard", "ours"];
+// A test of the checks themselves: --as-cardboard=ours (or --as-ours=cardboard) runs that build on the other side,
+// so every case should stop at its check. Such a run writes its media (if any) only into the work dir.
+const AS = { cardboard: arg("as-cardboard") || "cardboard", ours: arg("as-ours") || "ours" };
+const SWAPPED = AS.cardboard !== "cardboard" || AS.ours !== "ours";
+for (const b of Object.values(AS)) if (!SIDES.includes(b)) throw new Error(`no build "${b}": cardboard or ours`);
+const DEST = SWAPPED ? path.join(WORK, "media-test") : path.join(__dirname, "..", "..", "carton", "apps", "web", "public", "changelog", "img", "cb");
 
 // ---------------------------------------------------------------------------------------------------------------
 // The two builds
@@ -177,7 +190,7 @@ const overlayChain = (overlays, extra) => {
   return parts.join(";") + "," + extra;
 };
 // a clip from numbered PNG frames: MP4 (H.264, no sound, starts at once), WebM, and its poster (WebP, frame `poster`)
-const clip = (pattern, dest, width, { fps = 30, overlays = [], poster = 0, crf = 26 } = {}) => {
+const clipNow = (pattern, dest, width, { fps = 30, overlays = [], poster = 0, crf = 26 } = {}) => {
   ff("-framerate", String(fps), "-i", pattern, ...overlays.flatMap((o) => ["-i", o.png]), "-filter_complex", overlayChain(overlays, `scale=${width}:-2:flags=lanczos,format=yuv420p`),
     "-an", "-c:v", "libx264", "-preset", "veryslow", "-crf", String(crf), "-tune", "animation", "-movflags", "+faststart", dest + ".mp4");
   // WebM (VP9) too, for browsers without H.264 (Chromium as built from source)
@@ -188,10 +201,16 @@ const clip = (pattern, dest, width, { fps = 30, overlays = [], poster = 0, crf =
   ff("-i", p, ...on.flatMap((o) => ["-i", o.png]), "-filter_complex", overlayChain(on, `scale=${width}:-2:flags=lanczos`), "-c:v", "libwebp", "-quality", "82", "-compression_level", "6", dest + ".webp");
 };
 // a still (WebP) from one screenshot, with overlays
-const still = (src, dest, width, overlays = []) => {
+const stillNow = (src, dest, width, overlays = []) => {
   const on = overlays.map((o) => ({ ...o, from: 0, to: 0 }));
   ff("-i", src, ...on.flatMap((o) => ["-i", o.png]), "-filter_complex", overlayChain(on, `scale=${width}:-2:flags=lanczos`), "-c:v", "libwebp", "-quality", "82", "-compression_level", "6", dest);
 };
+// A case's encodes wait until its checks have passed: a case that stops writes nothing.
+let queue = null;
+const clip = (...a) => queue.push(() => clipNow(...a));
+const still = (...a) => queue.push(() => stillNow(...a));
+const near = (a, b, tol) => a !== null && a !== undefined && Math.abs(a - b) <= tol;
+const check = (what, problems) => { if (problems.length) throw new Error(`${what}: ${problems.join("; ")}`); };
 // numbered frames: save the next one; hold the last one for n more
 const framer = (dir) => {
   fs.mkdirSync(dir, { recursive: true });
@@ -262,6 +281,14 @@ CASES.fullscreen = async (browser, dirs, raw) => {
       { id: "cccccccc-0000-4000-8000-000000000002", trackId: V1, type: "image", startTime: 0, endTime: 60, trimStart: 0, trimEnd: 60, mediaItemId: IMG, autoReframe: true },
     ],
   };
+  // where the shown graphic's page is over the preview canvas: its scale (width over the canvas's) and its top-left
+  // corner, as fractions of the canvas (as scripts/carton/test/browser/fullscreen-graphic.js measures it)
+  const graphicBox = (page) => page.evaluate(() => {
+    const c = document.querySelector("canvas[data-preview-canvas]").getBoundingClientRect();
+    const shown = (e) => { for (let x = e; x; x = x.parentElement) { const st = getComputedStyle(x); if (st.visibility === "hidden" || st.display === "none") return false; } return getComputedStyle(e).opacity === "1"; };
+    const f = [...document.querySelectorAll('iframe[title="JSX graphic"]')].filter(shown)[0]?.getBoundingClientRect();
+    return f ? { scale: +(f.width / c.width).toFixed(4), left: +((f.left - c.left) / c.width).toFixed(4), top: +((f.top - c.top) / c.height).toFixed(4), full: !!document.fullscreenElement } : null;
+  });
   const out = {};
   for (const side of SIDES) {
     const dpr = 1.5, { context, page, errors } = await openEditor(browser, dirs[side], { project, viewport: { width: 1280, height: 720 }, dpr, media: { [IMG]: { type: "image/png", body: picture } } });
@@ -276,6 +303,7 @@ CASES.fullscreen = async (browser, dirs, raw) => {
     await page.waitForTimeout(1500);
     const zoom = await page.evaluate(() => +window.__cbTestStore().canvasTransform.scale.toFixed(3));
     if (zoom !== 0.9) throw new Error(`${side}: the preview's zoom is ${zoom}, not 0.9`);
+    const editor = await graphicBox(page);
     await page.screenshot({ path: path.join(raw, `${side}-editor.png`) });
     await page.locator('button[aria-label="Fullscreen"]').first().click();
     await page.evaluate(() => document.activeElement?.blur?.());
@@ -283,12 +311,22 @@ CASES.fullscreen = async (browser, dirs, raw) => {
     await page.waitForTimeout(3500);
     const fs0 = await page.evaluate(() => !!document.fullscreenElement);
     if (!fs0) throw new Error(`${side}: not in full screen`);
+    const full = await graphicBox(page);
     await page.screenshot({ path: path.join(raw, `${side}-full.png`) });
     if (errors.length) throw new Error(`${side}: page errors ${errors.join("; ")}`);
     await context.close();
     still(path.join(raw, `${side}-full.png`), path.join(DEST, `fullscreen-${side}.webp`), 960);
-    out[side] = { zoom };
+    out[side] = { zoom, editor, full };
   }
+  // in the editor both draw the graphic on the canvas; in full screen Cardboard's is 1/zoom too large from the
+  // top-left corner, ours still on the canvas
+  const problems = [];
+  for (const side of SIDES) {
+    const { zoom, editor: e, full: f } = out[side], want = side === "cardboard" ? 1 / zoom : 1;
+    if (!e || !near(e.scale, 1, 0.005) || !near(e.left, 0, 0.003) || !near(e.top, 0, 0.003)) problems.push(`${side} in the editor: the graphic is at ${JSON.stringify(e)}, not over the canvas`);
+    if (!f || !f.full || !near(f.scale, want, 0.005) || !near(f.left, 0, 0.003) || !near(f.top, 0, 0.003)) problems.push(`${side} in full screen: the graphic is at ${JSON.stringify(f)}, expected scale ${want.toFixed(3)} from the canvas's top-left corner`);
+  }
+  check("fullscreen", problems);
   return out;
 };
 
@@ -335,18 +373,49 @@ CASES.names = async (browser, dirs, raw) => {
     const clipRect = { x: 0, y: Math.round(box.top), width: Math.round(box.left) + 340, height: Math.round(box.bottom - box.top) + 2 };
     await page.screenshot({ path: path.join(raw, `${side}-editor.png`) });
     let i = 0, poster = 0;
+    const seen = [];
     for (const d of ds) {
       await page.evaluate((s) => { document.querySelector("[data-timeline-scroll]").scrollLeft = s; }, start + d);
       await frames(page, 3);
       if (d === 52 && !poster) poster = i;
       await page.screenshot({ path: path.join(dir, `${String(i++).padStart(4, "0")}.png`), clip: clipRect });
+      seen.push(await page.evaluate(namesShown, [M1, M2]));
     }
     if (errors.length) throw new Error(`${side}: page errors ${errors.join("; ")}`);
     await context.close();
     clip(path.join(dir, "%04d.png"), path.join(DEST, `names-${side}`), clipRect.width * 2, { poster });
-    out[side] = { frames: ds.length, poster, clip: clipRect };
+    // two: the name at the clip's start shows more than 3 px of letters while the one at the edge is drawn (within
+    // 3 px of the hand-over either may show: ours draws the edge name once the clip's own shows 2 px or less);
+    // none: no letters of either
+    const rows = seen.map((r) => r.map((x) => (x.cols > 3 * 2 && x.ink > 20 ? "two" : x.cols === 0 && x.ink <= 20 ? "none" : "one")));
+    const at = (k) => rows.map((r, j) => (r.includes(k) ? `${ds[j]} px (${seen[j].map((x) => `${x.cols}/${x.ink}`).join(" ")})` : null)).filter(Boolean);
+    out[side] = { frames: ds.length, poster, clip: clipRect, two: at("two").length, bothTwo: rows.filter((r) => r.every((x) => x === "two")).length, none: at("none").length, posterRows: rows[poster], ...(side === "ours" ? { twoAt: at("two").slice(0, 4), noneAt: at("none").slice(0, 4) } : {}) };
   }
+  // Cardboard: both names at once on both music rows in many frames, and in the poster; ours: never two, never none
+  const problems = [], c = out.cardboard, o = out.ours;
+  if (c.bothTwo < 20 || c.posterRows.some((x) => x !== "two")) problems.push(`Cardboard shows two names on both rows in ${c.bothTwo} frames (poster ${c.posterRows}), expected 20 or more and the poster`);
+  if (o.two || o.none) problems.push(`ours shows two names in ${o.two} frames (${o.twoAt.join(", ")}) and none in ${o.none} (${o.noneAt.join(", ")}), expected 0 and 0`);
+  check("names", problems);
   return out;
+};
+// In the page: on each music row, how much of the name at the clip's start shows (columns of letters on the tracks'
+// canvas within the view, device px) and of the name at the edge (letter pixels on the names canvas). The tracks'
+// canvas is a window wider than the view, moved by a transform; a name is near white on the clip's dark green.
+const namesShown = (ids) => {
+  const sc = document.querySelector("[data-timeline-scroll]"), base = document.querySelector("canvas[data-timeline-canvas-layer=base]"), ov = document.querySelector("canvas[data-timeline-canvas-layer=titles]");
+  const dpr = devicePixelRatio, offsetX = parseFloat(/translate3d\((-?[\d.]+)px/.exec(base.style.transform)[1]);
+  const sx = Math.round((sc.scrollLeft - offsetX) * dpr), w = Math.min(ov.width, Math.round(300 * dpr)), h = Math.round(24 * dpr);
+  const bt = base.getBoundingClientRect().top, ot = ov.getBoundingClientRect().top;
+  return ids.map((id) => {
+    const t = document.querySelector(`[data-timeline-scroll] [data-track-id="${id}"]`).getBoundingClientRect();
+    const b = base.getContext("2d").getImageData(sx, Math.round((t.top - bt) * dpr), w, h).data;
+    let cols = 0;
+    for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) if (b[(y * w + x) * 4] > 110) { cols++; break; }
+    const o = ov.getContext("2d").getImageData(0, Math.round((t.top - ot) * dpr), w, h).data;
+    let ink = 0;
+    for (let k = 3; k < o.length; k += 4) if (o[k] > 40) ink++;
+    return { cols, ink };
+  });
 };
 
 // The left rail's tooltips: the pointer rests on its Audio icon. Cardboard shows no name; ours shows "Audio".
@@ -439,7 +508,13 @@ CASES.badges = async (browser, dirs, raw) => {
     await page.waitForTimeout(1000);
     await page.keyboard.press("Enter");
     await page.waitForTimeout(800);
-    const state = () => page.evaluate(() => { const t = document.activeElement; return { value: t?.value, caret: t?.selectionStart, codes: [...(t?.value ?? "")].map((c) => c.charCodeAt(0)).filter((c) => c > 127 || c === 32) }; });
+    // the box's text and its badge chips (Cardboard draws each badge as a span[data-chip] over the text)
+    const state = () => page.evaluate(() => {
+      const t = document.querySelector('textarea[aria-label="Message the agent"]');
+      let e = t;
+      while (e && !/desktop-composer/.test(e.className)) e = e.parentElement;
+      return { value: t?.value, caret: t?.selectionStart, chips: [...(e ?? document).querySelectorAll("[data-chip]")].map((c) => c.textContent) };
+    });
     const picked = await state();
     const clipRect = await page.evaluate(() => {
       let e = document.activeElement;
@@ -466,6 +541,16 @@ CASES.badges = async (browser, dirs, raw) => {
     clip(f.pattern, path.join(DEST, `badges-${side}`), Math.min(800, clipRect.width * dpr), { fps, overlays: [{ png: o1, from: k0, to: k1 - 1 }, { png: o2, from: k1, to: k2 }], poster: f.n - 1 });
     out[side] = { picked, typed };
   }
+  // after the pick, one chip on both sides; after the keys, Cardboard's badge text is broken (no chip, the text no
+  // longer in the box), ours whole ("Make the " then the badge, its chip still drawn)
+  const problems = [];
+  for (const side of SIDES) {
+    const { picked, typed } = out[side], badge = picked.value?.slice("Make ".length, -1) ?? "";
+    if (picked.chips.length !== 1 || !/Arctic Reverie/.test(picked.chips[0] ?? "") || !picked.value?.startsWith("Make ")) { problems.push(`${side}: no single clip badge after the pick (${JSON.stringify(picked)})`); continue; }
+    const whole = typed.chips.length === 1 && typed.value.includes(badge), broken = typed.chips.length === 0 && !typed.value.includes(badge);
+    if (side === "cardboard" ? !broken : !(whole && typed.value.startsWith("Make the "))) problems.push(`${side}: after ← ← and "the ", ${JSON.stringify(typed)} (expected the badge ${side === "cardboard" ? "broken" : "whole after \"Make the \""})`);
+  }
+  check("badges", problems);
   return out;
 };
 
@@ -654,9 +739,10 @@ CASES.gpu = async (browser, dirs, raw) => {
 // ---------------------------------------------------------------------------------------------------------------
 (async () => {
   fs.mkdirSync(DEST, { recursive: true });
-  const dirs = builds();
+  const built = builds(), dirs = { cardboard: built[AS.cardboard], ours: built[AS.ours] };
+  if (SWAPPED) console.log(`TEST OF THE CHECKS: "cardboard" runs ${AS.cardboard}'s pages, "ours" runs ${AS.ours}'s; media go to ${DEST}`);
   const browser = await launch();
-  const report = {};
+  const report = {}, stopped = [];
   try {
     for (const [name, run] of Object.entries(CASES)) {
       if (ONLY && !ONLY.includes(name)) continue;
@@ -664,10 +750,18 @@ CASES.gpu = async (browser, dirs, raw) => {
       fs.rmSync(raw, { recursive: true, force: true });
       fs.mkdirSync(raw, { recursive: true });
       const t0 = Date.now();
-      report[name] = await run(browser, dirs, raw);
-      console.log(`${name}: ${JSON.stringify(report[name])} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+      queue = [];
+      try {
+        report[name] = await run(browser, dirs, raw);
+        for (const f of queue) f();
+        console.log(`${name}: ${JSON.stringify(report[name])} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+      } catch (e) {
+        stopped.push(name);
+        console.log(`${name}: STOPPED, nothing written: ${e.message}`);
+      } finally { queue = null; }
     }
   } finally { await browser.close(); }
+  if (stopped.length) { console.log(`FAIL: ${stopped.join(", ")}`); process.exitCode = 1; }
   for (const f of fs.readdirSync(DEST).sort()) {
     const p = path.join(DEST, f), d = dims(p);
     console.log(`${f.padEnd(28)} ${String(fs.statSync(p).size).padStart(8)} B  ${d.width}x${d.height}${f.endsWith(".mp4") ? `  ${d.nb_frames} frames, ${(+d.duration).toFixed(2)} s` : ""}`);
