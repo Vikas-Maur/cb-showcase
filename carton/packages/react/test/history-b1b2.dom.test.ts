@@ -198,6 +198,111 @@ for (const slow of [false, true])
     } finally { await m.unmount(); await carton.close(); }
   });
 
+// Review of 48fd9936 (P2): the play is its card's only while the card's row still holds every version it started with,
+// from the same base, edits only joining at its newer end. A regroup that takes one out makes it another card: the play
+// ends, and Play all plays what the card shows now.
+// five plain edits of yours, one group: the graphic's three (4–9 s), then the clip's two (0–4 s)
+const fiveEdits = async (c: Carton) => {
+  await c.commit({ ops: [set("g1", "endTime", 8.5)] });
+  await c.commit({ ops: [set("g1", "trimEnd", 4.5)] });
+  await c.commit({ ops: [set("g1", "startTime", 4.5)] });
+  await c.commit({ ops: [set("c1", "endTime", 3.5)] });
+  await c.commit({ ops: [set("c1", "trimEnd", 3.5)] });
+};
+const mine = (ui: { history(): { all?(): readonly { id: string; start?: unknown }[] } }) => ui.history().all!().filter((v) => !v.start);
+
+test(name("review P2: paused, then a version named in the middle splits the group: Play all plays what the card shows now"), async () => {
+  const x = host();
+  const { carton, ui, m } = await panel(fiveEdits, x.play);
+  try {
+    await openNewest(m.container);
+    await click(byText(card(m.container)!, "button", "Play all"));
+    await x.frames(5);
+    await click(byText(card(m.container)!, "button", "Pause"));
+    assert.ok(x.s.t < 3, "paused on the clip's changes (0–4 s)");
+    const middle = mine(ui)[2]!;
+    await act(async () => void (await ui.nameVersion(middle.id, "Checkpoint")));
+    // the card keeps its row: the group's older part, the graphic's first two changes
+    await waitFor(() => $$(card(m.container)!, ".carton-change").length === 2, "the card's group is its older part");
+    await flush();
+    assert.ok(!$(m.container, ".carton-before"), "the paused play went with the versions it played: no Before left");
+    await click(byText(card(m.container)!, "button", "Play all"));
+    await x.frames(2);
+    assert.ok(x.s.t >= 3, `plays the card's own changes at their place (the graphic's, 4 s on), not the paused clip spot: ${x.s.t}`);
+    assert.equal($$(card(m.container)!, ".carton-change[data-playing]").length, 1, "a row of the card lit");
+    assert.ok(!!byText(card(m.container)!, "button", "Pause"));
+  } finally { await m.unmount(); await carton.close(); }
+});
+
+test(name("review P2: the group's newest version named while it plays (taken out of the group): the play ends cleanly"), async () => {
+  const x = host();
+  const { carton, ui, m } = await panel(fiveEdits, x.play);
+  try {
+    await openNewest(m.container);
+    await click(byText(card(m.container)!, "button", "Play all"));
+    await x.frames(5);
+    assert.equal(x.s.playing, true);
+    const top = mine(ui).at(-1)!;
+    await act(async () => void (await ui.nameVersion(top.id, "Checkpoint")));
+    await waitFor(() => $$(card(m.container)!, ".carton-change").length === 4, "the card's group lost its newest");
+    await x.frames(4);
+    assert.equal(x.s.calls.at(-1), "pause", "Cardboard stopped");
+    assert.equal(x.s.playing, false);
+    assert.ok(!!byText(card(m.container)!, "button", "Play all"));
+    assert.ok(!$(m.container, ".carton-before"), "Before went with it");
+    const calls = x.s.calls.length;
+    await x.frames(10);
+    assert.equal(x.s.calls.length, calls, "nothing plays afterwards");
+  } finally { await m.unmount(); await carton.close(); }
+});
+
+test(name("B1, paused: an edit joins the group, then Play all goes on where it paused (only added at its newer end)"), async () => {
+  const x = host();
+  const { carton, m } = await panel(twoEdits, x.play);
+  try {
+    await openNewest(m.container);
+    await click(byText(card(m.container)!, "button", "Play all"));
+    await x.frames(5);
+    await click(byText(card(m.container)!, "button", "Pause"));
+    const t = x.s.t;
+    await joins(carton);
+    await waitFor(() => $$(card(m.container)!, ".carton-change").length === 3, "the card shows the new change");
+    await flush();
+    assert.ok(!!$(m.container, ".carton-before"), "the paused play is still the card's");
+    await click(byText(card(m.container)!, "button", "Play all"));
+    assert.equal(x.s.calls.at(-1), `play ${t}`, "goes on where it paused");
+    await x.frames(2);
+    assert.ok(!!byText(card(m.container)!, "button", "Pause"));
+    assert.equal($$(card(m.container)!, ".carton-change[data-playing]").length, 1);
+  } finally { await m.unmount(); await carton.close(); }
+});
+
+// Carton's undo never takes a version out: it is a version of its own ("undo", never a plain edit, so never in a
+// group), its own row on top. The group keeps every version, so its play carries on, with its Pause.
+test(name("B1: an undo while the grown group plays is its own row; the group keeps its versions and the play its Pause"), async () => {
+  const x = host();
+  const { carton, m } = await panel(twoEdits, x.play);
+  try {
+    await openNewest(m.container);
+    await click(byText(card(m.container)!, "button", "Play all"));
+    await x.frames(3);
+    await joins(carton);
+    await waitFor(() => $$(card(m.container)!, ".carton-change").length === 3, "the card shows the new change");
+    const calls = x.s.calls.length;
+    await act(async () => void (await carton.undo()));
+    await waitFor(() => !/3 changes/.test(newest(m.container).textContent ?? ""), "the undo's own row on top");
+    await x.frames(3);
+    assert.ok($$(m.container, ".carton-version").some((r) => /3 changes/.test(r.textContent ?? "")), "the group keeps its 3 versions");
+    assert.equal($$(card(m.container)!, ".carton-change").length, 3);
+    assert.equal(x.s.calls.length, calls, "the play goes on");
+    assert.equal(x.s.playing, true);
+    assert.ok(!!byText(card(m.container)!, "button", "Pause"));
+    assert.equal($$(card(m.container)!, ".carton-change[data-playing]").length, 1);
+    await click(byText(card(m.container)!, "button", "Pause"));
+    assert.equal(x.s.playing, false, "and Pause stops it");
+  } finally { await m.unmount(); await carton.close(); }
+});
+
 // B2: the tooltip is the button's own ::after, so a button dimmed as a whole (opacity) dims its tooltip too. One with a
 // tooltip is dimmed by its parts; the rest look as they did.
 test(name("B2: Play all off with nothing to play: its tooltip isn't dimmed with it (the row below never shows through)"), async () => {
