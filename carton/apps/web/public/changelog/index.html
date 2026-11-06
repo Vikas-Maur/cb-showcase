@@ -7,8 +7,10 @@
 <link rel="icon" href="data:,">
 <title>What's new · Cardboard showcase</title>
 <meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
-<!-- The changelog: one static page, no script. Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
+<!-- The changelog: one static page. Its only script opens the "See what happens" dialogs (at the end; one line in
+     <head> marks the page as having script). Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
      beside the files in fonts/), the free faces closest to cardboard.ai/changelog's own. -->
+<script>document.documentElement.classList.add("js")</script>
 <link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
 <style>
@@ -80,6 +82,89 @@ details li::before{content:"";position:absolute;left:2px;top:14px;width:5px;heig
 details li b{color:#fff;font-weight:500}
 .note{margin-top:24px;font-size:14px;line-height:1.6;color:var(--muted);letter-spacing:0}
 
+/* Also in Cardboard: what this build fixes that is also wrong in Cardboard's own code, and still is in its newest
+   Mac release (checked against 1.4.1). A red pill (the user asked for red, 2026-11-06), and a lightly tinted card around the whole section, or around a
+   list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.4.1</span>
+   <h3>…</h3><p>In Cardboard, … Now …</p></section>, and a line for it in the list at the top (.cbtoo). */
+:root{--also:#f87171;--also-line:rgba(248,113,113,.28);--also-bg:rgba(248,113,113,.045)}
+.tag.also{color:var(--also);border-color:var(--also-line)}
+section.also{margin:36px 0 0;padding:20px 22px 4px;border:1px solid var(--also-line);border-radius:16px;background:var(--also-bg);scroll-margin-top:24px}
+.also>.tag:first-child{margin-bottom:12px}
+.also h3{margin-top:0}
+.also ul{margin:12px 0 16px;padding:0;list-style:none}
+.also li{position:relative;padding:6px 8px 6px 26px;margin-left:-8px;border-radius:8px;font-size:15px;line-height:1.6;color:#d9d9d9;letter-spacing:0;scroll-margin-top:24px}
+.also li::before{content:"";position:absolute;left:10px;top:16px;width:5px;height:5px;border-radius:50%;background:var(--also)}
+.also li b{color:#fff;font-weight:500}
+section.also:target{border-color:rgba(248,113,113,.6)}
+.also li:target{background:rgba(248,113,113,.09)}
+aside .tag.also{white-space:nowrap}
+
+.cbtoo{margin:8px 0 0;padding:32px 32px 22px;border:1px solid var(--also-line);border-radius:20px;background:radial-gradient(120% 150% at 0% 0%,rgba(248,113,113,.1) 0%,rgba(248,113,113,.025) 50%,rgba(248,113,113,0) 100%)}
+.cbtoo h2{margin:14px 0 12px;font-size:32px}
+.cbtoo>p{max-width:640px}
+.cbtoo .groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px;margin-top:8px}
+.cbtoo h3{margin:22px 0 4px;font-size:13px;line-height:1.4;font-weight:500;color:var(--muted);letter-spacing:.02em}
+.cbtoo ul{margin:0;padding:0;list-style:none}
+.cbtoo li{border-top:1px solid rgba(255,255,255,.07)}
+.cbtoo li a{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:9px 0;font-size:14px;line-height:1.5;color:#e0e0e0;text-decoration:none;letter-spacing:0}
+.cbtoo li a:hover{color:#fff}
+.cbtoo li a:hover span:first-child{text-decoration:underline;text-decoration-color:var(--also-line);text-underline-offset:3px}
+.cbtoo .ref{flex:none;font-family:var(--mono);font-size:12px;color:var(--also)}
+.cbtoo .how{margin:20px 0 0;max-width:720px}
+
+/* "See what happens": an "i" beside a bug that can be shown, opening a dialog with Cardboard's side (red) next to
+   this build's. Each dialog's content is a <template id="see-cb-…">, so nothing in it loads until it opens. The
+   buttons show only with script on (the "js" class, set in <head>), so a page without script has no dead buttons. */
+.cbi{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;margin:0 0 0 2px;padding:0;border:1px solid var(--also-line);border-radius:999px;background:rgba(248,113,113,.08);color:var(--also);font:600 14px/1 var(--display);font-variation-settings:"opsz" 72;letter-spacing:0;cursor:pointer;vertical-align:1px;transition:background-color .15s,border-color .15s}
+.cbi::after{content:"";position:absolute;inset:-8px}
+.cbi:hover{background:rgba(248,113,113,.18);border-color:rgba(248,113,113,.55)}
+.cbi:focus-visible{outline:2px solid var(--also);outline-offset:2px}
+html:not(.js) .cbi{display:none}
+.also .head{display:flex;align-items:center;gap:10px;margin:0 0 6px}
+.also .head h3{margin:0}
+.also li .cbi{margin:0 2px 0 4px;vertical-align:-5px}
+html.js .cbtoo ul:has(.cbi) li{display:grid;grid-template-columns:minmax(0,1fr) 34px;align-items:center}
+html.js .cbtoo li .cbi{justify-self:end}
+.cbi-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--also-line);border-radius:999px;color:var(--also);font:600 12px/1 var(--display);vertical-align:1px}
+html:not(.js) .js-only{display:none}
+.vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+.cbv{width:min(1000px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 32px);margin:auto;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:20px;background:#0c0c0c;color:#fff;box-shadow:0 30px 120px rgba(0,0,0,.6);overscroll-behavior:contain}
+.cbv::backdrop{background:rgba(0,0,0,.75)}
+html:has(.cbv[open]){overflow:hidden}
+.cbv-in{padding:20px 24px 22px}
+.cbv-top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.cbv-x{display:inline-flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;padding:0;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:transparent;color:#d4d4d4;cursor:pointer}
+.cbv-x:hover{background:rgba(255,255,255,.07);color:#fff}
+.cbv-x svg{width:16px;height:16px}
+.cbv h2{margin:10px 0 8px;font-size:28px;line-height:1.15}
+.cbv-cap{max-width:780px;margin:0;font-size:15px;line-height:1.6;color:#d9d9d9;letter-spacing:0}
+.cbv-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px;margin:18px 0 14px}
+.cbv[data-layout~=stack] .cbv-pair{grid-template-columns:minmax(0,1fr)}
+.cbv[data-layout~=narrow]{width:min(820px,calc(100vw - 32px))}
+.cbv-side{margin:0;min-width:0}
+.cbv-side figcaption{display:flex;align-items:center;gap:8px;margin:0 0 7px;font-size:13px;font-weight:500;line-height:1.3;color:#e5e5e5;letter-spacing:0}
+.cbv-side figcaption::before{content:"";width:7px;height:7px;border-radius:50%;background:#a3a3a3}
+.cbv-side.cb figcaption{color:var(--also)}
+.cbv-side.cb figcaption::before{background:var(--also)}
+.cbv-side img,.cbv-side video{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#000}
+.cbv-side.cb img,.cbv-side.cb video{border-color:var(--also-line)}
+.cbv-foot{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.cbv-how{margin:0;max-width:720px;font-size:12.5px;line-height:1.6;color:#7c7c7c;letter-spacing:0}
+.cbv-play{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:transparent;color:#e5e5e5;font:500 13px/1 var(--sans);letter-spacing:0;cursor:pointer}
+.cbv-play:hover{background:rgba(255,255,255,.07)}
+.cbv-play[hidden]{display:none}
+.cbv-x:focus-visible,.cbv-play:focus-visible{outline:2px solid rgba(255,255,255,.5);outline-offset:2px}
+@media (max-width:640px){
+  .cbv{width:calc(100vw - 16px);max-height:calc(100dvh - 16px);border-radius:16px}
+  .cbv-in{padding:14px 14px 16px}
+  .cbv h2{font-size:22px}
+  .cbv-cap{font-size:14px}
+  .cbv-pair{grid-template-columns:minmax(0,1fr);gap:12px;margin:14px 0 12px}
+  .cbv-foot{flex-direction:column-reverse;gap:10px}
+}
+@media (prefers-reduced-motion:reduce){.cbi{transition:none}}
+
 .signoff{max-width:968px;margin:0 auto;padding:8px 24px 0}
 .signoff p{margin:0 0 0 284px;font-size:18px;font-style:italic;line-height:1.6;color:#d4d4d4}
 footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px solid rgba(255,255,255,.06);font-size:13px;line-height:1.6;color:#6b6b6b;letter-spacing:0}
@@ -96,6 +181,10 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   .lead{font-size:17px}
   .media{margin-bottom:28px}
   .stat b{font-size:28px}
+  section.also{padding:18px 16px 2px}
+  .cbtoo{padding:24px 18px 18px;border-radius:16px}
+  .cbtoo h2{font-size:26px}
+  .cbtoo .groups{grid-template-columns:1fr}
   .signoff{padding:0 20px}
   .signoff p{margin-left:0;font-size:16px}
   footer{margin-top:64px;padding:24px 20px 40px}
@@ -124,6 +213,112 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 </section>
 
 <main>
+
+<!-- What we fixed that Cardboard itself still gets wrong: each item is in Cardboard's own code (not our port) and still
+     in 1.4.1, its newest Mac release when this was written. Each links to its entry, marked the same way there. -->
+<section class="cbtoo" id="cardboard-too" aria-labelledby="cardboard-too-title">
+  <span class="tag also">Also in Cardboard 1.4.1</span>
+  <h2 class="display" id="cardboard-too-title">Fixed here, still in Cardboard</h2>
+  <p>These don’t come from our Windows port. They’re in Cardboard’s own code, and still in 1.4.1, its newest release for Mac. Each one is fixed in this build and marked in its entry below.<span class="js-only"> Press <span class="cbi-mark" aria-hidden="true">i</span><span class="vh">the i button</span> beside one to watch it happen in Cardboard’s own editor, next to this build.</span></p>
+  <div class="groups">
+    <div>
+      <h3>Saving and history</h3>
+      <ul>
+        <li><a href="#cb-saves"><span>Two saves at nearly the same moment, yours and an agent’s, can quietly undo one, even on different clips.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-history"><span>Only the newest 20 snapshots of a timeline are kept, one for each save that changes it.</span><span class="ref">#4</span></a></li>
+        <li><a href="#cb-stale"><span>Once an agent’s copy is older than the history Cardboard keeps, its edit can quietly undo newer edits, with no conflict shown.</span><span class="ref">#4</span></a></li>
+      </ul>
+      <h3>Speed</h3>
+      <ul>
+        <li><a href="#cb-idle"><span>While the editor is on screen, it measures the preview’s position every frame, even with nothing moving.</span><span class="ref">#3</span></a></li>
+        <li><a href="#cb-filmstrip"><span>Timeline thumbnails decode every frame of a video, then keep one every half second or second.</span><span class="ref">#1</span></a></li>
+      </ul>
+      <h3>Importing</h3>
+      <ul>
+        <li><a href="#cb-folder"><span>A folder dropped on the editor imports no media, and the media import pickers can’t choose a folder.</span><span class="ref">#1</span></a></li>
+        <li><a href="#cb-thumbs"><span>A video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest.</span><span class="ref">#1</span></a></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Playback and editing</h3>
+      <ul>
+        <li><a href="#cb-fullscreen"><span>With the preview zoomed in or out, full screen draws code graphics at the wrong size, off the video.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-names"><span>A clip that starts just off the timeline’s left edge shows its name twice, on top of itself.</span><span class="ref">#7</span></a><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-play"><span>After a seek, Play can wait for unloaded audio from clips on muted tracks, and pressing it again doesn’t skip the wait.</span><span class="ref">#2</span></a></li>
+        <li><a href="#cb-playhead"><span>Stepping frames, or dragging the playhead past the edge, leaves the playhead out of view.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-focus"><span>After typing in the prompt box, clicking the timeline leaves the keyboard there: Space types a space.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-badges"><span>A badge in the prompt box can be clicked or arrowed into, and typing there breaks it apart.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-enter"><span>Clicking an option in an agent’s question and pressing Enter un-picks it, so nothing is sent.</span><span class="ref">#1</span></a><button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-tooltips"><span>The editor’s left rail never shows its tooltips.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog">i</button></li>
+        <li><a href="#cb-gpu"><span>If the timeline’s drawing surfaces are lost and restored, it can stay black until something redraws it.</span><span class="ref">#2</span></a><button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog">i</button></li>
+      </ul>
+    </div>
+  </div>
+  <p class="how">Found by reading Cardboard’s code, 1.4.0 and today’s 1.4.1 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
+</section>
+
+<article id="7">
+  <aside>
+    <time datetime="2026-11-05">November 5, 2026</time>
+    <div class="tags"><a class="tag" href="#7" aria-label="Link to update 7">#7</a><span class="tag preview">Preview</span></div>
+  </aside>
+  <div>
+    <h2 class="display">Graphics stay on the video, and clip names stay readable</h2>
+    <p class="lead">Two drawing bugs from Cardboard itself, found while editing on a Windows laptop: code graphics drifting off the footage in full screen, and clip names drawn on top of each other on the timeline.</p>
+    <section class="also" id="cb-fullscreen">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <div class="head"><h3>Code graphics in full screen</h3><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></div>
+      <p>In Cardboard, if the preview is zoomed in or out (⌘ or Ctrl with the scroll wheel, or a pinch) when you go full screen, every code graphic is drawn at the wrong size from the top-left corner: too large and cut off at the right and bottom when the preview was zoomed out, too small with its edges inside the picture when it was zoomed in. The video is drawn right, so the graphic no longer lines up with it. Full screen shows the picture unzoomed, but the graphics were still sized for the zoom. At the default zoom, and in exports, it was always right.</p>
+      <p>Now what’s drawn over the preview takes the size the picture is actually shown at, in full screen and out of it, and stays in place when you zoom inside full screen or leave it.</p>
+    </section>
+    <section class="also" id="cb-names">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <div class="head"><h3>Clip names drawn once</h3><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></div>
+      <p>In Cardboard, when a clip starts just off the timeline’s left edge, its name is drawn twice on top of itself: once at the clip’s start, cut by the edge, and once pinned at the edge, so neither can be read. It happens on any screen, while scrolling or at rest. Now each name shows once: it scrolls off with its clip, then appears at the edge.</p>
+    </section>
+    <p class="how">Full screen: checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Clip names: checked frame by frame while scrolling, in Cardboard’s own timeline and ours, at 1×, 1.25× and 2× screen scaling. Cardboard’s code for both is the same on a Mac and in 1.4.1.</p>
+  </div>
+</article>
+
+<article id="6">
+  <aside>
+    <time datetime="2026-11-05">November 5, 2026</time>
+    <div class="tags"><a class="tag" href="#6" aria-label="Link to update 6">#6</a><span class="tag preview">Preview</span></div>
+  </aside>
+  <div>
+    <h2 class="display">History, redesigned: compare, find and go back</h2>
+    <p class="lead">We rebuilt Carton’s History after testing it in the real app. Every version reads in plain words, any two versions can be compared right in the editor, and you can go back as little as one clip.</p>
+
+    <h3>History you can read</h3>
+    <p>Each version says who made it, when, and what changed, in an editor’s words, and where it is in the edit: Muted “1.mp4”, at 0:05. Your own run of edits is one row, and an agent at work shows as a live row. An agent’s turn shows your request at once, then a short title of what it did. Play all plays every change in its place on the timeline, with sound, and Before shows how it was.</p>
+
+    <h3>Compare in the editor</h3>
+    <p>Compare takes over the stage: Side by side, Wipe with a line you drag, or Flip by holding B. Play both plays the two versions in step, shot by shot, so a trimmed or moved clip stays the same shot. The changes are marked on the timeline. It works between cuts too, and you can close History for more room while Compare stays on.</p>
+
+    <h3>Find any version</h3>
+    <p>Search by clip name, text on screen, what you asked an agent, or who made it. The versions people remember are marked as landmarks with a small picture: Exported, Sent, Named and each agent turn. Exported and Sent are shared with your teammates too. Press and hold a row to peek at it on the stage.</p>
+
+    <h3>Go back as little as you need</h3>
+    <p>Go back… offers four ways, smallest first, and each says what it will do before anything happens: bring back one clip as it was, undo an agent’s turn, restore the whole edit, or start a new cut from that version.</p>
+
+    <h3>Sharing needs only your name</h3>
+    <p>Share now fills in the live server for you, so sharing a project takes your name and one click.</p>
+
+    <details>
+      <summary>Improvements</summary>
+      <ul>
+        <li><b>Agents get the same tools.</b> <code>cb history --find</code> finds a version, <code>cb restore --clip</code> brings back one clip, and <code>cb compare --show</code> opens Compare in the editor for you.</li>
+      </ul>
+    </details>
+    <details>
+      <summary>Fixes &amp; housekeeping</summary>
+      <ul>
+        <li>Many smaller fixes from testing on a Windows laptop: clearer words throughout (a mute reads “Muted”, a code change never quotes code), Compare’s layout on smaller screens, Esc and keyboard focus, title-bar tabs that fit narrow windows, and Play all saying when there’s nothing to play.</li>
+      </ul>
+    </details>
+    <p class="note">History’s redesign is in preview, like the rest of Carton.</p>
+  </div>
+</article>
 
 <article id="5">
   <aside>
@@ -162,13 +357,25 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   <div>
     <figure class="media card"><img src="/changelog/img/conflict-card.webp" width="680" height="476" alt="A conflict card: you set a clip's opacity to 90% while the Director set it to 50%. Both edits are kept, with buttons Keep yours and Keep Director's."></figure>
     <h2 class="display">Carton: version history for video</h2>
-    <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
+    <p class="lead">Cardboard keeps a short recent history of a project’s timeline. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
 
-    <h3>Nothing gets overwritten</h3>
-    <p>Before, two saves at the same moment, say yours and the Director’s, could quietly undo one of them, even on different clips. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
+    <section class="also" id="cb-saves">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Nothing gets overwritten</h3>
+      <p>In Cardboard, two saves at nearly the same moment, say yours and the Director’s, can quietly undo one of them, even when they changed different clips: each save writes the whole project, with no check for a save in between. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
+    </section>
 
-    <h3>Every version, and who made it</h3>
-    <p>History keeps every version, where Cardboard 1.4.0 keeps only the newest 20. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+    <section class="also" id="cb-history">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Every version, and who made it</h3>
+      <p>Cardboard keeps only the newest 20 snapshots of a timeline, one for each save that changes it. Carton’s History keeps every version. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
+    </section>
+
+    <section class="also" id="cb-stale">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>An agent’s old copy can’t undo newer edits</h3>
+      <p>An agent edits a copy of the timeline. In Cardboard, once the version that copy came from has dropped out of its history (the newest 20 changed versions), its edit is merged against the current timeline instead, so its old values can quietly replace newer edits, with no conflict shown. Now an edit is always merged against the version it came from.</p>
+    </section>
 
     <h3>Undo only what’s yours</h3>
     <p>Ctrl+Z undoes your own edits and the agent turns you started, never a teammate’s. A whole Director turn can be undone at once.</p>
@@ -192,7 +399,6 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
-        <li>An agent’s edit to an old copy of the timeline is merged against the version it came from. Cardboard merged it against the current timeline and could undo newer edits.</li>
         <li>Exported <code>.cbproj</code> files never carry your history database or this computer’s paths.</li>
         <li>Opening a project on Windows retries when antivirus or the search indexer briefly holds a file.</li>
         <li>At final integration, all 24 test jobs passed (every test group on Linux and Windows, plus macOS): 6,844 tests, 0 failures.</li>
@@ -205,11 +411,15 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <article id="3">
   <aside>
     <time datetime="2026-10-31">October 31, 2026</time>
-    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a></div>
+    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a><a class="tag also" href="#cb-idle">Also in Cardboard 1.4.1</a></div>
   </aside>
   <div>
     <h2 class="display">An idle editor that stays idle</h2>
-    <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab. Now the editor rests when nothing moves.</p>
+    <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab of our Windows build. Now the editor rests when nothing moves.</p>
+    <section class="also" id="cb-idle">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <p>This is Cardboard’s own editor code, not our port. In Cardboard on a Mac, while a project’s editor is on screen, it measures where the preview sits on every frame, even when nothing moves.</p>
+    </section>
     <div class="stats">
       <div class="stat"><b><s>20.3% →</s> 0.7%</b><span>of a CPU core, one project open, window on screen, nothing moving</span></div>
       <div class="stat"><b><s>64.8% →</s> 2.0%</b><span>of a CPU core, four projects open, window on screen, nothing moving</span></div>
@@ -240,19 +450,32 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <h3>The fast GPU on laptops</h3>
     <p>On a laptop with two GPUs, Cardboard drew everything on the power-saving one, which borrows system memory, while the NVIDIA card sat idle. Plugged in, Cardboard now uses the NVIDIA card. On battery it stays on the power-saving one, and Windows’ own per-app setting still wins.</p>
 
-    <h3>Play means play</h3>
-    <p>After a seek, Play waited for audio from muted tracks and hidden clips that would never be heard. It now waits only for sound you’ll hear, and pressing Play a second time starts at once.</p>
+    <section class="also" id="cb-play">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Play means play</h3>
+      <p>In Cardboard, Play after a seek can wait for sound that hasn’t loaded yet from clips on muted tracks, which will never be heard, and pressing Play again while it waits doesn’t skip the wait. Now it waits only for sound you’ll hear, and a second press starts at once.</p>
+    </section>
 
-    <h3>Prompt badges you can click</h3>
-    <p>Badges in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) are now one piece. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser. The arrow keys and Backspace treat a badge as a single character, so it can’t break into loose text.</p>
+    <section class="also" id="cb-badges">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <div class="head"><h3>Prompt badges stay whole, and open on a click</h3><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></div>
+      <p>In Cardboard, a badge in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) can be clicked or arrowed into, and typing there breaks it into loose text. Now a badge is one piece that the caret steps over. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser.</p>
+    </section>
+
+    <section class="also" id="cb-fixes-2">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Bugs Cardboard has too</h3>
+      <ul>
+        <li id="cb-playhead"><b>The playhead stays in view.</b> <button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
+        <li id="cb-focus"><b>Clicking the timeline takes the keyboard.</b> <button class="cbi" type="button" data-see="cb-focus" aria-label="See what happens: Space after clicking the timeline" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, it stays in the prompt box, so Space types a space instead of playing.</li>
+        <li id="cb-tooltips"><b>The left rail shows its tooltips.</b> <button class="cbi" type="button" data-see="cb-tooltips" aria-label="See what happens: the left rail’s tooltips" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, its icons never show their names.</li>
+        <li id="cb-gpu"><b>The timeline redraws after a GPU reset.</b> <button class="cbi" type="button" data-see="cb-gpu" aria-label="See what happens: the timeline after a GPU reset" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, if the timeline’s drawing surfaces are lost and restored, which can happen when the graphics process restarts, the timeline can stay black until something else redraws it.</li>
+      </ul>
+    </section>
 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
-        <li>The timeline redraws after a GPU reset. It used to stay black.</li>
-        <li>The playhead stays in view when you step frames or drag it past the edge; the timeline scrolls to follow.</li>
-        <li>Clicking the timeline takes the keyboard from the prompt box, so Space plays instead of typing a space.</li>
-        <li>The editor’s left rail shows its tooltips.</li>
         <li>A benchmark kit, and a “baseline” build of Cardboard’s own pipeline to compare against, so every speed claim can be re-run on the same machine.</li>
         <li>A study re-implementation of how Cardboard merges an edited timeline: the groundwork for Carton.</li>
       </ul>
@@ -277,20 +500,37 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p>The built-in Claude Code agent, its Python tools and the <code>cb</code> command line work from Git Bash, cmd and PowerShell. Cardboard also finds the Claude Code and Codex you installed yourself.</p>
 
     <h3>Your NVIDIA GPU does the heavy lifting</h3>
-    <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU. Timeline thumbnails come from keyframes instead of decoding every frame.</p>
+    <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU.</p>
+
+    <section class="also" id="cb-filmstrip">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Timeline thumbnails from keyframes</h3>
+      <p>To draw a video’s thumbnails along the timeline, Cardboard decodes every frame of it, then keeps one every half second or second. Now, when a video has a keyframe at least every 2 seconds, only the keyframes are decoded; otherwise every frame is, on the NVIDIA GPU when there is one.</p>
+    </section>
 
     <h3>A Windows keyboard</h3>
-    <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, Enter answers the Director’s questions, and a new shortcut that clashes with another one is caught.</p>
+    <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, and a new shortcut that clashes with another one is caught.</p>
 
-    <h3>Import a whole folder</h3>
-    <p>Use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+    <section class="also" id="cb-folder">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Import a whole folder</h3>
+      <p>In Cardboard, a folder dropped on the editor imports no media, and its media import pickers can’t choose a folder. Now use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
+    </section>
+
+    <section class="also" id="cb-fixes-1">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <h3>Bugs Cardboard has too</h3>
+      <ul>
+        <li id="cb-enter"><b>Enter answers the Director’s questions.</b> <button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, clicking an option and then pressing Enter un-picks it, so nothing is sent. Now Enter on a picked option sends the answer.</li>
+        <li id="cb-thumbs"><b>Interrupted imports finish their thumbnails.</b> In Cardboard, a video whose import is cut off after its first thumbnail, by a crash or a forced quit, never gets the rest, even when the project reopens. Now it gets them when the project reopens.</li>
+      </ul>
+    </section>
 
     <details>
       <summary>Fixes &amp; housekeeping</summary>
       <ul>
         <li><b>Imports no longer lose clips.</b> Windows refuses to replace a file something is reading, so a save during an import could fail and drop a clip. Saves now retry.</li>
         <li>Closing the window quits Cardboard. After a failed import step it used to keep running with no window.</li>
-        <li>Clips left without thumbnails after quitting mid-import get them when the project reopens.</li>
         <li>Notifications show on Windows, and the taskbar button flashes when the Director needs you.</li>
         <li>Cardboard says “this PC” and “File Explorer” where it said “this Mac” and “Finder”.</li>
         <li>An activity log records how a session went: shortcuts, menus, waits and errors. Never what you type.</li>
@@ -306,5 +546,162 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change. Every number here was checked independently before it went up.</p></div>
 
 <footer>An independent project built on Cardboard&nbsp;1.4.0 for macOS. It isn’t made by, or affiliated with, the Cardboard team.</footer>
+<!-- "See what happens": what each bug looks like, captured with scripts/changelog/capture-visuals.js from Cardboard
+     1.4.0's own editor pages as shipped (the same code in 1.4.1) and from this build's, in Chromium with a sample
+     project. Only the red rings and labels named in a dialog are added afterwards. One <template> per bug: its media
+     load only when its dialog opens. data-layout: side (two columns) or stack (one), and narrow for a narrower dialog. -->
+<template id="see-cb-fullscreen" data-layout="side">
+  <h2 class="display" id="cbv-title">Code graphics in full screen</h2>
+  <p class="cbv-cap" id="cbv-cap">The preview was zoomed out one step, then put in full screen. Look at the graphic: its white frame, the ring around the sun and the title. Cardboard draws it too large, from the top-left corner, so the frame runs off the right and bottom and the ring misses the sun. This build keeps it on the picture.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/fullscreen-cardboard.webp" width="960" height="540" alt="Full screen, a coast at sunrise. The graphic’s white frame runs off the right and bottom edges, its ring sits below and to the right of the sun, and its title is pushed down to the bottom edge."></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/fullscreen-ours.webp" width="960" height="540" alt="The same moment in this build. The white frame sits just inside the picture’s edges, the ring circles the sun, and the title sits in the lower left."></figure>
+  </div>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample picture and graphic. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-names" data-layout="stack narrow">
+  <h2 class="display" id="cbv-title">Clip names drawn once</h2>
+  <p class="cbv-cap" id="cbv-cap">The timeline scrolls until two music clips start just off its left edge, then back. Watch their names. Cardboard draws each one twice, one on top of the other, so neither can be read. This build shows it once: it scrolls off with its clip, then appears at the edge.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1058" height="316" muted loop playsinline preload="auto" poster="/changelog/img/cb/names-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/names-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/names-cardboard.webm" type="video/webm"></video><p class="vh">Two music clips scroll past the timeline’s left edge. Each clip’s name is drawn twice, overlapping into unreadable letters, until the clip is far enough off screen.</p></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1058" height="316" muted loop playsinline preload="auto" poster="/changelog/img/cb/names-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/names-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/names-ours.webm" type="video/webm"></video><p class="vh">The same scroll in this build. Each name shows once: it slides off with its clip, then reappears at the left edge.</p></figure>
+  </div>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project, a frame taken every few pixels of scrolling. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-playhead" data-layout="stack">
+  <h2 class="display" id="cbv-title">The playhead stays in view</h2>
+  <p class="cbv-cap" id="cbv-cap">The playhead starts near the timeline’s right edge, and → (next frame) is pressed again and again. In Cardboard the white playhead line walks off the edge and out of sight, while the time keeps counting. In this build the timeline scrolls to keep it in view.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1100" height="208" muted loop playsinline preload="auto" poster="/changelog/img/cb/playhead-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/playhead-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/playhead-cardboard.webm" type="video/webm"></video><p class="vh">The timeline with the playhead near its right edge. With each press it moves right, then leaves the visible part, and the time keeps counting with no playhead in sight.</p></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1100" height="208" muted loop playsinline preload="auto" poster="/changelog/img/cb/playhead-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/playhead-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/playhead-ours.webm" type="video/webm"></video><p class="vh">The same presses in this build. When the playhead reaches the edge, the timeline scrolls and the playhead stays in view.</p></figure>
+  </div>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project and real key presses. The red label was added to show the key. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-focus" data-layout="stack">
+  <h2 class="display" id="cbv-title">Clicking the timeline takes the keyboard</h2>
+  <p class="cbv-cap" id="cbv-cap">“Make the intro shorter” is typed in the prompt box. Then a click on the timeline, and Space. In Cardboard the keyboard stays in the prompt box: Space adds a space after “shorter”, and nothing plays. In this build the click takes the keyboard, and Space plays.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1100" height="220" muted loop playsinline preload="auto" poster="/changelog/img/cb/focus-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/focus-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/focus-cardboard.webm" type="video/webm"></video><p class="vh">The timeline and the prompt box. After the click, the playhead jumps to the clicked time. After Space, the caret in the prompt box moves one space to the right, and the playhead stays still.</p></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1100" height="220" muted loop playsinline preload="auto" poster="/changelog/img/cb/focus-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/focus-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/focus-ours.webm" type="video/webm"></video><p class="vh">The same steps in this build. After Space, playback starts: the play button turns to pause and the playhead moves along the timeline.</p></figure>
+  </div>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project, a real click and real keys. The red ring and labels were added to show them. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-badges" data-layout="side">
+  <h2 class="display" id="cbv-title">Prompt badges stay whole</h2>
+  <p class="cbv-cap" id="cbv-cap">A clip mentioned with @ shows as a badge in the prompt box. With the caret after it, ← is pressed twice, then “the ” is typed. In Cardboard the caret goes into the badge, and the typing breaks it into loose text. In this build the caret steps over the badge, and the badge stays whole.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="744" height="264" muted loop playsinline preload="auto" poster="/changelog/img/cb/badges-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/badges-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/badges-cardboard.webm" type="video/webm"></video><p class="vh">The prompt box reads “Make” and a green clip badge. After the two presses and the typing, the badge’s green chip is gone, and “the” is stuck to the end of the clip’s name as plain text.</p></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="744" height="264" muted loop playsinline preload="auto" poster="/changelog/img/cb/badges-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/badges-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/badges-ours.webm" type="video/webm"></video><p class="vh">The same keys in this build. The caret jumps to before the badge, and the box reads “Make the” followed by the badge, still whole.</p></figure>
+  </div>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project and real keys. The red labels were added to show the keys. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-enter" data-layout="side narrow">
+  <h2 class="display" id="cbv-title">Enter answers the Director’s questions</h2>
+  <p class="cbv-cap" id="cbv-cap">The Director asks which shot should open a trailer. An option is clicked, then Enter is pressed. In Cardboard, Enter un-picks the option, and nothing is sent. In this build, Enter sends the picked answer, and the question closes.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="758" height="692" muted loop playsinline preload="auto" poster="/changelog/img/cb/enter-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/enter-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/enter-cardboard.webm" type="video/webm"></video><p class="vh">A question with three options. The click picks the second option and lights up Confirm. After Enter, the option is no longer picked and Confirm is greyed out.</p></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="758" height="692" muted loop playsinline preload="auto" poster="/changelog/img/cb/enter-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/enter-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/enter-ours.webm" type="video/webm"></video><p class="vh">The same click and Enter in this build. After Enter, the answer is sent and the question closes, leaving the empty prompt box.</p></figure>
+  </div>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample question, a real click and a real key. The red ring and labels were added to show them. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-tooltips" data-layout="side narrow">
+  <h2 class="display" id="cbv-title">The left rail shows its tooltips</h2>
+  <p class="cbv-cap" id="cbv-cap">The pointer rests on the music icon in the editor’s left rail, ringed in red. In Cardboard no name appears. In this build its name, Audio, shows beside it.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/tooltips-cardboard.webp" width="480" height="420" alt="The editor’s left rail with the music icon lit under the pointer, and no tooltip."></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/tooltips-ours.webp" width="480" height="420" alt="The same rail in this build, with a tooltip reading “Audio” beside the music icon."></figure>
+  </div>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium. The red ring was added to show where the pointer rests. Not recorded on a Mac.</p>
+</template>
+<template id="see-cb-gpu" data-layout="stack">
+  <h2 class="display" id="cbv-title">The timeline redraws after a GPU reset</h2>
+  <p class="cbv-cap" id="cbv-cap">The editor a few seconds after its graphics process restarted, as it can after a driver reset. In Cardboard the ruler and the tracks stay black. This build has drawn them again.</p>
+  <div class="cbv-pair">
+    <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/gpu-cardboard.webp" width="1100" height="208" alt="The timeline’s toolbar and track names show, but the ruler and the tracks are solid black."></figure>
+    <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/gpu-ours.webp" width="1100" height="208" alt="The same moment in this build: the ruler and both music clips are drawn."></figure>
+  </div>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium, whose graphics process was made to restart. Not recorded on a Mac.</p>
+</template>
+
+<dialog class="cbv" id="cbv" aria-labelledby="cbv-title" aria-describedby="cbv-cap">
+  <div class="cbv-in">
+    <div class="cbv-top">
+      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <button class="cbv-x" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="cbv-body"></div>
+    <div class="cbv-foot">
+      <p class="cbv-how" hidden></p>
+      <button class="cbv-play" type="button" hidden>Pause</button>
+    </div>
+  </div>
+</dialog>
+<script>
+// The "See what happens" dialogs: an "i" fills the dialog from its <template> (so its media load only now) and
+// opens it. Clips play together, muted and looping, unless the reader prefers reduced motion: then they wait for
+// Play. Esc, the close button or a click outside closes it, and the keyboard goes back to the "i".
+(() => {
+  const d = document.getElementById("cbv"), body = d.querySelector(".cbv-body"), how = d.querySelector(".cbv-foot .cbv-how"), toggle = d.querySelector(".cbv-play");
+  const calm = matchMedia("(prefers-reduced-motion: reduce)");
+  const clips = () => [...body.querySelectorAll("video")];
+  let opener = null, downOutside = false, gen = 0, cancel = [];
+  // Each open, play, pause and close starts a new generation: an earlier play request still waiting (for its clips
+  // to load) loses its timer and listeners, and plays nothing when it would have fired.
+  const fresh = () => { gen++; for (const f of cancel.splice(0)) f(); return gen; };
+  const label = (on) => { toggle.textContent = on ? "Pause" : "Play"; };
+  // both sides from the start, together, once both can play (or after 4 s)
+  const play = () => {
+    const g = fresh(), vs = clips();
+    for (const v of vs) if (v.preload === "none") { v.preload = "auto"; v.load(); }
+    label(true);
+    const waits = vs.filter((v) => v.readyState < 3).map((v) => new Promise((r) => { v.addEventListener("canplay", r, { once: true }); cancel.push(() => v.removeEventListener("canplay", r)); }));
+    const timeout = new Promise((r) => { const t = setTimeout(r, 4000); cancel.push(() => clearTimeout(t)); });
+    Promise.race([Promise.all(waits), timeout]).then(() => {
+      if (g !== gen || !d.open) return;
+      for (const f of cancel.splice(0)) f();
+      for (const v of vs) if (v.isConnected) { v.currentTime = 0; v.play().catch(() => {}); }
+    });
+  };
+  const pause = () => { fresh(); for (const v of clips()) v.pause(); label(false); };
+  // the dialog's media out: paused, their sources dropped so they stop loading, the elements removed
+  const unload = () => {
+    fresh();
+    for (const v of clips()) { v.pause(); for (const s of v.querySelectorAll("source")) s.remove(); v.removeAttribute("src"); v.load(); }
+    body.replaceChildren();
+  };
+  for (const b of document.querySelectorAll("button.cbi")) {
+    const t = document.getElementById("see-" + b.dataset.see);
+    if (!t) { b.remove(); continue; }
+    b.addEventListener("click", () => {
+      const part = t.content.cloneNode(true), still = calm.matches;
+      for (const v of part.querySelectorAll("video")) { v.muted = true; v.preload = still ? "none" : "auto"; }
+      const h = part.querySelector(".cbv-how");
+      how.textContent = h ? h.textContent : "";
+      how.hidden = !h;
+      h?.remove();
+      unload();
+      body.replaceChildren(part);
+      d.dataset.layout = t.dataset.layout || "side";
+      toggle.hidden = clips().length === 0;
+      opener = b;
+      d.showModal();
+      d.scrollTop = 0;
+      if (clips().length) still ? label(false) : play();
+    });
+  }
+  toggle.addEventListener("click", () => (toggle.textContent === "Pause" ? pause() : play()));
+  d.querySelector(".cbv-x").addEventListener("click", () => d.close());
+  // a click outside: on the backdrop, which is the dialog element itself (its content fills it)
+  d.addEventListener("pointerdown", (e) => { downOutside = e.target === d; });
+  d.addEventListener("click", (e) => { if (e.target === d && downOutside) d.close(); });
+  d.addEventListener("close", () => {
+    unload();
+    label(false);
+    const b = opener;
+    opener = null;
+    b?.focus();
+  });
+})();
+</script>
 </body>
 </html>
