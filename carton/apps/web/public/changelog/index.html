@@ -81,10 +81,10 @@ details li b{color:#fff;font-weight:500}
 .note{margin-top:24px;font-size:14px;line-height:1.6;color:var(--muted);letter-spacing:0}
 
 /* Also in Cardboard: what this build fixes that is also wrong in Cardboard's own code, and still is in its newest
-   Mac release (checked against 1.4.1). A mint pill, and a lightly tinted card around the whole section, or around a
+   Mac release (checked against 1.4.1). A red pill (the user asked for red, 2026-11-06), and a lightly tinted card around the whole section, or around a
    list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.4.1</span>
    <h3>…</h3><p>In Cardboard, … Now …</p></section>, and a line for it in the list at the top (.cbtoo). */
-:root{--also:#8fe3bf;--also-line:rgba(143,227,191,.28);--also-bg:rgba(143,227,191,.045)}
+:root{--also:#f87171;--also-line:rgba(248,113,113,.28);--also-bg:rgba(248,113,113,.045)}
 .tag.also{color:var(--also);border-color:var(--also-line)}
 section.also{margin:36px 0 0;padding:20px 22px 4px;border:1px solid var(--also-line);border-radius:16px;background:var(--also-bg);scroll-margin-top:24px}
 .also>.tag:first-child{margin-bottom:12px}
@@ -93,11 +93,11 @@ section.also{margin:36px 0 0;padding:20px 22px 4px;border:1px solid var(--also-l
 .also li{position:relative;padding:6px 8px 6px 26px;margin-left:-8px;border-radius:8px;font-size:15px;line-height:1.6;color:#d9d9d9;letter-spacing:0;scroll-margin-top:24px}
 .also li::before{content:"";position:absolute;left:10px;top:16px;width:5px;height:5px;border-radius:50%;background:var(--also)}
 .also li b{color:#fff;font-weight:500}
-section.also:target{border-color:rgba(143,227,191,.6)}
-.also li:target{background:rgba(143,227,191,.09)}
+section.also:target{border-color:rgba(248,113,113,.6)}
+.also li:target{background:rgba(248,113,113,.09)}
 aside .tag.also{white-space:nowrap}
 
-.cbtoo{margin:8px 0 0;padding:32px 32px 22px;border:1px solid var(--also-line);border-radius:20px;background:radial-gradient(120% 150% at 0% 0%,rgba(143,227,191,.1) 0%,rgba(143,227,191,.025) 50%,rgba(143,227,191,0) 100%)}
+.cbtoo{margin:8px 0 0;padding:32px 32px 22px;border:1px solid var(--also-line);border-radius:20px;background:radial-gradient(120% 150% at 0% 0%,rgba(248,113,113,.1) 0%,rgba(248,113,113,.025) 50%,rgba(248,113,113,0) 100%)}
 .cbtoo h2{margin:14px 0 12px;font-size:32px}
 .cbtoo>p{max-width:640px}
 .cbtoo .groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px;margin-top:8px}
