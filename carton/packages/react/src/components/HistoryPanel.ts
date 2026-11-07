@@ -1138,38 +1138,6 @@ export function HistoryPanel(props: HistoryPanelProps) {
   useEffect(() => {
     if (!peek.holding) setSaid("");
   }, [peek.holding]);
-  // What the ring shows, said for screen readers: "Leo made a change". Once the versions are described (a teammate's
-  // live version is told by person then: "Leo", never "Teammate"), or a moment later; a person again only after a
-  // quiet minute (their agent's turn goes on without a word a version); never over a held row's line.
-  const heard = useRef(new Map<string, number>());
-  const toSay = useRef<{ ids: string[]; timer: ReturnType<typeof setTimeout> | undefined }>({ ids: [], timer: undefined });
-  const holdingNow = useRef(peek.holding);
-  holdingNow.current = peek.holding;
-  const sayArrivals = useCallback((force: boolean) => {
-    const p = toSay.current;
-    const vs = p.ids.map(find).filter((v): v is Version => !!v);
-    if (!force && vs.some((v) => !v.summary)) return;
-    clearTimeout(p.timer);
-    p.ids = [];
-    const now = Date.now(), names: string[] = [];
-    for (const v of vs) {
-      const last = heard.current.get(v.author.key);
-      heard.current.set(v.author.key, now);
-      const who = actorLabel(v.author, ui.actor.bind(ui), words.you);
-      if ((last === undefined || now - last >= ARRIVAL_QUIET_MS) && who && !names.includes(who)) names.push(who);
-    }
-    if (names.length && !holdingNow.current) setSaid(words.madeAChange(names));
-  }, [find, ui, words]);
-  useEffect(() => {
-    const p = toSay.current;
-    if (arrivals.added.length) {
-      p.ids.push(...arrivals.added.map((v) => v.id));
-      clearTimeout(p.timer);
-      p.timer = setTimeout(() => sayArrivals(true), 1500);
-    }
-    if (p.ids.length) sayArrivals(false);
-  }, [arrivals, revision, sayArrivals]);
-  useEffect(() => () => clearTimeout(toSay.current.timer), []);
 
   // Keyboard (DESIGN §7): Enter / → open a row's card, a day or a group, ← closes it; Space plays (or pauses) the
   // version's changes; F2 names it. Esc: stop viewing → close the card → close the panel (the host's), one at a time:
@@ -1785,8 +1753,61 @@ export function HistoryPanel(props: HistoryPanelProps) {
           ),
     rowMenu,
     h("p", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
+    // (its own component: what it says never re-renders the list; `added` keeps its identity while nothing arrives)
+    h(ArrivalNews, { added: arrivals.added, holding: !!peek.holding }),
   );
 }
+
+/**
+ * What the ring shows, said for screen readers in a line of its own: "Leo made a change". Once the versions are
+ * described (a teammate's live version is told by person then: "Leo", never "Teammate"), or 1.5 s on; a person again
+ * only after a quiet minute (their agent's turn goes on without a word a version); never while a row is held (its own
+ * line speaks then). Nothing in the DOM, no render and no timer until someone else's version arrives: working alone,
+ * History is as it was.
+ */
+const ArrivalNews = memo(function ArrivalNews({ added, holding }: { added: readonly Version[]; holding: boolean }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  // `tick`: 0 until the first arrival (no live region yet), then one step per check
+  const [tick, setTick] = useState(0);
+  const [text, setText] = useState("");
+  const pending = useRef<{ ids: string[]; since: number }>({ ids: [], since: 0 });
+  const heard = useRef(new Map<string, number>());
+  const holdingNow = useRef(holding);
+  holdingNow.current = holding;
+  useEffect(() => {
+    if (!added.length) return;
+    const p = pending.current;
+    if (!p.ids.length) p.since = Date.now();
+    p.ids.push(...added.map((v) => v.id));
+    setTick((t) => t + 1);
+  }, [added]);
+  // (after the commit that drew the region: what it says next is announced)
+  useEffect(() => {
+    const p = pending.current;
+    if (!p.ids.length) return;
+    const hs = ui.history();
+    const vs = p.ids.map((id) => {
+      const i = hs.indexOf("all", id);
+      return i >= 0 ? hs.at("all", i) : undefined;
+    }).filter((v): v is Version => !!v);
+    if (vs.some((v) => !v.summary) && Date.now() - p.since < 1500) {
+      const t = setTimeout(() => setTick((n) => n + 1), 100);
+      return () => clearTimeout(t);
+    }
+    p.ids = [];
+    const now = Date.now(), names: string[] = [];
+    for (const v of vs) {
+      const last = heard.current.get(v.author.key);
+      heard.current.set(v.author.key, now);
+      const who = actorLabel(v.author, ui.actor.bind(ui), words.you);
+      if ((last === undefined || now - last >= ARRIVAL_QUIET_MS) && who && !names.includes(who)) names.push(who);
+    }
+    if (names.length && !holdingNow.current) setText(words.madeAChange(names));
+    return undefined;
+  }, [tick, ui, words]);
+  return tick ? h("p", { className: "carton-sr carton-arrival-news", role: "status", "aria-live": "polite" }, text) : null;
+});
 
 /**
  * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, stageView, onStage): the ref the editor

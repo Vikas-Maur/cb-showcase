@@ -28,7 +28,7 @@ async function panel(ui: CartonUi) {
 const rows = (root: HTMLElement) => $$(root, ".carton-version");
 const ringOf = (row: Element | undefined) => (row ? (row.querySelector(":scope > .carton-arrival") as HTMLElement | null) : null);
 const rings = (root: HTMLElement) => $$(root, ".carton-arrival");
-const said = (root: HTMLElement) => $(root, ".carton-history > .carton-sr")?.textContent ?? "";
+const said = (root: HTMLElement) => $(root, ".carton-arrival-news")?.textContent ?? "";
 const colorOf = (ui: CartonUi, a: Actor) => actorColor(a, ui.actor.bind(ui));
 async function arrive(ui: MockUi, author: Actor, summary: string) {
   let id = "";
@@ -74,6 +74,7 @@ test(name("yours and your agents' (the Director, a subagent, Claude Code, Codex)
   assert.equal(rings(m.container).length, 0);
   assert.equal($$(m.container, ".carton-version[data-arrived]").length, 0);
   assert.equal(said(m.container), before, "nothing said");
+  assert.equal($(m.container, ".carton-arrival-news"), null, "no live region of its own: working alone, the DOM is as it was");
   await m.unmount();
 });
 
