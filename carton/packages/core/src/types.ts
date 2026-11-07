@@ -665,7 +665,20 @@ export interface Notice {
 
 /** Events a Carton handle emits. */
 export type CartonEvent =
-  | { type: "change"; branchId: string; seq: number; change: ConfirmedChange; local: boolean }
+  | {
+      type: "change";
+      branchId: string;
+      seq: number;
+      change: ConfirmedChange;
+      local: boolean;
+      /**
+       * Who made it, told by person as log() and credits() tell it (`change.author` is as recorded): a teammate's GUI
+       * save as that teammate, their agent with its `owner`. People are known before a newly bound replica's rows arrive
+       * (the server's `people` comes first), so a live view can name a teammate's change from its first frame. As
+       * recorded when no person is known.
+       */
+      author?: Actor | null;
+    }
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
   | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }

@@ -1,8 +1,9 @@
-// A teammate's version that comes to History live reads by person once described (from-carton's summarize tells its
-// author as log() does): over the real engine, two replicas syncing through the in-process host, Leo's GUI save and
-// Leo's Claude Code's version come to Vikas's History live as recorded ("Teammate", and an unowned "Claude Code" that
-// reads like Vikas's own agent), and read "Leo" and "Leo's Claude Code" (in Leo's colour) once described; Vikas's own
-// versions keep their actors.
+// A teammate's version that comes to History live reads by person from its first frame: core's change event tells its
+// author as log() does, and from-carton takes it (summarize() tells one again, for a person learnt later). Over the
+// real engine, two replicas syncing through the in-process host: Leo's GUI save and Leo's Claude Code's version come to
+// Vikas's History live as "Leo" and "Leo's Claude Code" (in Leo's colour), at every notification, never first as
+// "Teammate" or an unowned "Claude Code" (as Vikas's own agent reads) or as Vikas's own (two profiles on one computer);
+// Vikas's own versions keep their actors.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, POS, defineSchema, hashDoc, timeAlgebra, type Actor as CoreActor, type Doc, type Rec } from "@carton/core";
@@ -34,7 +35,10 @@ async function until(pred: () => boolean | Promise<boolean>, what: string, ms = 
   }
 }
 
-test("a teammate's live versions read by person once described (Leo, Leo's Claude Code, in Leo's colour); yours stay", { timeout: 30_000 }, async () => {
+/** Vikas's and Leo's replicas of one shared project through the in-process host, each with its identity, and Vikas's
+ * History (his view model, as the library worker makes it once the person is known). */
+/** `sameComputer`: Leo's app on Vikas's computer (two test profiles on one laptop): both in one machine group. */
+async function twoPeople(o: { sameComputer?: boolean } = {}) {
   const tokens = new Map<string, AuthContext>();
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
   const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
@@ -44,47 +48,84 @@ test("a teammate's live versions read by person once described (Leo, Leo's Claud
   };
   // each app records its GUI saves as the generic person in its machine's group; setIdentity says who that is
   const vikasPerson: CoreActor = { kind: "human", id: "person", group: "local:vikas@laptop" };
-  const leoPerson: CoreActor = { kind: "human", id: "person", group: "local:leo@studio" };
-  const vikasClaude: CoreActor = { kind: "agent", id: "claude-code/787d66ff", name: "Claude Code", provider: "claude-code", group: "local:vikas@laptop" };
-  const leoClaude: CoreActor = { kind: "agent", id: "claude-code/1c0e5a9b", name: "Claude Code", provider: "claude-code", group: "local:leo@studio" };
+  const leoPerson: CoreActor = { kind: "human", id: "person", group: o.sameComputer ? "local:vikas@laptop" : "local:leo@studio" };
   const vikas = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), projectId: "p" }, actor: vikasPerson, sync: sync("vikas") });
   await vikas.setIdentity({ id: "vikas", name: "Vikas" });
   await vikas.share();
   await until(async () => (await vikas.cuts())[0]!.sequencer.kind === "server", "the hand-off");
   const cut = (await vikas.cuts())[0]!;
   const root = await vikas.checkout(`${cut.id}@0`);
-  const leoC = await Carton.open({ adapter, store: createMemoryStore(), init: { join: { projectId: "p", cut, doc0: root, rootHash: hashDoc(root, schema) } }, actor: leoPerson, sync: sync("leo") });
-  await leoC.setIdentity({ id: "leo", name: "Leo Park" });
+  const leo = await Carton.open({ adapter, store: createMemoryStore(), init: { join: { projectId: "p", cut, doc0: root, rootHash: hashDoc(root, schema) } }, actor: leoPerson, sync: sync("leo") });
+  await leo.setIdentity({ id: "leo", name: "Leo Park" });
   const ui = fromCarton(vikas, { me: { kind: "human", id: "vikas", name: "Vikas", group: "local:vikas@laptop" } });
   await ui.ready;
+  const close = async () => {
+    ui.dispose();
+    await Promise.all([vikas.close(), leo.close()]);
+    host.close();
+  };
+  return { vikas, leo, ui, close };
+}
+const vikasClaude: CoreActor = { kind: "agent", id: "claude-code/787d66ff", name: "Claude Code", provider: "claude-code", group: "local:vikas@laptop" };
+const leoClaude: CoreActor = { kind: "agent", id: "claude-code/1c0e5a9b", name: "Claude Code", provider: "claude-code", group: "local:leo@studio" };
+/** Leo's Claude Code on Vikas's computer (`sameComputer`): the same machine group as Vikas's. */
+const leoClaudeHere: CoreActor = { ...leoClaude, group: "local:vikas@laptop" };
+const setOp = (id: string, f: string, val: unknown) => ({ op: "set" as const, path: ["items", id, f], value: val });
+
+
+test("a teammate's live versions arrive told by person (Leo, Leo's Claude Code, in Leo's colour); yours stay", { timeout: 30_000 }, async () => {
+  const { vikas, leo, ui, close } = await twoPeople();
   try {
-    const set = (id: string, f: string, val: unknown) => ({ op: "set" as const, path: ["items", id, f], value: val });
-    // History open; then Vikas's own edit and his Claude Code's, Leo's GUI save and Leo's Claude Code's title, live
-    assert.equal((await vikas.commit({ ops: [set("a", "endTime", 1.5), set("a", "trimEnd", 1.5)], wait: 5000 })).status, "confirmed");
-    assert.equal((await vikas.commit({ ops: [set("b", "startTime", 2.5)], author: vikasClaude, wait: 5000 })).status, "confirmed");
-    assert.equal((await leoC.commit({ ops: [set("b", "endTime", 4.5), set("b", "trimEnd", 2)], wait: 5000 })).status, "confirmed");
-    assert.equal((await leoC.commit({ ops: [{ op: "insert", path: ["items", "t"], value: clip("t", 1, { type: "text", name: "Summer launch" }) }], author: leoClaude, wait: 5000 })).status, "confirmed");
+    assert.equal((await vikas.commit({ ops: [setOp("a", "endTime", 1.5), setOp("a", "trimEnd", 1.5)], wait: 5000 })).status, "confirmed");
+    assert.equal((await vikas.commit({ ops: [setOp("b", "startTime", 2.5)], author: vikasClaude, wait: 5000 })).status, "confirmed");
+    assert.equal((await leo.commit({ ops: [setOp("b", "endTime", 4.5), setOp("b", "trimEnd", 2)], wait: 5000 })).status, "confirmed");
+    assert.equal((await leo.commit({ ops: [{ op: "insert", path: ["items", "t"], value: clip("t", 1, { type: "text", name: "Summer launch" }) }], author: leoClaude, wait: 5000 })).status, "confirmed");
     const h = ui.history();
     const byKey = ui.actor.bind(ui);
     const rows = () => h.all!().slice(-4);
     await until(async () => (await ui.settled(), rows().length === 4 && rows()[3]!.author.kind === "agent" && !rows()[3]!.author.isYou), "Leo's Claude Code's version at Vikas's");
     const was = rows().map((x) => x.author);
-    // live, as recorded: what the panel read before (Leo's generic person, his agent without its person)
-    assert.deepEqual(was.map((a) => actorLabel(a, byKey, "You")), ["You", "Claude Code", "Teammate", "Claude Code"]);
-    // the panel shows them: each is described, and told by person
+    // live, before anything is described: already by person
+    assert.deepEqual(was.map((a) => actorLabel(a, byKey, "You")), ["You", "Claude Code", "Leo", "Leo's Claude Code"]);
+    assert.equal(actorColor(was[3]!, byKey), actorColor(was[2]!, byKey), "Leo's Claude Code in Leo's colour");
     for (let i = 0; i < 4; i++) h.at("all", i);
     await until(async () => (await ui.settled(), rows().every((x) => !!x.summary)), "the rows described");
     const now = rows().map((x) => x.author);
-    assert.deepEqual(now.map((a) => actorLabel(a, byKey, "You")), ["You", "Claude Code", "Leo", "Leo's Claude Code"]);
-    assert.equal(now[0], was[0], "your edit: the same actor");
-    assert.equal(now[1], was[1], "your Claude Code: the same actor");
-    assert.equal(actorColor(now[3]!, byKey), actorColor(now[2]!, byKey), "Leo's Claude Code in Leo's colour");
+    now.forEach((a, i) => assert.equal(a, was[i], `row ${i}: the same actor once described`));
     assert.deepEqual(now.map((a) => !!a.isYou), [true, true, false, false]);
-    assert.equal(h.count("mine"), 1, "Your changes: your own edit (re-indexed after the telling)");
-    assert.match(rows()[3]!.summary, /Summer launch/);
+    assert.equal(h.count("mine"), 1, "Your changes: your own edit");
   } finally {
-    ui.dispose();
-    await Promise.all([vikas.close(), leoC.close()]);
-    host.close();
+    await close();
+  }
+});
+
+for (const sameComputer of [false, true])
+test(`a teammate's arriving version is never published as "Teammate", an unowned "Claude Code" or yours, nor in another colour than Leo's${sameComputer ? " (Leo on Vikas's computer: one machine group)" : ""}`, { timeout: 30_000 }, async () => {
+  const { vikas, leo, ui, close } = await twoPeople({ sameComputer });
+  try {
+    const mine = await vikas.commit({ ops: [setOp("a", "endTime", 1.5), setOp("a", "trimEnd", 1.5)], wait: 5000 });
+    assert.equal(mine.status, "confirmed");
+    const id = mine.status === "confirmed" ? mine.change!.id : "";
+    const rid = id.slice(0, id.indexOf("."));
+    const byKey = ui.actor.bind(ui);
+    const leoColor = actorColor({ key: "human/leo", kind: "human", name: "Leo Park" });
+    const seen: string[] = [], wrong: string[] = [];
+    // every History the panel could draw: at each notification, each of the teammate's rows as it reads then
+    const off = ui.subscribe("history", () => {
+      for (const v of ui.history().all!()) {
+        if (v.start || v.id.startsWith(rid + ".") || v.author.kind === "system") continue;
+        const label = actorLabel(v.author, byKey, "You"), color = actorColor(v.author, byKey);
+        seen.push(label);
+        if (!(label === "Leo" || label === "Leo's Claude Code") || color !== leoColor || v.author.isYou) wrong.push(`${label} ${color}${v.author.isYou ? " (yours)" : ""}`);
+      }
+    });
+    assert.equal((await leo.commit({ ops: [setOp("b", "endTime", 4.5), setOp("b", "trimEnd", 2)], wait: 5000 })).status, "confirmed");
+    assert.equal((await leo.commit({ ops: [{ op: "insert", path: ["items", "t"], value: clip("t", 1, { type: "text", name: "Summer launch" }) }], author: sameComputer ? leoClaudeHere : leoClaude, wait: 5000 })).status, "confirmed");
+    await until(async () => (await ui.settled(), seen.includes("Leo's Claude Code")), "Leo's Claude Code's version at Vikas's");
+    off();
+    assert.deepEqual([...new Set(wrong)], [], "never another name or colour, not for one notification");
+    assert.ok(seen.includes("Leo"));
+  } finally {
+    await close();
   }
 });

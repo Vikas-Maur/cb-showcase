@@ -616,7 +616,8 @@ What changes with it on:
 - **A teammate's change that arrives live reads by name.** On a shared project, History used to name a teammate's
   change that came in while you were working as "Teammate", and their Claude Code as "Claude Code", the same as your
   own agent and without their colour, until History was loaded again (the project opened, a cut switched). It now says
-  "Leo" and "Leo's Claude Code", in Leo's colour, as soon as the row is shown.
+  "Leo" and "Leo's Claude Code", in Leo's colour, from the moment the row appears, with no flash of another name first,
+  also when two people's Cardboards share one computer.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
