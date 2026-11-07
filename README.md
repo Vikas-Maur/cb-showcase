@@ -621,7 +621,9 @@ What changes with it on:
   nor a cut you switch to. When a teammate's edit joins their row of edits, or their agent's turn goes on, that row
   glows again for it. With Windows' animation effects off (reduced motion), the ring and then the edge show without
   fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
-  minute.
+  minute. A teammate's change that arrived live also reads by name now: History used to say "Teammate" for their edits
+  and "Claude Code" for their Claude Code, the same as yours, until History was loaded again; it now says "Leo" and
+  "Leo's Claude Code" as soon as the row is shown.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and

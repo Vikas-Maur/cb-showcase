@@ -769,13 +769,29 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const j = pos.get(id);
     if (j === undefined || disposed) return;
     const row = rows[j]!;
+    // A teammate's version that came live is as its event recorded it (their app's generic person, their agent with no
+    // owner): log() tells it by person, as History's load reads every other version, so it reads "Leo" and "Leo's
+    // Claude Code" in Leo's colour, never "Teammate", or "Claude Code" as if it were yours, until History is loaded
+    // again (feat/history-arrival). Yours are told as they were recorded: the same actor, nothing changes.
+    let told = false;
+    if (got?.author && row.core && got.change === row.core.change) {
+      const a = ui(got.author), was = row.v.author;
+      if (a !== was && (a.key !== was.key || a.name !== was.name || a.parent !== was.parent || !!a.isYou !== !!was.isYou)) {
+        row.core = { ...row.core, author: got.author };
+        row.v = { ...row.v, author: a };
+        told = true;
+      }
+    }
     const tb = turnBase(row.v);
     const { turn, ...own } = w;
     const shown = tb ? (turn?.base === tb ? turn : null) : own;
-    if (!shown) return; // the row became another turn's meanwhile: it asks again
-    const { base: _b, ...words } = shown as Words & { base?: string };
-    row.v = { ...row.v, ...words };
-    changed(j);
+    if (shown) {
+      const { base: _b, ...words } = shown as Words & { base?: string };
+      row.v = { ...row.v, ...words };
+    } else if (!told) return; // the row became another turn's meanwhile: it asks again
+    // (an author told otherwise re-indexes from it: "Your changes" lists by author)
+    if (told) reindexFrom(j);
+    else changed(j);
     hub.notify("history");
   };
 
