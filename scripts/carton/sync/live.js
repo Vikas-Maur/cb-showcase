@@ -15,6 +15,10 @@
 // - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel, with
 //   why sync is failing when it is (core's `sync-error`, foundation's REQ-8: a host too old for this app, a refused
 //   token, an unreachable host), in plain words, instead of "Syncing" for ever.
+// - On a cut that isn't shared (the person's own cut: `cb cut switch`, the cuts menu), the status is the shared cut's
+//   (FINDINGS §4.4: it was the current cut's, which a local cut doesn't have: core says "Offline: 0 edits waiting", and
+//   a switch told the panel nothing, so Share kept "Up to date" from before it, or turned amber "Offline" at the next
+//   event), and `ownCut` names the cut the person is on, so Share says so.
 // - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut, and also
 //   NEW_MEDIA_MS after a change that adds a sound or a still (FINDINGS §6.2: a teammate waits for a new sound until it
 //   is shared, and the editing that follows its import, its clip placed and trimmed, kept putting that off). Those go
@@ -33,7 +37,7 @@ const AS_THEY_ARE = new Set(["audio", "image"]);
 const addsMedia = (change) => Array.isArray(change?.ops) && change.ops.some((o) => o?.op === "insert" && o.path?.length === 2 && o.path[0] === "media" && AS_THEY_ARE.has(o.value?.data?.type));
 
 export class Live {
-  constructor({ api, bundlePath, projectId, lc, log, onChange, view }) {
+  constructor({ api, bundlePath, projectId, lc, log, onChange, view, sharedCut }) {
     this.onChange = onChange ?? null;
     this.owner = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
@@ -49,14 +53,46 @@ export class Live {
     this.peers = new Map(); // actor key → {actor: peerActor(), role, cuts: Map(cut → {activity, idle, at}), the latest last}
     this.skippedPeer = false;
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
-    this.error = lc.carton.sync?.error?.() ?? null;
+    // the cuts that are shared, the one whose status Share shows while the person is on a cut of their own (the one
+    // they were on last, at first the one shared or joined: sync config's `cut`), and that own cut ({id, name}, or null)
+    this.shared = null; // Set of cut ids, once read (cutsNow)
+    this.home = sharedCut ?? null;
+    this.homeName = null;
+    this.ownCut = null;
+    this.cutSeen = lc.carton.cut;
+    this.error = lc.carton.sync?.error?.(this.#statusCut()) ?? null;
     this.stopped = false;
+  }
+
+  /** The cut whose sync the panel shows: the current one when it is shared, else the shared cut the person left. */
+  #statusCut() {
+    const cur = this.lc.carton.cut;
+    return !this.shared || this.shared.has(cur) || !this.home ? cur : this.home;
+  }
+  /** Which cuts are shared, and whether the person is on one, read again (start, a cut switch, the cuts changing). */
+  async cutsNow() {
+    if (this.stopped) return;
+    this.cutSeen = this.lc.carton.cut;
+    let cuts;
+    try { cuts = await this.lc.carton.cuts(); } catch { return; }
+    const cur = this.lc.carton.cut, now = cuts.find((c) => c.id === cur);
+    this.cutSeen = cur;
+    this.shared = new Set(cuts.filter((c) => c.sequencer?.kind !== "local").map((c) => c.id));
+    if (this.shared.has(cur)) this.home = cur;
+    else if (!this.shared.has(this.home)) this.home = this.shared.values().next().value ?? null;
+    this.homeName = cuts.find((c) => c.id === this.home)?.name ?? null;
+    this.ownCut = now && !this.shared.has(cur) && this.home ? { id: cur, name: now.name } : null;
+    this.error = this.lc.carton.sync?.error?.(this.#statusCut()) ?? null;
+    this.#publish();
   }
 
   async start() {
     const { lc } = this;
     // Events first, so nothing the first connection brings is missed.
     this.off = lc.carton.on((e) => this.#event(e));
+    // a cut switch (the cuts menu, cb cut switch served by the holder or followed from another process) is told here
+    this.offCut = this.owner?.onCut?.(() => void this.cutsNow()) ?? null;
+    await this.cutsNow();
     if (this.owner) {
       // the View's holder connects now (an unshared project's never does)
       await this.owner.connectSync();
@@ -92,7 +128,12 @@ export class Live {
   }
 
   #event(e) {
+    // a switch nothing told (a holder with no View): noticed at the next event
+    if (this.lc.carton.cut !== this.cutSeen) void this.cutsNow();
     switch (e.type) {
+      case "cuts":
+        void this.cutsNow();
+        break;
       case "change":
         // A change confirmed on the cut the app shows (another replica's, one cb made through this holder, or this
         // handle's own once the host answers): head into the file. When the file shows head already, the facade
@@ -119,15 +160,13 @@ export class Live {
         // A pending edit the server refused, or one a rebase emptied: head no longer has it, and project.json (and the
         // editor) must stop showing it. When the file already shows head, the facade writes nothing.
         if (e.type === "notice" || e.branchId === this.lc.carton.cut) this.#materializeSoon();
-        this.status = this.lc.carton.sync?.state() ?? this.status;
         this.#publish();
         break;
       case "sync":
-        this.status = this.lc.carton.sync?.state() ?? this.status;
         this.#publish();
         break;
       case "sync-error":
-        if (e.branchId !== this.lc.carton.cut) break;
+        if (e.branchId !== this.#statusCut()) break;
         this.error = e.error ?? null;
         if (this.error) this.log({ type: "sync-error", code: this.error.code, message: this.error.message });
         this.#publish();
@@ -194,7 +233,10 @@ export class Live {
       const [cut, c] = [...p.cuts].at(-1);
       return { actor: p.actor, cut, activity: c.activity, idle: !!c.idle || now - c.at > PEER_IDLE_MS, ...(p.role ? { role: p.role } : {}) };
     });
-    return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
+    const st = this.lc.carton.sync?.state(this.#statusCut()) ?? this.status;
+    this.status = st;
+    // ownCut: always said (null too): the pages merge each event into what they have, so a field left out would stay
+    return { shared: true, status: st.status, pending: st.pending, label: st.label, holder: this.holds(), peers, problem: problemOf(this.error), ownCut: this.ownCut ? { name: this.ownCut.name, shared: this.homeName } : null };
   }
   #publish() {
     this.api.emit({ kind: "carton", id: this.projectId, topic: "live", live: this.view() });
@@ -211,6 +253,7 @@ export class Live {
     clearTimeout(this.changeTimer);
     clearTimeout(this.newMediaTimer);
     this.off?.();
+    this.offCut?.();
     // the View's holder is the View's to stop
     await this.lease?.stop().catch(() => {});
   }

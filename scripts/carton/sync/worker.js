@@ -110,7 +110,8 @@ async function startLive(api, bundlePath, lc) {
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);
-    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
+    // (sharedCut: the cut shared or joined, whose status Share shows while the person is on a cut of their own)
+    const live = new Live({ api, bundlePath, projectId, lc, view, sharedCut: store.readConfig(bundlePath, projectId)?.cut ?? null, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.

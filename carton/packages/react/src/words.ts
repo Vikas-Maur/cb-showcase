@@ -671,6 +671,11 @@ export const words = {
   sharingServerPlaceholder: "share.example.com",
   sharingNow: "Sharing…",
   youHereNow: (name: string) => `${name} · here now`,
+  // On a cut of your own (not shared), Share says so: the status beside the title is the shared cut's (demo rehearsal,
+  // FINDINGS §4.4: it read "Offline" there), and teammates don't see you while you're on it (core leaves the shared
+  // cut's presence at a switch)
+  onOwnCut: (cut: string, shared: string | null) => `You're on “${cut}”, which isn't shared. Your edits there stay on this computer, and teammates don't see you until you're back on ${shared ? `“${shared}”` : "a shared cut"}.`,
+  youOnCut: (name: string, cut: string) => `${name} · on “${cut}”`,
   hereNotEditing: "Here, not editing",
   nobodyElseHere: "Nobody else is here right now.",
   whoCanDoWhat: "Who can do what",

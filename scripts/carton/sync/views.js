@@ -132,6 +132,7 @@ export class View {
     this.stamps = new Map(); // printed view name → its file's stamp
     this.syncArgs = null; // the holder's sync start, kept until Live runs
     this.waiting = new Set(); // view files whose save waited for the lease in vain (#mayCommit)
+    this.cutListeners = new Set(); // told of every switch of the current cut the holder serves or follows (live.js: Share's status)
     this.live = false;
     this.off = null;
     this.timer = null;
@@ -196,7 +197,7 @@ export class View {
       onHeadChange: (cause) => mz.onHeadChange(cause),
       // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
       showChange: (c, ms, o) => mz.showChange(c, ms, o),
-      onCutSwitch: (cut) => mz.onCutSwitch(cut),
+      onCutSwitch: (cut) => { for (const f of this.cutListeners) f(cut); return mz.onCutSwitch(cut); },
       // Carton UX v2 (N0): `cb compare … --show` opens Compare in the editor windows that show the project
       openView: (v, by) => (this.api.openView ? this.api.openView(this.projectId, v, by) : Promise.resolve({ opened: 0 })),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
@@ -262,6 +263,12 @@ export class View {
   }
 
   /** This handle holds the lease right now (not fenced, not stopped). */
+  /** f(cut) at every switch of the current cut the holder serves or follows; returns its undo. */
+  onCut(f) {
+    this.cutListeners.add(f);
+    return () => this.cutListeners.delete(f);
+  }
+
   holds() {
     const h = this.lease?.current;
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
