@@ -785,7 +785,7 @@ What changes with it on:
   cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
   made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. A track left out
   keeps out the clips on it when the cut folded into doesn't have that track, and a title left out keeps out its own
-  text entry: in the demo rehearsals `cb fold … --reject tracks/<Talk>`, with its list made before a teammate added
+  text entry (ordinary media, a video a kept-out clip uses, comes in as before): in the demo rehearsals `cb fold … --reject tracks/<Talk>`, with its list made before a teammate added
   another title on Talk, brought that title in on no track, which Cardboard's print showed on a made-up "Missing
   track", and History's Fold in did the same for a track's row left unticked. They count as left out, and `cb fold`
   names them ("and with them, since they can't come in without them: …"). Changes are
@@ -1137,7 +1137,11 @@ with Carton off none of it runs at all.
   against the version the file showed before (merged with what reached the project meanwhile; before, its whole
   document went over the newest version, and a teammate's change on its way into the file was taken out), also
   when the program kept the file's own rev (the file is that version only while what Carton keeps of it is that
-  version's).
+  version's), and when that version still had edits waiting for the sharing server. A version Carton can't rebuild yet
+  (after a restart, before those edits are sent) leaves the file held: nothing is written over it until it can be taken.
+  Carton knows its own `project.json` by the bytes it wrote (their hash), never by a file's size and date alone. None
+  of this costs a save: in an independent check of this branch with six alternating pairs of 120 saves at 200 items,
+  the gap after subtracting the Carton-off control's had a median of −0.565 ms.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
