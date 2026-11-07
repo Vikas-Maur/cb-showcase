@@ -111,7 +111,7 @@ async function startLive(api, bundlePath, lc) {
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);
     // (sharedCut: the cut shared or joined, whose status Share shows while the person is on a cut of their own)
-    const live = new Live({ api, bundlePath, projectId, lc, view, sharedCut: store.readConfig(bundlePath, projectId)?.cut ?? null, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
+    const live = new Live({ api, bundlePath, projectId, lc, view, sharedCut: store.readConfig(bundlePath, projectId)?.cut ?? null, onChange: (only) => autoShare(api, bundlePath, projectId, only), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.
@@ -191,14 +191,17 @@ function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) 
   return p;
 }
 
-// One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do.
+// One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do. `only`: the
+// early run for the sounds and stills a change just added (live.js NEW_MEDIA_MS), queued apart, so it never stands in
+// for the run of everything that the editing's pause brings.
 const autoQueued = new Set();
-function autoShare(api, bundlePath, projectId) {
-  if (autoQueued.has(bundlePath) || store.readConfig(bundlePath, projectId)?.withMedia === false) return;
-  autoQueued.add(bundlePath);
-  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(bundlePath));
+function autoShare(api, bundlePath, projectId, only = null) {
+  const key = only?.length ? bundlePath + "\n" + only.join(",") : bundlePath;
+  if (autoQueued.has(key) || store.readConfig(bundlePath, projectId)?.withMedia === false) return;
+  autoQueued.add(key);
+  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(key));
   mediaJobs.set(bundlePath, p);
-  return shareMediaOf(api, bundlePath, projectId);
+  return shareMediaOf(api, bundlePath, projectId, only?.length ? { only } : {});
 }
 
 // R6: a teammate's clip has no file here. Its record in project.json gets where it plays from
@@ -224,6 +227,8 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
       for (const [k, v] of Object.entries(from)) if (v !== undefined && data[k] === undefined) data[k] = v;
     }
     const prev = had.get(m.id);
+    // a teammate's new clip, not sent yet: the editor's first ask for it may wait for it a while (waitPlayable)
+    if (!prev && !m.shared) arrived(bundlePath, m.id);
     return { ...m, createdAt: m.createdAt ?? prev?.createdAt ?? now, addedAt: m.addedAt ?? prev?.addedAt ?? now, data };
   });
   return { ...next, media: list };
@@ -307,13 +312,24 @@ async function recordIn(lc, bundlePath, projectId, mediaId, { missMs } = {}) {
  * its clip arrives, before the teammate's app has sent the file (it shares a new clip a moment after adding it). The
  * answer was "none", which main gives the editor as 1.4.0's "Source file missing". A teammate's clip on its way (its
  * entry in this computer's head, its file never here) is now waited for instead, as a slow load: answered as soon as
- * the project says it is shared (a change, which wakes the wait) or the host has its record (asked every half second),
- * for at most ON_ITS_WAY_MS; then "none", as before. One wait per clip, shared by every ask for it.
+ * the project says it is shared (a change, which wakes the wait) or the host has its record (asked every half second);
+ * then "none", as before. One wait per clip, shared by every ask for it.
  */
+// Only while it is new here: within ON_ITS_WAY_MS of its entry reaching this computer's project.json (fillTeammateMedia
+// notes it, before the editor can see the clip). One that never comes (the teammate's app closed first, a file over the
+// server's limit) is answered at once after that, as before, so the editor's requests for it never hang again and again.
 const ON_ITS_WAY_MS = 12_000;
 const onItsWay = new Map(); // `${bundlePath}|${mediaId}` → Promise<playable | null>
+const arrivals = new Map(); // `${bundlePath}|${mediaId}` → when its entry arrived (ms)
+function arrived(bundlePath, mediaId) {
+  const now = Date.now();
+  for (const [k, at] of arrivals) if (now - at > ON_ITS_WAY_MS) arrivals.delete(k);
+  arrivals.set(`${bundlePath}|${mediaId}`, now);
+}
 function waitPlayable(lc, bundlePath, projectId, mediaId) {
   const key = `${bundlePath}|${mediaId}`;
+  const since = arrivals.get(key);
+  if (since === undefined || Date.now() - since >= ON_ITS_WAY_MS) return Promise.resolve(null);
   let p = onItsWay.get(key);
   if (p) return p;
   p = (async () => {
@@ -324,7 +340,7 @@ function waitPlayable(lc, bundlePath, projectId, mediaId) {
     let wake = null;
     const off = lc.carton.on((e) => { if (e.type === "change") wake?.(); });
     try {
-      for (const end = Date.now() + ON_ITS_WAY_MS; Date.now() < end;) {
+      for (const end = since + ON_ITS_WAY_MS; Date.now() < end;) {
         await new Promise((r) => { wake = r; setTimeout(r, 500).unref?.(); });
         wake = null;
         const doc = await lc.carton.head().then((h) => h.doc, () => null);

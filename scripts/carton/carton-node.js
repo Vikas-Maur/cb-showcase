@@ -724,8 +724,11 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   // into project.json was never recorded, and the next read of the file (sawDisk) or the next write made on it took it
   // for an outside save and imported it on head: a teammate's change that had reached head meanwhile was deleted, for
   // everyone, by "external:project.json" (demo rehearsal, FINDINGS §6.1: 11 of 12 runs).
+  // The version it shows is its base's (an empty change of it), edits still waiting for the sharing server included:
+  // core's answer names the confirmed head without them (a lease holder's empty write), so the base's ref when it is one.
   if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) {
-    await setRev(lc, doc.stateUpdatedAt, r.ref);
+    const shows = baseRef && typeof baseRef === "object" && typeof baseRef.branchId === "string" && typeof baseRef.seq === "number" ? baseRef : r.ref;
+    await setRev(lc, doc.stateUpdatedAt, shows);
     return { ...r, doc, merged: false };
   }
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's

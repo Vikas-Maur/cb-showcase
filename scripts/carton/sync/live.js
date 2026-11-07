@@ -20,9 +20,9 @@
 //   a switch told the panel nothing, so Share kept "Up to date" from before it, or turned amber "Offline" at the next
 //   event), and `ownCut` names the cut the person is on, so Share says so.
 // - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut, and also
-//   NEW_MEDIA_MS after a change that adds a sound or a still (FINDINGS §6.2: a teammate waits for a new sound until it
-//   is shared, and the editing that follows its import, its clip placed and trimmed, kept putting that off). Those go
-//   up as they are; a video waits as before, so Carton's proxy can still be made from Cardboard's own once it exists.
+//   NEW_MEDIA_MS after a change that adds a sound or a still, for those only (FINDINGS §6.2: a teammate waits for a new
+//   sound until it is shared, and the editing that follows its import, its clip placed and trimmed, kept putting that
+//   off). Those go up as they are; a video waits as before, so Carton's proxy can still be made from Cardboard's own.
 //   The run after the last change still comes: it shares what the early one couldn't yet (a file project.json didn't
 //   list yet).
 import path from "node:path";
@@ -34,7 +34,8 @@ const PEER_IDLE_MS = 30_000;
 const ON_CHANGE_MS = 2000;
 const NEW_MEDIA_MS = 150;
 const AS_THEY_ARE = new Set(["audio", "image"]);
-const addsMedia = (change) => Array.isArray(change?.ops) && change.ops.some((o) => o?.op === "insert" && o.path?.length === 2 && o.path[0] === "media" && AS_THEY_ARE.has(o.value?.data?.type));
+/** The sounds and stills a change adds (their media ids), or none. */
+const addedMedia = (change) => (Array.isArray(change?.ops) ? change.ops : []).filter((o) => o?.op === "insert" && o.path?.length === 2 && o.path[0] === "media" && AS_THEY_ARE.has(o.value?.data?.type)).map((o) => String(o.path[1]));
 
 export class Live {
   constructor({ api, bundlePath, projectId, lc, log, onChange, view, sharedCut }) {
@@ -42,6 +43,7 @@ export class Live {
     this.owner = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
     this.newMediaTimer = null; // the early run for a change that added a sound or a still (NEW_MEDIA_MS)
+    this.newMedia = new Set(); // which ones: the early run shares only those (a video added with them waits as before)
     this.api = api;
     this.bundlePath = bundlePath;
     this.projectId = projectId;
@@ -141,15 +143,21 @@ export class Live {
         if (e.branchId === this.lc.carton.cut) {
           this.#materializeSoon();
           if (this.onChange && !this.stopped) {
-            const run = () => Promise.resolve().then(this.onChange).catch((err) => this.log({ type: "on-change-failed", error: String(err?.message ?? err) }));
-            if (!this.newMediaTimer && addsMedia(e.change)) {
-              this.newMediaTimer = setTimeout(() => { this.newMediaTimer = null; if (!this.stopped) run(); }, NEW_MEDIA_MS);
+            const run = (only) => Promise.resolve().then(() => this.onChange(only)).catch((err) => this.log({ type: "on-change-failed", error: String(err?.message ?? err) }));
+            for (const id of addedMedia(e.change)) this.newMedia.add(id);
+            if (!this.newMediaTimer && this.newMedia.size) {
+              this.newMediaTimer = setTimeout(() => {
+                this.newMediaTimer = null;
+                const only = [...this.newMedia];
+                this.newMedia.clear();
+                if (!this.stopped) run(only);
+              }, NEW_MEDIA_MS);
               this.newMediaTimer.unref?.();
             }
             clearTimeout(this.changeTimer);
             this.changeTimer = setTimeout(() => {
               this.changeTimer = null;
-              run();
+              run(null);
             }, ON_CHANGE_MS);
             this.changeTimer.unref?.();
           }

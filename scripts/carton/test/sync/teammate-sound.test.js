@@ -128,3 +128,21 @@ test("a clip whose file was on this computer and is gone is still answered at on
     fs.renameSync(moved, file);
   }
 });
+
+test("a teammate's clip that never comes is waited for only while it is new (12 s after it arrived); after that, answered at once", t, async (tc) => {
+  // a sound entry with no file anywhere (its app can never send it): what an app closed before sharing leaves
+  const doc = await S.projectOf(alice, id);
+  const ghost = randomUUID(), now = new Date().toISOString();
+  const entry = { id: ghost, createdAt: now, addedAt: now, data: { type: "audio", fileName: "never-sent.wav", duration: 3, size: 1000, format: "wav" } };
+  await alice.call("projects.updateScoped", { ...doc, media: [...doc.media, entry], stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) }, { ...SCOPE, ownedMediaIds: [ghost], carton: { base: doc.stateUpdatedAt, actor: "person" } });
+  await S.until(() => S.fileOf(bob).media.some((m) => m.id === ghost), 20_000, "the entry at bob's");
+  const arrived = Date.now();
+  const first = await bob.call("carton.liveMediaSource", { mediaId: ghost });
+  const waited = Date.now() - arrived;
+  tc.diagnostic(`the first ask waited ${waited} ms`);
+  assert.equal(first, null);
+  assert.ok(waited >= 9_000 && waited < 14_000, `waited while it was new, not longer: ${waited} ms`);
+  const t1 = Date.now();
+  assert.equal(await bob.call("carton.liveMediaSource", { mediaId: ghost }), null);
+  assert.ok(Date.now() - t1 < 1500, `then answered at once: ${Date.now() - t1} ms`);
+});
