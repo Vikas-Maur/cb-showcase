@@ -142,3 +142,63 @@ test("a real outside save (another program writes project.json) is still taken a
   const top = bob.cb(["history", "Demo", "--limit", "1"]).json().versions[0];
   assert.match(top.by?.id ?? "", /^external:project\.json/, JSON.stringify(top));
 });
+
+// Review of fix/demo-sync-bugs, P1: an empty write's rev is recorded now, and a rev Carton knows was trusted without a
+// look at the file. Another program that edits project.json and keeps its rev had its edit dropped at the next
+// materialization (the reviewer's repro: it passes on 0c498b2b and failed on 58077096). The file is that version only
+// while what Carton versions of it is that version's; otherwise its edit is imported against that version.
+test("an outside edit that keeps the file's rev, after an empty background write, is taken as an edit and kept", t, async () => {
+  await readyAt(alice);
+  await S.sleep(2500);
+  const doc = await S.projectOf(alice, id);
+  // an empty whole-project write (as a background write is): its rev recorded
+  await alice.call("projects.write", { ...doc, stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) });
+  await S.sleep(300);
+  const since = headSeq();
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const env = JSON.parse(fs.readFileSync(file, "utf8"));
+  const text = env.project.timelineItems.find((i) => i.name === "Hello");
+  text.textContent = "Outside program kept the rev";
+  fs.writeFileSync(file + ".other.tmp", JSON.stringify(env));
+  fs.renameSync(file + ".other.tmp", file);
+  await alice.call("projects.read", id);
+  const title = "A teammate after the outside edit";
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 20_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  assert.equal(aliceFile().timelineItems.find((i) => i.id === text.id)?.textContent, "Outside program kept the rev", "the outside edit stays in alice's file");
+  await S.until(async () => (await S.projectOf(bob, id)).timelineItems.find((i) => i.id === text.id)?.textContent === "Outside program kept the rev", 20_000, "the outside edit at bob's");
+  assert.ok((await S.projectOf(bob, id)).timelineItems.some((i) => i.name === title), "bob's title kept");
+  const h = bob.cb(["history", "Demo", "--limit", "8"]).json().versions.filter((v) => Number(v.version.split("@")[1]) > since);
+  assert.ok(h.some((v) => /^external:project\.json/.test(v.by?.id ?? "")), "taken as an outside save: " + JSON.stringify(h.map((v) => [v.version, v.by?.id])));
+});
+
+// An outside save with a new rev, made while a teammate's change has reached this computer's head but not yet its file
+// (the materialization held): imported as what it changed against the version the file showed, so the teammate's change
+// stays. On head (as before), the outside program's older document took the teammate's change out.
+test("an outside save made while a teammate's change is on its way into the file keeps both", t, async () => {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(1000);
+  await alice.call("test.holdMaterialize");
+  const title = "A teammate while another program saves";
+  await addTitle(bob, title);
+  await S.until(() => alice.call("test.materializeHeld"), 20_000, "alice's materialization of bob's change held");
+  // another program edits the file as it is (without bob's title), with a new rev
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const env = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.ok(!env.project.timelineItems.some((i) => i.name === title), "the file doesn't show bob's title yet");
+  const text = env.project.timelineItems.find((i) => i.name === "Hello");
+  text.fontSize = 77;
+  env.project.stateUpdatedAt = Date.now();
+  fs.writeFileSync(file + ".other.tmp", JSON.stringify(env));
+  fs.renameSync(file + ".other.tmp", file);
+  await alice.call("projects.read", id);
+  await alice.call("test.releaseMaterialize");
+  await S.until(() => { const f = aliceFile(); return f.timelineItems.some((i) => i.name === title) && f.timelineItems.find((i) => i.id === text.id)?.fontSize === 77; }, 20_000, "both in alice's file");
+  await S.sleep(2000);
+  for (const d of [aliceFile(), await S.projectOf(bob, id)]) {
+    assert.ok(d.timelineItems.some((i) => i.name === title), "bob's title kept");
+    assert.equal(d.timelineItems.find((i) => i.id === text.id)?.fontSize, 77, "the outside edit kept");
+  }
+});

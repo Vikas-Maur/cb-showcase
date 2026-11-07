@@ -604,12 +604,39 @@ async function commitIn(lc, { doc, base, author, intent, gui }) {
 }
 
 // A save Carton didn't write (an old cb, an editor, another program), committed as one and attributed to it. Returns
-// the state it made, {ref, doc}: on a shared cut the holder's, which this handle may not be able to read.
-async function importForeign(lc, project) {
-  const r = await commitIn(lc, { doc: fromHost(project, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
+// the state it made, {ref, doc}: on a shared cut the holder's, which this handle may not be able to read. `on`: the
+// version it was made on, when known ({base, doc}: revState): imported as what it changed against that version, merged
+// with whatever reached head since (a clash keeps head's value), never a whole older document over head. Without it, on
+// head, as before.
+async function importForeign(lc, project, on = null) {
+  const at = on ?? { base: null, doc: (await lc.carton.head()).doc };
+  const r = await commitIn(lc, { doc: fromHost(project, at.doc), ...(at.base ? { base: at.base } : {}), author: actorOf("external:project.json") });
   if (r.status === "rejected") throw new Error("Carton rejected the outside save: " + r.reason);
   return r.head?.doc ? r.head : lc.carton.head();
 }
+// Review of fix/demo-sync-bugs, P1. The version a recorded rev names, as {base, ref, doc}: `doc` its state, `base` the
+// ref to commit an edit of it on (null: head, which is that state now), `ref` the version to keep the rev on. A rev on a
+// shared cut's edits still waiting for the sharing server names a state core can't rebuild from its seq (it resolves
+// the confirmed seq without them): head while head is still exactly that, or the version those edits became once
+// confirmed one after another. null when it can't be had here.
+async function revState(lc, ref) {
+  try {
+    if (typeof ref === "string" || !ref?.pending?.length) return { base: ref, ref, doc: await lc.carton.checkout(ref) };
+    const head = await lc.carton.head(ref.branchId);
+    if (sameRef(head.ref, ref)) return { base: null, ref: head.ref, doc: head.doc };
+    const k = ref.pending.length, ids = new Set(ref.pending);
+    const next = (await lc.carton.log({ cut: ref.branchId, before: ref.seq + k + 1, limit: k })).filter((v) => v.ref.seq > ref.seq);
+    if (next.length !== k || !next.every((v) => ids.has(v.change))) return null;
+    const at = { branchId: ref.branchId, seq: ref.seq + k, pending: [] };
+    return { base: at, ref: at, doc: await lc.carton.checkout(at) };
+  } catch { return null; }
+}
+// What Carton versions of a project file is exactly `doc`'s (as isKnownState compares).
+const sameVersioned = (lc, project, doc) => {
+  try { return hashDoc(fromHost(project, doc), lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch { return false; }
+};
+// project.json files checked since they were written (path → stamp): a second read of the same file checks nothing.
+const checkedFiles = new Map();
 
 // ui-words #3: the person's GUI saves whose answer the editor hadn't yet (a save made before the previous one's echo
 // says so: meta.after). A save that landed as it was is a ref (setRev); one merged with someone else's change has no
@@ -1455,11 +1482,35 @@ export const cardboard14 = {
     recovered.set(bundlePath, { text, out: json });
     return json;
   },
-  async sawDisk({ bundlePath, doc }) {
+  // A project.json the store read from disk (`stamp`: the file's, as the store read it; `before`: the rev the file had
+  // when the store last read or wrote it).
+  async sawDisk({ bundlePath, doc, stamp = null, before = null }) {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
-    if (!lc || (await refOf(lc, doc.stateUpdatedAt))) return;
-    // A save Carton didn't write (an old cb, an editor): imported now, so it is attributed when it lands.
-    await setRev(lc, doc.stateUpdatedAt, (await importForeign(lc, doc)).ref);
+    if (!lc) return;
+    const file = path.join(bundlePath, "project.json");
+    const ref = await refOf(lc, doc.stateUpdatedAt);
+    if (ref) {
+      // Review of fix/demo-sync-bugs, P1: a rev Carton recorded names a version, but another program may have edited
+      // the file and kept its rev (an empty write's rev is recorded too now). The file is that version only while what
+      // Carton versions of it is that version's; otherwise it is an outside save, imported as what it changed against
+      // that version. The file this process installed last (its stamp), or one checked already, is what it is: no read,
+      // no hash on a save's or an apply's way. (A version that can't be rebuilt here is taken as the file says.)
+      if (stamp && (stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file))) return;
+      const at = await revState(lc, ref);
+      if (at && !sameVersioned(lc, doc, at.doc)) await importForeign(lc, doc, at);
+      if (stamp) checkedFiles.set(file, stamp);
+      return;
+    }
+    // A save Carton didn't write (an old cb, an editor, another program): imported now, so it is attributed when it
+    // lands. Against the version the file showed before it (the store's last read or write of it), when Carton knows it:
+    // what the program changed, never its whole document over a teammate's change that reached head meanwhile; its rev
+    // then names that version (the file is it plus the edit: a GUI save made on it builds on that version, and head goes
+    // into the file with a rev of its own). Else on head, as before, its rev on what that made.
+    const was = typeof before === "number" && before !== doc.stateUpdatedAt ? await refOf(lc, before) : null;
+    const at = was ? await revState(lc, was) : null;
+    const made = await importForeign(lc, doc, at);
+    await setRev(lc, doc.stateUpdatedAt, at?.ref && typeof at.ref === "object" ? at.ref : made.ref);
+    if (stamp) checkedFiles.set(file, stamp);
   },
   // H2/H3: Carton's versions that reached project.json, newest first, then the older .revs.
   async revisions({ bundlePath, files }) {

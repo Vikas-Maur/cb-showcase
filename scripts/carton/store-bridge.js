@@ -310,11 +310,14 @@ module.exports = ({ dir, slice, who, codec }) => {
       await fsp.writeFile(tmp, text, "utf8");
       try { await carton().install(tmp, file); } catch (e) { await fsp.rm(tmp, { force: true }); throw e; }
     },
-    // H1: a document on disk that Carton never wrote is a foreign write, imported when it is read.
-    async sawDisk(store, id, doc) {
+    // H1: a document on disk that Carton never wrote is a foreign write, imported when it is read. With the file's stamp
+    // (the store's), and the rev the file had when the store last read or wrote it: an outside save is imported as what
+    // it changed against that version (review of fix/demo-sync-bugs, P1).
+    async sawDisk(store, id, doc, stamp) {
       const bundlePath = store.byId.get(id)?.bundlePath;
       if (!bundlePath || !carton()) return;
-      try { await carton().sawDisk({ bundlePath, root: store.options.root, doc }); }
+      const before = store.seenOnDisk?.get(id)?.document?.stateUpdatedAt;
+      try { await carton().sawDisk({ bundlePath, root: store.options.root, doc, stamp: typeof stamp === "string" ? stamp : null, before: typeof before === "number" ? before : null }); }
       catch (e) { console.warn("[carton] import of an outside save failed:", e?.message ?? e); }
     },
     // H2, H3: the mirror's revision readers read Carton's history, newest first, then any older .revs.
