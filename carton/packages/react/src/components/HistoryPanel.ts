@@ -18,7 +18,8 @@ import type { Actor, CartonUi, FindHit, HistoryFilter, Landmark, Version, Viewin
 import { VirtualList } from "../virtual.ts";
 import { COLLAPSE_OVER, DAY_ROW_HEIGHT, dayLabel, dayNumber, groupHistory, type HistoryRow } from "../history-groups.ts";
 import { ActorName, Avatar, Button, HoverMore, InlineName, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
-import { actorLabel } from "../actors.ts";
+import { actorColor, actorLabel } from "../actors.ts";
+import { nextArrivals, type ArrivalState } from "../arrivals.ts";
 import { clipCredits, type ClipCreditsView } from "../credits.ts";
 import { CLIP_ICON } from "./ChangeRow.ts";
 import { ChangesView } from "./ChangesView.ts";
@@ -155,6 +156,32 @@ function RowMark({ v, live }: { v: Version; live?: boolean }) {
   if (sign) return h("span", { className: "carton-version-mark carton-mark-sign", "data-sign": named ? "named" : v.kind, "aria-hidden": true }, h(Icon, { name: sign, size: named ? 11 : 12 }));
   return h("span", { className: "carton-version-mark", "data-live": live ? "" : undefined, "aria-hidden": true }, h(Avatar, { actor: v.author, size: 20, named: true }));
 }
+
+/** How long a row that just arrived glows (its ring, a soft glow) before it settles into a faint edge of its colour. */
+export const ARRIVAL_GLOW_MS = 5000;
+/** A person announced as having made a change isn't announced again until they've been quiet this long. */
+const ARRIVAL_QUIET_MS = 60_000;
+
+/**
+ * Someone else's row that arrived while History is open (arrivals.ts): a ring in their colour (their avatar's, an
+ * agent's person's) with a soft glow, which settles after ARRIVAL_GLOW_MS into a faint edge that stays while History
+ * is open. Drawn on mount from when it arrived, so a row scrolled back into view takes up where its glow is; a new
+ * arrival in the same row (a teammate's edit joining their group, their agent's turn going on) is a new ring, keyed by
+ * its time. Without motion (prefers-reduced-motion) the skin drops the fade-in and the settling: the ring shows, then
+ * the edge.
+ */
+const ArrivalRing = memo(function ArrivalRing({ actor, at }: { actor: Actor; at: number }) {
+  const ui = useCartonUi();
+  const [glow, setGlow] = useState(() => Date.now() - at < ARRIVAL_GLOW_MS);
+  // (fades in only as it arrives: never on a row scrolled back into view)
+  const [pop] = useState(() => Date.now() - at < 300);
+  useEffect(() => {
+    if (!glow) return;
+    const t = setTimeout(() => setGlow(false), Math.max(0, at + ARRIVAL_GLOW_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [glow, at]);
+  return h("span", { className: "carton-arrival", "data-glow": glow ? "" : undefined, "data-pop": pop ? "" : undefined, style: { ["--carton-actor" as string]: actorColor(actor, ui.actor.bind(ui)) }, "aria-hidden": true });
+});
 
 /** Who did it, and how many changes: "Claude Code · 4 changes", "Named by You · 1 change", "You · 2 of 3 changes". */
 function Meta({ v, count, ui }: { v: Version; count?: number; ui: CartonUi }) {
@@ -299,6 +326,8 @@ interface RowProps {
   /** Its title takes two lines (design QA v2 G9), and how it says when that changes. */
   wrap?: boolean;
   onWrap?: (key: string, wrap: boolean) => void;
+  /** Someone else's version, arrived while History is open: when (its ArrivalRing). A group's or a turn's: its newest's. */
+  arrived?: number | undefined;
 }
 
 /**
@@ -403,12 +432,15 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-hold": p.holding ? "" : undefined,
       "data-folded": p.folded ? "" : undefined,
       "data-wrap": p.wrap && measures ? "" : undefined,
+      "data-arrived": p.arrived !== undefined ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(p.rowKey, e),
       onContextMenu: (e: MouseEvent) => {
         e.preventDefault();
         p.onMenu(p.rowKey, e.currentTarget as HTMLElement);
       },
     },
+    // (first: drawn under the row's ⋯; a new arrival in the row is a new ring)
+    p.arrived !== undefined ? h(ArrivalRing, { key: `arrival:${p.arrived}`, actor: v.author, at: p.arrived }) : null,
     p.child ? h("span", { className: "carton-version-mark", "aria-hidden": true }) : mark ? h(LandmarkTile, { kind: mark.kind, picture: mark.picture }) : h(RowMark, { v }),
     p.naming
       ? h(
@@ -800,6 +832,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
     return out;
   }, [rows]);
   const newestId = useMemo(() => hist.at("all", 0)?.id ?? null, [hist, revision]);
+  // Someone else's versions that arrive while History is open (arrivals.ts): their rows wear their colour. A step reads
+  // only what arrived since the last; working alone, nothing ever arrives.
+  const allLoading = !!hist.status?.("all").loading;
+  const arrivalState = useRef<ArrivalState | null>(null);
+  const arrivals = useMemo(
+    () => (arrivalState.current = nextArrivals(arrivalState.current, typeof hist.all === "function" ? hist.all() : [], { source: hist, cut: cutId, rev: revision, loading: allLoading, now: Date.now() })),
+    [hist, cutId, revision, allLoading],
+  );
   // Only the start rows: History has nothing of the person's yet (the empty state)
   const onlyStart = !!rows && rows.every((r) => r.kind === "day" || r.kind === "start");
 
@@ -1341,6 +1381,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
       pickFrom: !!pick?.from && pick.from.id === v.id,
       // "Holding" once the stage shows it (the host's stage: never while it still loads, as Viewing; design QA G1)
       holding: peek.holding === v.id && viewedId === v.id,
+      // someone else's, arrived while History is open: a group's or a turn's row by its newest version (the one it shows)
+      arrived: arrivals.at.get(v.id),
     });
     // the same shape open or closed (the row, then its card or nothing), so opening the card keeps the row's own DOM
     if (!isOpen) return h(Fragment, null, row, null);
@@ -1711,8 +1753,61 @@ export function HistoryPanel(props: HistoryPanelProps) {
           ),
     rowMenu,
     h("p", { className: "carton-sr", role: "status", "aria-live": "polite" }, said),
+    // (its own component: what it says never re-renders the list; `added` keeps its identity while nothing arrives)
+    h(ArrivalNews, { added: arrivals.added, holding: !!peek.holding }),
   );
 }
+
+/**
+ * What the ring shows, said for screen readers in a line of its own: "Leo made a change". Once the versions are
+ * described (a teammate's live version is told by person then: "Leo", never "Teammate"), or 1.5 s on; a person again
+ * only after a quiet minute (their agent's turn goes on without a word a version); never while a row is held (its own
+ * line speaks then). Nothing in the DOM, no render and no timer until someone else's version arrives: working alone,
+ * History is as it was.
+ */
+const ArrivalNews = memo(function ArrivalNews({ added, holding }: { added: readonly Version[]; holding: boolean }) {
+  const ui = useCartonUi();
+  const words = useWords();
+  // `tick`: 0 until the first arrival (no live region yet), then one step per check
+  const [tick, setTick] = useState(0);
+  const [text, setText] = useState("");
+  const pending = useRef<{ ids: string[]; since: number }>({ ids: [], since: 0 });
+  const heard = useRef(new Map<string, number>());
+  const holdingNow = useRef(holding);
+  holdingNow.current = holding;
+  useEffect(() => {
+    if (!added.length) return;
+    const p = pending.current;
+    if (!p.ids.length) p.since = Date.now();
+    p.ids.push(...added.map((v) => v.id));
+    setTick((t) => t + 1);
+  }, [added]);
+  // (after the commit that drew the region: what it says next is announced)
+  useEffect(() => {
+    const p = pending.current;
+    if (!p.ids.length) return;
+    const hs = ui.history();
+    const vs = p.ids.map((id) => {
+      const i = hs.indexOf("all", id);
+      return i >= 0 ? hs.at("all", i) : undefined;
+    }).filter((v): v is Version => !!v);
+    if (vs.some((v) => !v.summary) && Date.now() - p.since < 1500) {
+      const t = setTimeout(() => setTick((n) => n + 1), 100);
+      return () => clearTimeout(t);
+    }
+    p.ids = [];
+    const now = Date.now(), names: string[] = [];
+    for (const v of vs) {
+      const last = heard.current.get(v.author.key);
+      heard.current.set(v.author.key, now);
+      const who = actorLabel(v.author, ui.actor.bind(ui), words.you);
+      if ((last === undefined || now - last >= ARRIVAL_QUIET_MS) && who && !names.includes(who)) names.push(who);
+    }
+    if (names.length && !holdingNow.current) setText(words.madeAChange(names));
+    return undefined;
+  }, [tick, ui, words]);
+  return tick ? h("p", { className: "carton-sr carton-arrival-news", role: "status", "aria-live": "polite" }, text) : null;
+});
 
 /**
  * The host's stage, where it has one (scripts/carton/ui.js connect(): stageRef, stageView, onStage): the ref the editor

@@ -613,6 +613,17 @@ What changes with it on:
   **Compare with…** picks any second version (or another cut) to compare with. A filter (the icon by the cut) shows
   landmarks, named versions, agent turns, your changes, or only the versions that touched the clip selected on the
   timeline, with that clip's credits.
+- **A teammate's change stands out as it arrives.** On a shared project, when a teammate's change (or their agent's)
+  comes in while History is open, its row fades in with a ring in that person's colour, the colour of their avatar,
+  and a soft glow; after a few seconds it settles into a faint edge of that colour, which stays while History is open.
+  So with your own Claude Code adding rows as it works, "Leo's Claude Code · Added title “Summer launch”" reads at a
+  glance as someone else. Your own changes and your agents' never get it, nor what was there when you opened History,
+  nor a cut you switch to. When a teammate's edit joins their row of edits, or their agent's turn goes on, that row
+  glows again for it. With Windows' animation effects off (reduced motion), the ring and then the edge show without
+  fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
+  minute. A teammate's change that arrived live also reads by name now: History used to say "Teammate" for their edits
+  and "Claude Code" for their Claude Code, the same as yours, until History was loaded again; it now says "Leo" and
+  "Leo's Claude Code" as soon as the row is shown.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
