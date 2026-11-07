@@ -89,7 +89,9 @@ const r1 = (x) => Math.round(x * 10) / 10;
   const listen = (L) => {
     bash(`cb app seek ${L.at} "${PROJECT}"`);
     bash(`cb app play "${PROJECT}"`);
-    steps.push({ pause: Math.round((L.end - L.at + 0.4) * 1000) });
+    // until the app has played past the line (not a fixed pause: on the Windows laptop the first voice loaded for 6 s
+    // before playback began, the pause came first and was lost, and playback ran on through the next lines)
+    steps.push({ wait: { played: +(L.end + 0.4).toFixed(2), timeout: Math.ceil(L.end - L.at + 15) } });
     bash(`cb app pause "${PROJECT}"`);
   };
 

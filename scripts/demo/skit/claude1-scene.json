@@ -105,7 +105,10 @@
    "command": "cb app play \"Morning Brew promo\""
   },
   {
-   "pause": 4900
+   "wait": {
+    "played": 29.9,
+    "timeout": 20
+   }
   },
   {
    "tool": "Bash",
@@ -148,7 +151,10 @@
    "command": "cb app play \"Morning Brew promo\""
   },
   {
-   "pause": 9700
+   "wait": {
+    "played": 43.4,
+    "timeout": 25
+   }
   },
   {
    "tool": "Bash",
@@ -191,7 +197,10 @@
    "command": "cb app play \"Morning Brew promo\""
   },
   {
-   "pause": 10300
+   "wait": {
+    "played": 59,
+    "timeout": 25
+   }
   },
   {
    "tool": "Bash",
@@ -231,7 +240,10 @@
    "command": "cb app play \"Morning Brew promo\""
   },
   {
-   "pause": 5000
+   "wait": {
+    "played": 68.1,
+    "timeout": 20
+   }
   },
   {
    "tool": "Bash",
