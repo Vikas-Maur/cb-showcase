@@ -81,7 +81,7 @@ the chat kept out, a check, and the editor switched to it last), `agent_clear`.
 | `app-player.js` | the running app for `cb app` (seek, play, pause, context) on this box: that editor behind Cardboard's control socket, its playback traced (FINDINGS.md §6.3) |
 | `bench-latency.js` | how soon a remote edit shows on the app's side |
 | `repro-import-race.js` | FINDINGS.md §6.1: a teammate's change deleted after an import |
-| `repro-slow-records.js` | FINDINGS.md §6.4: a teammate's sounds, all on the server, reported "still on their way" when the server is slow (`host.mjs` `DEMO_HOST_RECORD_DELAY_MS`) |
+| `repro-slow-records.js` | FINDINGS.md §6.4: a teammate's sounds, all on the server, reported "still on their way" when the opener's server reads are slow (`host.mjs` `DEMO_HOST_RECORD_DELAY_MS`) |
 | `race-hide.js` | FINDINGS.md §4.1: the hide while the remote keeps talking (a line between the agent's reading and its fold), checked on its own |
 | `rehearse.sh`, `rehearsal-cues.yaml`, `sample-cues.yaml` | the rehearsal, and a sheet for the real session |
 | `actor/actor.js` | a scripted stand-in for the Messages API: the real Claude Code inside Cardboard plays a scene (`skit/README.md`) |

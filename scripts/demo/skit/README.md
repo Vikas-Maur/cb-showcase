@@ -112,8 +112,9 @@ Rehearsed on the laptop (2026-11-07, Cardboard 013ca5c3, muted, Claude 2 from EC
    It shows as "Claude · Here now · editing" in the laptop's Share and title bar, and waits. Its sheet ends only once
    every voice it sent is on the sharing server, checked ("✓ Claude: all 6 sounds on the sharing server"); leave with
    `scripts/demo/peer leave --peer Claude`, which waits for any still on their way, saying so. A notice "N clips are
-   still on their way" when the project is opened again later is the laptop's check giving up on a slow server
-   (FINDINGS.md §6.4): `node laptop\media-check.js <port> <project id>` tells which.
+   still on their way" when the project is opened again later is the laptop's own check, whose server read for them
+   was slow or failed (FINDINGS.md §6.4; `fix/demo-sync-bugs` makes it read the project's own record instead):
+   `node laptop\media-check.js <port> <project id>` tells which.
 6. **Record:** OBS, a Window Capture of Cardboard (Windows Graphics Capture) and an Application Audio Capture of
    `Cardboard.exe` (the voices play in the app). Start recording.
 7. **Go:** in the chat panel, pick Claude Code (not the Director), and send `Everyday work: tidy up the promo`.
