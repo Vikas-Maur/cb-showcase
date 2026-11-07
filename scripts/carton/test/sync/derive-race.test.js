@@ -421,3 +421,32 @@ async function twiceOffline(restart, between = false) {
 test("two offline saves of the same clip keep the second, and an outside save of the first file keeps both", t, () => twiceOffline(false));
 test("the same with a restart after the outside save", t, () => twiceOffline(true));
 test("the same with a restart between the two saves", t, () => twiceOffline(false, true));
+
+// Round 4 of fix/demo-sync-bugs: an outside save Carton can't take (it rejects the document) stopped every materialization
+// once Carton checked the file before writing head (review 2): a teammate's changes never reached the file while Live
+// said up to date (or, read by the store first, head went over it and it was lost). It is kept aside now, in
+// .carton/outside/, said in the log, and the project goes on showing head.
+test("an outside save Carton can't take is kept aside and said, and the teammate's changes still reach the file", t, async () => {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  await alice.call("test.rejectOutside", true);
+  try {
+    const file = path.join(alice.root, "Demo.cardboard", "project.json");
+    const o = JSON.parse(fs.readFileSync(file, "utf8"));
+    const outside = "Outside save Carton can't take";
+    o.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
+    o.project.stateUpdatedAt = Date.now();
+    fs.writeFileSync(file + ".other.tmp", JSON.stringify(o));
+    fs.renameSync(file + ".other.tmp", file);
+    const title = "Bob after a save Carton can't take";
+    await addTitle(bob, title);
+    await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 30_000, "bob's title in alice's file");
+    const dir = path.join(alice.root, "Demo.cardboard", ".carton", "outside");
+    assert.ok(fs.readdirSync(dir).some((n) => fs.readFileSync(path.join(dir, n), "utf8").includes(outside)), "the outside save kept aside");
+    assert.match(alice.worker().stderr(), /couldn't be taken and was kept at .*\.carton[\\/]outside/);
+    assert.equal((await alice.call("carton.liveStatus", { projectId: id })).status, "up-to-date");
+  } finally {
+    await alice.call("test.rejectOutside", false);
+  }
+});

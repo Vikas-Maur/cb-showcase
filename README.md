@@ -1142,7 +1142,9 @@ with Carton off none of it runs at all.
   lose it. An outside save is taken at once, never held; one whose kept file is gone (only past the newest 512) is
   taken against that version's confirmed state, and a clash with an edit made since is the person's conflict card.
   Offline, a second change of the same thing (moving a clip twice) stays too: it was made on the first, still unsent,
-  as if on the state before it, clashed with it ("You" vs "You"), and the clip went back to the first. Carton knows its
+  as if on the state before it, clashed with it ("You" vs "You"), and the clip went back to the first. An outside save
+  Carton can't take at all (it rejects the document) is kept as it is in the project's `.carton\outside` folder and
+  said in the app's log, and the project goes on showing the newest version. Carton knows its
   own `project.json` by the bytes it wrote (their hash), never by a file's size and date alone. None
   of this costs a save: in an independent check of this branch with six alternating pairs of 120 saves at 200 items,
   the gap after subtracting the Carton-off control's had a median of −0.565 ms.

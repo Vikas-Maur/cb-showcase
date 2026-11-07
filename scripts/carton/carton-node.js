@@ -675,6 +675,7 @@ async function revState(lc, bundle, ref, rev) {
  * older document over head.
  */
 async function takeOutside(lc, bundle, project, installed = null) {
+  if (testHooks.takeOutside) await testHooks.takeOutside();
   const rev = project?.stateUpdatedAt;
   let ref = await refOf(lc, rev), from = rev;
   const known = !!ref;
@@ -705,7 +706,17 @@ async function fileOutside(lc, bundlePath, stamp, project = null) {
   let p = project;
   try { p = JSON.parse(bytes.toString("utf8")).project ?? project; } catch {}
   if (!p) return;
-  await takeOutside(lc, bundlePath, p, installed && typeof installed === "object" ? installed : null);
+  try {
+    await takeOutside(lc, bundlePath, p, installed && typeof installed === "object" ? installed : null);
+  } catch (e) {
+    // One Carton can't take (it rejects the document) is kept as it is, in .carton/outside/ (by its hash: once), and
+    // said; the project goes on showing head. Before, it stopped every materialization (round 4 of fix/demo-sync-bugs):
+    // a teammate's changes never reached the file while Live said up to date; or head went over it and it was lost.
+    const to = path.join(bundlePath, ".carton", "outside", `project-${h.slice(0, 16)}.json`);
+    try { fs.mkdirSync(path.dirname(to), { recursive: true }); fs.writeFileSync(to, bytes, { flag: "wx" }); } catch (w) { if (w?.code !== "EEXIST") throw e; }
+    console.warn(`[carton] a save of project.json by another program couldn't be taken and was kept at ${to}: ${errText(e)}`);
+    return void checkedFiles.set(file, stamp);
+  }
   checkedFiles.set(file, stamp);
   // taken: said in the journal too, so another process (or this one after a restart) doesn't take it again
   await withInstallLock(bundlePath, async () => { const jj = readJournal(bundlePath); jj[TAKEN] = h; await writeJournal(bundlePath, jj); }).catch(() => {});
@@ -1225,7 +1236,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOCK_BUSY = Symbol("busy");
 // Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does;
 // `materialize` runs in materializeIn once it has made the project from head, before the store has it.
-const testHooks = { between: null, installed: null, lockWaitMs: null, materialize: null };
+const testHooks = { between: null, installed: null, lockWaitMs: null, materialize: null, takeOutside: null };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 function takeOverIfAbandoned(dir) {
   const owner = path.join(dir, "owner");
@@ -2271,9 +2282,11 @@ async function materializeIn(library, projectId) {
     const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
     // Review of fix/demo-sync-bugs: the file there now, if another program wrote it, is taken before head goes over it
     // (fileOutside; a fresh process's store lists a project by scanning it, never through the read that takes it)
+    // An outside save Carton can't take (it rejects the document) never stops the project from showing head: as when
+    // the store reads it (store-bridge's sawDisk), it is said, and head's install moves it aside and keeps it (review).
     if (bundlePath) {
       const lc = await open(bundlePath, { projectId });
-      if (lc) await fileOutside(lc, bundlePath, await statStamp(path.join(bundlePath, "project.json"), BUSY).catch(() => null));
+      if (lc) await fileOutside(lc, bundlePath, await statStamp(path.join(bundlePath, "project.json"), BUSY).catch(() => null)).catch((e) => console.warn("[carton] import of an outside save failed:", errText(e)));
     }
     const made = await headAt(bundlePath, current);
     if (!made) return null;
