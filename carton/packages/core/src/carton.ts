@@ -1703,9 +1703,12 @@ class CartonImpl implements Carton {
         summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
         title = { kind: "fold", ...(from ? { cut: from } : {}), taken: n, total: n };
       } else if (c.kind === "restore" && c.restoreRecord) {
-        // a bring-back of one clip (Carton UX v2): the app says when from ("Brought back “Intro” from Mon 4:10 pm")
-        summary = `Brought back '${c.restoreName ?? "a clip"}' from an earlier version`;
-        title = { kind: "bring-back", ...(c.restoreOf ? { of: c.restoreOf } : {}), record: c.restoreRecord, ...(c.restoreName ? { name: c.restoreName } : {}) };
+        // a bring-back of one clip (Carton UX v2): the app says when from ("Brought back “Intro” from Mon 4:10 pm"). One
+        // that took the clip out (it wasn't there then: `cb restore --clip … --remove`) says so, as History, its toast and
+        // cb restore do: `cb history` read "Brought back 'Psst…' from an earlier version" (demo rehearsal FINDINGS §4.4)
+        const removed = ops.some((o) => o.op === "remove" && o.path.length === 2 && E.pathKey(o.path) === c.restoreRecord);
+        summary = removed ? `Took out '${c.restoreName ?? "a clip"}'` : `Brought back '${c.restoreName ?? "a clip"}' from an earlier version`;
+        title = { kind: "bring-back", ...(c.restoreOf ? { of: c.restoreOf } : {}), record: c.restoreRecord, ...(c.restoreName ? { name: c.restoreName } : {}), ...(removed ? { removed: true } : {}) };
       } else if (c.kind === "restore") {
         summary = "Restored an earlier version";
         title = { kind: "restore", ...(c.restoreOf ? { of: c.restoreOf } : {}) };

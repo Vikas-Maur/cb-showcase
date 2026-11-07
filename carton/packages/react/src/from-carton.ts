@@ -1586,7 +1586,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const x = t.of ? versionAt(t.of) : undefined;
       const from = x?.name ? `“${x.name}”` : x ? at(x.at) : "an earlier version";
       const clip = t.name ? `“${t.name}”` : "a clip";
-      summary = list.length > 0 && list.every((r) => r.kind === "remove") ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
+      // (core's `removed` says it took the clip out, as `cb history` words it; for a version from a core without it,
+      // the rows decide)
+      summary = t.removed || (list.length > 0 && list.every((r) => r.kind === "remove")) ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
     }
     else if (t?.kind === "undo-restore" || t?.kind === "redo-restore") summary = `${t.kind === "undo-restore" ? "Undid" : "Redid"} the restore of ${restored(t.of)}`;
     else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${t.rest ? "the rest of " : ""}${cutName(t.cut)}`;
