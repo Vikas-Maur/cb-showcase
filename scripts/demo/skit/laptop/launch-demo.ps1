@@ -3,10 +3,12 @@
 # starts it outside the foreground app on virtual desktop 2, never activated, 1536x864 DIP (1920x1080 px at 125%), with
 # the DevTools port. Muted unless -Sound (a rehearsal plays on the person's speakers; a take records the app's audio).
 # Prints the launcher's lines; the last is "pid=<pid> hwnd=<hwnd>" (the window to capture: cap-run.ps1 -Hwnd).
-#   powershell -ExecutionPolicy Bypass -File launch-demo.ps1 [-DebugPort 9420] [-Sound]
+#   powershell -ExecutionPolicy Bypass -File launch-demo.ps1 [-DebugPort 9420] [-Sound] [-CurrentDesktop]
+# -CurrentDesktop: on the desktop on screen, not desktop 2 (for a take OBS records: its Window Capture sees a window on
+# another virtual desktop as black). Still never activated.
 # Needs the VirtualDesktop PowerShell module (Install-Module VirtualDesktop -Scope CurrentUser).
 # (-DebugPort, not -Port: demo-env.ps1 sets $Port, the stand-in's, and would replace it)
-param([int]$DebugPort = 9420, [switch]$Sound)
+param([int]$DebugPort = 9420, [switch]$Sound, [switch]$CurrentDesktop)
 . "$PSScriptRoot\demo-env.ps1"
 $ef = Join-Path $Demo "demo-app.env"
 $lines = foreach ($k in $AppEnv.Keys) { "$k=$($AppEnv[$k])" }
@@ -17,4 +19,5 @@ foreach ($n in ($names | Sort-Object -Unique)) { if (-not $AppEnv.Contains($n)) 
 Set-Content -Encoding ASCII $ef $lines
 $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$PSScriptRoot\unseen\start-unseen.ps1", '-Exe', $Exe, '-Profile', $Demo, '-Port', $DebugPort, '-Width', 1536, '-Height', 864, '-EnvFile', $ef)
 if (-not $Sound) { $a += @('-ExtraArgs', '--mute-audio') }
+if ($CurrentDesktop) { $a += '-CurrentDesktop' }
 powershell @a
