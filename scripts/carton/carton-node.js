@@ -380,13 +380,13 @@ async function setRev(lc, rev, ref) {
   if (typeof rev !== "number" || !ref) return;
   await lc.store.write([{ table: REVS, key: ["rev", rev], value: ref }, { table: REVS, key: refKey(ref), value: rev }]);
 }
-// Review 3 of fix/demo-sync-bugs: a file whose rev names a version history can't rebuild (a shared cut's edits still
-// waiting for the sharing server: core resolves the seq alone; and while they wait, core folds later edits of the same
-// thing into the same pending change, so one pending version names a state that changes) is kept as Carton installed it:
-// a hard link of the install's own temp file in .carton/bases/ (no copy; a copy where the volume has no links), named
-// for that rev and the hash of the bytes. An outside save of that file is taken against exactly those bytes, after a
-// restart too. A file another program edited in place (the same inode) no longer hashes to its name: not used.
-// Confirmed versions need none: history rebuilds them. The oldest go past BASES_KEPT.
+// Review 3 of fix/demo-sync-bugs: core rebuilds a version with edits still waiting for the sharing server (a shared cut
+// offline) as its confirmed seq alone. The project.json Carton installs for such a version is kept as installed: a hard
+// link of the install's own temp file in .carton/bases/ (no copy; a copy where the volume has no links), named for the
+// file's rev and the hash of its bytes. An outside save of that file (takeOutside) and the editor's next save made on it
+// (commit) are taken against exactly those bytes, after a restart too. A file another program edited in place (the same
+// inode) no longer hashes to its name: not used. Confirmed versions need none: history rebuilds them. The oldest go past
+// BASES_KEPT.
 const BASES_KEPT = 512;
 const basesDir = (bundle) => path.join(bundle, ".carton", "bases");
 let basesKept = 0;
@@ -778,6 +778,16 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
   if (chained) baseRef = chained.base;
+  // Found in round 4 of fix/demo-sync-bugs, and so in 0c498b2b: a GUI save made on a version still waiting for the
+  // sharing server (offline, the editor's echo of its previous save) went to core as that pending ref, which core
+  // rebuilds as its confirmed seq alone: a second change of the same thing clashed with the first ("You" vs "You") and
+  // the timeline went back to the first value. The version the editor had is the store's document when it is at that
+  // rev, else that file's kept bytes (keepBase): the save goes on it as core's held base, as a chained save does.
+  let guiHeld = null;
+  if (meta?.base !== undefined && !chained && pendingRef(baseRef)) {
+    const at = base && base.stateUpdatedAt === rev ? fromHost(base, await c.checkout({ branchId: baseRef.branchId, seq: baseRef.seq, pending: [] })) : await keptBase(lc, bundlePath, rev, baseRef);
+    if (at) baseRef = guiHeld = { baseDoc: at, baseSeq: baseRef.seq, causal: [...baseRef.pending] };
+  }
   // Review P1: a cb write's base still pending in the lease holder resolves here (and in the holder, from a ref without
   // its hash) as the confirmed state it was built on, where an edit back to that state's value reads as no change. Its
   // document is what the store's base shows when that is its rev: pinned, the commit merges against exactly it; else
@@ -789,7 +799,7 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     pendingBase = baseRef;
     baseRef = held.header;
   }
-  const baseDoc = chained?.doc ?? imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
+  const baseDoc = chained?.doc ?? guiHeld?.baseDoc ?? imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
   const gui = meta?.base !== undefined && !!baseRef;
   const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;

@@ -272,8 +272,8 @@ test("an in-place edit that keeps the file's size and mtime is still checked aft
 
 // Review 2, P1: an outside edit of a file whose rev names an older version still waiting for the sharing server (more
 // edits wait after it) wasn't taken: core can't rebuild that state from its seq, the file was marked checked, and the
-// next materialization wrote over it. That version's document is kept now, and the edit is taken against exactly it;
-// after a restart (nothing kept), the file is held, never written over, and taken once those edits are confirmed.
+// next materialization wrote over it. That file's bytes are kept now (.carton/bases, by its rev), and the edit is taken
+// at once against exactly them, after a restart too.
 async function pendingOutside(restart) {
   await readyAt(alice);
   await readyAt(bob);
@@ -300,7 +300,7 @@ async function pendingOutside(restart) {
   }
   await alice.call("projects.read", id);
   await S.sleep(500);
-  if (restart) assert.equal(helloAt(), outside, "taken at once, against that version kept in carton.db: nothing wrote over it");
+  if (restart) assert.equal(helloAt(), outside, "taken at once, against that file's kept bytes: nothing wrote over it");
   host = await S.startHost(path.join(S.TMP, "derive-race-host"), port);
   await readyAt(alice);
   await readyAt(bob);
@@ -315,13 +315,13 @@ async function pendingOutside(restart) {
   assert.deepEqual([atBob.textContent, atBob.fontSize], [outside, size], "both at bob's");
 }
 test("an outside edit of an older version still waiting for the sharing server is taken against exactly it", t, () => pendingOutside(false));
-test("the same after a restart while offline: that version is kept in carton.db, the edit taken against it", t, () => pendingOutside(true));
+test("the same after a restart while offline: that file's bytes are kept, the edit taken against them", t, () => pendingOutside(true));
 
 // Review 3 of fix/demo-sync-bugs (its three controls). The pending version an outside save was made on came from a cache
 // that unchanged background writes evicted; a background write then took the unimported outside file as its own base and
 // certified it (P1: also after an offline restart, on 0c498b2b too); and with the version gone, a file held for it never
 // resolved once Bob's edit confirmed between Alice's (P2: Alice's file stayed behind while Live said up to date). The
-// version's document is kept in carton.db once per version now, and an outside save is taken at once against it.
+// file's bytes are kept now (.carton/bases, by its rev), and an outside save is taken at once against them.
 const unchangedWrites = async (n) => {
   for (let j = 0; j < n; j++) {
     const unchanged = await S.projectOf(alice, id);
@@ -377,11 +377,12 @@ test("review 3, P1: a background write after an outside save of a pending versio
 test("review 3, P1: the same after an offline restart", t, () => backgroundAfterOutside({ restart: true }));
 test("review 3, P2: a pending version gone from memory, Bob's edit confirmed first, then a restart: nothing held, all of it shown", t, () => backgroundAfterOutside({ evict: true, interleave: true, restart: true }));
 
-// Found in round 4 of fix/demo-sync-bugs: offline, core folds a later edit of the same thing into the pending change still
-// waiting for the server, so two files can name one pending version with different states. An outside save of the
-// earlier file was taken against the later state (the version as head has it), and that later edit was undone. Each
-// such file's own bytes are kept now, by its rev, and an outside save of it is taken against exactly them.
-async function amendedOutside(restart) {
+// Found in round 4 of fix/demo-sync-bugs, on 0c498b2b too: offline, the person's second GUI save of the same thing was
+// made on a version still waiting for the server, which core rebuilds as its confirmed seq alone: it clashed with the
+// first ("You" vs "You") and the timeline went back to the first value. It goes on the version the editor had now (the
+// store's document, else that file's kept bytes). And an outside save of the earlier file is taken against that file's
+// own bytes (kept by its rev), so the later save stays too, also after a restart.
+async function twiceOffline(restart) {
   await readyAt(alice);
   await readyAt(bob);
   await S.sleep(2500);
@@ -393,7 +394,10 @@ async function amendedOutside(restart) {
   const file = path.join(alice.root, "Demo.cardboard", "project.json");
   const old = JSON.parse(fs.readFileSync(file, "utf8"));
   await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: later } : null));
-  const outside = `Outside save of an amended version${restart ? ", then a restart" : ""}`;
+  await S.sleep(500);
+  assert.equal(aliceFile().timelineItems.find((i) => i.name === "Hello").fontSize, later, "the second save shows");
+  assert.deepEqual(alice.cb(["conflicts", "Demo"]).json().cards, [], "no clash with the first");
+  const outside = `Outside save of the first of two${restart ? ", then a restart" : ""}`;
   old.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
   fs.writeFileSync(file + ".other.tmp", JSON.stringify(old));
   fs.renameSync(file + ".other.tmp", file);
@@ -409,8 +413,8 @@ async function amendedOutside(restart) {
   for (const [who, d] of [["alice", aliceFile()], ["bob", await S.projectOf(bob, id)]]) {
     const item = d.timelineItems.find((i) => i.name === "Hello");
     assert.equal(item.textContent, outside, `${who}: the outside save kept`);
-    assert.equal(item.fontSize, later, `${who}: alice's later edit of the same clip kept`);
+    assert.equal(item.fontSize, later, `${who}: alice's second save kept`);
   }
 }
-test("an outside save of a pending version a later edit of the same clip amended keeps that later edit", t, () => amendedOutside(false));
-test("the same after an offline restart", t, () => amendedOutside(true));
+test("two offline saves of the same clip keep the second, and an outside save of the first file keeps both", t, () => twiceOffline(false));
+test("the same with a restart after the outside save", t, () => twiceOffline(true));
