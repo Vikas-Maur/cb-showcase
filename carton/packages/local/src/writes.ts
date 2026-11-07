@@ -617,37 +617,40 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
   const asConflicts = (x: CbResult): CbResult => (kept.length && (x.status === "confirmed" || x.status === "pending") ? { ...x, status: "conflicts", conflicts: kept, ref: x.ref ?? null, landed: x.status } as CbResult : x);
   if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, { ...extra, ...(r?.entry ? { undid: r.entry } : {}) }));
-  // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices
+  // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices.
+  // Every answer carries what the write itself said (`extra`: a bring-back's `brought`, a fold's `rest`), as on a local
+  // cut: on a shared one `cb restore --clip … --remove` said "Brought back … as it was" for a clip it took out (demo
+  // rehearsal, FINDINGS §4.4)
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
   const online = opts.online ? opts.online(destCut(op)) : st() === "up-to-date" || st() === "syncing";
-  if (!online) return asConflicts({ ...toCbResult(r, notices), online: false } as CbResult);
+  if (!online) return asConflicts({ ...toCbResult(r, notices, extra), online: false } as CbResult);
   const ms = req.waitMs ?? WAIT_MS;
   if (carton.sync?.waitFor) {
     // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
     const o = await carton.sync.waitFor(r.id, ms, destCut(op));
-    if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
+    if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, ...extra });
     // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
-    if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
-    if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
+    if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE, ...extra });
+    if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices, extra), online: true } as CbResult);
     // its notice (core stored it before the wait returned) is this result: marked delivered, not listed again
     answered = r.id;
-    return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
+    return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}), ...extra };
   }
   const out = await outcomes.wait(r.id, ms);
-  if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
-  if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
+  if (!out) return asConflicts({ ...toCbResult(r, notices, extra), online: true } as CbResult);
+  if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices, ...extra });
   // emptied and its id spent, as the commit path answers it: already in place, or the cards that took its place (their
   // late-conflict notice is this result, as there)
   if (out.kind === "absorbed") {
-    if (!out.cards.length) return asConflicts({ status: "confirmed", id: r.id, seq: out.seq ?? (await carton.head(destCut(op))).ref.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
+    if (!out.cards.length) return asConflicts({ status: "confirmed", id: r.id, seq: out.seq ?? (await carton.head(destCut(op))).ref.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE, ...extra });
     answered = r.id;
-    return { status: "conflicts", id: r.id, conflicts: [...kept, ...out.cards], ref: null, notices, absorbed: true };
+    return { status: "conflicts", id: r.id, conflicts: [...kept, ...out.cards], ref: null, notices, absorbed: true, ...extra };
   }
   // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
   answered = r.id;
-  return n.kind === "rejected" ? { status: "rejected", id: r.id, reason: n.text, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...(n.cards ?? [])], ref: null, notices };
+  return n.kind === "rejected" ? { status: "rejected", id: r.id, reason: n.text, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...(n.cards ?? [])], ref: null, notices, ...extra };
   }
 }
 

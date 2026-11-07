@@ -584,7 +584,9 @@ What changes with it on:
   - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
     takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`, and
     its version says so in History and in `cb history` alike: "Took out 'Psst…'" (`cb history` read "Brought back
-    'Psst…' from an earlier version" for it).
+    'Psst…' from an earlier version" for it), and so does `cb restore` itself on a shared cut, where it answered
+    "Brought back “Psst…” as it was in …" (the lease holder's answer, after the sharing server's, lost what the write
+    had said of itself).
     It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
     time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
     taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
@@ -1205,13 +1207,13 @@ Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`); Cardboard's back
 derive main asks for) followed by a teammate's change, which stays, and another program's save, still taken as one
 (`derive-race.test.js`); a teammate's new sound, its clip asked for the moment it arrives, and sent while its person
 goes on editing (`teammate-sound.test.js`); Share on a cut of your own, with the sharing server gone and back
-(`share-own-cut.test.js`). The timings are `save-bench.js`'s, a measurement and
+(`share-own-cut.test.js`); `cb restore --clip --remove` on a shared cut (`restore-remove-shared.test.js`). The timings are `save-bench.js`'s, a measurement and
 not a test: a GUI save's round trip to the worker and how soon `timeline.tsx` shows it, Carton off and on alternated
 round by round (run it alone, on a quiet machine, on mains power).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js scripts/carton/test/sync/restore-remove-shared.test.js
 ```
 
 Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
