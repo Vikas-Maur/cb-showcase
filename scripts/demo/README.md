@@ -50,13 +50,14 @@ scripts/demo/rehearse.sh                    # local server on 127.0.0.1:8791, Vi
 scripts/demo/rehearse.sh --host https://cardboard-showcase.vikasmaur10.workers.dev   # the live server (a new project there: 10 per address per day)
 node scripts/demo/shots.js --app Vikas --out <dir> --state "Main cut@7.5" --state "Vikas's cut@7.5"   # the app's side, in Chromium
 node scripts/demo/bench-latency.js --remote Sam --app Vikas --rounds 10 --sound-every 2   # how soon edits arrive
+node scripts/demo/race-hide.js --runs 5      # the hide while Sam keeps talking; --old-flow: the first rehearsal's order
 scripts/demo/rehearse.sh --stop
 ```
 
 In a rehearsal sheet, steps marked `as: Vikas` play the laptop: `cb` (Cardboard's own `cb` on that participant's library,
 as the app's Director: `CARDBOARD_ACTOR=director/…`), `agent_say` (its own view, a `<text>` added, `cb source apply`),
-`agent_hide` (a cut from the version before the chat, the editor switched to it, the rest folded in with the chat kept
-out), `agent_clear`.
+`agent_hide` (FINDINGS.md §4.1: a cut from the version before the chat, the shared cut's printed version folded in with
+the chat kept out, a check, and the editor switched to it last), `agent_clear`.
 
 ## Files
 
@@ -72,4 +73,5 @@ out), `agent_clear`.
 | `shots.js` | real-browser shots of the app's side, driven by its participant's worker |
 | `bench-latency.js` | how soon a remote edit shows on the app's side |
 | `repro-import-race.js` | FINDINGS.md §6.1: a teammate's change deleted after an import |
+| `race-hide.js` | FINDINGS.md §4.1: the hide while the remote keeps talking (a line between the agent's reading and its fold), checked on its own |
 | `rehearse.sh`, `rehearsal-cues.yaml`, `sample-cues.yaml` | the rehearsal, and a sheet for the real session |

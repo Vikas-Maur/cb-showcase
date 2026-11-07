@@ -129,10 +129,11 @@ const COMMANDS = {
       execFileSync("ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "400k", "-c:a", "aac", "-b:a", "64k", "-shortest", clip]);
     }
     const must = (r, what) => { if (r.code !== 0) throw new Error(`${what}: ${r.out}${r.err}`.slice(0, 1500)); return r; };
-    must(lib.cb(dir, ["project", "create", name]), "project create");
-    must(lib.cb(dir, ["media", "add", name, clip]), "media add");
+    // as the person at the app (CARDBOARD_ACTOR=person: Carton's store bridge maps it to them), never a nameless "Terminal"
+    must(lib.cb(dir, ["project", "create", name], { actor: "person" }), "project create");
+    must(lib.cb(dir, ["media", "add", name, clip], { actor: "person" }), "media add");
     const tsx = `export default (\n  <timeline aspect="16:9">\n    <track name="Footage">\n      <clip name="Opening shot" src="rehearsal-clip.mp4" start={0} end={12} />\n    </track>\n  </timeline>\n);\n`;
-    must(lib.cb(dir, ["source", "apply", name, "-"], { input: tsx }), "source apply");
+    must(lib.cb(dir, ["source", "apply", name, "-"], { input: tsx, actor: "person" }), "source apply");
     const r = await lib.request(dir, "adopt", {});
     say(`Made “${r.name}” in ${cfg.name}'s library (a 12 s clip on “Footage”).`);
   },

@@ -24,19 +24,21 @@ box with both participants on it; the laptop adds its own network leg.
 - **Being found**: the laptop's agent sees the teammate in `cb activity`, `cb history` (with `--find`), `cb credits`,
   `cb compare`, by name ("Sam", "Leo's Director") and by computer (`cb history --json`: `local:<user>@<host>`).
   Presence ("who is here now") is not in `cb` at all: only the app's Share dialog and title bar show it.
-- **Hiding** (all live while shared, verified): `cb cut new "<name>" --from <version before the chat>` and
-  `cb cut switch "<name>"` put the person's editor on a cut of their own, without the chat; `cb fold "Main cut" --into
-  "<name>" --reject …` brings in the teammate's real work and keeps the chat's tracks, clips and media out; `cb restore
-  <version> --clip "<clip>" --remove` takes one clip out of the shared cut for everyone. **After the switch the
+- **Hiding** (all live while shared, verified, race-tested): `cb cut new "<name>" --from <version before the chat>`,
+  then `cb fold <the shared cut's version, as printed> --into <that cut> --reject …` (the teammate's real work in; the
+  chat's tracks, clips and media out), a check with `cb compare`, and `cb cut switch` last: the person's editor shows a
+  cut of their own without the chat (§4.1: with a line from the remote landing mid-hide, 0 leaks in 5 runs; the first
+  cross-machine rehearsal's order leaked). `cb restore <version> --clip "<clip>" --remove` takes one clip out of the
+  shared cut for everyone. **After the switch the
   conversation is one way**: the remote keeps writing on Main and the agent reads it (`cb history --cut "Main cut"`,
-  `cb compare`), but nothing the agent can run writes to Main while the editor shows another cut (§4.3).
+  `cb compare`), but nothing the agent can run writes to Main while the editor shows another cut (§4.2).
 - **Voice**: `cb generate voice` would run on this box (plain HTTPS to cardboard.ai with a bearer token,
   `CARDBOARD_TOKEN`), but needs the user's account token; not tried, by instruction. The fallback is Piper on this box
   (4 English voices installed), `peer speak` or `node scripts/demo/tts.js`.
 - **Found while rehearsing, Carton bugs (not the rig's)**: (1) a sound imported the way the editor imports a dropped file
   can make the importer's computer delete the next change a teammate makes (§6.1); (2) a teammate's new sound can't be
   streamed for about 2 s after its media entry arrives (§6.2); (3) on a cut that isn't shared, Share's status is stale
-  (§4.4). The rig works around (1) and (2).
+  (§4.3). The rig works around (1) and (2).
 
 ## 1. Joining
 
@@ -110,6 +112,15 @@ the version it was made on as its base), so Carton records it as the person's ed
 it change by change. A title is Cardboard's own shape for one, copied from what `cb source apply` writes for a `<text>`
 (an item and its text entry). A sound is imported by Cardboard's own `cb media add` (handed to the worker, the lease
 holder), shared to the server, and then placed as an audio clip.
+
+**Credited to the participant, everywhere**: that `cb media add` runs as the person (`CARDBOARD_ACTOR=person`, which
+Carton's store bridge maps to the app's own person, as it does the editor's saves), or as the agent with `--agent`. Run
+with no actor, `cb` is a nameless terminal writer: in the first cross-machine rehearsal the laptop's `cb history` showed
+Sam's spoken line's import as "Terminal" (`terminal:ubuntu@ip-172-31-19-157`, owner Sam). Before and after, through the
+app's real History panel (`shots.js`, laptop's 125%): the panel showed "Added media “Can we talk here.wav” · Sam · 2
+changes" both times (it already tells a nameless writer as the person behind it); `cb history` said `main@7 Terminal`
+before and `main@7 Sam` (`"kind":"human"`) after, so the agent reading it, and its chat if that is on screen, say Sam
+too (shots `gfv-scratch/carton/demo/shots/speak-credit-before/` and `…/speak-credit-after/`, `1-main-cut-history.png`).
 
 ```
 peer say "Psst. Is anyone else in here?" --at 3.5 --for 3 --style chat [--name "<timeline label>"] [--track Talk]
@@ -224,23 +235,77 @@ their titles) → `cb history --json` (their computer, `local:<user>@<host>`). A
 All of these were run with the app side's real `cb` while the project was shared and the remote was editing, in the
 local rehearsals and on the live server (logs, §7).
 
-### 4.1 The person's own cut, without the chat (works)
+### 4.1 The hide, step by step (works; the recipe for the laptop's agent)
+
+The person's editor goes to a cut of their own, made from the version before the chat began, with the teammate's other
+work folded in and nothing of the chat. In this order (`cues.js` `agentHide` does exactly this with Cardboard's `cb`):
 
 ```
-$ cb cut new "Demo rehearsal" "Vikas's cut" --from main@5        # the newest version before the chat began
-New cut "Vikas's cut" (df2006ff)
-$ cb cut switch "Demo rehearsal" "Vikas's cut"
+$ cb cut list "Demo rehearsal"                                   # 0. the name must be free: "Vikas's cut"
+$ cb cut new "Demo rehearsal" "Vikas's cut" --from main@4        # 1. from the version before the chat; the editor stays
+New cut "Vikas's cut" (df2006ff)                                 #    from here on, the cut by its id: df2006ff
+$ cb source print "Demo rehearsal" --view hide                   # 2. the shared cut now, at one exact version (its header):
+// cardboard:rev Main cut@316~… b:…                              #    "Main cut@316": what to keep out comes from this print
+$ cb fold "Demo rehearsal" main@316 --into df2006ff \            # 3. exactly that version, never the cut's moving head
+    --reject tracks/<Talk> --reject tracks/<Voice> \
+    --reject timelineItems/<every clip on them> --reject media/<their media> --reject media/<the teammate's unused media>
+Folded in (kept out: …): confirmed df2006ff@2
+$ cb compare "Demo rehearsal" main@4 df2006ff                    # 4. nothing of the chat came in (see below)
+$ cb cut switch "Demo rehearsal" df2006ff                        # 5. last: the editor shows it; the teammate sees the person leave
 Now on "Vikas's cut"
 ```
 
-- The new cut lives on the laptop only ("this computer only" in `cb cut list`); the editor follows the switch at once
-  (the worker writes the cut's head into project.json): the chat's tracks and clips are gone from the timeline, the
-  chip "● Vikas's cut" shows on the timeline's toolbar, History shows that cut's history, the media bin loses the chat's
-  sound (shots `2-…-editor.png`, `2-…-history.png`).
-- The remote sees the person leave: their presence leaves the shared cut (core's `#leavePresence` on a switch), so the
-  remote's stream says `Vikas left` and its Share no longer lists them. A cue can wait for exactly that
-  (`wait: {left: Vikas}`).
-- The remote keeps writing on Main; the laptop still receives it (Main stays connected) and the agent reads it:
+- **What to keep out**, all from the one print of step 2 (plus project.json, read right after it, for a title's text
+  entry: the print names only file media): the chat's tracks; every clip on them (an id on the line after `<text`,
+  `<audio`); each clip's media (an `<audio>`'s `src` is a name the header maps to an id; a `<text>`'s entry is its
+  `mediaItemId` in project.json); and the teammate's media no clip uses yet (a sound whose clip isn't placed: `cb compare
+  <version before> <that version>` lists it as "Added media '…'"). Keep all of them out: a rejected track with one of its
+  clips not rejected makes the fold refuse ("Not folded in: 2 cards", each "(parent)", nothing saved); rejecting only the
+  clips leaves empty "Talk" and "Voice" tracks in the person's cut and the chat's media in the bin.
+- **Why that order** (found in the first cross-machine rehearsal): the reject list was read at 12:13:00.46, the cut was
+  made and switched to, and the fold of "Main cut" ran at 12:13:04.15. Sam's "Gone. They can't see us now." landed at
+  12:13:04.122, in between, because Sam waits for "Vikas left" and that fires at the switch; the fold took Main's head
+  with it, and the line came into the person's cut on a made-up "Missing track" (History "Folded in “Main cut” · 1 of 8
+  changes", the cut 0:12 → 0:19). Now the fold takes the exact printed version (a line landing after it is simply not in
+  it), and the switch, which the teammate sees, comes after the fold.
+- **The check, step 4**: compared with the version before the chat, the person's cut may only have gained tracks, clips
+  and media from outside the chat in the folded version. A line naming a chat track, "… on another track" (`cb compare`'s
+  words for a clip whose track isn't there; History says "Missing track"), or any other clip or media is a leak. Then,
+  after the switch, each such clip is taken out at once with `cb restore "Demo rehearsal" main@4 --clip <id> --remove`
+  ("Took out “Gone…”: it wasn't in the version from …"), and the agent says so. `cb` writes only to the current cut, so
+  this shows for a moment; with the order above it never happened (below).
+- **A name used twice**: Carton lets two cuts share a name, and `--into <name>`, `cut switch <name>` then mean the first
+  one (`cli-mcp` `refs.ts` `resolveCut`). A second hide under the same name folded into the old cut (its history clashed:
+  the fold refused). So step 0, and the cut by its id after step 1.
+- **The version before the chat**: walk `cb history --cut "Main cut" --limit 1000` from the oldest, `cb compare
+  <previous> <version>` for each, and take the one before the first that touches the chat's tracks (`versionBefore`). The
+  whole history: with `--limit 200` the walk began mid-chat once Main had more versions, and the person's cut would have
+  been made from a version with chat in it.
+- **Long reject lists**: one `--reject` per record; with a few dozen chat clips it is short, but Windows caps a command
+  line at 32,767 characters (about 600 `--reject`s): a very long chat would need a fold in parts.
+
+**The race, rehearsed** (`scripts/demo/race-hide.js`, local server, both participants on this box): while the agent
+hides the chat, Sam keeps talking from its own process: chat lines and a spoken line spread over the hide, one more line
+landed exactly between the agent's print and its fold, and a line the moment Vikas leaves. Then the person's cut is read
+on its own from the app side's worker: no clip on a chat track or on a track the cut doesn't have, no chat track, none
+of the chat's media, and Sam's real work from before the fold there.
+
+| The hide | Runs | Leaked into the person's cut | Log |
+|---|---|---|---|
+| the laptop's order (switch, then fold Main's head) | 2 | 2 clips each run ("Between line", and "Gone" sent at "Vikas left"), "on another track"; the check took both out after the switch | `gfv-scratch/carton/demo/runs/race-hide-2026-11-07T07-17-37-593Z/` |
+| the order above | 5 | 0; no fold refused; Sam's real work in every run; 32 of Sam's edits landed on Main during the five hides | `gfv-scratch/carton/demo/runs/race-hide-2026-11-07T07-18-21-207Z/` |
+
+**What the person sees**: the editor follows the switch at once (the worker writes the cut's head into project.json):
+the chat's tracks and clips are gone from the timeline, the chip "● Vikas's cut" shows on the timeline's toolbar,
+History shows that cut's history ("merge (N left out)", the Start row "Folded in “Main cut” · You"), the media bin loses
+the chat's sound (shots `2-…-editor.png`, `2-…-history.png`). The new cut lives on the laptop only ("this computer only"
+in `cb cut list`).
+
+**What the remote sees**: the person leave, at the switch: their presence leaves the shared cut (core's `#leavePresence`
+on a switch), so the remote's stream says `Vikas left` and its Share no longer lists them (`wait: {left: Vikas}`).
+
+**After the hide**, the remote keeps writing on Main; the laptop still receives it (Main stays connected) and the agent
+reads it:
 
 ```
 $ cb history "Demo rehearsal" --cut "Main cut" --limit 3
@@ -251,24 +316,9 @@ $ cb compare "Demo rehearsal" "Vikas's cut" "Main cut"
 …
 ```
 
-Picking "the version before the chat": walk `cb history --cut "Main cut"` from the start, `cb compare <previous>
-<version>` for each, and take the one before the first that touches the chat's tracks (`cues.js` `versionBefore`).
+Later work of the teammate's comes in with another fold of a newer printed version, the chat kept out the same way.
 
-### 4.2 The remote's real work in, the chat kept out (works)
-
-```
-$ cb fold "Demo rehearsal" "Main cut" --into "Vikas's cut" \
-    --reject tracks/<Talk> --reject tracks/<Voice> --reject timelineItems/<each chat clip> --reject media/<each chat clip's media>
-Folded in (kept out: tracks/…, …): confirmed df2006ff@2
-```
-
-Keep all three kinds out: rejecting only the clips leaves the empty "Talk" and "Voice" tracks in the person's cut, and
-the chat's media (each title's text entry, "Text: Hello? Anyone there?", and the sound) comes along into the bin. With
-all three, the person's cut held only the footage and the teammate's "Opening title". History shows the fold as a merge
-"(N left out)", and the cut's Start row "Folded in “Main cut” · You". The ids are in the agent's own view
-(`cb source print --view`: tracks and clips) and project.json (each clip's `mediaItemId`).
-
-### 4.3 What doesn't work
+### 4.2 What doesn't work
 
 - **The agent can't answer on Main while the editor shows another cut.** Its view is parsed against the current cut's
   project.json (`materializer.ts` `parseSave` → `currentProject()`): a view printed on Main and saved after the switch
@@ -284,7 +334,7 @@ all three, the person's cut held only the footage and the teammate's "Opening ti
   editing" (shot `2-…-share.png`). The remote can go `--idle` (faded) or `--gone` itself.
 - What the agent did is in History: "Made this cut", the fold "(N left out)", by Director.
 
-### 4.4 Also possible, and a quirk
+### 4.3 Also possible, and a quirk
 
 - One clip out of the shared cut, for everyone: `cb restore "Demo rehearsal" main@5 --clip "Psst. Is anyone else in
   here?" --remove`. The remote saw `Removed title “Psst. Is anyone else in here?”`; Carton words the version "Brought
@@ -384,6 +434,9 @@ passed (`peer speak`), so the clip can be streamed the moment it appears; it cos
 - **The person's own actions**: anything the person does in the editor is a change like any other; a cue waiting for
   "the agent's title" waits for the agent's (`by: Director`).
 - **Cardboard 1.4.1**: the laptop runs 0c498b2b (1.4.0); none of this was run from 1.4.1.
+- **Recording**: in the first cross-machine rehearsal the laptop's window capture with ffmpeg (WGC, `gfxcapture`) failed:
+  WGC delivers a frame only when the window changes, and ffmpeg didn't stop on `q`, leaving an MP4 with no moov. The
+  real session records with OBS.
 
 ## 7. Rehearsals
 
@@ -417,8 +470,9 @@ From the laptop / the user:
 3. Optional: a "Talk" track (and an audio "Voice" track) made in the project beforehand, where the user wants them; else
    the rig adds them at the bottom (titles still draw on top).
 4. The agent's side: a prompt for the laptop's Director (or Claude Code) with the commands of §3 and §4 (find with
-   `cb activity` / `cb history`, answer with a `<text … zIndex={100}>` through its view, hide with `cut new --from`,
-   `cut switch`, `fold --reject`), and the script's order: talk first, hide last.
+   `cb activity` / `cb history`, answer with a `<text … zIndex={100}>` through its view, hide exactly as §4.1: a free
+   name, `cut new --from <version before the chat>`, one `source print --view`, `fold <that printed version> --into <the
+   cut's id> --reject …`, `compare`, and `cut switch` last), and the script's order: talk first, hide last.
 5. The script, as a cue sheet (`sample-cues.yaml` shows the steps), and the voice: Piper here, or ElevenLabs lines made
    on the laptop and copied over (`speak: … file:`).
 6. During the recording: no files dropped into the shared project on the laptop (§6.1); the laptop on mains.

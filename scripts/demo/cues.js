@@ -203,7 +203,11 @@ function cbStep(dir, s, out, stamp) {
  */
 function versionBefore(dir, s) {
   const cut = s.cut_from ?? "Main cut", tracks = s.chat_tracks ?? ["Talk", "Voice"];
-  const h = lib.cb(dir, ["history", s.project, "--cut", cut, "--limit", "200"], { actor: ACTOR(s) }).json().versions.slice().reverse();
+  // the whole history, oldest first (cb history lists the newest first, 1000 at most): a shorter list began mid-chat
+  // once the cut had more versions than it held, and the person's cut was then made from a version with chat in it
+  if (s.before) return s.before;
+  const h = lib.cb(dir, ["history", s.project, "--cut", cut, "--limit", "1000"], { actor: ACTOR(s) }).json().versions.slice().reverse();
+  if (h.length >= 1000 && h[0].ref?.seq > 0) throw new Error(`${cut} has more than 1000 versions: say which is the last before the chat (before: <cut>@<seq>)`);
   for (let i = 1; i < h.length; i++) {
     const r = lib.cb(dir, ["compare", s.project, h[i - 1].version, h[i].version], { actor: ACTOR(s) }).json();
     if (r.changes.some((c) => tracks.some((t) => c.includes(`'${t}'`)))) return h[i - 1].version;
@@ -237,30 +241,140 @@ function agentClear(dir, s) {
 }
 
 /**
- * The agent hides the chat from the person (FINDINGS.md §4): a cut of their own from the newest version before the chat
- * (on this computer only), the editor switched to it, then the teammate's other work folded in with the chat's tracks,
- * their clips and the clips' media kept out. The ids come from what the agent can read while it is still on the shared
- * cut: its own view (tracks, clips, media files) and the project file (a title's text entry).
+ * The agent hides the chat from the person (FINDINGS.md §4), with Cardboard's own cb only, as the laptop's agent would:
+ *   1. the version just before the chat began (versionBefore);
+ *   2. `cb cut new <cut> --from <it>`: a cut of the person's own, on this computer only (the editor doesn't follow);
+ *   3. `cb source print --view`: the shared cut as it is now, at an exact version (its header); from that one print, what
+ *      to keep out: the chat's tracks, every clip on them, those clips' media (a title's text entry from project.json),
+ *      and a teammate's media no clip uses yet (a sound whose clip isn't placed yet);
+ *   4. `cb fold <that version> --into <cut> --reject …`: exactly that version, so a line that lands on the shared cut
+ *      meanwhile can't come in (folding the cut's moving head did, in the first cross-machine rehearsal: a line landed
+ *      between the reading and the fold, on a "Missing track");
+ *   5. `cb compare <version before> <cut>`: nothing of the chat there (no line naming its tracks, clips or media);
+ *   6. `cb cut switch <cut>`, last: the person's editor shows it, and the teammate sees them leave the shared cut only
+ *      now, after the fold.
+ * If step 5 finds something anyway, the cut is switched to and each such clip taken out at once with `cb restore <version
+ * before> --clip <id> --remove` (cb writes to the current cut only), and the answer says so.
  */
 async function agentHide(dir, s, out, stamp) {
   const cut = s.agent_hide, tracks = s.chat_tracks ?? ["Talk", "Voice"], from = s.cut_from ?? "Main cut";
-  const doc = await lib.request(dir, "read");
-  const chat = new Set((doc.tracks ?? []).filter((t) => tracks.includes(t.name)).map((t) => t.id));
-  const items = (doc.timelineItems ?? []).filter((i) => chat.has(i.trackId));
-  const media = [...new Set(items.map((i) => i.mediaItemId).filter(Boolean))];
-  const reject = [...[...chat].map((id) => "tracks/" + id), ...items.map((i) => "timelineItems/" + i.id), ...media.map((id) => "media/" + id)];
-  const before = versionBefore(dir, { ...s, cut_from: from, chat_tracks: tracks });
-  const steps = [
-    ["cut", "new", s.project, cut, "--from", before],
-    ["cut", "switch", s.project, cut],
-    ["fold", s.project, from, "--into", cut, ...reject.flatMap((r) => ["--reject", r])],
-  ];
-  for (const a of steps) {
-    const r = lib.cb(dir, a, { actor: ACTOR(s), json: false });
-    out(`${stamp()}      $ cb ${a.slice(0, 5).join(" ")}${a[0] === "fold" ? ` … (${reject.length} kept out)` : a.length > 5 ? " " + a.slice(5).join(" ") : ""} │ ${(r.out + r.err).trim().split("\n")[0].slice(0, 160)}`);
+  const run = (a, { json = false, quiet = false } = {}) => {
+    const r = lib.cb(dir, a, { actor: ACTOR(s), json });
+    if (!quiet) out(`${stamp()}      $ cb ${a.slice(0, 5).join(" ")}${a[0] === "fold" ? ` … (${a.filter((x) => x === "--reject").length} kept out)` : a.length > 5 ? " " + a.slice(5).join(" ") : ""} │ ${(r.out + r.err).trim().split("\n")[0].slice(0, 160)}`);
     if (r.code !== 0) throw new Error(`cb ${a.slice(0, 3).join(" ")} failed: ${(r.out + r.err).trim().slice(0, 300)}`);
+    return r;
+  };
+  // A cut's name can be taken twice, and `--into <name>` then means the first cut with it (cli-mcp refs.ts resolveCut):
+  // a second hide under the same name would fold into the old cut. So a taken name is refused, and the new cut is
+  // named by its id from here on.
+  const taken = run(["cut", "list", s.project], { json: true, quiet: true }).json().cuts.find((c) => c.name.toLowerCase() === String(cut).toLowerCase());
+  if (taken) throw new Error(`a cut named “${taken.name}” is already there (${taken.id.slice(0, 8)}): name the person's cut something else`);
+  const before = versionBefore(dir, { ...s, cut_from: from, chat_tracks: tracks });
+  const made = run(["cut", "new", s.project, cut, "--from", before]);
+  const id = /\(([0-9a-f]{8})\)\s*$/.exec(made.out.trim())?.[1]; // New cut "Vikas's cut" (df2006ff): enough of its id for cb
+  if (!id) throw new Error("cb cut new answered no cut: " + made.out.slice(0, 200));
+  // (race-hide.js --old-flow only: the first cross-machine rehearsal's order, the switch before the fold, and the shared
+  // cut's moving head folded; it shows the leak and the safety net)
+  const old = !!s.old_flow;
+  // the shared cut now, at one exact version, from one print (the editor is still on it)
+  const view = run(["source", "print", s.project, "--view", "hide"], { json: true, quiet: true }).json().view;
+  const v = readView(view.file);
+  // a title's text entry is in project.json (the print names only file media); read off disk, as the agent reads it,
+  // once it holds every chat clip of the print (the worker writes it a moment after each change)
+  const file = path.join(lib.readJson(path.join(dir, "peer.json")).root, `${s.project}.cardboard`, "project.json");
+  const printed = v.tracks.filter((t) => tracks.includes(t.name)).flatMap((t) => t.items.map((i) => i.id));
+  let onDisk = new Map();
+  for (let i = 0; i < 60; i++) {
+    try { onDisk = new Map((JSON.parse(fs.readFileSync(file, "utf8")).project?.timelineItems ?? []).map((x) => [x.id, x.mediaItemId])); } catch {}
+    if (printed.every((x) => onDisk.has(x))) break;
+    await new Promise((res) => setTimeout(res, 50));
   }
-  return { text: `the person's editor is on “${cut}” (from ${before}); ${items.length} chat clips, ${chat.size} tracks and ${media.length} media kept out of it` };
+  if (old) run(["cut", "switch", s.project, id]);
+  const at = view.ref; // "Main cut@12~6d7f0548 b:5f7fb7b0"
+  const chatTracks = v.tracks.filter((t) => tracks.includes(t.name));
+  const chatItems = chatTracks.flatMap((t) => t.items), others = v.tracks.filter((t) => !tracks.includes(t.name)).flatMap((t) => t.items);
+  const usedBy = (items) => new Set(items.flatMap((i) => [i.src ? v.media.get(i.src) : null, onDisk.get(i.id)]).filter(Boolean));
+  const keep = usedBy(others), chatMedia = [...usedBy(chatItems)].filter((m) => !keep.has(m));
+  // media added since the version before the chat that no clip uses: a teammate's sound still waiting for its clip
+  const added = run(["compare", s.project, before, at], { json: true, quiet: true }).json().changes.map((c) => /^Added media '(.+)'$/.exec(c)?.[1]).filter(Boolean);
+  const loose = added.map((n) => v.media.get(n)).filter((m) => m && !keep.has(m) && !chatMedia.includes(m));
+  const reject = [...chatTracks.map((t) => "tracks/" + t.id), ...chatItems.map((i) => "timelineItems/" + i.id), ...[...chatMedia, ...loose].map((m) => "media/" + m)];
+  out(`${stamp()}      (the shared cut at ${at.split(" ")[0]}: ${chatItems.length} chat clips on ${chatTracks.map((t) => t.name).join(", ") || "no chat track"}, ${chatMedia.length + loose.length} media of theirs)`);
+  // (race-hide.js only: `_beforeFold` lands a teammate's line right here, after the reading)
+  if (s._debug) fs.writeFileSync(s._debug, JSON.stringify({ at, view: view.file, viewText: fs.readFileSync(view.file, "utf8"), reject, chatItems, chatTracks: chatTracks.map((t) => ({ id: t.id, name: t.name, n: t.items.length })) }, null, 1));
+  if (typeof s._beforeFold === "function") s._beforeFold();
+  // The version as `cb history` names it (main@N): exactly what was printed. A fold that refuses saves nothing ("Not
+  // folded in: N cards"): in the race rehearsal (race-hide.js) it refused now and then, with "(parent)" cards for the
+  // chat's tracks, when a teammate's line had landed on the shared cut a moment before, and the same fold went through
+  // moments later; so it is tried again after a pause, the same version and the same list.
+  const version = `${(await cutKind(dir, s, from)) ?? "main"}@${/@(\d+)~/.exec(at)?.[1]}`;
+  for (let tries = 1; ; tries++) {
+    try { run(["fold", s.project, old ? from : version, "--into", id, ...reject.flatMap((r) => ["--reject", r])]); break; }
+    catch (e) {
+      if (!/Not folded in: \d+ cards?/.test(e.message) || tries >= 4) throw e;
+      out(`${stamp()}      (the fold refused with cards, nothing saved; again in ${tries} s)`);
+      await new Promise((res) => setTimeout(res, tries * 1000));
+    }
+  }
+  // Nothing of the chat in the person's cut: compared with the version before the chat, it may only have gained tracks,
+  // clips and media from outside the chat in the version folded in. Anything else is a leak: a chat track or clip, a
+  // clip whose track isn't there ("on another track"), media of theirs. (cb compare cuts long names with "…".)
+  const fits = (name, allowed) => [...allowed].some((n) => n === name || (name.endsWith("…") && n.startsWith(name.slice(0, -1))));
+  const okTracks = new Set(v.tracks.filter((t) => !tracks.includes(t.name)).map((t) => t.name));
+  const okClips = new Set(others.map((i) => i.name).filter(Boolean));
+  const okMedia = new Set([...v.media].filter(([, id]) => keep.has(id)).map(([n]) => n));
+  const leaked = (l) => {
+    if (/ on another track\b|'Missing track'/.test(l) || tracks.some((t) => l.includes(`'${t}'`))) return true;
+    let m;
+    if ((m = /^Added track '(.+?)'/.exec(l))) return !fits(m[1], okTracks);
+    if ((m = /^Added media '(.+)'$/.exec(l))) return !fits(m[1], okMedia);
+    if ((m = /^Added (?!track |media )\S+ '(.+?)'(?: on | at |$)/.exec(l))) return !fits(m[1], okClips);
+    return false;
+  };
+  const lines = run(["compare", s.project, before, id], { json: true, quiet: true }).json().changes;
+  const leaks = lines.filter(leaked);
+  if (!old) run(["cut", "switch", s.project, id]);
+  let fixed = [];
+  if (leaks.length) {
+    // the safety net: cb writes only to the current cut, so this shows for a moment
+    out(`${stamp()}      ✗ leaked into “${cut}”: ${leaks.join("; ")}`);
+    const now = readView(run(["source", "print", s.project, "--view", "hide"], { json: true, quiet: true }).json().view.file);
+    const theirs = new Set(chatItems.map((i) => i.id));
+    // a chat clip by its id, anything on a chat track, or a clip a leaked line names
+    const suspect = (t, i) => theirs.has(i.id) || tracks.includes(t.name) || leaks.some((l) => i.name && l.includes(`'${i.name}'`));
+    for (const t of now.tracks) for (const i of t.items) {
+      if (!suspect(t, i)) continue;
+      run(["restore", s.project, before, "--clip", i.id, "--remove"]);
+      fixed.push(i.name ?? i.id);
+    }
+  }
+  return { text: `the person's editor is on “${cut}” (from ${before}, ${at.split(" ")[0]} folded in); ${chatItems.length} chat clips, ${chatTracks.length} tracks and ${chatMedia.length + loose.length} media kept out${fixed.length ? `; ${fixed.length} leaked clip${fixed.length === 1 ? "" : "s"} taken out after the switch: ${fixed.map((n) => `“${n}”`).join(", ")}` : leaks.length ? `; leaks seen, none could be taken out: ${leaks.join("; ")}` : "; nothing of the chat came in"}`, at, before, reject, leaks, fixed };
 }
 
-module.exports = { run, meets, load, voiceName };
+/** How `cb history` names a cut's versions ("main" for the Main cut: main@12). */
+async function cutKind(dir, s, cut) {
+  const h = lib.cb(dir, ["history", s.project, "--cut", cut, "--limit", "1"], { actor: ACTOR(s) }).json().versions[0];
+  return h?.version?.split("@")[0] ?? null;
+}
+
+/** An agent's view file (cb source print --view): its tracks with their clips (id, name, src), and its media by name. */
+function readView(file) {
+  const text = fs.readFileSync(file, "utf8");
+  const media = new Map();
+  for (const m of text.matchAll(/^\/\/ {3}(.+?) {2,}.*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/gm)) media.set(m[1].trim(), m[2]);
+  const tracks = [];
+  for (const block of text.split(/\n\s*<track\b/).slice(1)) {
+    const head = /^([^>]*)>/.exec(block)?.[1] ?? "";
+    const attr = (src, k) => new RegExp(`\\b${k}=(?:"([^"]*)"|\\{"((?:[^"\\\\]|\\\\.)*)"\\})`).exec(src)?.slice(1).find((x) => x !== undefined);
+    const items = [];
+    for (const el of block.split(/<\/track>/)[0].split(/\n\s*<(?=[a-z])/).slice(1)) {
+      const tag = /^([a-z]+)/.exec(el)?.[1];
+      if (!tag || tag === "track") continue;
+      items.push({ tag, id: attr(el, "id"), name: attr(el, "name") ?? null, src: attr(el, "src") ?? null });
+    }
+    tracks.push({ id: attr(head, "id"), name: attr(head, "name"), items: items.filter((i) => i.id) });
+  }
+  return { tracks, media };
+}
+
+module.exports = { run, meets, load, voiceName, agentHide, versionBefore, readView };

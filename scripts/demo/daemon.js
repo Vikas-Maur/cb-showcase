@@ -253,7 +253,9 @@ async function speak({ file, at, name, track = "Voice", text, volume, seconds, s
   } else {
     // Cardboard's own `cb media add`, handed to this worker (the lease holder) as any cb write: no background derive
     const had = new Set(((await read()).media ?? []).map((m) => m.id));
-    const r = await cbAsync(["media", "add", projectId(), path.resolve(file)], cfg.agent ? cfg.agent.id : null);
+    // named as the person (or the agent): Carton's store bridge maps CARDBOARD_ACTOR=person to the app's own person, so
+    // the import reads as them everywhere (`cb history` too); a cb with no actor is a nameless "Terminal" writer
+    const r = await cbAsync(["media", "add", projectId(), path.resolve(file)], cfg.agent ? cfg.agent.id : "person");
     if (r.code !== 0) throw new Error("Cardboard didn't take the sound: " + (r.out + r.err).trim().split("\n").slice(-2).join(" "));
     for (let i = 0; i < 100 && !mediaId; i++) {
       mediaId = ((await read()).media ?? []).find((m) => !had.has(m.id) && m.data?.type === "audio")?.id;
@@ -420,6 +422,13 @@ const OPS = {
   },
   read: () => read(),
   async cuts() { const lc = await handle(); return { current: lc.carton.cut, cuts: await lc.carton.cuts() }; },
+  // any cut's state as this computer holds it (rehearsal checks: race-hide.js reads the person's cut this way)
+  async cutDoc({ name }) {
+    const lc = await handle(), c = (await lc.carton.cuts()).find((x) => x.name === name || x.id === name);
+    if (!c) throw new Error(`No cut “${name}” here`);
+    const { doc, ref } = await lc.carton.head(c.id);
+    return { cut: c.name, seq: ref.seq, tracks: doc.tracks ?? [], items: doc.timelineItems ?? [], media: (doc.media ?? []).map((m) => ({ id: m.id, type: m.data?.type ?? null, fileName: m.data?.fileName ?? null })) };
+  },
   async log({ cut, limit = 20 }) { const lc = await handle(); return lc.carton.log({ cut, limit, summary: true }); },
   async sync() { const lc = await handle(); return { cut: lc.carton.cut, state: lc.carton.sync?.state() ?? null, error: lc.carton.sync?.error?.() ?? null }; },
   async media({ mediaId }) { return { source: await call("carton.liveMediaSource", { mediaId }), here: await call("carton.liveMediaHere", { projectId: projectId(), mediaIds: [mediaId] }) }; },
