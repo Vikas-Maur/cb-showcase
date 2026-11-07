@@ -1240,6 +1240,9 @@ async function installFile(tmp, file, seenStamp, rev, envelope) {
     // journaled now, so a later sweep finds it if this process exits before the put-back decides.
     await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp, held: seen });
     if (recover) s.mine.add(recover), (journal[path.basename(recover)] = { at: Date.now(), stamp: await statStamp(recover, BUSY) });
+    // the project.json Carton installed last, whichever process did (review of fix/demo-sync-bugs, P1: sawDisk knows it
+    // for what it is without reading it again); a stat, in the journal this install writes anyway
+    if (path.basename(file) === "project.json" && installed) journal[INSTALLED] = await statStamp(file, BUSY);
     await writeJournal(bundle, journal);
     if (testHooks.installed) await testHooks.installed(file);
     s.own = await ownAfter(file, bytes);
@@ -1328,6 +1331,8 @@ async function ownAfter(file, bytes) {
 // When each displaced file was moved aside and its stamp then (.carton/displaced.json), written under the install
 // lock. A file's own mtime says nothing: a rename keeps it.
 const journalFile = (bundle) => path.join(bundle, ".carton", "displaced.json");
+// (beside the displaced files: the stamp of the project.json Carton installed last)
+const INSTALLED = "#installed:project.json";
 const readJournal = (bundle) => { try { return JSON.parse(fs.readFileSync(journalFile(bundle), "utf8")); } catch { return {}; } };
 const writeJournal = async (bundle, j) => {
   const tmp = journalFile(bundle) + "." + process.pid + ".tmp";
@@ -1345,7 +1350,7 @@ async function sweep(file, s, journal, held) {
   const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []), now = Date.now();
   // (a set: a burst of saves leaves hundreds of files here until their review, and this runs at every install)
   const present = new Set(names);
-  for (const n of Object.keys(journal)) if (!present.has(n)) delete journal[n];
+  for (const n of Object.keys(journal)) if (n !== INSTALLED && !present.has(n)) delete journal[n];
   for (const n of names) {
     const p = path.join(dir, n), j = journal[n];
     if (s.mine.has(p) || !j || now - j.at < 10_000) continue;
@@ -1493,9 +1498,10 @@ export const cardboard14 = {
       // Review of fix/demo-sync-bugs, P1: a rev Carton recorded names a version, but another program may have edited
       // the file and kept its rev (an empty write's rev is recorded too now). The file is that version only while what
       // Carton versions of it is that version's; otherwise it is an outside save, imported as what it changed against
-      // that version. The file this process installed last (its stamp), or one checked already, is what it is: no read,
-      // no hash on a save's or an apply's way. (A version that can't be rebuilt here is taken as the file says.)
-      if (stamp && (stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file))) return;
+      // that version. The file Carton installed last (its stamp: this process's, or any's in .carton/displaced.json), or
+      // one checked already, is what it is: no read, no hash on a save's or an apply's way. (A version that can't be
+      // rebuilt here is taken as the file says.)
+      if (stamp && (stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file) || stamp === readJournal(bundlePath)[INSTALLED])) return;
       const at = await revState(lc, ref);
       if (at && !sameVersioned(lc, doc, at.doc)) await importForeign(lc, doc, at);
       if (stamp) checkedFiles.set(file, stamp);
