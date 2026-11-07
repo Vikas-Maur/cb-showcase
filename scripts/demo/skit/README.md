@@ -110,6 +110,12 @@ to the OS; paths from `demo-env.ps1`):
 | `cap-run.ps1 -Hwnd <hwnd> -Out <file.mkv>` | records that window only (Windows Graphics Capture → Quick Sync → Matroska) until its stop file appears |
 | `go.js <port> <project id>` | History open, the Library panel closed, a Claude Code row picked, the prompt sent; shoots the key moments, sends the gone cue 3 s after the stand-in waits for it, then stops the capture and the taskbar flash |
 | `unseen\` | the launcher, its Win32 calls, and `flashstop.ps1` |
+| `obs\make-config.ps1` | our own OBS settings in OBS's portable config folder (the user's `%APPDATA%\obs-studio` is never read or written): scene "Cardboard" = Window Capture (Windows Graphics Capture) + Application Audio Capture of `Cardboard.exe`, 1080p60, NVENC, hybrid MP4 into `D:\OBS` |
+| `obs\obs-rec.ps1 -Start` / `-Stop [-Name skit-take1.mp4]` | starts OBS on that config recording at once (minimized), and stops it with a graceful close |
+
+For a take OBS records, start the demo Cardboard with `launch-demo.ps1 -Sound -CurrentDesktop`: OBS's Window Capture
+records a window on another virtual desktop as black. OBS is started minimized, not `--minimize-to-tray` (closing it from
+the tray crashed in its preview's teardown, after the file was finished).
 | `lib\` | DevTools helpers (over `scripts/cdp.js`), the first-run screens, opening a project's tab, `demo-env.ps1`'s paths for Node |
 
 A rehearsal: `make-project.ps1`, `start-actor.ps1`, `launch-demo.ps1`, `node share.js 9420 <id>` (send the link), then

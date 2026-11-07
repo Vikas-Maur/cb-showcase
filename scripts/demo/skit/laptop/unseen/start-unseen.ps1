@@ -11,11 +11,13 @@
 #   virtual desktop 2 (the VirtualDesktop PowerShell module), put on-screen there (-Width x -Height in DIP, or as
 #   Cardboard sized it) and never activated; a window that doesn't come within 240 s: the app is closed by its pid;
 # - --remote-debugging-port=<Port> to drive it over DevTools; -ExtraArgs adds switches (--mute-audio for a rehearsal);
+# - -CurrentDesktop: the window goes to the desktop on screen instead of desktop 2 (still never activated): OBS's Window
+#   Capture records a window on another virtual desktop as black (Windows hides it there), so a take OBS records needs it;
 # - -WaitForActive: wait while the person's last input is 150 s old or more (no longer the default: the user allowed
 #   launches while they are away, 2026-11-07). No input is ever sent to the session.
 # Prints "pid=<main pid> hwnd=<hwnd>" last.
 param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Profile, [Parameter(Mandatory)][int]$Port,
-  [switch]$Switches, [int]$Width = 0, [int]$Height = 0, [string]$ExtraArgs = '', [switch]$CartonOff, [string]$EnvFile = '', [switch]$WaitForActive)
+  [switch]$Switches, [int]$Width = 0, [int]$Height = 0, [string]$ExtraArgs = '', [switch]$CartonOff, [string]$EnvFile = '', [switch]$WaitForActive, [switch]$CurrentDesktop)
 $ErrorActionPreference = 'Stop'
 Import-Module VirtualDesktop -WarningAction SilentlyContinue
 . "$PSScriptRoot\win32.ps1"
@@ -27,7 +29,7 @@ if (-not ('IdleOnly' -as [type])) { Add-Type -TypeDefinition 'using System; usin
 # 2026-11-07: the user lifted this rule ("yes even when im away"): the wait runs only with -WaitForActive.
 while ($WaitForActive -and [IdleOnly]::Ms() -ge 150000) { "$((Get-Date).ToString('HH:mm:ss')) user idle $([int]([IdleOnly]::Ms() / 1000)) s: waiting until they are active (checked every 30 s)"; Start-Sleep -Seconds 30 }
 if ((Get-DesktopCount) -lt 2) { $null = New-Desktop; "made virtual desktop 2" }
-$cur = Get-DesktopIndex (Get-CurrentDesktop); $ti = if ($cur -eq 0) { 1 } else { 0 }; $d2 = Get-Desktop $ti; "user's desktop index: $cur (never switched); test desktop index: $ti"
+$cur = Get-DesktopIndex (Get-CurrentDesktop); $ti = if ($CurrentDesktop) { $cur } elseif ($cur -eq 0) { 1 } else { 0 }; $d2 = Get-Desktop $ti; "user's desktop index: $cur (never switched); test desktop index: $ti"
 # (no focus guard and no watch on the user's foreground: the user may look at, focus or click a test window at any time; 2026-11-06)
 $cargs = "--remote-debugging-port=$Port"
 if ($ExtraArgs) { $cargs += " $ExtraArgs" }
