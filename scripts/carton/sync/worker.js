@@ -301,23 +301,29 @@ async function recordShare(lc, bundlePath, projectId, mediaId, record) {
  * read when its entry arrived (before the teammate had shared it) was kept for 2 s: the editor's first ask for its clip
  * got "Source file missing", and the sound played 2 to 4 s after it could have.
  */
+// A media entry's own record once it is final (S5-G2): a complete proxy, or an original shared as it is; else null.
+function ownRecord(e, mediaId) {
+  const s = e?.shared;
+  return s && e.contentHash && ((s.proxy && (s.proxy.hash || s.proxy.size !== undefined)) || (!s.proxy && s.original === "shared")) ? { id: mediaId, ...s, hash: e.contentHash } : null;
+}
 async function recordIn(lc, bundlePath, projectId, mediaId, { missMs } = {}) {
   const e = lc && (await lc.carton.head()).doc?.media?.find?.((m) => m.id === mediaId);
-  const s = e?.shared;
-  if (s && e.contentHash && ((s.proxy && (s.proxy.hash || s.proxy.size !== undefined)) || (!s.proxy && s.original === "shared"))) return { id: mediaId, ...s, hash: e.contentHash };
-  return media.sharedRecord(bundlePath, projectId, mediaId, { missMs });
+  return ownRecord(e, mediaId) ?? media.sharedRecord(bundlePath, projectId, mediaId, { missMs });
 }
 /**
  * FINDINGS §6.2: main asks where a teammate's clip plays from when the editor first loads it, which can be the moment
  * its clip arrives, before the teammate's app has sent the file (it shares a new clip a moment after adding it). The
- * answer was "none", which main gives the editor as 1.4.0's "Source file missing". A teammate's clip on its way (its
- * entry in this computer's head, its file never here) is now waited for instead, as a slow load: answered as soon as
- * the project says it is shared (a change, which wakes the wait) or the host has its record (asked every half second);
- * then "none", as before. One wait per clip, shared by every ask for it.
+ * answer was "none", which main gives the editor as 1.4.0's "Source file missing". A teammate's clip on its way is now
+ * waited for instead, as a slow load: answered as soon as the project says it is shared (each change is looked at) or
+ * the host has its record (asked one read at a time, half a second apart). One wait per clip, shared by every ask for it.
+ * Only while it is new here: within ON_ITS_WAY_MS of its entry reaching this computer's project.json (fillTeammateMedia
+ * notes it, before the editor can see the clip; only a teammate's clip, never one whose file is here). One that never
+ * comes (the teammate's app closed first, a file over the server's limit) is answered as before after that, so the
+ * editor's requests for it never hang again and again.
+ * Review of fix/demo-sync-bugs, P2: the deadline is a timer of its own, so a host read that stalls (the network, the
+ * server) can't hold the answer past it: the read is aborted, and the listener, the timers and the wait go with it. A
+ * change that brings the record meanwhile answers at once, whatever read is pending.
  */
-// Only while it is new here: within ON_ITS_WAY_MS of its entry reaching this computer's project.json (fillTeammateMedia
-// notes it, before the editor can see the clip). One that never comes (the teammate's app closed first, a file over the
-// server's limit) is answered at once after that, as before, so the editor's requests for it never hang again and again.
 const ON_ITS_WAY_MS = 12_000;
 const onItsWay = new Map(); // `${bundlePath}|${mediaId}` → Promise<playable | null>
 const arrivals = new Map(); // `${bundlePath}|${mediaId}` → when its entry arrived (ms)
@@ -326,33 +332,50 @@ function arrived(bundlePath, mediaId) {
   for (const [k, at] of arrivals) if (now - at > ON_ITS_WAY_MS) arrivals.delete(k);
   arrivals.set(`${bundlePath}|${mediaId}`, now);
 }
+/** The wait for a teammate's clip on its way, or null when it isn't one (the caller asks as before). */
 function waitPlayable(lc, bundlePath, projectId, mediaId) {
   const key = `${bundlePath}|${mediaId}`;
   const since = arrivals.get(key);
-  if (since === undefined || Date.now() - since >= ON_ITS_WAY_MS) return Promise.resolve(null);
+  if (since === undefined || Date.now() - since >= ON_ITS_WAY_MS) return null;
+  // shared from this computer (it was here): never a teammate's on its way
+  if (Object.hasOwn(readShared(bundlePath, projectId), mediaId)) return null;
   let p = onItsWay.get(key);
   if (p) return p;
-  p = (async () => {
-    // the project's own record of a clip whose original is here (a missing file of this computer's) or was shared from
-    // here: never a teammate's on its way. Cardboard's own missing-file path stays right for those.
-    if (Object.hasOwn(readShared(bundlePath, projectId), mediaId)) return null;
-    try { if (JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).media?.some((m) => m?.mediaId === mediaId && m.nativePath)) return null; } catch { return null; }
-    let wake = null;
-    const off = lc.carton.on((e) => { if (e.type === "change") wake?.(); });
-    try {
-      for (const end = since + ON_ITS_WAY_MS; Date.now() < end;) {
-        await new Promise((r) => { wake = r; setTimeout(r, 500).unref?.(); });
-        wake = null;
-        const doc = await lc.carton.head().then((h) => h.doc, () => null);
-        if (!doc?.media?.some?.((m) => m.id === mediaId)) return null; // removed meanwhile, or the handle closed
-        const out = media.playable(await recordIn(lc, bundlePath, projectId, mediaId, { missMs: 400 }).catch(() => null));
-        if (out) return out;
-      }
-      return null;
-    } finally {
+  p = new Promise((resolve) => {
+    let done = false, poll = null, reading = null, off = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      clearTimeout(poll);
+      reading?.abort();
       off?.();
-    }
-  })().finally(() => onItsWay.delete(key));
+      onItsWay.delete(key);
+      resolve(v);
+    };
+    const deadline = setTimeout(() => finish(null), Math.max(0, since + ON_ITS_WAY_MS - Date.now()));
+    // the project's own record: at once, and at each change (never waiting on the network); gone from the project: none
+    const fromProject = () => lc.carton.head().then((h) => {
+      const e = Array.isArray(h.doc?.media) ? h.doc.media.find((m) => m?.id === mediaId) : undefined;
+      if (!e) return finish(null);
+      const out = media.playable(ownRecord(e, mediaId));
+      if (out) finish(out);
+    }, () => finish(null));
+    off = lc.carton.on((e) => { if (e.type === "change" && !done) void fromProject(); });
+    // the host's record, one read at a time
+    const ask = () => {
+      if (done) return;
+      reading = new AbortController();
+      media.sharedRecord(bundlePath, projectId, mediaId, { missMs: 400, signal: reading.signal }).then((rec) => media.playable(rec), () => null).then((out) => {
+        reading = null;
+        if (done) return;
+        if (out) return finish(out);
+        poll = setTimeout(ask, 500);
+      });
+    };
+    void fromProject();
+    ask();
+  });
   onItsWay.set(key, p);
   return p;
 }
@@ -613,8 +636,10 @@ extend({
         const bundlePath = projectId && api.bundleOf(projectId);
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
         const lc = await api.open(bundlePath).catch(() => null);
-        // a teammate's clip still on its way is waited for, never answered "none" first (FINDINGS §6.2: waitPlayable)
-        const p = media.playable(await recordIn(lc, bundlePath, projectId, mediaId).catch(() => null)) ?? (lc ? await waitPlayable(lc, bundlePath, projectId, mediaId) : null);
+        // a teammate's clip still on its way is waited for, never answered "none" first, and never past its deadline
+        // (FINDINGS §6.2, review P2: waitPlayable); any other as before
+        const waiting = lc ? waitPlayable(lc, bundlePath, projectId, mediaId) : null;
+        const p = waiting ? await waiting : media.playable(await recordIn(lc, bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
       },
       /**
