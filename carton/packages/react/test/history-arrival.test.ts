@@ -8,7 +8,7 @@
 //   Vikas's own versions stay as they were.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ARRIVAL_BURST, ARRIVALS_KEPT, isSomeoneElse, nextArrivals, type ArrivalState } from "../src/arrivals.ts";
+import { ARRIVAL_BURST, ARRIVAL_CALM_MS, ARRIVALS_KEPT, isSomeoneElse, nextArrivals, type ArrivalState } from "../src/arrivals.ts";
 import { actorColor, actorLabel } from "../src/actors.ts";
 import { clip, leoClaude, leoClaudeHere, setOp, twoPeople, until, vikasClaude } from "./two-people.fixture.ts";
 import type { Actor, Version } from "../src/model.ts";
@@ -73,6 +73,25 @@ test("a version arriving among provisional rows (before them, as the engine plac
   assert.deepEqual([...s.at.keys()], [before.id, after.id]);
 });
 
+test(`an arrival within ${ARRIVAL_CALM_MS} ms of the one before is in a burst (drawn without motion); after a quiet moment it is calm again`, () => {
+  const all = [v(you)];
+  let s = step(null, all, 1);
+  const a = v(leo), b = v(leosAgent), c = v(leo), d = v(leo);
+  all.push(a);
+  s = step(s, all, 2, { now: 10_000 });
+  assert.equal(s.busy.size, 0, "the first: calm");
+  all.push(b, c);
+  s = step(s, all, 3, { now: 10_000 + ARRIVAL_CALM_MS - 1 });
+  assert.deepEqual([...s.busy].sort(), [b.id, c.id].sort(), "the next two, soon after: a burst");
+  all.push(v(you));
+  s = step(s, all, 4, { now: 10_000 + 2 * ARRIVAL_CALM_MS });
+  assert.equal(s.lastAt, 10_000 + ARRIVAL_CALM_MS - 1, "yours move nothing");
+  all.push(d);
+  s = step(s, all, 5, { now: 10_000 + 3 * ARRIVAL_CALM_MS });
+  assert.ok(!s.busy.has(d.id), "after a quiet moment: calm");
+  assert.ok([...s.busy].every((id) => s.at.has(id)), "a burst's marks are some of the arrivals'");
+});
+
 test("History loading, empty or loaded in one go is never an arrival; another cut starts over; a reload is watched as it is", () => {
   const list = [v(you), v(leo), v(leosAgent)];
   // the renderer's History before the worker's first `init` (remote.ts: loading), then the whole list at once
@@ -117,6 +136,7 @@ test(`more than ${ARRIVAL_BURST} new confirmed versions at once is another list,
   }
   assert.equal(s.at.size, ARRIVALS_KEPT);
   assert.ok(s.at.has(all[all.length - 1]!.id) && !s.at.has(all[all.length - ARRIVALS_KEPT - 1]!.id), "the oldest marks go first");
+  assert.ok(s.busy.size <= ARRIVALS_KEPT && [...s.busy].every((id) => s.at.has(id)), "a burst's marks go with them");
 });
 
 test("a step reads only what arrived: the newest confirmed version back to the one seen last", () => {

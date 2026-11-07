@@ -323,19 +323,17 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version[data-folded]){padding-left:24px}
 :where(${S}) :where(.carton-version[data-folded])::before{content:"";position:absolute;left:17px;top:10px;bottom:10px;width:1px;border-radius:1px;background:var(--cb-line-2)}
 :where(${S}) :where(.carton-version[data-folded] .carton-version-title){font-weight:500;color:var(--cb-fg-2)}
-/* someone else's row that arrived while History is open (HistoryPanel's ArrivalRing, in their avatar's colour): it fades
-   in as a 1.5 px ring with a soft glow and tint (::after), and after a few seconds settles into the faint 1 px edge
-   under it, which stays. Only opacity moves (the compositor's), never a shadow: a busy shared project repaints nothing
-   for it frame by frame. Without motion: no fade-in and no settling (the reduced-motion rule below), the ring then the
-   edge */
+/* someone else's row that arrived while History is open (HistoryPanel's ArrivalRing, in their avatar's colour): a 1.5 px
+   ring with a soft inner glow and tint, which after a few seconds settles into a faint 1 px edge that stays. One
+   element, no layer of its own. It moves only when it came after a quiet moment ([data-calm]): it fades in and
+   settles softly. In a burst (a teammate's agent at work) it shows and settles without motion, and costs no frames.
+   Without motion: neither (the reduced-motion rule below), the ring then the edge */
 :where(${S}) :where(.carton-arrival){position:absolute;inset:0;border-radius:inherit;pointer-events:none;
   box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--carton-actor) 40%, transparent)}
-:where(${S}) :where(.carton-arrival)::after{content:"";position:absolute;inset:0;border-radius:inherit;opacity:0;
-  background:color-mix(in srgb, var(--carton-actor) 7%, transparent);
-  box-shadow:inset 0 0 0 1.5px var(--carton-actor),inset 0 0 14px -6px color-mix(in srgb, var(--carton-actor) 80%, transparent);
-  transition:opacity 1.4s var(--cb-ease)}
-:where(${S}) :where(.carton-arrival[data-glow])::after{opacity:1}
-:where(${S}) :where(.carton-arrival[data-pop]){animation:carton-arrive .7s var(--cb-decel) both}
+:where(${S}) :where(.carton-arrival[data-glow]){background:color-mix(in srgb, var(--carton-actor) 7%, transparent);
+  box-shadow:inset 0 0 0 1.5px var(--carton-actor),inset 0 0 14px -6px color-mix(in srgb, var(--carton-actor) 80%, transparent)}
+:where(${S}) :where(.carton-arrival[data-calm]){transition:box-shadow 1.2s var(--cb-ease),background-color 1.2s var(--cb-ease)}
+:where(${S}) :where(.carton-arrival[data-calm][data-pop]){animation:carton-arrive .6s var(--cb-decel) both}
 @keyframes carton-arrive{from{opacity:0}}
 /* the history's start, and an agent working */
 :where(${S}) :where(.carton-start){grid-template-rows:18px}

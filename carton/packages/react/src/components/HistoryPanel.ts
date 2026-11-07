@@ -167,10 +167,11 @@ const ARRIVAL_QUIET_MS = 60_000;
  * agent's person's) with a soft glow, which settles after ARRIVAL_GLOW_MS into a faint edge that stays while History
  * is open. Drawn on mount from when it arrived, so a row scrolled back into view takes up where its glow is; a new
  * arrival in the same row (a teammate's edit joining their group, their agent's turn going on) is a new ring, keyed by
- * its time. Without motion (prefers-reduced-motion) the skin drops the fade-in and the settling: the ring shows, then
- * the edge.
+ * its time. `calm`: it came after a quiet moment (not in a burst, ARRIVAL_CALM_MS), and only then does it move: it
+ * fades in and settles softly. Without motion (prefers-reduced-motion) the skin drops both: the ring shows, then the
+ * edge.
  */
-const ArrivalRing = memo(function ArrivalRing({ actor, at }: { actor: Actor; at: number }) {
+const ArrivalRing = memo(function ArrivalRing({ actor, at, calm }: { actor: Actor; at: number; calm: boolean }) {
   const ui = useCartonUi();
   const [glow, setGlow] = useState(() => Date.now() - at < ARRIVAL_GLOW_MS);
   // (fades in only as it arrives: never on a row scrolled back into view)
@@ -180,7 +181,7 @@ const ArrivalRing = memo(function ArrivalRing({ actor, at }: { actor: Actor; at:
     const t = setTimeout(() => setGlow(false), Math.max(0, at + ARRIVAL_GLOW_MS - Date.now()));
     return () => clearTimeout(t);
   }, [glow, at]);
-  return h("span", { className: "carton-arrival", "data-glow": glow ? "" : undefined, "data-pop": pop ? "" : undefined, style: { ["--carton-actor" as string]: actorColor(actor, ui.actor.bind(ui)) }, "aria-hidden": true });
+  return h("span", { className: "carton-arrival", "data-glow": glow ? "" : undefined, "data-pop": pop ? "" : undefined, "data-calm": calm ? "" : undefined, style: { ["--carton-actor" as string]: actorColor(actor, ui.actor.bind(ui)) }, "aria-hidden": true });
 });
 
 /** Who did it, and how many changes: "Claude Code · 4 changes", "Named by You · 1 change", "You · 2 of 3 changes". */
@@ -328,6 +329,8 @@ interface RowProps {
   onWrap?: (key: string, wrap: boolean) => void;
   /** Someone else's version, arrived while History is open: when (its ArrivalRing). A group's or a turn's: its newest's. */
   arrived?: number | undefined;
+  /** It arrived after a quiet moment, not in a burst: its ring moves (fades in, settles softly). */
+  arrivedCalm?: boolean;
 }
 
 /**
@@ -440,7 +443,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       },
     },
     // (first: drawn under the row's ⋯; a new arrival in the row is a new ring)
-    p.arrived !== undefined ? h(ArrivalRing, { key: `arrival:${p.arrived}`, actor: v.author, at: p.arrived }) : null,
+    p.arrived !== undefined ? h(ArrivalRing, { key: `arrival:${p.arrived}`, actor: v.author, at: p.arrived, calm: !!p.arrivedCalm }) : null,
     p.child ? h("span", { className: "carton-version-mark", "aria-hidden": true }) : mark ? h(LandmarkTile, { kind: mark.kind, picture: mark.picture }) : h(RowMark, { v }),
     p.naming
       ? h(
@@ -1383,6 +1386,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       holding: peek.holding === v.id && viewedId === v.id,
       // someone else's, arrived while History is open: a group's or a turn's row by its newest version (the one it shows)
       arrived: arrivals.at.get(v.id),
+      arrivedCalm: !arrivals.busy.has(v.id),
     });
     // the same shape open or closed (the row, then its card or nothing), so opening the card keeps the row's own DOM
     if (!isOpen) return h(Fragment, null, row, null);

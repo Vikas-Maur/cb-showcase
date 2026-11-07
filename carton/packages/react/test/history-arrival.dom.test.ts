@@ -10,9 +10,10 @@ import { after, afterEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, remoteUi, serveUi } from "../src/index.ts";
 import { ARRIVAL_GLOW_MS } from "../src/components/HistoryPanel.ts";
+import { ARRIVAL_CALM_MS } from "../src/arrivals.ts";
 import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import { actorColor } from "../src/actors.ts";
-import { cardboardSkin, injectCardboardSkin } from "../src/skin/cardboard.ts";
+import { injectCardboardSkin } from "../src/skin/cardboard.ts";
 import type { Actor, CartonUi } from "../src/model.ts";
 import { clip, leoClaude, setOp, twoPeople } from "./two-people.fixture.ts";
 
@@ -165,35 +166,53 @@ test(name("a teammate's edit joining their group row: the group's row wears it, 
   await m.unmount();
 });
 
+test(name("with motion, a calm arrival fades in and settles softly; one in a burst (ARRIVAL_CALM_MS) shows and settles without motion"), async () => {
+  const ui = createMockUi({ versions: 10, seed: 19 });
+  const m = await panel(ui);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    await land(ui, { author: people.bob, kind: "edit", summary: "Added title “Summer launch”" });
+    const calm = ringOf(rows(m.container)[0])!;
+    assert.ok(calm.hasAttribute("data-calm"), "the first after a quiet moment");
+    const cs = getComputedStyle(calm);
+    assert.match(cs.animation, /^carton-arrive /, "it fades in");
+    assert.match(cs.transition, /^box-shadow 1\.2s/, "and settles softly");
+    // 0.5 s on, Bob's Director's: a burst
+    await act(() => mock.timers.tick(500));
+    await land(ui, { author: people.bobsDirector, kind: "edit", summary: "Moved “Summer launch” to 0:03" });
+    const busy = ringOf(rows(m.container)[0])!;
+    assert.ok(busy.hasAttribute("data-glow") && !busy.hasAttribute("data-calm"), "in a burst: glowing, still");
+    const bs = getComputedStyle(busy);
+    assert.ok(!/carton-arrive/.test(bs.animation), `no fade-in (${bs.animation})`);
+    assert.ok(!/box-shadow/.test(bs.transition), `no settling animation (${bs.transition})`);
+    assert.ok(calm.hasAttribute("data-calm"), "the first stays as it was");
+    // a quiet moment later, Priya's: calm again
+    await act(() => mock.timers.tick(ARRIVAL_CALM_MS + 100));
+    await land(ui, { author: people.priya, kind: "edit", summary: "Trimmed “Outro”" });
+    assert.ok(ringOf(rows(m.container)[0])!.hasAttribute("data-calm"));
+  } finally {
+    mock.timers.reset();
+  }
+  await m.unmount();
+});
+
 test(name("without motion (prefers-reduced-motion): the ring shows, with no fade-in and no settling animation"), async () => {
   // (happy-dom computes the skin's rules, its media queries by its device settings; `animation` and `transition` as
   // their shorthands)
   const settings = (window as unknown as { happyDOM: { settings: { device: { prefersReducedMotion: string } } } }).happyDOM.settings;
-  const ui = createMockUi({ versions: 10, seed: 19 });
-  const m = await panel(ui);
-  await arrive(ui, people.bob, "Added title “Summer launch”");
-  const first = ringOf(rows(m.container)[0])!;
-  assert.match(getComputedStyle(first).animation, /^carton-arrive /, "with motion: it fades in");
-  await m.unmount();
-  // (happy-dom computes no ::after: the glow layer's rules as the skin has them; live.mjs reads them in Chromium)
-  const rules = cardboardSkin.split("\n:where").filter((r) => r.includes("carton-arrival") || r.includes("carton-arrive"));
-  assert.ok(rules.some((r) => /\.carton-arrival\)::after\{[^}]*transition:opacity 1\.4s/.test(r)), "it settles slowly, by the glow layer's opacity");
-  assert.ok(rules.some((r) => /\.carton-arrival\[data-glow\]\)::after\{opacity:1\}/.test(r)));
-  assert.match(cardboardSkin, /@keyframes carton-arrive\{from\{opacity:0\}\}/, "it fades in by opacity alone");
-  assert.ok(!rules.some((r) => /transition:[^;}]*box-shadow|@keyframes carton-arrive\{[^}]*box-shadow/.test(r)), "no shadow moves: nothing repainted frame by frame");
-  assert.match(cardboardSkin, /@media \(prefers-reduced-motion: reduce\)\{\s*:where\(\[data-carton-skin="cardboard"\]\) \*, :where\(\[data-carton-skin="cardboard"\]\) \*::before, :where\(\[data-carton-skin="cardboard"\]\) \*::after\{animation:none!important;transition:none!important\}/, "without motion, the glow layer's settling is off too");
   settings.device.prefersReducedMotion = "reduce";
   try {
-    const ui2 = createMockUi({ versions: 10, seed: 19 });
-    const m2 = await panel(ui2);
-    await arrive(ui2, people.bob, "Added title “Summer launch”");
-    const ring = ringOf(rows(m2.container)[0])!;
-    assert.ok(ring && ring.hasAttribute("data-glow"), "the outline still shows");
+    const ui = createMockUi({ versions: 10, seed: 19 });
+    const m = await panel(ui);
+    await arrive(ui, people.bob, "Added title “Summer launch”");
+    const ring = ringOf(rows(m.container)[0])!;
+    assert.ok(ring && ring.hasAttribute("data-glow") && ring.hasAttribute("data-calm"), "the outline still shows (a calm one)");
     const cs = getComputedStyle(ring);
     assert.equal(cs.animation, "none", "no fade-in");
+    assert.equal(cs.transition, "none", "no settling animation");
     assert.equal(cs.position, "absolute");
-    assert.match(cs.boxShadow, /^inset 0 0 0 1px /, "the faint edge, under the glow layer");
-    await m2.unmount();
+    assert.match(cs.boxShadow, /^inset 0 0 0 1\.5px #[0-9a-f]{6},inset 0 0 14px/, "its ring and glow, drawn");
+    await m.unmount();
   } finally {
     settings.device.prefersReducedMotion = "no-preference";
   }

@@ -619,8 +619,9 @@ What changes with it on:
   So with your own Claude Code adding rows as it works, "Leo's Claude Code · Added title “Summer launch”" reads at a
   glance as someone else. Your own changes and your agents' never get it, nor what was there when you opened History,
   nor a cut you switch to. When a teammate's edit joins their row of edits, or their agent's turn goes on, that row
-  glows again for it. With Windows' animation effects off (reduced motion), the ring and then the edge show without
-  fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
+  glows again for it. Changes arriving in a burst (a teammate's agent at work) get the ring without the fade, so a busy
+  project costs no frames. With Windows' animation effects off (reduced motion), the ring and then the edge show
+  without fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
   minute. A teammate's change that arrived live also reads by name now: History used to say "Teammate" for their edits
   and "Claude Code" for their Claude Code, the same as yours, until History was loaded again; it now says "Leo" and
   "Leo's Claude Code", in Leo's colour, from the moment the row appears, with no flash of another name first, also
