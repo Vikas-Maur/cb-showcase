@@ -7,10 +7,16 @@ cues:
   - label: "Claude 1's last everyday edit (the outro's address)"
     wait: {words: "12 Main Street", by: "Claude Code", timeout: 1800}
   - pause: 1.0
+  - say: "We have no time!\nI am claude and I need\nyour help immediately."
+    at: 25
+    for: 4.5
+    style: chat
+    size: 64
+    y: 230
+    track: Overlays
+    name: "Hello?"
   - speak: "Hello?"
     track: Voiceover
-    titles:
-      - {say: "We have no time!\nI am claude and I need\nyour help immediately.", at: 25, for: 4.5, style: chat, size: 64, y: 230, track: Overlays, name: "Hello?"}
     parts:
       - {file: "/home/ubuntu/gfv-scratch/carton/demo/tts/skit-voices/r1/Hello.wav", at: 25, name: "Hello?"}
   - label: "Claude 1's title “Who are you? I am claude”"

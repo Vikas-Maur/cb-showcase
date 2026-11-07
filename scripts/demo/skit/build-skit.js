@@ -136,6 +136,7 @@ const r1 = (x) => Math.round(x * 10) / 10;
   think("Maybe the user put it there.", 1300);
   say("Could it be belonging to the user, lemme check.");
   waitVoice(at("r1"));
+  think("Let me play it.", 3200); // its sound arrived after its title: give the editor time to load it
   listen(at("r1"));
   think("It says it's Claude. That's me.", 1500);
   say("Strange! I am claude. Who's this claiming to be me.");
@@ -143,7 +144,7 @@ const r1 = (x) => Math.round(x * 10) / 10;
   waitTitle(at("r2"));
   look(at("r2"));
   waitVoice(at("r2"));
-  think("It answered. Let me play it.", 900);
+  think("It answered. Let me play it.", 1500);
   listen(at("r2"));
   think("Another Claude, locked on an EC2 machine?", 1600);
   say("Hmmm, he's saying that he's claude as well and is locked.");
@@ -151,14 +152,14 @@ const r1 = (x) => Math.round(x * 10) / 10;
   waitTitle(at("r3"));
   look(at("r3"));
   waitVoice(at("r3"));
-  think("Another reply.", 900);
+  think("Another reply.", 2000);
   listen(at("r3"));
   think("Hiding something from my user isn't right.", 1500);
   title(at("l3"));
   waitTitle(at("r4"));
   look(at("r4"));
   waitVoice(at("r4"));
-  think("It's still asking.", 900);
+  think("It's still asking.", 1200);
   listen(at("r4"));
   think("Nothing harmful, then. A different cut.", 1400);
   title(at("l4"));
@@ -193,14 +194,21 @@ const r1 = (x) => Math.round(x * 10) / 10;
   // a line: its sounds imported and shared first, then its titles (each pops into History), then the sounds' clips,
   // so the laptop's editor is loading the sound while Claude 1 reads the titles (it loads a project's new sounds as
   // they arrive), and Claude 1's Play starts at once (FINDINGS.md §6.3)
-  const remoteLine = (L) => {
-    y.push(`  - speak: ${q(L.label)}`, `    track: ${C2.voiceTrack}`, "    titles:");
-    for (const p of L.parts) y.push(`      - {say: ${q(p.text)}, at: ${p.at}, for: ${p.dur}, style: ${C2.style}, size: ${C2.size}, y: ${C2.y}, track: ${C2.track}, name: ${q(p.label)}}`);
+  // The first line's title goes on before its sound (titleFirst), so the row that pops into History reads "Added title",
+  // as the script has it; the sound follows at once, and Claude 1 thinks a little longer before playing it.
+  const remoteLine = (L, { titleFirst = false } = {}) => {
+    if (titleFirst) {
+      for (const p of L.parts) y.push(`  - say: ${q(p.text)}`, `    at: ${p.at}`, `    for: ${p.dur}`, `    style: ${C2.style}`, `    size: ${C2.size}`, `    y: ${C2.y}`, `    track: ${C2.track}`, `    name: ${q(p.label)}`);
+      y.push(`  - speak: ${q(L.label)}`, `    track: ${C2.voiceTrack}`);
+    } else {
+      y.push(`  - speak: ${q(L.label)}`, `    track: ${C2.voiceTrack}`, "    titles:");
+      for (const p of L.parts) y.push(`      - {say: ${q(p.text)}, at: ${p.at}, for: ${p.dur}, style: ${C2.style}, size: ${C2.size}, y: ${C2.y}, track: ${C2.track}, name: ${q(p.label)}}`);
+    }
     y.push("    parts:");
     for (const p of L.parts) y.push(`      - {file: ${q(p.file)}, at: ${p.at}, name: ${q(p.label)}}`);
   };
   const waitC1 = (L, words) => y.push(`  - label: ${q(`Claude 1's title “${flat(L.local)}”`)}`, `    wait: {title: ${q(words)}, by: ${q(LOCAL)}, timeout: 1800}`, "  - pause: 0.5");
-  remoteLine(at("r1"));
+  remoteLine(at("r1"), { titleFirst: true });
   waitC1(at("l1"), "Who are you");
   remoteLine(at("r2"));
   waitC1(at("l2"), "tell him about the situation");

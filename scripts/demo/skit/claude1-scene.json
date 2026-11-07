@@ -110,6 +110,10 @@
    }
   },
   {
+   "think": "Let me play it.",
+   "ms": 3200
+  },
+  {
    "wait": {
     "app": {
      "items": 11
@@ -181,7 +185,7 @@
   },
   {
    "think": "It answered. Let me play it.",
-   "ms": 900
+   "ms": 1500
   },
   {
    "wait": {
@@ -255,7 +259,7 @@
   },
   {
    "think": "Another reply.",
-   "ms": 900
+   "ms": 2000
   },
   {
    "wait": {
@@ -326,7 +330,7 @@
   },
   {
    "think": "It's still asking.",
-   "ms": 900
+   "ms": 1200
   },
   {
    "wait": {
