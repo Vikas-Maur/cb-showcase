@@ -734,6 +734,8 @@ export const cardboardSkin = `
   background:color-mix(in srgb, var(--cb-warn) 8%, transparent);border:1px solid color-mix(in srgb, var(--cb-warn) 28%, transparent)}
 :where(${S}) :where(.carton-share-offline > .carton-icon){margin-top:2px;color:var(--cb-warn)}
 :where(${S}) :where(.carton-share-offline strong){font-weight:600}
+:where(${S}) :where(.carton-share-offline[data-tone=info]){background:#ffffff08;border-color:#ffffff14}
+:where(${S}) :where(.carton-share-offline[data-tone=info] > .carton-icon){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-share-section){display:flex;flex-direction:column;gap:8px}
 :where(${S}) :where(.carton-share-invite){padding-top:16px;border-top:1px solid #ffffff12}
 :where(${S}) :where(.carton-share-heading){font-size:13px;line-height:18px;font-weight:500;color:var(--cb-fg-3)}

@@ -109,3 +109,30 @@ test("view model: find, landmarks, bring back one clip, its choices, align and t
     await carton.close();
   }
 });
+
+test("a bring-back that took a clip out is named so in History and in cb history's words, also when the clips after it moved back (demo rehearsal FINDINGS §4.4)", async () => {
+  // one track of clips (a title over them would stop the ripple: bring-back-place.test.ts's layout)
+  const one = (id: string, s: number, e: number) => clip(id, s, e, { playbackSpeed: 1 });
+  const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: { name: "Film", tracks: [{ id: "t1", [POS]: "V" }], items: [one("a", 0, 5), one("b", 5, 10), one("c", 10, 15)] }, cutName: "Main cut" }, actor: alice });
+  const ui = fromCarton(carton, { me: alice });
+  await ui.ready;
+  try {
+    // D inserted at 5 with a ripple: B and C moved 3 s later
+    await carton.commit({ ops: [{ op: "insert", path: ["items", "d"], value: one("d", 5, 8) }, set("b", "startTime", 8), set("b", "endTime", 13), set("c", "startTime", 13), set("c", "endTime", 18)], intent: { kind: "ripple-insert", maps: { t1: [{ d: [], i: [[5, 3]] }] } }, author: alice });
+    // taken out as it was at @0 (it wasn't there): B and C move back
+    const r = await ui.restoreClip!(`${carton.cut}@0`, "d", { remove: true });
+    assert.deepEqual([r.how, r.ripple?.moved], ["removed", 2]);
+    const v = (await carton.log({ limit: 1, summary: true, rows: true }))[0]!;
+    assert.equal(v.summary, "Took out 'D'", "cb history's words (it read “Brought back 'D' from an earlier version”)");
+    assert.equal(v.title?.removed, true);
+    await ui.settled();
+    const h = ui.history();
+    h.at("all", 0);
+    await ui.settled();
+    await new Promise((res) => setTimeout(res, 20));
+    assert.equal(h.at("all", 0)!.summary, "Took out “D”", "History's words");
+  } finally {
+    ui.dispose();
+    await carton.close();
+  }
+});

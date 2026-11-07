@@ -57,6 +57,24 @@ test("no problem: no alert; a problem without a message of its own shows the wor
   assert.doesNotMatch(out, /carton-sync-detail|title=/);
 });
 
+test("on a cut of your own (demo rehearsal FINDINGS §4.4): a plain line says so, never amber or Offline; You aren't shown as here; back on the shared cut, as before", () => {
+  const own = { ...base, status: "up-to-date", ownCut: { name: "Bob's cut", shared: "Main cut" } };
+  const out = html(own);
+  assert.match(out, /class="carton-share-offline" data-tone="info" role="status" data-own-cut=""/, "a plain (info) line, a status");
+  assert.match(out, /<strong>You&#x27;re on “Bob&#x27;s cut”, which isn&#x27;t shared\.<\/strong> Your edits there stay on this computer, and teammates don&#x27;t see you until you&#x27;re back on “Main cut”\./);
+  assert.doesNotMatch(out, /role="alert"|You&#x27;re offline|Offline/);
+  // You: on that cut, without the ring of someone here (teammates don't see you there)
+  assert.match(out, /Bob · on “Bob&#x27;s cut”/);
+  assert.doesNotMatch(out, /data-here/);
+  // offline for real on your own cut: both, the plain line first
+  const both = html({ ...own, status: "offline" });
+  assert.ok(both.indexOf("data-own-cut") >= 0 && both.indexOf("data-own-cut") < both.indexOf("You&#x27;re offline"), "the cut's line, then the offline one");
+  const back = html({ ...base, status: "up-to-date", ownCut: null });
+  assert.doesNotMatch(back, /data-own-cut|isn&#x27;t shared/);
+  assert.match(back, /Bob · here now/);
+  assert.match(back, /data-here/);
+});
+
 // UI audit 2026-11-02, P1-8, P2-8, P2-9, P2-10, P2-12: words an editor reads, and a failure that says what to do.
 test("P1-8: a server that can't be reached is said so at the address, never as a token problem or a raw 'fetch failed'", () => {
   const p = ui.shareProblem("fetch failed", "share");

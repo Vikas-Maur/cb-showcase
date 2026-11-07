@@ -467,12 +467,13 @@ export interface Version {
    * folded in, by name; how many changes it took, of how many), the rest of a partial fold, a restore (the version it
    * restored: `of`, a node id, when known), or an undo or a redo of a restore or a fold.
    */
-  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore" | "bring-back"; cut?: string; of?: NodeId; taken?: number; total?: number; rest?: boolean; record?: PathKey; name?: string };
+  title?: { kind: "fold" | "rest" | "restore" | "undo-fold" | "redo-fold" | "undo-restore" | "redo-restore" | "bring-back"; cut?: string; of?: NodeId; taken?: number; total?: number; rest?: boolean; record?: PathKey; name?: string; removed?: boolean };
   /** A restore: the version it restored (a node id), when the restore recorded it. */
   restoreOf?: NodeId;
   /**
    * A bring-back of one clip (`restoreClip`, Carton UX v2): the clip (`timelineItems/c1`) and its name then. With
-   * `restoreOf`, the app says "Brought back “Intro” from Mon 4:10 pm"; `title` is `{kind: "bring-back", of, record, name}`.
+   * `restoreOf`, the app says "Brought back “Intro” from Mon 4:10 pm"; `title` is `{kind: "bring-back", of, record, name}`,
+   * with `removed: true` when it took the clip out (it wasn't in that version): "Took out “Intro”".
    */
   restoreRecord?: PathKey;
   restoreName?: string;

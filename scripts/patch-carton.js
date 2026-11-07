@@ -179,7 +179,11 @@ const patchStore = (replace, k) => {
   // earlier build's restore or recovery wrote them so) get them as the file is read (the store bridge's `loaded`), so
   // the editor's saves land again; the next save writes them. A project whose entries have them costs one check.
   replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;__carton.on&&(r=__carton.loaded(e,r));let n=await Promise.all(r.media.map(`);
-  replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
+  // (with the file's stamp as the store read it: the facade knows a file it installed itself without reading it again,
+  // and checks any other file whose rev it knows against that version: review of fix/demo-sync-bugs, P1)
+  const stampVar = /stamp:([\w$]+)/.exec(s.read[0])?.[1];
+  if (!stampVar) throw new Error("patch-carton.js: the store's read keeps no stamp to pass the facade");
+  replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]},${stampVar}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.
   for (const [from, to] of s.revFiles) replace(from, to);

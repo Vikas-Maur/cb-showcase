@@ -47,6 +47,16 @@ console.info = console.log;
       } catch (e) { out({ id, ok: false, error: String(e?.message ?? e) }); }
       continue;
     }
+    // An outside save Carton can't take: "test.rejectOutside" makes every one fail as a rejected document would (true),
+    // or stops that (false) (derive-race.test.js).
+    if (method === "test.rejectOutside") {
+      try {
+        const hooks = require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs")).internals.testHooks;
+        hooks.takeOutside = args[0] ? async () => { throw new Error("Carton rejected the outside save: invalid (test)"); } : null;
+        out({ id, ok: true, data: !!hooks.takeOutside });
+      } catch (e) { out({ id, ok: false, error: String(e?.message ?? e) }); }
+      continue;
+    }
     // The project as Carton's head makes it, for a bundle (args[0]): what project.json should show.
     if (method === "test.headProject") {
       try { out({ id, ok: true, data: await require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs")).internals.headProject(args[0]) }); }

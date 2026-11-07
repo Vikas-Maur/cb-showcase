@@ -110,7 +110,8 @@ async function startLive(api, bundlePath, lc) {
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);
-    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
+    // (sharedCut: the cut shared or joined, whose status Share shows while the person is on a cut of their own)
+    const live = new Live({ api, bundlePath, projectId, lc, view, sharedCut: store.readConfig(bundlePath, projectId)?.cut ?? null, onChange: (only) => autoShare(api, bundlePath, projectId, only), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.
@@ -190,14 +191,17 @@ function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) 
   return p;
 }
 
-// One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do.
+// One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do. `only`: the
+// early run for the sounds and stills a change just added (live.js NEW_MEDIA_MS), queued apart, so it never stands in
+// for the run of everything that the editing's pause brings.
 const autoQueued = new Set();
-function autoShare(api, bundlePath, projectId) {
-  if (autoQueued.has(bundlePath) || store.readConfig(bundlePath, projectId)?.withMedia === false) return;
-  autoQueued.add(bundlePath);
-  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(bundlePath));
+function autoShare(api, bundlePath, projectId, only = null) {
+  const key = only?.length ? bundlePath + "\n" + only.join(",") : bundlePath;
+  if (autoQueued.has(key) || store.readConfig(bundlePath, projectId)?.withMedia === false) return;
+  autoQueued.add(key);
+  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(key));
   mediaJobs.set(bundlePath, p);
-  return shareMediaOf(api, bundlePath, projectId);
+  return shareMediaOf(api, bundlePath, projectId, only?.length ? { only } : {});
 }
 
 // R6: a teammate's clip has no file here. Its record in project.json gets where it plays from
@@ -223,6 +227,8 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
       for (const [k, v] of Object.entries(from)) if (v !== undefined && data[k] === undefined) data[k] = v;
     }
     const prev = had.get(m.id);
+    // a teammate's new clip, not sent yet: the editor's first ask for it may wait for it a while (waitPlayable)
+    if (!prev && !m.shared) arrived(bundlePath, m.id);
     return { ...m, createdAt: m.createdAt ?? prev?.createdAt ?? now, addedAt: m.addedAt ?? prev?.addedAt ?? now, data };
   });
   return { ...next, media: list };
@@ -287,14 +293,91 @@ async function recordShare(lc, bundlePath, projectId, mediaId, record) {
 }
 
 /**
- * A clip's shared record: the project's own (its media entry's `shared` and `contentHash`, S5-G2) once its proxy is
- * complete, else the one on the host (published as soon as the proxy's stream is claimed, so it plays while it
- * uploads).
+ * A clip's shared record: the project's own (its media entry's `shared` and `contentHash`, S5-G2) once it is final (a
+ * complete proxy; or, for a sound or a still, which have none, its original shared as it is), else the one on the host
+ * (published as soon as a proxy's stream is claimed, so a video plays while it uploads). `missMs`: how long a "not on
+ * the host" read before still counts (sync/media.js sharedRecord).
+ * Demo rehearsal, FINDINGS §6.2: only a proxy counted, so a teammate's sound always went to the host, where a "none"
+ * read when its entry arrived (before the teammate had shared it) was kept for 2 s: the editor's first ask for its clip
+ * got "Source file missing", and the sound played 2 to 4 s after it could have.
  */
-async function recordIn(lc, bundlePath, projectId, mediaId) {
+// A media entry's own record once it is final (S5-G2): a complete proxy, or an original shared as it is; else null.
+function ownRecord(e, mediaId) {
+  const s = e?.shared;
+  return s && e.contentHash && ((s.proxy && (s.proxy.hash || s.proxy.size !== undefined)) || (!s.proxy && s.original === "shared")) ? { id: mediaId, ...s, hash: e.contentHash } : null;
+}
+async function recordIn(lc, bundlePath, projectId, mediaId, { missMs } = {}) {
   const e = lc && (await lc.carton.head()).doc?.media?.find?.((m) => m.id === mediaId);
-  if (e?.shared?.proxy && (e.shared.proxy.hash || e.shared.proxy.size !== undefined)) return { id: mediaId, ...e.shared, hash: e.contentHash };
-  return media.sharedRecord(bundlePath, projectId, mediaId);
+  return ownRecord(e, mediaId) ?? media.sharedRecord(bundlePath, projectId, mediaId, { missMs });
+}
+/**
+ * FINDINGS §6.2: main asks where a teammate's clip plays from when the editor first loads it, which can be the moment
+ * its clip arrives, before the teammate's app has sent the file (it shares a new clip a moment after adding it). The
+ * answer was "none", which main gives the editor as 1.4.0's "Source file missing". A teammate's clip on its way is now
+ * waited for instead, as a slow load: answered as soon as the project says it is shared (each change is looked at) or
+ * the host has its record (asked one read at a time, half a second apart). One wait per clip, shared by every ask for it.
+ * Only while it is new here: within ON_ITS_WAY_MS of its entry reaching this computer's project.json (fillTeammateMedia
+ * notes it, before the editor can see the clip; only a teammate's clip, never one whose file is here). One that never
+ * comes (the teammate's app closed first, a file over the server's limit) is answered as before after that, so the
+ * editor's requests for it never hang again and again.
+ * Review of fix/demo-sync-bugs, P2: the deadline is a timer of its own, so a host read that stalls (the network, the
+ * server) can't hold the answer past it: the read is aborted, and the listener, the timers and the wait go with it. A
+ * change that brings the record meanwhile answers at once, whatever read is pending.
+ */
+const ON_ITS_WAY_MS = 12_000;
+const onItsWay = new Map(); // `${bundlePath}|${mediaId}` → Promise<playable | null>
+const arrivals = new Map(); // `${bundlePath}|${mediaId}` → when its entry arrived (ms)
+function arrived(bundlePath, mediaId) {
+  const now = Date.now();
+  for (const [k, at] of arrivals) if (now - at > ON_ITS_WAY_MS) arrivals.delete(k);
+  arrivals.set(`${bundlePath}|${mediaId}`, now);
+}
+/** The wait for a teammate's clip on its way, or null when it isn't one (the caller asks as before). */
+function waitPlayable(lc, bundlePath, projectId, mediaId) {
+  const key = `${bundlePath}|${mediaId}`;
+  const since = arrivals.get(key);
+  if (since === undefined || Date.now() - since >= ON_ITS_WAY_MS) return null;
+  // shared from this computer (it was here): never a teammate's on its way
+  if (Object.hasOwn(readShared(bundlePath, projectId), mediaId)) return null;
+  let p = onItsWay.get(key);
+  if (p) return p;
+  p = new Promise((resolve) => {
+    let done = false, poll = null, reading = null, off = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      clearTimeout(poll);
+      reading?.abort();
+      off?.();
+      onItsWay.delete(key);
+      resolve(v);
+    };
+    const deadline = setTimeout(() => finish(null), Math.max(0, since + ON_ITS_WAY_MS - Date.now()));
+    // the project's own record: at once, and at each change (never waiting on the network); gone from the project: none
+    const fromProject = () => lc.carton.head().then((h) => {
+      const e = Array.isArray(h.doc?.media) ? h.doc.media.find((m) => m?.id === mediaId) : undefined;
+      if (!e) return finish(null);
+      const out = media.playable(ownRecord(e, mediaId));
+      if (out) finish(out);
+    }, () => finish(null));
+    off = lc.carton.on((e) => { if (e.type === "change" && !done) void fromProject(); });
+    // the host's record, one read at a time
+    const ask = () => {
+      if (done) return;
+      reading = new AbortController();
+      media.sharedRecord(bundlePath, projectId, mediaId, { missMs: 400, signal: reading.signal }).then((rec) => media.playable(rec), () => null).then((out) => {
+        reading = null;
+        if (done) return;
+        if (out) return finish(out);
+        poll = setTimeout(ask, 500);
+      });
+    };
+    void fromProject();
+    ask();
+  });
+  onItsWay.set(key, p);
+  return p;
 }
 const recordOf = async (api, bundlePath, projectId, mediaId) => recordIn(await api.open(bundlePath).catch(() => null), bundlePath, projectId, mediaId);
 
@@ -552,7 +635,11 @@ extend({
         const projectId = await projectOfMedia(api, mediaId);
         const bundlePath = projectId && api.bundleOf(projectId);
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
-        const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId).catch(() => null));
+        const lc = await api.open(bundlePath).catch(() => null);
+        // a teammate's clip still on its way is waited for, never answered "none" first, and never past its deadline
+        // (FINDINGS §6.2, review P2: waitPlayable); any other as before
+        const waiting = lc ? waitPlayable(lc, bundlePath, projectId, mediaId) : null;
+        const p = waiting ? await waiting : media.playable(await recordIn(lc, bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
       },
       /**
