@@ -613,6 +613,10 @@ What changes with it on:
   **Compare with…** picks any second version (or another cut) to compare with. A filter (the icon by the cut) shows
   landmarks, named versions, agent turns, your changes, or only the versions that touched the clip selected on the
   timeline, with that clip's credits.
+- **A teammate's change that arrives live reads by name.** On a shared project, History used to name a teammate's
+  change that came in while you were working as "Teammate", and their Claude Code as "Claude Code", the same as your
+  own agent and without their colour, until History was loaded again (the project opened, a cut switched). It now says
+  "Leo" and "Leo's Claude Code", in Leo's colour, as soon as the row is shown.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
