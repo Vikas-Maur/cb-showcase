@@ -582,7 +582,9 @@ What changes with it on:
   - `cb history <project> --landmarks` lists the versions people remember: exported, sent (a link made), named,
     agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
   - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
-    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`, and
+    its version says so in History and in `cb history` alike: "Took out 'Psst…'" (`cb history` read "Brought back
+    'Psst…' from an earlier version" for it).
     It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
     time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
     taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
@@ -1104,7 +1106,13 @@ with Carton off none of it runs at all.
   top as the library's empty view gave way to the grid) and brings the new tile into view.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
-  The Share dialog shows the status and who is in the project, with what they are doing. The title bar shows it too,
+  The Share dialog shows the status and who is in the project, with what they are doing. On a cut of your own (one
+  that isn't shared: `cb cut switch`, the cuts menu), the status beside the title and the title bar's dot are the
+  shared cut's, which stays connected; a plain line says "You're on “Vikas's cut”, which isn't shared. Your edits
+  there stay on this computer, and teammates don't see you until you're back on “Main cut”.", and You read "Vikas · on
+  “Vikas's cut”", without the ring of someone here (switching to it takes you out of the shared cut's presence).
+  Before, Share kept "Up to date" from before the switch, or turned amber "Offline" and stayed so while the shared cut
+  was up to date. The title bar shows it too,
   with nothing open: a dot on the Share icon (amber offline, white
   while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
   says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
@@ -1112,12 +1120,24 @@ with Carton off none of it runs at all.
   with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", the host's own
   message in the tooltip), access refused, the host out of reach.
+- **Cardboard's background work never undoes a teammate's change.** An import's waveform and album art, the
+  thumbnails Cardboard makes again, a transcript's status and a relinked file's new date are written into `project.json`
+  after the edit that caused them. They change nothing Carton versions, and Carton recorded no version for them, so
+  the next time the file was read it looked like another program's save: it was imported over the newest version,
+  and a teammate's change that had arrived meanwhile was deleted for everyone (in the demo rehearsals, a title added
+  right after a sound was dropped on the timeline, 11 of 12 times). Each such write is now known for what it is. Its
+  waveform and art stay in the file, and a real save by another program is still taken as one.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
   made it, which the host knows, so nothing in the history is rewritten.)
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
-  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
+  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. A teammate's new sound or
+  still plays as soon as their app has sent it: the editor's first ask for its clip, which can come before the file is
+  on its way, is answered once it is (for up to 12 s) instead of with "Source file missing", and the app that adds a
+  sound or a still sends it at once, while its person goes on editing (a video still goes once editing pauses for 2 s,
+  so its preview can be made from Cardboard's own). Before, the sound played 2 to 4 s after it could have, and the
+  editor was first told it was missing. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
   into the project itself, as a version by whoever shared it.
 - **Opening a project you joined**: its clips were never on your computer, so 1.4.0's loader would stop at "Missing
@@ -1181,13 +1201,17 @@ the panel's words when sync fails (`ui.test.js`); and what a GUI save costs the 
 a busy machine can't hide it: no print of `timeline.tsx` made and thrown away, the editor's save projection run only
 for the items that changed, a bound on file system calls per save (each one a trip through NTFS on Windows), no
 second read of `project.json` to print `timeline.tsx` (the facade hands Carton the file the save just wrote), and
-Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`). The timings are `save-bench.js`'s, a measurement and
+Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`); Cardboard's background writes (an import's derive, the
+derive main asks for) followed by a teammate's change, which stays, and another program's save, still taken as one
+(`derive-race.test.js`); a teammate's new sound, its clip asked for the moment it arrives, and sent while its person
+goes on editing (`teammate-sound.test.js`); Share on a cut of your own, with the sharing server gone and back
+(`share-own-cut.test.js`). The timings are `save-bench.js`'s, a measurement and
 not a test: a GUI save's round trip to the worker and how soon `timeline.tsx` shows it, Carton off and on alternated
 round by round (run it alone, on a quiet machine, on mains power).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js
 ```
 
 Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
