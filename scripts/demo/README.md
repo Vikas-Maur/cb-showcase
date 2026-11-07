@@ -75,3 +75,5 @@ the chat kept out, a check, and the editor switched to it last), `agent_clear`.
 | `repro-import-race.js` | FINDINGS.md §6.1: a teammate's change deleted after an import |
 | `race-hide.js` | FINDINGS.md §4.1: the hide while the remote keeps talking (a line between the agent's reading and its fold), checked on its own |
 | `rehearse.sh`, `rehearsal-cues.yaml`, `sample-cues.yaml` | the rehearsal, and a sheet for the real session |
+| `actor/actor.js` | a scripted stand-in for the Messages API: the real Claude Code inside Cardboard plays a scene (`skit/README.md`) |
+| `skit/` | the user's skit: the promo, Claude 1's scene, Claude 2's cue sheet, the laptop's launch scripts, its rehearsal |

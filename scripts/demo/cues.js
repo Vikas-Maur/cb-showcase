@@ -19,7 +19,8 @@ function load(file) {
   return JSON.parse(json);
 }
 
-const low = (s) => String(s ?? "").toLowerCase();
+// words compared as they read: a title wrapped onto lines ("I'll tell\nhim") still matches "tell him"
+const low = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ");
 const has = (s, w) => low(s).includes(low(w));
 /** Does `ev` (one of the stream's events) meet `w` (a step's `wait`)? */
 function meets(ev, w) {

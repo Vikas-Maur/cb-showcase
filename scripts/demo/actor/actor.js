@@ -85,6 +85,8 @@ async function changeWords(cut, version) {
   }
   return words.get(key);
 }
+// words compared as they read (a title wrapped onto lines still matches its words in one line)
+const flatWords = (s) => String(s).replace(/\s+/g, " ");
 let lastMatchSeq = null; // a wait looks at versions after the one the previous wait matched
 async function waitFor(w, alive) {
   const t0 = Date.now(), cut = w.cut ?? scene.cut ?? "Main cut", timeout = (w.timeout ?? 900) * 1000;
@@ -112,7 +114,7 @@ async function waitFor(w, alive) {
         const c = await cb(["compare", vars.project, `${kind}@${from}`, head.version, "--json"]);
         let said = "";
         try { said = JSON.parse(c.out).changes.join("\n"); } catch {}
-        if (said.includes(w.words)) {
+        if (flatWords(said).includes(flatWords(w.words))) {
           lastMatchSeq = top;
           log({ event: "waited", by: w.by, version: head.version, ms: Date.now() - t0 });
           return;
@@ -131,7 +133,7 @@ async function waitFor(w, alive) {
         const a = v.by ?? {};
         if (w.by && !(a.kind === "human" && (a.name === w.by || a.id === w.by))) continue;
         const said = w.words ? await changeWords(cut, v.version) : "";
-        if (w.words && !(said ?? "").includes(w.words)) continue;
+        if (w.words && !flatWords(said ?? "").includes(flatWords(w.words))) continue;
         lastMatchSeq = seq;
         if (w.save) vars[w.save] = `${v.version.split("@")[0]}@${seq - 1}`;
         log({ event: "waited", by: a.name ?? a.id, version: v.version, ms: Date.now() - t0, ...(w.save ? { saved: { [w.save]: vars[w.save] } } : {}) });
