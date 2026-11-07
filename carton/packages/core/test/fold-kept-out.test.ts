@@ -56,3 +56,24 @@ test("a clip added on a kept-out track after the reject list was made stays out 
     await c.close();
   }
 });
+
+// Review 2 of fix/demo-sync-bugs, P2: only a private part (a title's own text entry: `nounOf` null) stays out with the
+// record that names it. Ordinary media a kept-out clip uses comes in as a fold brings it: rejecting only a video's
+// placement kept the video out of the cut's media bin too.
+test("rejecting only a clip's placement keeps its ordinary media in; a kept-out title's own entry stays out", async () => {
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: film(), cutName: "Main cut" }, actor: me });
+  try {
+    const main = c.cut;
+    const into = await c.fork("Bin only", { from: `${main}@0` });
+    await c.commit({ cut: main, ops: [ins("media", { id: "v2", name: "interview.mp4" }), ins("items", { id: "p", trackId: "v1", name: "Unwanted placement", mediaId: "v2" }), ins("items", { id: "t", trackId: "v1", name: "Note", mediaId: "m9" }), ins("media", { id: "m9", name: "Text: Note", own: true })] });
+    const r = await c.foldSome(`${main}@1`, { into: into.id, reject: ["items/p", "items/t"] });
+    assert.equal(r.status, "confirmed", JSON.stringify(r));
+    const d = (await c.head(into.id)).doc;
+    assert.ok(ids(d, "media").includes("v2"), "the video stays in the bin");
+    assert.ok(!ids(d, "media").includes("m9"), "the kept-out title's own entry stays out");
+    assert.deepEqual(ids(d, "items"), ["a"]);
+    assert.deepEqual([...(r.keptOut ?? [])].sort(), ["items/p", "items/t", "media/m9"]);
+  } finally {
+    await c.close();
+  }
+});

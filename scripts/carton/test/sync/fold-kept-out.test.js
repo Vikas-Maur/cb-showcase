@@ -91,3 +91,24 @@ test("cb fold --reject of a track keeps out a title added on it after the list w
   const row = alice.cb(["history", "Demo", "--cut", "Alice's cut", "--limit", "1"]).json().versions[0];
   assert.ok(row.leftOut?.includes(`timelineItems/${more.item}`) && row.leftOut?.includes(`media/${more.media}`), JSON.stringify(row));
 });
+
+// Review 2 of fix/demo-sync-bugs, P2: rejecting only a video's placement also kept the video out of the cut's media bin
+// (any media a kept-out clip named was widened out). Only a private part, a title's own text entry, stays out with its
+// title; ordinary media comes in as a fold brings it. (The chat's titles above: their entries stay out.)
+test("rejecting only a clip's placement keeps its ordinary video in the cut's media bin", t, async () => {
+  const before = latest(alice);
+  must(alice.cb(["cut", "new", "Demo", "Bin only", "--from", before]), "cut new");
+  const had = new Set(S.fileOf(bob).media.map((m) => m.id));
+  must(bob.cb(["media", "add", "Demo", b.clip2]), "media add");
+  const media = await S.until(() => S.fileOf(bob).media.find((m) => !had.has(m.id) && m.data?.type === "video"), 10_000, "the new video at bob's");
+  const doc = await S.projectOf(bob, id), clip = randomUUID(), track = doc.tracks.find((x) => x.type === "video") ?? doc.tracks[0];
+  const item = { id: clip, trackId: track.id, type: "video", startTime: 6, endTime: 9, trimStart: 0, trimEnd: 3, mediaItemId: media.id, name: "Unwanted placement" };
+  await bob.call("projects.updateScoped", { ...doc, timelineItems: [...doc.timelineItems, item], stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) }, { ...SCOPE, carton: { base: doc.stateUpdatedAt, actor: "person" } });
+  await settled(bob);
+  await S.until(() => alice.cb(["history", "Demo", "--cut", "Main cut", "--limit", "1"]).json().versions[0]?.by?.id === "Bob", 20_000, "the placement at alice's");
+  const fold = must(alice.cb(["fold", "Demo", "Main cut", "--into", "Bin only", "--reject", `timelineItems/${clip}`]), "fold").json();
+  assert.equal(fold.keptOut, undefined, "nothing kept out beyond the placement: " + JSON.stringify(fold));
+  must(alice.cb(["cut", "switch", "Demo", "Bin only"]), "switch");
+  await S.until(() => S.fileOf(alice).media.some((m) => m.id === media.id), 20_000, "the video in alice's cut");
+  assert.ok(!S.fileOf(alice).timelineItems.some((i) => i.id === clip), "its placement kept out");
+});

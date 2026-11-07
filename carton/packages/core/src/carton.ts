@@ -2850,9 +2850,9 @@ class CartonImpl implements Carton {
    * Fold-some's reject list with what can't come in without the records it keeps out (laptop rehearsal, 2026-11-07):
    * a record whose parent is kept out and isn't in the cut folded into stays out too (a clip added on a kept-out track
    * after the list was made came in pointing at no track, which Cardboard printed on a made-up "Missing track"), and so
-   * does a part the fold would add that only kept-out records name (a kept-out title's own text entry, which came into
-   * the media bin with the title's words). Each counts as left out ("N left out"). The given list as it is (its own
-   * form) when nothing more is needed.
+   * does a private part the fold would add that only kept-out records name (a kept-out title's own text entry, which
+   * came into the media bin with the title's words; never ordinary media, which stays as a fold brings it). Each counts
+   * as left out ("N left out"). The given list as it is (its own form) when nothing more is needed.
    */
   #widenReject(into: string, y: NodeId, opts: FoldOptions & { reject: PathKey[] }): PathKey[] {
     const dry = this.#h.fold(into, y, { ...opts, check: true });
@@ -2871,7 +2871,10 @@ class CartonImpl implements Carton {
           if (out.has(k)) continue;
           const parent = spec.parent, part = spec.partOf;
           const orphan = !!parent && out.has(E.pathKey([parent.collection, String(r[parent.field])])) && !holds(pre, parent.collection, r[parent.field]);
-          const holders = part && !holds(pre, coll, id) ? recs(post, part.collection).filter((h) => h[part.field] === id) : [];
+          // only a private part (`nounOf` null: a title's or a graphic's own entry, no media file of its own), never
+          // ordinary media a kept-out clip uses: a video stays in the bin when only its placement is kept out (review 2
+          // of fix/demo-sync-bugs, P2)
+          const holders = part && spec.nounOf?.(r) === null && !holds(pre, coll, id) ? recs(post, part.collection).filter((h) => h[part.field] === id) : [];
           const partOfOut = holders.length > 0 && holders.every((h) => out.has(E.pathKey([part!.collection, String(h[keyOf(part!.collection)])])));
           if (orphan || partOfOut) out.add(k), (grew = true);
         }
