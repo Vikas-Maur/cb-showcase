@@ -32,10 +32,14 @@ if (!wav) throw new Error("usage: node repro-import-race.js <delay ms> <a .wav>"
   const h = lib.cb(VIK, ["history", P, "--cut", "Main cut", "--limit", "8"]).json().versions;
   const seq = Number(before.split("@")[1]);
   const fresh = h.filter((x) => Number(x.version.split("@")[1]) > seq).reverse();
+  // `deleted`: an outside save (external:*) among the new versions removed Vikas's title (review of the verifier: an
+  // external version alone isn't the bug)
+  let deleted = false;
   for (const x of fresh) {
     const prev = `main@${Number(x.version.split("@")[1]) - 1}`;
     const c = lib.cb(VIK, ["compare", P, prev, x.version]).json();
+    if (/^external:/.test(x.by?.id ?? "") && c.changes.some((w) => /^Deleted title 'Agent title at/.test(w))) deleted = true;
     console.log(`${x.version}  ${x.by?.id}${x.by?.owner ? ` (${x.by.owner.name}'s)` : ""}  ${c.changes.join("; ")}`);
   }
-  console.log(JSON.stringify({ delay, speakMs: s.savedMs, external: fresh.some((x) => /^external:/.test(x.by?.id ?? "")) }));
+  console.log(JSON.stringify({ delay, speakMs: s.savedMs, external: fresh.some((x) => /^external:/.test(x.by?.id ?? "")), deleted }));
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -151,7 +151,24 @@ every few rounds speaks a line; timed from just before the remote's call on this
 worker has the change, *shown* = the app's project.json shows it, which is when the editor's pages are told; for a
 sound, whether the app's worker could stream it when its clip arrived):
 
-PENDING VERIFICATION
+Every number below was checked by an independent re-run (a separate agent, its own participants and server, 3 runs of
+10 rounds locally and 1 of 6 on the live server; its files are in `gfv-scratch/carton/demo-verify/`). Medians:
+
+| | Local server (127.0.0.1) | Live server |
+|---|---|---|
+| a title added, changed or removed: *seen* | about 8 ms | about 90 ms |
+| the same: *shown* | about 60 ms | about 150 ms (measured with the rig's former 50 ms read of the worker's posts, which added 35–40 ms locally) |
+| a spoken line: its clip on the other side | about 3.5 s after the call | about 3.7 s |
+| … streamable when its clip arrived | 15 of 15 (verifier), 8 of 8 (ours) | 3 of 3, both runs |
+
+- A spoken line's 3.5 s is mostly on purpose: `cb media add` (about 1.2 s), then a fixed 2.3 s wait (`DEMO_REASK_MS`)
+  before the clip goes on, so the other side can play it the moment it appears (§6.2). Without that wait the clip came
+  about 1.2 s after the call, and the sound became playable about 3.3 s after it in most runs and about 5.2 s in about a
+  third.
+- From this box the Cloudflare edge is about 1 ms away: the live server's 90 ms is mostly the server's own time. The
+  laptop adds its own network leg.
+- `cb` from the agent's side: about 0.6–0.7 s a command; the rehearsal's `agent_say` (print a view, add a title,
+  apply) about 1.7 s; `agent_hide` (cut new, switch, fold) about 6.5 s.
 
 ## 3. Being found
 
@@ -299,7 +316,8 @@ cardboard.ai's API answers from this box.
 - `node scripts/demo/tts.js "<words>" --voice ryan --speed 1.0 --out line.wav|line.mp3` (speed 0.5–2 →
   Piper's `--length_scale` 1/speed; MP3 through ffmpeg). `peer speak` and the cue runner use it; the runner makes every
   spoken line of a sheet before its first step (kept in `voice-cache/`, so a second run makes none).
-- PENDING VERIFICATION: how long a line takes to make.
+- Making a line on this box (checked by the independent re-run, 3 each): `ryan` about 3 s for 4–4.5 s of speech, `lessac`
+  about 1.2 s for about 5 s.
 
 **The trade-off**: Piper is clear and steady but reads as synthetic: flat prosody, no laughs or whispers, one speaker per
 model. ElevenLabs v3 (what `cb generate voice` uses) acts (`[whispers]`, `[laughs]`), clones voices, and sounds human;
@@ -316,8 +334,9 @@ it costs credits and needs the account. A middle way that needs no token here: m
 
 and its deploy's vars (`deploy/carton`, `wrangler.production.toml`): `OPEN_CREATE_PER_DAY = "10"` (new projects per
 client address per UTC day), `MAX_UPLOAD_BYTES = "209715200"` (200 MiB per file: audio and stills go up as they are,
-video as a 720p proxy), `PRESENCE_TIMEOUT_MS = "120000"`, no daily write cap. This box made 1 project there today
-(the live rehearsal, "Demo rehearsal"); the user's shares count against the laptop's address, not this box's.
+video as a 720p proxy), `PRESENCE_TIMEOUT_MS = "120000"`, no daily write cap. This box made 2 projects there today,
+both "Demo rehearsal" (the live rehearsal, and the verifier's live run); the user's shares count against the laptop's
+address, not this box's.
 
 ### 6.1 Carton bug: an import's background derive deletes a teammate's next change
 
@@ -335,7 +354,10 @@ main@54  Vikas  Added title 'Agent title at +2500 ms' on 'Talk' at 30.0 s
 main@55  external:project.json (Sam's)  Deleted title 'Agent title at +2500 ms'
 ```
 
-PENDING VERIFICATION (run counts). Repro: `scripts/demo/repro-import-race.js` (its header). Not seen with the import
+Counts, checked by the independent re-run: Cardboard's import with the clip saved at once, a title from the teammate
+1.5–2.5 s later: deleted in 11 of 12 of the verifier's runs (the one miss, the first run after the participant
+restarted) and in 8 of 9 of ours (the miss, a save that came 0.34 s after the import); through `cb media add`: 0 of 12 (the verifier), 0 of 6 with the title timed to arrive
+as long after the save, 0 of 4 (ours); with one more save after the derive (`DEMO_SETTLE=1`): 0 of 6 and 0 of 3. Repro: `scripts/demo/repro-import-race.js` (its header). Not seen with the import
 through `cb media add` (the rig's default), nor with one more save after the derive finished. Likely the same in the
 Windows app (the same worker code, the same import), not checked there. For the recording: don't drop files into the
 shared project on the laptop while the remote is editing; `cb generate voice` and `cb media add` go through `cb`. Fix
@@ -374,6 +396,7 @@ leave and says one more line, the agent reads it on Main).
 |---|---|---|
 | local server, 127.0.0.1 | 18/18 steps, 20.2 s | `gfv-scratch/carton/demo/runs/rehearsal-cues-2026-11-07T04-05-27-312Z.log` (+ `.jsonl`) |
 | live server | 18/18 steps, 21.5 s | `gfv-scratch/carton/demo/runs/rehearsal-cues-2026-11-07T04-01-55-385Z.log` (+ `.jsonl`) |
+| local, the rig as committed | 18/18 steps, 21.3 s | `gfv-scratch/carton/demo/runs/rehearsal-cues-2026-11-07T04-31-11-312Z.log` |
 
 Real-browser shots of the app's side (Cardboard's patched editor pages in headless Chromium at the laptop's 125%, driven
 by Vikas's real worker: `scripts/demo/shots.js`), each state: the editor, History open, Share open:

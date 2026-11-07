@@ -4,7 +4,8 @@
 // rounds, a sound (speak, a WAV made beforehand). Timed from just before the remote's call, on this box's one clock:
 //   saved   the remote's call answered (its worker committed; the change is on its way)
 //   seen    the app's worker has the change in its history (Carton's change event, as `peer watch` shows it)
-//   shown   the app's project.json shows it (the worker tells the editor's pages then)
+//   shown   the app's worker says project.json shows it (main then tells the editor's pages; the pages' own drawing
+//           isn't in it). The first one after `seen`: one edit at a time, so it is this edit's
 //   sound   (speak only) the app's worker can stream the sound from the server (liveMediaSource answers with its size)
 // Writes every run and the medians to <out>.json and prints a table.
 //   node bench-latency.js --remote Sam --app Vikas [--rounds 10] [--sound-every 3] [--out <file>]
@@ -82,7 +83,7 @@ const median = (xs) => { const s = xs.filter((x) => x !== null).sort((p, q) => p
   sub.close();
   const ops = [...new Set(runs.map((r) => r.op))];
   const medians = Object.fromEntries(ops.map((op) => { const rs = runs.filter((r) => r.op === op); return [op, { n: rs.length, saved: median(rs.map((r) => r.saved)), seen: median(rs.map((r) => r.seen)), shown: median(rs.map((r) => r.shown)), ...(op === "speak" ? { sound: median(rs.map((r) => r.sound)), playableOnArrival: `${rs.filter((r) => r.playableOnArrival).length}/${rs.length}` } : {}) }]; }));
-  const meta = { at: new Date().toISOString(), host: lib.readJson(path.join(lib.DEMO, "host", "host.json"))?.origin ?? appCfg.host, cpus: os.cpus().length, node: process.version, rounds: ROUNDS };
+  const meta = { at: new Date().toISOString(), host: appCfg.host ?? lib.readJson(path.join(lib.DEMO, "host", "host.json"))?.origin ?? null, cpus: os.cpus().length, node: process.version, rounds: ROUNDS };
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT + ".json", JSON.stringify({ meta, medians, runs }, null, 2));
   console.log("op     n   saved  seen  shown  sound   (median ms; every run in " + OUT + ".json)");

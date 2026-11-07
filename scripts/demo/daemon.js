@@ -471,17 +471,18 @@ function serve() {
 (async () => {
   log("starting", cfg.name, cfg.agent ? "as " + cfg.agent.name : "as a person", "build", b.commit);
   ({ call, events } = await require(path.join(lib.REPO, "scripts", "carton", "test", "worker-harness.js")).start(b.worker, cfg.root));
-  // the worker's posts: the Share status (who is here, sync) as the app's pages get it
-  setInterval(() => {
-    const batch = events.splice(0);
-    for (const e of batch) {
-      // the worker's posts as main gets them (shots.js plays main for Cardboard's pages)
-      if (e.kind === "change" && (e.change?.kind === "carton" || e.change?.kind === "changed")) for (const w of rawWatchers) w(e.change);
-      if (e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === projectId()) takeLive(e.change.live);
-      // project.json now shows head: the moment main tells the editor's pages to take it (what the person sees)
-      else if (e.kind === "change" && e.change?.kind === "changed" && e.change.id === projectId()) emit({ type: "shown" });
-    }
-  }, 50).unref();
+  // the worker's posts, each as it is posted (the harness pushes them into `events`; nothing waits for a poll, so a
+  // `shown` is timed when the worker tells main, as main would hear it)
+  const take = (e) => {
+    // the worker's posts as main gets them (shots.js plays main for Cardboard's pages)
+    if (e.kind === "change" && (e.change?.kind === "carton" || e.change?.kind === "changed")) for (const w of rawWatchers) w(e.change);
+    // the Share status (who is here, sync) as the app's pages get it
+    if (e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === projectId()) takeLive(e.change.live);
+    // project.json now shows head: the moment main tells the editor's pages to take it
+    else if (e.kind === "change" && e.change?.kind === "changed" && e.change.id === projectId()) emit({ type: "shown" });
+  };
+  for (const e of events.splice(0)) take(e);
+  events.push = (...xs) => { for (const e of xs) { try { take(e); } catch (err) { log("event", String(err?.message ?? err)); } } return 0; };
   if (projectId()) {
     // a participant started again (after a crash or a reboot of this box): its project goes live again, as in the app
     // (once the library has listed it and its history has opened)
