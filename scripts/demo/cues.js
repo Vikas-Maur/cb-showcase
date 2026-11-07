@@ -197,7 +197,7 @@ const clip = (t) => { const x = String(t).replace(/\s+/g, " ").trim(); return x.
 const voiceName = (text) => (String(text).replace(/[^\p{L}\p{N} '-]+/gu, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ") || "line") + ".wav";
 function summary(kind, r) {
   if (!r) return kind;
-  if (kind === "say" || kind === "speak" || kind === "edit") return `“${r.name}” ${r.start?.toFixed(1)}–${r.end?.toFixed(1)} s on ${r.track ?? "its track"} (${kind === "speak" ? `imported in ${(r.importedMs / 1000).toFixed(2)} s, on the server in ${((r.sharedMs ?? 0) / 1000).toFixed(2)} s, on the timeline at` : "saved in"} ${(r.savedMs / 1000).toFixed(2)} s${r.voiceMs ? `, voice made in ${(r.voiceMs / 1000).toFixed(2)} s` : ""})`;
+  if (kind === "say" || kind === "speak" || kind === "edit") return `“${r.name}” ${r.start?.toFixed(1)}–${r.end?.toFixed(1)} s on ${r.track ?? "its track"} (${kind === "speak" ? `imported in ${(r.importedMs / 1000).toFixed(2)} s, on the server in ${((r.sharedMs ?? 0) / 1000).toFixed(2)} s${r.checkedMs !== undefined ? `, checked there by ${(r.checkedMs / 1000).toFixed(2)} s` : ""}, on the timeline at` : "saved in"} ${(r.savedMs / 1000).toFixed(2)} s${r.voiceMs ? `, voice made in ${(r.voiceMs / 1000).toFixed(2)} s` : ""}${r.notChecked?.length ? `; NOT confirmed on the server: ${r.notChecked.join(", ")}` : ""})`;
   if (kind === "clear") return `removed ${r.removed.map((x) => `“${x}”`).join(", ")}`;
   if (kind === "wait" && r.matched) return `seen: ${r.by} ${r.what ?? ""}${r.lagMs !== null ? ` (${(r.lagMs / 1000).toFixed(2)} s after it was made)` : ""}`;
   if (kind === "cb" || kind === "agent_say" || kind === "agent_clear" || kind === "agent_hide") return r.text;

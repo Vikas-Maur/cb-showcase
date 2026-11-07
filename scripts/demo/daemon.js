@@ -337,9 +337,14 @@ async function speakAll({ parts, track = "Voice", volume, titles = [] }) {
     await new Promise((res) => setTimeout(res, 100));
   }
   const sharedMs = Date.now() - s0;
+  // each sound checked on the server (its record, its bytes the file sent) before its clip goes on, so the other side
+  // can play it the moment it sees the clip; during the wait below, so it costs nothing when the server is quick
+  const checked = Promise.all(parts.map((p, k) => onServerBefore({ name: p.name ?? path.basename(p.file), mediaId: ids.get(k), file: path.resolve(p.file) })));
   const said = [];
   for (const t of titles) said.push(await say(t));
   { const wait = importedAt + REASK_MS - Date.now(); if (wait > 0) await new Promise((res) => setTimeout(res, wait)); }
+  const checks = await checked;
+  const checkedMs = Date.now() - s0;
   const doc = await read();
   const { tracks, track: tr } = trackFor(doc, track, true);
   const items = parts.map((p, k) => {
@@ -348,7 +353,7 @@ async function speakAll({ parts, track = "Voice", volume, titles = [] }) {
   });
   await save(doc, { ...doc, tracks, timelineItems: [...(doc.timelineItems ?? []), ...items] });
   items.forEach((it, k) => { mine({ id: it.id, name: it.name, kind: "sound", mediaId: it.mediaItemId, file: path.resolve(parts[k].file) }); checkSoon(it.mediaItemId); });
-  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, titles: said.map((x) => x.name), savedMs: Date.now() - t0, savedAt: Date.now() };
+  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, checkedMs, notChecked: checks.filter((c) => !c.ok).map((c) => c.name), titles: said.map((x) => x.name), savedMs: Date.now() - t0, savedAt: Date.now() };
   emit({ type: "self", op: "speak", ...out });
   return out;
 }
@@ -429,6 +434,18 @@ function checkSoon(mediaId) {
     }
     checking.delete(mediaId);
   })().catch(() => checking.delete(mediaId));
+}
+/** Before a clip goes on: its sound checked on the server, shared again if it isn't there, up to `timeoutMs`. */
+async function onServerBefore(s, timeoutMs = 30_000) {
+  const t0 = Date.now();
+  for (let n = 1; ; n++) {
+    const r = await checkSound(s);
+    if (r.ok) { onServer.set(s.mediaId, r); return { ok: true, name: s.name }; }
+    lastCheck.set(s.mediaId, r.why);
+    if (Date.now() - t0 > timeoutMs) { log(`speakAll: ${s.name} not on the server after ${timeoutMs / 1000} s (${r.why}); its clip goes on, checked again after`); return { ok: false, name: s.name, why: r.why }; }
+    if (n % 3 === 0) await call("carton.liveShareMedia", { projectId: projectId(), mediaIds: [s.mediaId], force: /isn't the file sent|of its/.test(r.why) }).catch(() => {});
+    await new Promise((res) => setTimeout(res, 500));
+  }
 }
 function soundsState() {
   const all = sounds(), pending = all.filter((s) => !onServer.has(s.mediaId));
