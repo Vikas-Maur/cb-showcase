@@ -53,8 +53,15 @@ app can play it the moment it lands: FINDINGS.md §6.2).
 
 ## On the laptop (the recording)
 
-Not run on Windows yet: the paths and the launch are as the code reads them (`main.js` `lV`, `WBt`, `$Bt`), to be
-checked in the laptop rehearsal.
+Rehearsed on the laptop (2026-11-07, Cardboard 013ca5c3, muted, Claude 2 from EC2). What Windows needed:
+- `Cardboard.exe` is a Windows (GUI) program: PowerShell waits for it, and shows what it prints, only when its output
+  goes down a pipe. The scripts pipe it (unpiped, `cb project create` returned at once and raced `cb source apply`, and
+  the stand-in returned with no output).
+- cb finds the running app by `CARDBOARD_SOCKET` only (`CARDBOARD_USER_DATA` means nothing to it): `demo-env.ps1` sets it
+  to the demo profile's, else cb here (and the stand-in's waits) would reach the user's own Cardboard when it runs.
+- A voice that has just arrived can load for seconds before `cb app play` starts playback (6 s for the first one on the
+  laptop); a fixed pause then sent `cb app pause` too early, it was lost, and playback ran on through the next lines. The
+  scene now waits until the app has played the line (`{wait: {played}}`, `cb app context`) before it pauses.
 
 0. **Once:** set the paths in `laptop\demo-env.ps1` (the installed build, a demo folder). The demo profile's Claude Code
    is the build's own (`resources\director\claude.exe`), with its own config folder: the user's Claude sign-in is never
@@ -66,8 +73,10 @@ checked in the laptop rehearsal.
 2. **The stand-in:** `powershell -ExecutionPolicy Bypass -File scripts\demo\skit\laptop\start-actor.ps1` (it runs on
    Cardboard's own Node: no Node install). Leave it open. It answers on `127.0.0.1:8787` only, never forwards anything,
    and never reads, logs or keeps request headers.
-3. **The demo Cardboard:** `powershell -ExecutionPolicy Bypass -File scripts\demo\skit\laptop\start-cardboard.ps1`. It
-   sets, for this Cardboard only: `CARDBOARD_USER_DATA`, `CARDBOARD_HOME`, `CARDBOARD_CLAUDE_PATH` (the build's Claude
+3. **The demo Cardboard:** `powershell -ExecutionPolicy Bypass -File scripts\demo\skit\laptop\start-cardboard.ps1`
+   (`-Mute` for a rehearsal, `-DebugPort <n>` to drive it over DevTools). It removes every `CLAUDE*`/`ANTHROPIC*`
+   variable, then sets, for this Cardboard only (`$AppEnv` in `demo-env.ps1`): `CARDBOARD_USER_DATA`, `CARDBOARD_HOME`,
+   `CARDBOARD_SOCKET`, `CARDBOARD_CLAUDE_PATH` (the build's Claude
    Code), `CLAUDE_CONFIG_DIR` (fresh), `ANTHROPIC_BASE_URL=http://127.0.0.1:8787`, `ANTHROPIC_API_KEY=sk-mock`,
    `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`. Cardboard hands its whole environment to the
    person's own Claude Code (`lV`), and strips every `ANTHROPIC_*`/`CLAUDE_*` from the Director's, so only Claude Code
@@ -88,6 +97,25 @@ checked in the laptop rehearsal.
 8. **The human leaves** (step 5 of the scene): `Invoke-WebRequest http://127.0.0.1:8787/cue/gone`, or let it go by
    itself after 6 s.
 9. The take ends with "He's gone." on the timeline. Stop recording.
+
+### Driving it on the laptop (a rehearsal, or a take run from a terminal)
+
+The laptop's own tooling in `laptop\`, for a run while someone uses the laptop (all DevTools page input; nothing is sent
+to the OS; paths from `demo-env.ps1`):
+
+| File | What |
+|---|---|
+| `launch-demo.ps1` | the demo Cardboard with `start-cardboard.ps1`'s environment, started unseen on desktop 2 (`unseen\start-unseen.ps1`, never activated), muted unless `-Sound`, DevTools on `-DebugPort` (9420); prints `pid=… hwnd=…` |
+| `share.js <port> <project id>` | first-run screens, the project's tab, Share as "Vikas" on the default server; prints `LINK <url>` (read from the dialog: Copy link would overwrite the clipboard) |
+| `cap-run.ps1 -Hwnd <hwnd> -Out <file.mkv>` | records that window only (Windows Graphics Capture → Quick Sync → Matroska) until its stop file appears |
+| `go.js <port> <project id>` | History open, the Library panel closed, a Claude Code row picked, the prompt sent; shoots the key moments, sends the gone cue 3 s after the stand-in waits for it, then stops the capture and the taskbar flash |
+| `unseen\` | the launcher, its Win32 calls, and `flashstop.ps1` |
+| `lib\` | DevTools helpers (over `scripts/cdp.js`), the first-run screens, opening a project's tab, `demo-env.ps1`'s paths for Node |
+
+A rehearsal: `make-project.ps1`, `start-actor.ps1`, `launch-demo.ps1`, `node share.js 9420 <id>` (send the link), then
+`cap-run.ps1` with the printed hwnd and `-Out <demo>\runs\<run>\rehearsal.mkv`, and on "go" `node go.js 9420 <id>
+<demo>\runs\<run>` (the same run folder: its `cap.stop` ends the capture). Windows Graphics Capture gives a frame only
+when the window changes, and an ffmpeg that never got one can crash on `q` and leave an empty file.
 
 ## Rehearsing on Linux
 

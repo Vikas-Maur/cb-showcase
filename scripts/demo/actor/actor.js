@@ -29,6 +29,11 @@
 //                                           named exactly so) whose change, in `cb compare` words, contains `words`;
 //                                           `save` keeps "<cut>@<the version before it>" as {{save}}
 //   {wait: {cue: "gone", timeout: 30}}      held until GET /cue/gone (the operator), or the timeout
+//   {wait: {played: 29.9, timeout: 20}}     held until the running app has played up to that timeline second (`cb app
+//                                           context`: playing, playhead at or past it), or played and stopped (the
+//                                           timeline's end), or the timeout. In place of a fixed pause after `cb app
+//                                           play`: a voice that just arrived can load for seconds before playback starts
+//                                           (6 s on the Windows laptop), and a `cb app pause` sent before then is lost
 //   {end: "<words or nothing>"}             the turn's last message (end_turn)
 // A message is the blocks up to and including the next tool call. Waits and pauses hold the message's stream (pings
 // keep it open) before its next block, so the chat shows nothing new until the other side has acted.
@@ -94,6 +99,26 @@ async function waitFor(w, alive) {
     log({ event: "wait", cue: w.cue });
     await Promise.race([new Promise((r) => cues.set(w.cue, r)), sleep(timeout)]);
     cues.delete(w.cue);
+    return;
+  }
+  if (w.played !== undefined) {
+    // (`cb app context` keeps the playhead where playback began until it stops: the time played is counted from the
+    // first answer that says "playing", which is at most one answer, ~0.35 s on the laptop, after playback began)
+    log({ event: "wait", played: w.played });
+    let started = null, from = null, last = null;
+    while (alive() && Date.now() - t0 < timeout) {
+      const r = await cb(["app", "context", vars.project, "--json"]);
+      try { const c = JSON.parse(r.out); last = { playing: c.playing, playhead: c.playhead }; } catch { last = null; }
+      if (last?.playing && started === null) { started = Date.now(); from = last.playhead; }
+      if (last && !last.playing && started !== null) break; // stopped (the timeline's end)
+      if (started !== null) {
+        const left = (w.played - from) * 1000 - (Date.now() - started);
+        if (left <= 0) break;
+        if (left < 450) { await sleep(left); break; }
+      }
+      await sleep(100);
+    }
+    log({ event: Date.now() - t0 < timeout ? "waited" : "wait-timeout", played: w.played, playbackStartedMs: started && started - t0, from, at: last, ms: Date.now() - t0 });
     return;
   }
   log({ event: "wait", by: w.by, words: w.words ?? null });

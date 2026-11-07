@@ -1,0 +1,152 @@
+// The take's "go" in the demo Cardboard, driven over DevTools (README steps 7-9, for a rehearsal or a take):
+//   node go.js <DevTools port> <project id> [run folder] [--keep-library] [--layout-only] [--gone-after 3]
+//                                                        [--cap-stop <file>] [--model "Opus 5.5"]
+// 1. The layout: History open beside the chat (Ctrl+Shift+H as DevTools key events), the Library panel closed so the
+//    preview has room (--keep-library: left open). --layout-only: report the layout, shoot it, and stop there.
+// 2. The chat's picker set to a Claude Code row (provider "claude", --model's label if there is one; never Cloud, the
+//    Director), the prompt typed and sent with the page's Send button.
+// 3. Watches the page every ~0.25 s (History's top rows and their arrival ring, the chat's text, the timecode, the cut,
+//    the timeline's items once a second from the editor's React state) and the stand-in's log, and shoots the key
+//    moments as it notices them (a moment's time is when it was noticed, up to ~1 s after it happened; the stand-in's
+//    log has the exact times): Claude 2's first row arriving, the chat's thinking row and first line, the playhead on
+//    Claude 2's first title, Claude 1's first title, the switch to "Edit v2", back on Main with "He's gone.".
+// 4. Sends the gone cue (GET /cue/gone) --gone-after seconds after the stand-in starts waiting for it.
+// 5. At the end ("He's gone." on Main, the stand-in at its last message, the chat idle 3 s): asks the capture to stop
+//    (writes --cap-stop, default <run>\cap.stop, the file cap-run.ps1 -StopFile waits for) and stops the window's
+//    taskbar flash (unseen\flashstop.ps1).
+// Log <run>\go.log, the chat's text over time <run>\go-chat.jsonl, moments <run>\go-moments.json, shots
+// <run>\shots\1N-*.png. Paths from demo-env.ps1. DevTools page input only: nothing is sent to the OS.
+const fs = require("fs"), path = require("path"), http = require("http");
+const { spawnSync } = require("child_process");
+const argv = process.argv.slice(2);
+const opt = (k, d) => { const i = argv.indexOf("--" + k); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
+const flag = (k) => { const i = argv.indexOf("--" + k); if (i < 0) return false; argv.splice(i, 1); return true; };
+const KEEP_LIBRARY = flag("keep-library"), LAYOUT_ONLY = flag("layout-only"), GONE_AFTER = Number(opt("gone-after", 3)), CAP_STOP = opt("cap-stop", null), MODEL = opt("model", "Opus 5.5");
+const [port, id, given] = argv;
+if (!port || !id) { console.error("usage: node go.js <DevTools port> <project id> [run folder] [--keep-library] [--layout-only] [--gone-after 3] [--cap-stop <file>] [--model <label>]"); process.exit(2); }
+process.env.CDP_PORT = port;
+const h = require("./lib/cdp-helpers");
+const D = require("./lib/demo-env");
+const OUT = D.runDir(given), SH = path.join(OUT, "shots");
+const E = "app/editor/" + id;
+const scene = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "claude1-scene.json"), "utf8"));
+const PROMPT = scene.prompt ?? "Everyday work: tidy up the promo";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const ts = () => { const d = new Date(); return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+let T0 = Date.now();
+const log = (...a) => { const s = `${ts()} +${((Date.now() - T0) / 1000).toFixed(1).padStart(6)}s ${a.join(" ")}`; console.log(s); fs.appendFileSync(path.join(OUT, "go.log"), s + "\n"); };
+const center = (sel) => `(() => { const b = ${sel}; if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+const btnSel = (label) => `[...document.querySelectorAll("button[aria-label]")].find((b) => b.getAttribute("aria-label") === ${JSON.stringify(label)} && b.getBoundingClientRect().width > 0)`;
+let shotN = 10;
+const shot = async (name) => { const f = path.join(SH, `${++shotN}-${name}.png`); const t = Date.now(); try { await h.shot(E, f); log(`shot ${path.basename(f)} (${Date.now() - t} ms)`); } catch (e) { log("shot failed", name, e.message); } return f; };
+const cue = (name) => new Promise((res) => http.get(`http://127.0.0.1:${D.Port}/cue/${name}`, (r) => { let b = ""; r.on("data", (d) => (b += d)); r.on("end", () => res(`${r.statusCode} ${b.trim()}`)); }).on("error", (e) => res("error " + e.message)));
+// cheap page reads, every ~0.25 s
+const READ = `(() => {
+  const sb = document.querySelector(".carton-sidebar");
+  const rows = sb ? [...sb.querySelectorAll(".carton-version")].slice(0, 3).map((r) => { const a = r.querySelector(".carton-arrival"); return { text: r.innerText.replace(/\\s+/g, " ").trim().slice(0, 110), ring: !!a, glow: !!a?.hasAttribute("data-glow") }; }) : [];
+  const lines = (sb?.innerText ?? "").split(String.fromCharCode(10)).map((s) => s.trim()).filter(Boolean);
+  const cut = lines[lines.indexOf("Comments") + 1] ?? null;
+  const tc = [...document.querySelectorAll(".tabular-nums")].find((e) => /^\\d\\d:\\d\\d:\\d\\d\\.\\d{3}$/.test(e.textContent.trim()))?.textContent.trim() ?? null;
+  const ta = document.querySelector('textarea[aria-label="Message the agent"]');
+  let chat = ta; while (chat && chat.parentElement && chat.getBoundingClientRect().height < 600) chat = chat.parentElement;
+  const chatText = (chat?.innerText ?? "").replace(/\\n{2,}/g, "\\n").trim();
+  const busy = [...document.querySelectorAll("button[aria-label]")].some((b) => /^Stop/i.test(b.getAttribute("aria-label")) && b.getBoundingClientRect().width > 0);
+  const status = sb ? [...sb.querySelectorAll("[role=status],[aria-live]")].map((s) => s.textContent.trim()).filter(Boolean).join(" | ") : "";
+  return { rows, cut, tc, chatText: chatText.slice(-2500), busy, status };
+})()`;
+// the timeline's items, from the editor's React state
+const ITEMS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]]; let tl = null;
+  while (stack.length && !tl) { const f = stack.pop(); if (!f) continue; for (let s = f.memoizedState, n = 0; s && n < 60; s = s.next, n++) { const c = s.memoizedState; if (c && typeof c === "object" && !Array.isArray(c) && "selectedTimelineItemIds" in c && "timelineItems" in c) { tl = c; break; } } if (f.child) stack.push(f.child); if (f.sibling) stack.push(f.sibling); }
+  return tl ? tl.timelineItems.map((i) => (i.name ?? i.textContent ?? "") + "@" + Number(i.startTime).toFixed(1)) : null; })()`;
+const LAYOUT = `(() => { const box = (e) => { if (!e) return null; const r = e.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; }; const ta = document.querySelector('textarea[aria-label="Message the agent"]'); let c = ta; while (c && c.parentElement && c.getBoundingClientRect().height < 600) c = c.parentElement; return { win: [innerWidth, innerHeight], history: box(document.querySelector(".carton-sidebar")), chat: box(c), preview: box(document.querySelector("canvas")) }; })()`;
+// the Library panel's own collapse button: the visible "Collapse panel" in the left half, in a panel header
+const LIBRARY_COLLAPSE = `[...document.querySelectorAll('button[aria-label="Collapse panel"]')].find((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.x > 0 && r.x < innerWidth / 2 && r.y < 100; })`;
+const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); return Number(hh) * 3600 + Number(mm) * 60 + Number(s); };
+(async () => {
+  const page = await h.page(E);
+  T0 = Date.now(); log(`go: project ${id}, run folder ${OUT}`);
+  // 1. the layout
+  if (!(await h.ev(E, `!!document.querySelector(".carton-sidebar")?.offsetParent`))) { await h.keys(E, "Control+Shift+h"); await sleep(1200); }
+  if (!KEEP_LIBRARY) {
+    const lc = await h.ev(E, center(LIBRARY_COLLAPSE));
+    if (lc) { await h.mouse(page, lc.x, lc.y); await sleep(900); log("Library panel closed"); } else log("no Library collapse button found (left as it is)");
+  }
+  log("layout (CSS px):", JSON.stringify(await h.ev(E, LAYOUT)));
+  await shot("layout");
+  if (LAYOUT_ONLY) { h.forget(); process.exit(0); }
+  // the stand-in's log: the newest in the demo folder (start-actor.ps1 makes one per run)
+  const actorLog = fs.readdirSync(D.Demo).filter((f) => /^actor-.*\.log$/.test(f)).sort().pop();
+  if (!actorLog) throw new Error("no stand-in log in " + D.Demo + ": start-actor.ps1 first");
+  const ACTOR = path.join(D.Demo, actorLog);
+  let lastIndex = null; try { lastIndex = JSON.parse(fs.readFileSync(ACTOR, "utf8").split("\n").find((l) => l.includes('"event":"scene"'))).messages - 1; } catch {}
+  log(`stand-in log ${ACTOR} (the scene's last message: ${lastIndex})`);
+  // 2. the picker: a Claude Code row, not Cloud (the Director)
+  const pb = await h.ev(E, center(btnSel("Agent, model and effort"))); await h.mouse(page, pb.x, pb.y); await sleep(800);
+  const rows = await h.ev(E, `[...document.querySelectorAll('[role=radiogroup][aria-label="Agent and model"] [role=radio]')].map((b) => { const k = Object.keys(b).find((k) => k.startsWith("__reactFiber")); let f = b[k], row = null; for (let i = 0; f && i < 6 && !row; i++, f = f.return) row = f.memoizedProps?.row ?? null; return { label: b.innerText.trim(), provider: row?.provider ?? null }; })`);
+  const want = rows.findIndex((r) => r.provider === "claude" && r.label === MODEL), idx = want >= 0 ? want : rows.findIndex((r) => r.provider === "claude");
+  if (idx < 0) throw new Error("no Claude Code row: " + JSON.stringify(rows));
+  const rp = await h.ev(E, center(`document.querySelectorAll('[role=radiogroup][aria-label="Agent and model"] [role=radio]')[${idx}]`));
+  await h.mouse(page, rp.x, rp.y); await sleep(700);
+  if (await h.ev(E, `!!document.querySelector('[role=radiogroup][aria-label="Agent and model"]')`)) { await h.keys(E, "Escape"); await sleep(400); }
+  const val = await h.ev(E, `(() => { const b = ${btnSel("Agent, model and effort")}; const k = Object.keys(b).find((k) => k.startsWith("__reactFiber")); let f = b[k]; for (let i = 0; f && i < 30; i++, f = f.return) if (f.memoizedProps?.connectors) return { value: f.memoizedProps.value, label: b.innerText.trim() }; return { label: b.innerText.trim() }; })()`);
+  log(`picked "${rows[idx].label}" (provider ${rows[idx].provider}); picker now`, JSON.stringify(val));
+  if (val.value && val.value.provider !== "claude") throw new Error("the picker isn't on Claude Code");
+  // the prompt, typed and sent
+  const ta = await h.ev(E, center(`document.querySelector('textarea[aria-label="Message the agent"]')`)); await h.mouse(page, ta.x, ta.y); await sleep(250);
+  await page.send("Input.insertText", { text: PROMPT }); await sleep(400);
+  const typed = await h.ev(E, `document.querySelector('textarea[aria-label="Message the agent"]').value`);
+  await shot("typed");
+  const sendB = await h.ev(E, center(btnSel("Send message")));
+  const tSend = Date.now(); await h.mouse(page, sendB.x, sendB.y);
+  log(`sent: ${JSON.stringify(typed)}`);
+  // 3. watch
+  const M = {}; const at = (k) => { M[k] = Date.now(); log(`MOMENT ${k} noticed at +${((Date.now() - tSend) / 1000).toFixed(1)} s after send`); };
+  let last = {}, lastChat = "", items = [], tItems = 0, actorPos = 0, actorBuf = "", goneAsked = false, lastMsg = -1, turnEndSeen = 0, firstReq = null;
+  const chatLog = fs.openSync(path.join(OUT, "go-chat.jsonl"), "a");
+  const deadline = Date.now() + 30 * 60e3;
+  while (Date.now() < deadline) {
+    try { const st = fs.statSync(ACTOR); if (st.size > actorPos) { const fd = fs.openSync(ACTOR, "r"); const b = Buffer.alloc(st.size - actorPos); fs.readSync(fd, b, 0, b.length, actorPos); fs.closeSync(fd); actorPos = st.size; actorBuf += b.toString("utf8"); } } catch {}
+    let nl; while ((nl = actorBuf.indexOf("\n")) >= 0) {
+      const line = actorBuf.slice(0, nl); actorBuf = actorBuf.slice(nl + 1); let o = null; try { o = JSON.parse(line); } catch {}
+      if (!o) continue;
+      if (o.event === "request" && o.kind === "scene") { lastMsg = o.message; if (firstReq === null) { firstReq = Date.now(); log("stand-in: first scene request"); } }
+      if (o.event === "request" && o.kind !== "scene") log(`stand-in: ${o.kind} request answered ${JSON.stringify(o.answered ?? "")}`);
+      if (o.event === "tool") log(`stand-in: tool ${o.index} ${o.name} ${JSON.stringify(o.input).slice(0, 140)}`);
+      if (o.event === "waited" || o.event === "wait-timeout") log(`stand-in: ${o.event} ${JSON.stringify(o).slice(36, 260)}`);
+      if (o.event === "wait" && !o.cue) log(`stand-in: waits ${JSON.stringify(o).slice(36, 200)}`);
+      if (o.event === "wait" && o.cue === "gone" && !goneAsked) {
+        goneAsked = true; at("standin-waits-gone");
+        setTimeout(async () => { const r = await cue("gone"); log(`cue gone sent (${GONE_AFTER} s after the stand-in's wait was noticed): ${r}`); }, GONE_AFTER * 1000);
+      }
+    }
+    let s; try { s = await h.ev(E, READ); } catch (e) { log("read failed", e.message); await sleep(500); continue; }
+    if (s.chatText !== lastChat) { fs.writeSync(chatLog, JSON.stringify({ t: ts(), ms: Date.now() - tSend, chat: s.chatText.slice(-600), busy: s.busy }) + "\n"); lastChat = s.chatText; }
+    if (JSON.stringify(s.rows[0]) !== JSON.stringify(last.rows?.[0])) log(`history top: ${JSON.stringify(s.rows[0])}${s.status ? " | status: " + s.status : ""}`);
+    if (s.cut !== last.cut) log(`cut: ${s.cut}`);
+    if (s.busy !== last.busy) log(`chat busy: ${s.busy}`);
+    if (Date.now() - tItems > 1000) { tItems = Date.now(); try { const it = await h.ev(E, ITEMS); if (it && JSON.stringify(it) !== JSON.stringify(items)) { const added = it.filter((x) => !items.includes(x)), gone = items.filter((x) => !it.includes(x)); if (items.length) log(`timeline: +${JSON.stringify(added)} -${JSON.stringify(gone)} (${it.length} items)`); items = it; } } catch {} }
+    const has = (p) => items.some((x) => x.startsWith(p));
+    const t = secs(s.tc);
+    // the key moments
+    if (!M.ring && s.rows.some((r) => r.ring)) { at("ring"); await shot("history-claude2-row-arrival"); setTimeout(() => shot("history-claude2-row-1s5"), 1500); }
+    if (!M.thinking && M.ring && /Thinking|Thought/.test(s.chatText.slice(-400))) { at("thinking"); await shot("chat-thinking-row"); }
+    if (!M.firstLine && /Wait! Where did this clip come from/.test(s.chatText)) { at("firstLine"); await shot("chat-first-line"); }
+    if (!M.playhead && M.firstLine && t !== null && t >= 25.3 && t <= 29.5) { at("playhead"); await shot("playhead-on-claude2-title"); }
+    if (!M.c1title && has("Who are you")) { at("c1title"); await shot("claude1-first-title"); }
+    if (!M.v2 && s.cut === "Edit v2") { at("v2"); await shot("switch-edit-v2"); setTimeout(() => shot("edit-v2-1s"), 1000); }
+    if (!M.gone && M.v2 && s.cut && s.cut !== "Edit v2" && has("He's gone.")) { at("gone"); await shot("main-hes-gone"); setTimeout(() => shot("main-hes-gone-1s5"), 1500); }
+    // the end
+    if (M.gone && (lastIndex === null || lastMsg >= lastIndex) && !s.busy) { if (!turnEndSeen) turnEndSeen = Date.now(); if (Date.now() - turnEndSeen > 3000) break; } else turnEndSeen = 0;
+    last = s;
+    await sleep(250);
+  }
+  at("end"); await shot("end");
+  fs.writeFileSync(path.join(OUT, "go-moments.json"), JSON.stringify({ sent: new Date(tSend).toISOString(), noticedSecondsAfterSend: Object.fromEntries(Object.entries(M).map(([k, v]) => [k, +((v - tSend) / 1000).toFixed(1)])), items, lastChat: lastChat.slice(-2500) }, null, 1));
+  fs.writeFileSync(CAP_STOP || path.join(OUT, "cap.stop"), "stop"); log("asked the capture to stop");
+  const fl = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "unseen", "flashstop.ps1"), "-Port", String(port)], { encoding: "utf8" }); log("flashstop:", (fl.stdout || fl.stderr || "").trim().split("\n").pop());
+  // a small repaint so the capture sees its "q" (Windows Graphics Capture gives a frame only when the window changes):
+  // the pointer over the chat's input and away, which changes nothing else
+  const tb = await h.ev(E, center(`document.querySelector('textarea[aria-label="Message the agent"]')`));
+  if (tb) { await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: tb.x, y: tb.y }); await sleep(600); await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 }); }
+  h.forget(); process.exit(0);
+})().catch((e) => { log("ERR", e.stack); h.forget(); process.exit(1); });
