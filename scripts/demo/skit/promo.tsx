@@ -1,5 +1,12 @@
+// The "Morning Brew" promo (24 s) the skit happens over. Its first three tracks are empty: the conversation's, made here
+// so that they sit at the top of the timeline, in view (a track added later goes below the others, out of view on the
+// laptop), with names that give nothing away: Callouts for Claude 1's titles, Overlays and Voiceover for Claude 2's
+// titles and voice. A cut from before the conversation ("Edit v2") has them empty.
 export default (
   <timeline aspect="16:9">
+    <track name="Callouts"></track>
+    <track name="Overlays"></track>
+    <track kind="audio" name="Voiceover"></track>
     <track name="Titles">
       <text name="Headline" start={1} end={6} textContent="Morning Brew" fontSize={150} fontWeight="bold" color="#FFF4E6" textAlign="center" shadowColor="#000000" shadowBlur={18} shadowOffsetX={0} shadowOffsetY={6} transform={{ x: 0, y: 60, scale: 1, rotation: 0 }} />
       <text name="Tagline" start={6} end={11} textContent="Fresh roast, every morning" fontSize={84} fontWeight="bold" color="#FFF4E6" textAlign="center" shadowColor="#000000" shadowBlur={12} shadowOffsetX={0} shadowOffsetY={4} />

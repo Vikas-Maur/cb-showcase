@@ -8,7 +8,8 @@
 #                      the timeline), track (default Talk), color, size, y
 #   speak: <words>     a spoken line (Piper, made before the run starts): at, voice (ryan | lessac | amy | alan), speed,
 #                      name, track (default Voice); file: <wav|mp3> to use a recording instead (ElevenLabs lines made
-#                      on the laptop, for example)
+#                      on the laptop, for example); parts: [{file, at, name}] for a line in several sounds (imported,
+#                      shared and placed together), with titles: [say's fields] put on once they are shared
 #   edit: <clip>       text, at, for, style          clear: <clip>  (all: true for every match; all-mine for ours)
 #   presence: <what you're doing>  (or idle, or gone)
 #   wait: {title | words | removed: <words>, by: <who>, any_edit: true, here | left: <who>, activity: <words>,

@@ -59,7 +59,7 @@ const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/htm
 // The editor of the app participant `app` (its folder), on its project, in a new context of `browser`.
 //   mediaDelay: the first fetch of each media file waits this long (ms), as the laptop waits for a teammate's sound to
 //     come down from the sharing server; onControlReply: the editor's control:reply answers.
-async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null } = {}) {
+async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null, onMedia = null } = {}) {
   const b = lib.build(), RENDERER = path.dirname(b.assets);
   const cfg = lib.readJson(path.join(app, "peer.json"));
   const PID = cfg.projectId;
@@ -98,11 +98,12 @@ async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null 
     const u = new URL(route.request().url());
     if (u.pathname.startsWith("/media/")) {
       const id = decodeURIComponent(u.pathname.slice("/media/".length));
-      if (mediaDelay > 0 && !delayed.has(id)) { delayed.add(id); await new Promise((r) => setTimeout(r, mediaDelay)); }
+      const delay = mediaDelay > 0 && !delayed.has(id);
+      if (delay) { delayed.add(id); await new Promise((r) => setTimeout(r, mediaDelay)); }
       const at = (await worker("media.locate", [[id]]).catch(() => ({})))?.[id]?.nativePath;
-      if (at && fs.existsSync(at)) return route.fulfill({ status: 200, contentType: TYPES[path.extname(at).toLowerCase()] ?? "application/octet-stream", body: fs.readFileSync(at) });
+      if (at && fs.existsSync(at)) { const body = fs.readFileSync(at); onMedia?.({ id, bytes: body.length, delayed: delay }); return route.fulfill({ status: 200, contentType: TYPES[path.extname(at).toLowerCase()] ?? "application/octet-stream", body }); }
       const live = await worker("carton.liveMediaUrl", [{ mediaId: id }]).catch(() => null);
-      if (live?.url) { const r = await fetch(live.url); return route.fulfill({ status: 200, contentType: r.headers.get("content-type") ?? "application/octet-stream", body: Buffer.from(await r.arrayBuffer()) }); }
+      if (live?.url) { const r = await fetch(live.url); const body = Buffer.from(await r.arrayBuffer()); onMedia?.({ id, bytes: body.length, delayed: delay, live: true }); return route.fulfill({ status: 200, contentType: r.headers.get("content-type") ?? "application/octet-stream", body }); }
       return route.fulfill({ status: 404, body: "" });
     }
     if (u.hostname !== "localhost") return route.fulfill({ status: 404, body: "" });

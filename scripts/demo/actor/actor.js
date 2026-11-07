@@ -26,15 +26,25 @@
 //   {pause: <ms>}                           nothing for that long (before the next block)
 //   {wait: {by: "Claude", words: "Added audio 'Hello?'", save: "before_claude", timeout: 900}}
 //                                           held until `cb history` on the cut shows a version by that author (a person
-//                                           named exactly so) whose change, in `cb compare` words, contains `words`;
-//                                           `save` keeps "<cut>@<the version before it>" as {{save}}
+//                                           named exactly so; without `by`, anyone) whose change, in `cb compare` words,
+//                                           contains `words`; `save` keeps "<cut>@<the version before that author's first
+//                                           change since the wait began>" as {{save}} (Claude 2 shares a line's sound
+//                                           before its title: the version before the title would hold that sound)
 //   {wait: {cue: "gone", timeout: 30}}      held until GET /cue/gone (the operator), or the timeout
 //   {wait: {played: 29.9, timeout: 20}}     held until the running app has played up to that timeline second (`cb app
 //                                           context`: playing, playhead at or past it), or played and stopped (the
 //                                           timeline's end), or the timeout. In place of a fixed pause after `cb app
 //                                           play`: a voice that just arrived can load for seconds before playback starts
 //                                           (6 s on the Windows laptop), and a `cb app pause` sent before then is lost
-//   {end: "<words or nothing>"}             the turn's last message (end_turn)
+//   {wait: {app: {duration: 29.5, items: 11, itemsAtMost: 9}, timeout: 15}}
+//                                           held until the running app's editor (`cb app context`) has a timeline at
+//                                           least that long, with at least (or at most) that many items, or the timeout.
+//                                           A change is in `cb history` before the editor shows it: a seek before then
+//                                           stops at the editor's old end (and Play from the end plays from 0), a Play
+//                                           before the line's clip is in the editor plays no voice
+//   {end: "<words or nothing>"}             the turn's last message (end_turn). Held behind a {wait: {cue: "end"}},
+//                                           the turn stays open (the chat panel shows it working) until the operator
+//                                           ends it: at the turn's end the panel folds the turn into "Worked for …"
 // A message is the blocks up to and including the next tool call. Waits and pauses hold the message's stream (pings
 // keep it open) before its next block, so the chat shows nothing new until the other side has acted.
 const http = require("http"), fs = require("fs"), path = require("path");
@@ -93,6 +103,20 @@ async function changeWords(cut, version) {
 // words compared as they read (a title wrapped onto lines still matches its words in one line)
 const flatWords = (s) => String(s).replace(/\s+/g, " ");
 let lastMatchSeq = null; // a wait looks at versions after the one the previous wait matched
+// A wait that matched on one comparison of several versions (below) answers at once, and takes the head for its match;
+// the version that held its words is found before the next wait looks (each version's words, cached): else a change
+// that landed in the same few seconds (a line's sound, right after its title) would be behind the next wait's start,
+// and that wait would never see it.
+let unsettled = null;
+async function settle() {
+  if (!unsettled) return;
+  const { versions, words: want, cut } = unsettled;
+  unsettled = null;
+  for (const v of versions) {
+    const said = await changeWords(cut, v.version);
+    if (flatWords(said ?? "").includes(flatWords(want))) { lastMatchSeq = Number(v.version.split("@")[1]); return; }
+  }
+}
 async function waitFor(w, alive) {
   const t0 = Date.now(), cut = w.cut ?? scene.cut ?? "Main cut", timeout = (w.timeout ?? 900) * 1000;
   if (w.cue) {
@@ -103,24 +127,42 @@ async function waitFor(w, alive) {
   }
   if (w.played !== undefined) {
     // (`cb app context` keeps the playhead where playback began until it stops: the time played is counted from the
-    // first answer that says "playing", which is at most one answer, ~0.35 s on the laptop, after playback began)
+    // first answer that says "playing", which is at most one answer, ~0.35 s on the laptop, after playback began; when
+    // less than one more answer's time is left, the rest is slept, so the pause comes on time however slow cb is)
     log({ event: "wait", played: w.played });
-    let started = null, from = null, last = null;
+    let started = null, from = null, last = null, polls = 0, unread = 0, unreadSample = null, pollMs = 400;
     while (alive() && Date.now() - t0 < timeout) {
+      const p0 = Date.now();
       const r = await cb(["app", "context", vars.project, "--json"]);
-      try { const c = JSON.parse(r.out); last = { playing: c.playing, playhead: c.playhead }; } catch { last = null; }
+      polls++; pollMs = Date.now() - p0;
+      try { const c = JSON.parse(r.out); last = { playing: !!c.playing, playhead: c.playhead }; }
+      catch { last = null; unread++; unreadSample ??= (r.out + r.err).trim().slice(0, 160); }
       if (last?.playing && started === null) { started = Date.now(); from = last.playhead; }
       if (last && !last.playing && started !== null) break; // stopped (the timeline's end)
       if (started !== null) {
         const left = (w.played - from) * 1000 - (Date.now() - started);
-        if (left <= 0) break;
-        if (left < 450) { await sleep(left); break; }
+        if (left <= pollMs + 150) { if (left > 0) await sleep(left); break; }
       }
       await sleep(100);
     }
-    log({ event: Date.now() - t0 < timeout ? "waited" : "wait-timeout", played: w.played, playbackStartedMs: started && started - t0, from, at: last, ms: Date.now() - t0 });
+    log({ event: Date.now() - t0 < timeout ? "waited" : "wait-timeout", played: w.played, playbackStartedMs: started && started - t0, from, state: last, ms: Date.now() - t0, polls, pollMs, ...(unread ? { unread, unreadSample } : {}) });
     return;
   }
+  if (w.app) {
+    const want = w.app, ok = (c) => c && (want.duration === undefined || c.duration >= want.duration - 0.01) && (want.items === undefined || c.items >= want.items) && (want.itemsAtMost === undefined || c.items <= want.itemsAtMost);
+    log({ event: "wait", app: want });
+    let last = null, polls = 0;
+    while (alive() && Date.now() - t0 < timeout) {
+      const r = await cb(["app", "context", vars.project, "--json"]);
+      polls++;
+      try { const c = JSON.parse(r.out); last = { duration: c.duration, items: c.items }; } catch { last = null; }
+      if (ok(last)) break;
+      await sleep(150);
+    }
+    log({ event: ok(last) ? "waited" : "wait-timeout", app: want, state: last, polls, ms: Date.now() - t0 });
+    return;
+  }
+  await settle(); // (only before a wait on History: a cue or a play isn't held up by it)
   log({ event: "wait", by: w.by, words: w.words ?? null });
   let from = lastMatchSeq;
   if (from === null) { // the first wait: from the head as the scene began (vars.startSeq, set at the first request)
@@ -141,6 +183,7 @@ async function waitFor(w, alive) {
         try { said = JSON.parse(c.out).changes.join("\n"); } catch {}
         if (flatWords(said).includes(flatWords(w.words))) {
           lastMatchSeq = top;
+          unsettled = { versions: theirs.slice().reverse(), words: w.words, cut };
           log({ event: "waited", by: w.by, version: head.version, ms: Date.now() - t0 });
           return;
         }
@@ -152,15 +195,17 @@ async function waitFor(w, alive) {
     if (r.code === 0) {
       let versions = [];
       try { versions = JSON.parse(r.out).versions; } catch {}
+      let first = null; // that author's first version since the wait began
       for (const v of versions.slice().reverse()) {
         const seq = Number(v.version.split("@")[1]);
         if (seq <= from) continue;
         const a = v.by ?? {};
         if (w.by && !(a.kind === "human" && (a.name === w.by || a.id === w.by))) continue;
+        first ??= seq;
         const said = w.words ? await changeWords(cut, v.version) : "";
         if (w.words && !flatWords(said ?? "").includes(flatWords(w.words))) continue;
         lastMatchSeq = seq;
-        if (w.save) vars[w.save] = `${v.version.split("@")[0]}@${seq - 1}`;
+        if (w.save) vars[w.save] = `${v.version.split("@")[0]}@${first - 1}`;
         log({ event: "waited", by: a.name ?? a.id, version: v.version, ms: Date.now() - t0, ...(w.save ? { saved: { [w.save]: vars[w.save] } } : {}) });
         return;
       }

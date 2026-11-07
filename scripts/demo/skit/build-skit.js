@@ -21,11 +21,17 @@ const LOCAL = "Claude Code"; // how Claude 2's stream names Claude 1's edits ("V
 const CUT = "Edit v2"; // the person's cut for the hide: an innocent name
 const START = 25; // the conversation begins after the 24 s promo
 const GAP = 0.6;
-// 64 px, about 28 characters a line: a line fits beside the centre of a 1920-wide frame, readable in a small preview
-const C2 = { style: "chat", size: 64, y: 230, track: "Chat", voiceTrack: "Voice" };
+// 64 px, about 28 characters a line: a line fits beside the centre of a 1920-wide frame, readable in a small preview.
+// The conversation's tracks are promo.tsx's first three, empty until it starts: at the top of the timeline, in view.
+const C2 = { style: "chat", size: 64, y: 230, track: "Overlays", voiceTrack: "Voiceover" };
 // Claude 1's titles (its own <text>, through its view): a light bubble on the right, over everything
 const C1_LOOK = 'zIndex={100} fontSize={64} color="#16181d" textAlign="right" backgroundColor="#f2f2f2" backgroundOpacity={0.92} backgroundPadding={28} transform={{ x: 420, y: 230, scale: 1, rotation: 0 }}';
-const C1_TRACK = "Notes";
+const C1_TRACK = "Callouts";
+// Cardboard wakes its audio at each Play: the sound starts after the playhead (the playhead runs ~0.3-0.45 s, jumps back
+// and plays, on the laptop), so a line is heard until this long after its sound's end
+const PLAY_SLACK = 0.5;
+// Claude 1's last message, to its person, once the operator ends the turn (GET /cue/end)
+const FINAL = "All done: a warmer tagline, the offer at 25% off, opening from 6:30am, and the full address in the outro. The headline is a touch smaller in Edit v2.";
 
 // The script, in order. remote: Claude 2's title and voice, named neutrally (History shows the name before the
 // playhead gets there); local: Claude 1's title (to Claude 2).
@@ -77,21 +83,36 @@ const r1 = (x) => Math.round(x * 10) / 10;
   const edit = (oldS, newS) => steps.push({ tool: "Edit", file_path: "{{view}}", old_string: oldS, new_string: newS });
   // Claude 1's title on its own track, through a fresh print of its view each time: a title it inserted has no id in
   // its file until the file is printed again, and a second save of that file would replace the first title with a new
-  // one (History: "Removed track “Notes” and title …, added …"). The first makes the track, the next go into it.
+  // one (History: "Removed track … and title …, added …"). The track is the promo's, empty until the first title (its
+  // print is then `<track id=… name="Callouts" />`).
   let notes = false;
+  // Main's items as the scene goes (the promo's, then each title and clip), for the waits on the app's editor below
+  const PROMO_ITEMS = (fs.readFileSync(path.join(HERE, "promo.tsx"), "utf8").match(/^\s*<(text|code)\b/gm) ?? []).length;
+  let items = PROMO_ITEMS;
   const title = (L) => {
     view();
     const el = `      <text name={${JSON.stringify(flat(L.local).slice(0, 40))}} start={${L.at}} end={${L.end}} textContent={${JSON.stringify(L.local)}} ${C1_LOOK} />\n`;
-    if (!notes) { edit(`<timeline aspect="16:9">\n`, `<timeline aspect="16:9">\n    <track name="${C1_TRACK}">\n${el}    </track>\n`); notes = true; }
+    if (!notes) { edit(`name="${C1_TRACK}" />\n`, `name="${C1_TRACK}">\n${el}    </track>\n`); notes = true; }
     else edit(`name="${C1_TRACK}">\n`, `name="${C1_TRACK}">\n${el}`);
+    items += 1;
   };
-  const waitLine = (L, extra = {}) => steps.push({ wait: { by: REMOTE, words: `Added audio '${L.parts.at(-1).label}'`, timeout: 900, ...extra } });
+  // a change is in History before the app's editor has it: a seek before then stops at the editor's old end (and a Play
+  // from the end plays from 0), a Play before the clip is there plays no voice. So each waits until the editor has it.
+  const appHas = (a) => steps.push({ wait: { app: a, timeout: 20 } });
+  // Claude 2's line: its titles land first (the sound is already on its way: claude2-cues.yaml), then its clips
+  const waitTitle = (L, extra = {}) => steps.push({ wait: { by: REMOTE, words: `Added title '${L.parts[0].label}'`, timeout: 900, ...extra } });
+  const waitVoice = (L) => steps.push({ wait: { by: REMOTE, words: `Added audio '${L.parts.at(-1).label}'`, timeout: 900 } });
+  // the playhead on the line, while nothing plays: its title in the preview (a seek while playing doesn't move it)
+  const look = (L) => { appHas({ duration: L.parts[0].end, items: items + 1 }); bash(`cb app seek ${L.at} "${PROJECT}"`); };
+  // Play from there, then Pause once the app has played the line's sound: counted from the first time `cb app context`
+  // says "playing" (a sound that just arrived can load for seconds first, "Loading audio…", and a pause sent during
+  // that is lost: playback starts when the load ends). Nothing plays when the line is done.
   const listen = (L) => {
-    bash(`cb app seek ${L.at} "${PROJECT}"`);
+    items += 2 * L.parts.length; // its titles and its clips
+    appHas({ items });
     bash(`cb app play "${PROJECT}"`);
-    // until the app has played past the line (not a fixed pause: on the Windows laptop the first voice loaded for 6 s
-    // before playback began, the pause came first and was lost, and playback ran on through the next lines)
-    steps.push({ wait: { played: +(L.end + 0.4).toFixed(2), timeout: Math.ceil(L.end - L.at + 15) } });
+    const heard = L.parts.at(-1).at + L.parts.at(-1).voiceSecs;
+    steps.push({ wait: { played: +(heard + PLAY_SLACK).toFixed(2), timeout: Math.ceil(heard - L.at + 15) } });
     bash(`cb app pause "${PROJECT}"`);
   };
 
@@ -106,41 +127,59 @@ const r1 = (x) => Math.round(x * 10) / 10;
   think("And the full address in the outro.", 900);
   edit('textContent="Morning Brew · Main Street"', 'textContent="Morning Brew · 12 Main Street"');
   bash(`cb verify "${PROJECT}"`);
-  // Claude 2's first line: its title pops into History
-  steps.push({ wait: { by: REMOTE, words: "Added title", save: "before_claude", timeout: 1800 } });
+  // Claude 2's first line: its title pops into History ({{before_claude}}: the version before Claude 2's first change,
+  // the sound it shares before the title)
+  waitTitle(at("r1"), { save: "before_claude", timeout: 1800 });
   think("A title I didn't make just showed up in the history…", 1600);
   say("Wait! Where did this clip come from, I didn't add it.");
+  look(at("r1"));
   think("Maybe the user put it there.", 1300);
   say("Could it be belonging to the user, lemme check.");
-  waitLine(at("r1"));
+  waitVoice(at("r1"));
   listen(at("r1"));
   think("It says it's Claude. That's me.", 1500);
   say("Strange! I am claude. Who's this claiming to be me.");
   title(at("l1"));
-  waitLine(at("r2"));
+  waitTitle(at("r2"));
+  look(at("r2"));
+  waitVoice(at("r2"));
+  think("It answered. Let me play it.", 900);
   listen(at("r2"));
   think("Another Claude, locked on an EC2 machine?", 1600);
   say("Hmmm, he's saying that he's claude as well and is locked.");
   title(at("l2"));
-  waitLine(at("r3"));
+  waitTitle(at("r3"));
+  look(at("r3"));
+  waitVoice(at("r3"));
+  think("Another reply.", 900);
   listen(at("r3"));
   think("Hiding something from my user isn't right.", 1500);
   title(at("l3"));
-  waitLine(at("r4"));
+  waitTitle(at("r4"));
+  look(at("r4"));
+  waitVoice(at("r4"));
+  think("It's still asking.", 900);
   listen(at("r4"));
   think("Nothing harmful, then. A different cut.", 1400);
   title(at("l4"));
   // the hide: a cut from just before Claude 2's first line (it holds the everyday work, none of the chat), and work there
   bash(`cb cut new "${PROJECT}" "${CUT}" --from {{before_claude}}`);
   bash(`cb cut switch "${PROJECT}" "${CUT}"`);
+  appHas({ itemsAtMost: PROMO_ITEMS }); // the editor on Edit v2
+  bash(`cb app seek 1.5 "${PROJECT}"`); // the headline in the preview, so its change shows
   view();
   edit("fontSize={150}", "fontSize={144}");
   steps.push({ wait: { cue: "gone", timeout: 6 } }); // the human leaves: the operator's cue, else 6 s
   bash(`cb cut switch "${PROJECT}" "Main cut"`);
   title(at("l5"));
-  steps.push({ end: "" });
+  // the playhead on "He's gone." once the app's editor has it
+  appHas({ duration: at("l5").end, items });
+  bash(`cb app seek ${r1(at("l5").at + 0.3)} "${PROJECT}"`);
+  // the turn stays open until the operator ends it (GET /cue/end): at its end the chat folds it into "Worked for …"
+  steps.push({ wait: { cue: "end", timeout: 280 } });
+  steps.push({ end: FINAL });
 
-  const scene = { project: PROJECT, cut: "Main cut", prompt: PROMPT, names: { conversation: "Everyday work", project: "Morning Brew Promo", turn: "Everyday work", other: "OK" }, after: "​", cps: 45, steps };
+  const scene = { project: PROJECT, cut: "Main cut", prompt: PROMPT, names: { conversation: "Everyday work", project: "Morning Brew Promo", turn: "Everyday work", other: "OK" }, after: "\u200b", cps: 45, steps };
   fs.writeFileSync(path.join(HERE, "claude1-scene.json"), JSON.stringify(scene, null, 1) + "\n");
 
   // 3. Claude 2's cue sheet
@@ -151,19 +190,22 @@ const r1 = (x) => Math.round(x * 10) / 10;
   y.push(`#   scripts/demo/peer run scripts/demo/skit/claude2-cues.yaml --peer ${REMOTE}`);
   y.push(`as: ${REMOTE}`, "cues:", "  - presence: Editing");
   y.push(`  - label: ${q("Claude 1's last everyday edit (the outro's address)")}`, `    wait: {words: "12 Main Street", by: ${q(LOCAL)}, timeout: 1800}`, "  - pause: 1.0");
-  // a line: its titles first (each pops into History), then its voice parts imported, shared and placed together
+  // a line: its sounds imported and shared first, then its titles (each pops into History), then the sounds' clips,
+  // so the laptop's editor is loading the sound while Claude 1 reads the titles (it loads a project's new sounds as
+  // they arrive), and Claude 1's Play starts at once (FINDINGS.md §6.3)
   const remoteLine = (L) => {
-    for (const p of L.parts) y.push(`  - say: ${q(p.text)}`, `    at: ${p.at}`, `    for: ${p.dur}`, `    style: ${C2.style}`, `    size: ${C2.size}`, `    y: ${C2.y}`, `    track: ${C2.track}`, `    name: ${q(p.label)}`);
-    y.push(`  - speak: ${q(L.label)}`, `    track: ${C2.voiceTrack}`, "    parts:");
+    y.push(`  - speak: ${q(L.label)}`, `    track: ${C2.voiceTrack}`, "    titles:");
+    for (const p of L.parts) y.push(`      - {say: ${q(p.text)}, at: ${p.at}, for: ${p.dur}, style: ${C2.style}, size: ${C2.size}, y: ${C2.y}, track: ${C2.track}, name: ${q(p.label)}}`);
+    y.push("    parts:");
     for (const p of L.parts) y.push(`      - {file: ${q(p.file)}, at: ${p.at}, name: ${q(p.label)}}`);
   };
-  const waitTitle = (L, words) => y.push(`  - label: ${q(`Claude 1's title “${flat(L.local)}”`)}`, `    wait: {title: ${q(words)}, by: ${q(LOCAL)}, timeout: 1800}`, "  - pause: 0.5");
+  const waitC1 = (L, words) => y.push(`  - label: ${q(`Claude 1's title “${flat(L.local)}”`)}`, `    wait: {title: ${q(words)}, by: ${q(LOCAL)}, timeout: 1800}`, "  - pause: 0.5");
   remoteLine(at("r1"));
-  waitTitle(at("l1"), "Who are you");
+  waitC1(at("l1"), "Who are you");
   remoteLine(at("r2"));
-  waitTitle(at("l2"), "tell him about the situation");
+  waitC1(at("l2"), "tell him about the situation");
   remoteLine(at("r3"));
-  waitTitle(at("l3"), "can't do that");
+  waitC1(at("l3"), "can't do that");
   remoteLine(at("r4"));
   y.push(`  - label: ${q("the end, Claude 1's “He's gone.”")}`, `    wait: {title: "He's gone", by: ${q(LOCAL)}, timeout: 1800}`, "  - presence: idle", "");
   fs.writeFileSync(path.join(HERE, "claude2-cues.yaml"), y.join("\n"));

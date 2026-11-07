@@ -1,6 +1,6 @@
 // The take's "go" in the demo Cardboard, driven over DevTools (README steps 7-9, for a rehearsal or a take):
 //   node go.js <DevTools port> <project id> [run folder] [--keep-library] [--layout-only] [--gone-after 3]
-//                                                        [--cap-stop <file>] [--model "Opus 5.5"]
+//                                                        [--end-after 4] [--cap-stop <file>] [--model "Opus 5.5"]
 // 1. The layout: History open beside the chat (Ctrl+Shift+H as DevTools key events), the Library panel closed so the
 //    preview has room (--keep-library: left open). --layout-only: report the layout, shoot it, and stop there.
 // 2. The chat's picker set to a Claude Code row (provider "claude", --model's label if there is one; never Cloud, the
@@ -10,7 +10,8 @@
 //    moments as it notices them (a moment's time is when it was noticed, up to ~1 s after it happened; the stand-in's
 //    log has the exact times): Claude 2's first row arriving, the chat's thinking row and first line, the playhead on
 //    Claude 2's first title, Claude 1's first title, the switch to "Edit v2", back on Main with "He's gone.".
-// 4. Sends the gone cue (GET /cue/gone) --gone-after seconds after the stand-in starts waiting for it.
+// 4. Sends the gone cue (GET /cue/gone) --gone-after seconds after the stand-in starts waiting for it, and the end cue
+//    (GET /cue/end: Claude 1's last message, and the turn's end) --end-after seconds after it starts waiting for that.
 // 5. At the end ("He's gone." on Main, the stand-in at its last message, the chat idle 3 s): asks the capture to stop
 //    (writes --cap-stop, default <run>\cap.stop, the file cap-run.ps1 -StopFile waits for) and stops the window's
 //    taskbar flash (unseen\flashstop.ps1).
@@ -21,9 +22,9 @@ const { spawnSync } = require("child_process");
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf("--" + k); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
 const flag = (k) => { const i = argv.indexOf("--" + k); if (i < 0) return false; argv.splice(i, 1); return true; };
-const KEEP_LIBRARY = flag("keep-library"), LAYOUT_ONLY = flag("layout-only"), GONE_AFTER = Number(opt("gone-after", 3)), CAP_STOP = opt("cap-stop", null), MODEL = opt("model", "Opus 5.5");
+const KEEP_LIBRARY = flag("keep-library"), LAYOUT_ONLY = flag("layout-only"), GONE_AFTER = Number(opt("gone-after", 3)), END_AFTER = Number(opt("end-after", 4)), CAP_STOP = opt("cap-stop", null), MODEL = opt("model", "Opus 5.5");
 const [port, id, given] = argv;
-if (!port || !id) { console.error("usage: node go.js <DevTools port> <project id> [run folder] [--keep-library] [--layout-only] [--gone-after 3] [--cap-stop <file>] [--model <label>]"); process.exit(2); }
+if (!port || !id) { console.error("usage: node go.js <DevTools port> <project id> [run folder] [--keep-library] [--layout-only] [--gone-after 3] [--end-after 4] [--cap-stop <file>] [--model <label>]"); process.exit(2); }
 process.env.CDP_PORT = port;
 const h = require("./lib/cdp-helpers");
 const D = require("./lib/demo-env");
@@ -101,7 +102,7 @@ const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); 
   log(`sent: ${JSON.stringify(typed)}`);
   // 3. watch
   const M = {}; const at = (k) => { M[k] = Date.now(); log(`MOMENT ${k} noticed at +${((Date.now() - tSend) / 1000).toFixed(1)} s after send`); };
-  let last = {}, lastChat = "", items = [], tItems = 0, actorPos = 0, actorBuf = "", goneAsked = false, lastMsg = -1, turnEndSeen = 0, firstReq = null;
+  let last = {}, lastChat = "", items = [], tItems = 0, actorPos = 0, actorBuf = "", goneAsked = false, endAsked = false, lastMsg = -1, turnEndSeen = 0, firstReq = null;
   const chatLog = fs.openSync(path.join(OUT, "go-chat.jsonl"), "a");
   const deadline = Date.now() + 30 * 60e3;
   while (Date.now() < deadline) {
@@ -117,6 +118,10 @@ const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); 
       if (o.event === "wait" && o.cue === "gone" && !goneAsked) {
         goneAsked = true; at("standin-waits-gone");
         setTimeout(async () => { const r = await cue("gone"); log(`cue gone sent (${GONE_AFTER} s after the stand-in's wait was noticed): ${r}`); }, GONE_AFTER * 1000);
+      }
+      if (o.event === "wait" && o.cue === "end" && !endAsked) {
+        endAsked = true; at("standin-waits-end");
+        setTimeout(async () => { const r = await cue("end"); log(`cue end sent (${END_AFTER} s after the stand-in's wait was noticed): ${r}`); }, END_AFTER * 1000);
       }
     }
     let s; try { s = await h.ev(E, READ); } catch (e) { log("read failed", e.message); await sleep(500); continue; }
@@ -135,6 +140,7 @@ const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); 
     if (!M.c1title && has("Who are you")) { at("c1title"); await shot("claude1-first-title"); }
     if (!M.v2 && s.cut === "Edit v2") { at("v2"); await shot("switch-edit-v2"); setTimeout(() => shot("edit-v2-1s"), 1000); }
     if (!M.gone && M.v2 && s.cut && s.cut !== "Edit v2" && has("He's gone.")) { at("gone"); await shot("main-hes-gone"); setTimeout(() => shot("main-hes-gone-1s5"), 1500); }
+    if (!M.final && /All done:/.test(s.chatText.slice(-800))) { at("final"); await shot("chat-final-message"); }
     // the end
     if (M.gone && (lastIndex === null || lastMsg >= lastIndex) && !s.busy) { if (!turnEndSeen) turnEndSeen = Date.now(); if (Date.now() - turnEndSeen > 3000) break; } else turnEndSeen = 0;
     last = s;

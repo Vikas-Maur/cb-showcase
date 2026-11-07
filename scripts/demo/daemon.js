@@ -306,8 +306,12 @@ async function speak({ file, at, name, track = "Voice", text, volume, seconds, s
 /**
  * Several sounds at once (a line in parts): one `cb media add` of every file, one share, one wait for the other side
  * (REASK_MS), and one save placing every clip, so a two-part line costs about what one does. parts: [{file, at, name}].
+ * titles: [say's arguments], said once the sounds are on the sharing server and before their clips are placed: the
+ * other computer's editor starts loading a project's new sounds when they arrive in its media (all of them, in idle
+ * time), so the line's sound comes down while its titles are read, and plays at once when someone plays it (on the
+ * laptop, a sound played as it arrived waited up to 6 s, "Loading audio…").
  */
-async function speakAll({ parts, track = "Voice", volume }) {
+async function speakAll({ parts, track = "Voice", volume, titles = [] }) {
   if (!Array.isArray(parts) || !parts.length) throw new Error("No parts");
   for (const p of parts) if (!p.file || !fs.existsSync(p.file)) throw new Error("No sound file: " + p.file);
   const t0 = Date.now();
@@ -332,6 +336,8 @@ async function speakAll({ parts, track = "Voice", volume }) {
     await new Promise((res) => setTimeout(res, 100));
   }
   const sharedMs = Date.now() - s0;
+  const said = [];
+  for (const t of titles) said.push(await say(t));
   { const wait = importedAt + REASK_MS - Date.now(); if (wait > 0) await new Promise((res) => setTimeout(res, wait)); }
   const doc = await read();
   const { tracks, track: tr } = trackFor(doc, track, true);
@@ -341,7 +347,7 @@ async function speakAll({ parts, track = "Voice", volume }) {
   });
   await save(doc, { ...doc, tracks, timelineItems: [...(doc.timelineItems ?? []), ...items] });
   for (const it of items) mine({ id: it.id, name: it.name, kind: "sound", mediaId: it.mediaItemId });
-  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, savedMs: Date.now() - t0, savedAt: Date.now() };
+  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, titles: said.map((x) => x.name), savedMs: Date.now() - t0, savedAt: Date.now() };
   emit({ type: "self", op: "speak", ...out });
   return out;
 }

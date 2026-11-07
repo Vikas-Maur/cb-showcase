@@ -4,11 +4,12 @@
 // control:request event; the editor answers with control:reply). So `cb app seek/play/pause/context` run Cardboard's
 // real playback, as on the laptop: the store, the wait for audio before Play ("Loading audio…"), the audio graph and its
 // clock. Every playback state the editor goes through goes to the trace, with the calls that caused it.
-//   node app-player.js --app Vikas --socket <dir>/cardboard.sock [--media-delay <ms>] [--trace <file.jsonl>]
+//   node app-player.js --app Vikas --socket <dir>/cardboard.sock [--media-delay <ms>] [--trace <file.jsonl>] [--stdin]
 //   cb, then: CARDBOARD_SOCKET=<that socket> CARDBOARD_HOME=<the library> cb app play   (never with --root: cb doesn't
 //   ask the app about a library under --root)
 // --media-delay: the first fetch of each media file waits that long, as the laptop waits for a teammate's sound to come
-// down from the sharing server. Run it through gfv-scratch/carton/slot.sh (one Chromium at a time on the dev box).
+// down from the sharing server. --stdin: it stops when its input closes (a script that started it ends it so).
+// Run it through gfv-scratch/carton/slot.sh (one Chromium at a time on the dev box).
 const fs = require("fs"), path = require("path"), net = require("net"), crypto = require("crypto");
 const lib = require("./lib.js");
 const editor = require("./editor-page.js");
@@ -35,7 +36,7 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
   let nextId = 1;
   const browser = await editor.launch();
   const ed = await editor.openEditor(browser, {
-    app: APP, mediaDelay: DELAY,
+    app: APP, mediaDelay: DELAY, onMedia: (x) => { trace({ what: "media", ...x }); out(`editor fetched media ${x.id.slice(0, 8)} (${x.bytes} bytes${x.delayed ? `, after ${DELAY} ms` : ""})`); },
     onControlReply: (r) => { const p = pending.get(r.id); if (!p) return; pending.delete(r.id); r.ok ? p.resolve(r.data) : p.reject(r.error); },
   });
   const { page } = ed;
@@ -55,6 +56,8 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
     trace(x);
     if (x.what === "state") out(`editor: ${x.loading ? "Loading audio…" : x.playing ? "playing" : "paused"}${x.pending && !x.playing ? " (play waiting)" : ""} at ${f2(x.t)}`);
     if (x.what === "jump") out(`editor: the playhead jumped back ${f2(x.from)} → ${f2(x.t)} while playing`);
+    if (x.what === "timeline") out(`editor: the timeline has ${x.items} items, ${f2(x.duration)} s`);
+    if (x.what === "ready") out(`editor: the sound at ${f2(x.t)} is ${x.ready ? "loaded: Play starts at once" : "not loaded: Play would wait (Loading audio…)"}`);
   });
   await page.evaluate(() => {
     const s = window.__demoStore, t0 = performance.now(), ms = () => Math.round(performance.now() - t0);
@@ -62,9 +65,16 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
     let last = snap(), lastT = last.t;
     window.__demoTrace({ what: "start", ms: 0, ...last });
     s.subscribe(() => { const x = snap(); if (x.playing !== last.playing || x.loading !== last.loading || x.pending !== last.pending) { last = x; window.__demoTrace({ what: "state", ms: ms(), ...x }); } });
+    // the timeline the editor has (a change reaches History first, then the editor)
+    let shape = "";
+    s.subscribe(() => { const st = s.state(), now = `${st.timelineItems?.length ?? 0}|${st.duration}`; if (now !== shape) { shape = now; window.__demoTrace({ what: "timeline", ms: ms(), items: st.timelineItems?.length ?? 0, duration: st.duration }); } });
     const frame = () => { const x = snap(); if (x.playing && x.t < lastT - 0.05) window.__demoTrace({ what: "jump", ms: ms(), from: lastT, ...x }); lastT = x.t; requestAnimationFrame(frame); };
     requestAnimationFrame(frame);
     setInterval(() => { const x = snap(); if (x.playing || x.loading) window.__demoTrace({ what: "tick", ms: ms(), ...x }); }, 250);
+    // whether Play would start at once: the sound of the next seconds from the playhead is loaded (the editor's own
+    // check, checkAudioReadyAtPlayhead, which Play asks before it waits with "Loading audio…")
+    let ready = null;
+    setInterval(() => { const st = s.state(); if (st.isPlaying || !st.checkAudioReadyAtPlayhead) return; const r = !!st.checkAudioReadyAtPlayhead(st.currentTime); if (r !== ready) { ready = r; window.__demoTrace({ what: "ready", ms: ms(), ready: r, t: Math.round(st.currentTime * 1000) / 1000 }); } }, 100);
   });
 
   const bundlePath = path.join(cfg.root, `${cfg.projectName}.cardboard`);
@@ -76,6 +86,8 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
     "player.seek": async (p) => ask("player.seek", { at: p.at }),
     "player.play": async () => ask("player.play", {}),
     "player.pause": async () => ask("player.pause", {}),
+    // not Cardboard's: a look inside the page for a test (scripts/demo only; the socket takes the token as main's does)
+    "demo.eval": async (p) => ({ value: await page.evaluate(p.expr) }),
   };
   const server = net.createServer((c) => {
     let buf = "", authed = false;
@@ -107,4 +119,5 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
   out(`ready: ${cfg.projectName} open in the editor; cb app on ${SOCK}${DELAY ? `; a media file's first fetch waits ${DELAY} ms` : ""}`);
   const stop = async () => { server.close(); try { fs.unlinkSync(SOCK); } catch {} await ed.close(); await browser.close().catch(() => {}); process.exit(0); };
   process.on("SIGTERM", stop); process.on("SIGINT", stop);
+  if (a.includes("--stdin")) { process.stdin.on("end", stop); process.stdin.on("error", stop); process.stdin.resume(); }
 })().catch((e) => { out("✗ " + (e?.stack ?? e)); process.exit(1); });

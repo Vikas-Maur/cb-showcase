@@ -70,7 +70,9 @@ the chat kept out, a check, and the editor switched to it last), `agent_clear`.
 | `tts.js` | Piper: text → WAV or MP3 |
 | `host.mjs` | a local sharing server (server-node, open creation, as the live one) |
 | `machine.cjs` | `--machine`: the computer name Carton records with a participant's edits |
+| `editor-page.js` | the app's side in headless Chromium: Cardboard's patched editor pages on its participant's worker (for `shots.js` and `app-player.js`) |
 | `shots.js` | real-browser shots of the app's side, driven by its participant's worker |
+| `app-player.js` | the running app for `cb app` (seek, play, pause, context) on this box: that editor behind Cardboard's control socket, its playback traced (FINDINGS.md §6.3) |
 | `bench-latency.js` | how soon a remote edit shows on the app's side |
 | `repro-import-race.js` | FINDINGS.md §6.1: a teammate's change deleted after an import |
 | `race-hide.js` | FINDINGS.md §4.1: the hide while the remote keeps talking (a line between the agent's reading and its fold), checked on its own |

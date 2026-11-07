@@ -2,10 +2,16 @@
 // laptop's app, with the promo shared; Claude 2 joined as "Claude"; the stand-in (actor.js) on Claude 1's scene; and the
 // real Claude Code CLI in Vikas's project (its own config folder, ANTHROPIC_BASE_URL at the stand-in, a dead proxy for
 // anything else) running Cardboard's real cb from its PATH, as the app runs its agent. Claude 2's cue sheet runs beside
-// it. Then the app side's editor and History in Chromium (shots.js) at the moments that matter.
+// it. The app's editor runs in Chromium for `cb app …` (app-player.js: Cardboard's own playback, Loading audio… and
+// all), as Claude 1's seek/play/pause reach the laptop's. Then the app side's editor and History in Chromium (shots.js)
+// at the moments that matter.
 //   DEMO_DIR=~/gfv-scratch/carton/demo-skit node rehearse-skit.js [--claude <path>] [--no-shots] [--gone-after <s>]
+//     [--end-after <s>] [--media-delay <ms>] [--setup-only]
+// --gone-after / --end-after: the operator's cues, that long after the stand-in starts waiting for them (no
+// --end-after: 3 s). --media-delay: the app's first fetch of each sound waits that long (the laptop's download).
 // Everything goes to $DEMO_DIR/skit-runs/<time>/: chat.txt (what the chat panel would show, timed), chat.jsonl (Claude
-// Code's own stream), actor.log, claude2.log, timeline.txt (the three merged), shots/.
+// Code's own stream), actor.log, claude2.log, app.log and app-trace.jsonl (the app's playback), timeline.txt (all of
+// them merged), shots/.
 const fs = require("fs"), path = require("path"), os = require("os");
 const { spawn, spawnSync, execFileSync } = require("child_process");
 const readline = require("readline");
@@ -20,6 +26,7 @@ fs.mkdirSync(process.env.TMPDIR, { recursive: true });
 const lib = require("../lib.js");
 const CLAUDE = opt("claude", path.join(os.homedir(), ".local", "bin", "claude"));
 const HOST_PORT = Number(opt("host-port", 8795)), ACTOR_PORT = Number(opt("actor-port", 8796));
+const SOCK = path.join(DEMO, "app-sock", "cardboard.sock"); // app-player.js, the running app for `cb app …`
 const scene = JSON.parse(fs.readFileSync(path.join(HERE, "claude1-scene.json"), "utf8"));
 const RUN = path.join(DEMO, "skit-runs", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(RUN, { recursive: true });
@@ -53,19 +60,32 @@ const peer = (...args) => {
   const bin = path.join(DEMO, "bin"), q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
   fs.mkdirSync(bin, { recursive: true });
   const keep = ["HOME", "USERPROFILE", "XDG_DATA_HOME", "LOCALAPPDATA", "CARDBOARD_CARTON", "CARTON_DIR", "TMPDIR"];
-  fs.writeFileSync(path.join(bin, "cb"), `#!/bin/sh\n# Cardboard's own cb on Vikas's library, as the app puts cb on its agent's PATH (the skit rehearsal on Linux)\n${keep.map((k) => `export ${k}=${q(env0[k])}`).join("\n")}\nexec ${q(process.execPath)} ${q(path.join(b.cli, "cardboard.mjs"))} --root ${q(cfg.root)} "$@"\n`, { mode: 0o755 });
+  // `cb app …` goes to the running app (app-player.js: Vikas's editor in Chromium) through CARDBOARD_SOCKET, as the
+  // laptop's cb finds the demo Cardboard. cb never asks the app about a library given with --root, and without it a
+  // project argument wants a signed-in cb (never here): so the project's name is dropped from those commands, and they
+  // act on the app's tab, which is that project (on the laptop the name finds that same tab).
+  const appCmd = `if [ "$1" = app ]; then\n  n=$#\n  for x in "$@"; do [ "$x" = ${q(cfg.projectName)} ] || [ "$x" = ${q(cfg.projectId)} ] || set -- "$@" "$x"; done\n  shift $n\n  CARDBOARD_SOCKET=${q(SOCK)} exec ${q(process.execPath)} ${q(path.join(b.cli, "cardboard.mjs"))} "$@"\nfi\n`;
+  fs.writeFileSync(path.join(bin, "cb"), `#!/bin/sh\n# Cardboard's own cb on Vikas's library, as the app puts cb on its agent's PATH (the skit rehearsal on Linux)\n${keep.map((k) => `export ${k}=${q(env0[k])}`).join("\n")}\n${appCmd}exec ${q(process.execPath)} ${q(path.join(b.cli, "cardboard.mjs"))} --root ${q(cfg.root)} "$@"\n`, { mode: 0o755 });
+  if (a.includes("--setup-only")) { note(`set up: the project shared, Claude joined; cb: ${path.join(bin, "cb")}; app socket (app-player.js): ${SOCK}`); process.exit(0); }
 
-  // 3. the stand-in
+  // 3. the app's editor, for `cb app …` (one Chromium: slot.sh)
+  const appLog = path.join(RUN, "app.log");
+  const app = spawn(path.join(os.homedir(), "gfv-scratch", "carton", "slot.sh"), [process.execPath, path.join(DEMO_SCRIPTS, "app-player.js"), "--app", "Vikas", "--socket", SOCK, "--trace", path.join(RUN, "app-trace.jsonl"), "--media-delay", String(opt("media-delay", 0)), "--stdin"], { env: process.env, stdio: ["pipe", fs.openSync(appLog, "a"), fs.openSync(appLog, "a")] });
+  for (let i = 0; i < 600 && !/ ready: | ✗ /.test(fs.existsSync(appLog) ? fs.readFileSync(appLog, "utf8") : ""); i++) await new Promise((r) => setTimeout(r, 500));
+  if (!/ ready: /.test(fs.readFileSync(appLog, "utf8"))) throw new Error("the app's editor didn't open: " + fs.readFileSync(appLog, "utf8").slice(-600));
+  note(`the app's editor open for cb app (app.log)`);
+
+  // 4. the stand-in
   const actor = spawn(process.execPath, [path.join(DEMO_SCRIPTS, "actor", "actor.js"), "--scene", path.join(HERE, "claude1-scene.json"), "--port", String(ACTOR_PORT), "--log", path.join(RUN, "actor.log"), "--cb", JSON.stringify([path.join(bin, "cb")])], { env: { ...process.env, ACTOR_QUIET: "1" }, stdio: ["ignore", "ignore", fs.openSync(path.join(RUN, "actor.err"), "a")] });
   await new Promise((r) => setTimeout(r, 800));
   note(`stand-in on 127.0.0.1:${ACTOR_PORT} (pid ${actor.pid})`);
 
-  // 4. Claude 2's cue sheet, beside it
+  // 5. Claude 2's cue sheet, beside it
   const c2log = fs.openSync(path.join(RUN, "claude2.log"), "a");
   const c2 = spawn(process.execPath, [path.join(DEMO_SCRIPTS, "peer"), "run", path.join(HERE, "claude2-cues.yaml"), "--peer", "Claude"], { env: process.env, stdio: ["ignore", c2log, c2log] });
   note(`Claude 2's cue sheet running (pid ${c2.pid})`);
 
-  // 5. Claude 1: the real Claude Code, its own config folder, the stand-in as its API, nothing else reachable
+  // 6. Claude 1: the real Claude Code, its own config folder, the stand-in as its API, nothing else reachable
   const cfgDir = path.join(RUN, "claude-config");
   fs.mkdirSync(cfgDir, { recursive: true });
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE|CODEX_)/.test(k)));
@@ -98,33 +118,39 @@ const peer = (...args) => {
       for (const c of x.message.content) if (c.type === "tool_result") say(`  ⎿ ${String(typeof c.content === "string" ? c.content : (c.content ?? []).map((y) => y.text ?? "").join(" ")).replace(/\s+/g, " ").replace(/<system-reminder>.*$/, "").slice(0, 200)}${c.is_error ? "  (error)" : ""}`);
     } else if (x.type === "result") say(`■ turn ended: ${x.subtype}${x.is_error ? " (error)" : ""}`);
   });
-  if (goneAfter !== null) {
-    // the operator's "the human has gone" cue, some seconds after the cut switch shows in the stand-in's log
+  // the operator's cues: "the human has gone" (without --gone-after, the stand-in goes on by itself after 6 s) and "end
+  // the turn", some seconds after the stand-in starts waiting for each
+  const cueAfter = (name, secs) => {
     const watch = setInterval(() => {
       const log = fs.existsSync(path.join(RUN, "actor.log")) ? fs.readFileSync(path.join(RUN, "actor.log"), "utf8") : "";
-      if (log.includes('"cue":"gone"')) { clearInterval(watch); setTimeout(() => fetch(`http://127.0.0.1:${ACTOR_PORT}/cue/gone`).catch(() => {}), Number(goneAfter) * 1000); }
+      if (log.includes(`"event":"wait","cue":"${name}"`)) { clearInterval(watch); setTimeout(() => fetch(`http://127.0.0.1:${ACTOR_PORT}/cue/${name}`).catch(() => {}), Number(secs) * 1000); }
     }, 300);
-  }
+  };
+  if (goneAfter !== null) cueAfter("gone", goneAfter);
+  cueAfter("end", opt("end-after", 3));
   const code = await new Promise((r) => cc.on("exit", r));
   note(`Claude Code ended (exit ${code})`);
   await Promise.race([new Promise((r) => c2.on("exit", r)), new Promise((r) => setTimeout(r, 60_000))]);
   note(`Claude 2's cue sheet ended (exit ${c2.exitCode})`);
   actor.kill();
+  app.stdin.end(); // the app's editor closes
+  await Promise.race([new Promise((r) => app.on("exit", r)), new Promise((r) => setTimeout(r, 20_000))]);
 
-  // 6. one timeline: the chat, the stand-in, Claude 2
+  // 7. one timeline: the chat, the stand-in, Claude 2, the app's playback
   const lines = [];
   for (const l of fs.readFileSync(path.join(RUN, "chat.txt"), "utf8").split("\n").filter(Boolean)) lines.push([l.slice(0, 12), "chat    " + l.slice(23)]);
   for (const l of fs.readFileSync(path.join(RUN, "actor.log"), "utf8").split("\n").filter(Boolean)) {
     const x = JSON.parse(l);
-    if (["wait", "waited", "pause", "cue", "wait-timeout"].includes(x.event) || (x.event === "request" && x.kind !== "scene")) lines.push([x.at.slice(11, 23), `actor   ${x.event} ${JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== "at" && k !== "event"))).slice(0, 180)}`]);
+    if (typeof x.at === "string" && (["wait", "waited", "pause", "cue", "wait-timeout"].includes(x.event) || (x.event === "request" && x.kind !== "scene"))) lines.push([x.at.slice(11, 23), `actor   ${x.event} ${JSON.stringify(Object.fromEntries(Object.entries(x).filter(([k]) => k !== "at" && k !== "event"))).slice(0, 180)}`]);
   }
   for (const l of fs.readFileSync(path.join(RUN, "claude2.log"), "utf8").split("\n").filter((x) => /^\d\d:\d\d:\d\d\.\d{3} /.test(x))) lines.push([l.slice(0, 12), "claude2 " + l.slice(23).slice(0, 200)]);
+  for (const l of fs.readFileSync(appLog, "utf8").split("\n").filter((x) => /^\d\d:\d\d:\d\d\.\d{3} /.test(x))) lines.push([l.slice(0, 12), "app     " + l.slice(23).trim().slice(0, 200)]);
   lines.sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
   fs.writeFileSync(path.join(RUN, "timeline.txt"), lines.map(([t, s]) => `${t}  ${s}`).join("\n") + "\n");
   note(`timeline: ${path.join(RUN, "timeline.txt")}`);
   note("History (app side):\n" + spawnSync(path.join(bin, "cb"), ["history", scene.project, "--limit", "40"], { encoding: "utf8" }).stdout);
 
-  // 7. the app side in Chromium: Main at Claude 2's first line, at Claude 1's first reply, at "He's gone.", and Edit v2
+  // 8. the app side in Chromium: Main at Claude 2's first line, at Claude 1's first reply, at "He's gone.", and Edit v2
   if (!a.includes("--no-shots")) {
     const layout = fs.readFileSync(path.join(HERE, "layout.md"), "utf8");
     const atOf = (words) => Number(layout.split("\n").find((l) => l.includes(words))?.split("|")[3]?.trim() ?? 25) + 0.6;

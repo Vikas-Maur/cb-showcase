@@ -423,7 +423,50 @@ for 2 s (`sync/media.js` `sharedRecord`); for a sound (no proxy) the project's o
 1.4.0's "Source file missing". The rig shares the sound before placing its clip and places it once those 2 s have
 passed (`peer speak`), so the clip can be streamed the moment it appears; it costs about 2 s per spoken line.
 
-### 6.3 Everything else
+### 6.3 Cardboard: playing a sound that has just arrived, through `cb app`
+
+What the skit's Claude 1 does to "listen" (`cb app seek`, `play`, `pause`), and what the laptop saw (Cardboard 013ca5c3,
+2026-11-07): "Loading audio…" for seconds on the first voice and a shorter time on the second; a pause sent during it
+lost, and playback running on through the next lines; a seek while playing not moving the playhead; every Play running
+the playhead a moment, jumping back, then playing. All of it is Cardboard 1.4.0's own code (none of it is patched by
+us), read in the pristine bundles and reproduced in its real editor on this box (`app-player.js`, below):
+
+- **A pause during "Loading audio…" is lost.** Play waits until the sound of the next seconds is loaded
+  (`toggleTimelinePlayback`: `isAudioPreloading` and `pendingPlayback` set, then the editor's preload; at its end,
+  `pendingPlayback && setIsPlaying(true)`). `cb app pause` (the renderer's `player.pause`:
+  `e.isPlaying&&e.setIsPlaying(!1)`) does nothing while nothing plays yet, and answers "Paused at …": the waiting play
+  stays, and playback starts when the load ends. On this box, a play right after a line's sound landed (its first
+  fetch held back to stand in for the laptop's download), then a pause: "Paused at 48.70s", and the editor started
+  playing as the load ended and ran on until the next pause. A product fix would be small (`player.pause` also clears
+  `pendingPlayback`); not done here.
+- **`cb app context` doesn't follow playback.** It reads the store's `playheadTime`, which playback writes only when it
+  stops; while playing it keeps the time playback began (`playing: true`). `cb app pause` answers where it stopped.
+- **A seek while playing doesn't move it** (`player.seek` sets the store's time; the playback loop keeps its own clock).
+- **A seek past the editor's end stops at the end, and Play from the end plays from 0** (`player.seek` clamps to the
+  timeline's duration; `toggleTimelinePlayback` starts at 0 at or after the end). A change shows in `cb history` before
+  the editor has it: in a rehearsal here, Claude 1 sought to a line whose title was in History but not yet in the editor
+  ("Playhead at 43.00s" for 48.7), and its Play then played the promo from the start.
+- **Every Play starts twice.** The audio graph suspends its audio context 500 ms after playback stops
+  (`syncInternal`) and resumes it at the next Play (`await a.resume()`); meanwhile the playback loop runs the playhead
+  by the wall clock from where it began, and when the audio clock answers it follows that, anchored at the start: the
+  playhead jumps back. The longer the audio takes to wake (the laptop: 0.3–0.45 s), the bigger the jump.
+- **The editor loads a project's new sounds as they arrive.** When the project's media change, the editor preloads,
+  in idle time, every sound of the project, placed on the timeline or not (EditorRoute `LD` → `preloadAudio`). So a
+  sound that has been in the project for longer than its download plays at once.
+
+What the skit does about it (`build-skit.js`): Claude 2 shares a line's sound before it puts the line's titles on,
+and places its clips after them (`speak` with `titles:`), so the laptop downloads the sound while Claude 1 reads; Claude
+1 moves the playhead onto the line only while nothing plays (`cb app seek` when the line's title lands: the viewer sees
+the title), plays once the clip is there, waits until `cb app context` says "playing" and then the line's length plus
+0.5 s (the jump back), and pauses: a pause that always finds playback running. Before each seek and each play, the
+stand-in waits until the editor itself has the line (`cb app context`: the timeline's length and its item count).
+
+`app-player.js` is the running app for `cb app` on this box: the app participant's editor in headless Chromium,
+behind a control socket served as Cardboard's main serves it, each request handed to the editor's own handlers (its
+`control:request`), every playback state written to a trace (`--media-delay` holds back each sound's first fetch, as
+the laptop waits for its download). The skit's Linux rehearsal runs Claude 1's seek/play/pause through it.
+
+### 6.4 Everything else
 
 - **The server down or the network gone**: edits wait and go when it is back, on both sides (`live.test.js` "offline
   and rejoin"); the participant reconnects by itself. Presence fades after 30 s and goes after 120 s.

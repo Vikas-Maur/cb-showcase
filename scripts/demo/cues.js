@@ -127,8 +127,13 @@ async function run(file, { from = 1, dry = false, peer } = {}) {
         }
         case "say": r = await lib.request(dir, "say", { text: s.say, at: s.at, dur: s.for, style: s.style, name: s.name, track: s.track, color: s.color, size: s.size, y: s.y }); break;
         case "speak": {
-          // a line in parts (each its own file and spot): imported, shared and placed together
-          if (Array.isArray(s.parts)) { r = await lib.request(dir, "speakAll", { parts: s.parts, track: s.track, volume: s.volume }); break; }
+          // a line in parts (each its own file and spot): imported, shared and placed together; `titles` (say's
+          // fields: say, at, for, style, size, y, track, name, color) go on once the sounds are shared, before the clips
+          if (Array.isArray(s.parts)) {
+            const titles = (s.titles ?? []).map((t) => ({ text: t.say, at: t.at, dur: t.for, style: t.style, name: t.name, track: t.track, color: t.color, size: t.size, y: t.y }));
+            r = await lib.request(dir, "speakAll", { parts: s.parts, track: s.track, volume: s.volume, titles });
+            break;
+          }
           let file = s.file ?? voices.get(s), made = null;
           if (!file) { made = await require("./tts.js").synth(s.speak, { voice: s.voice ?? "ryan", speed: s.speed ?? 1, out: path.join(dir, "voice", voiceName(s.speak)) }); file = made.file; }
           r = await lib.request(dir, "speak", { file, text: s.speak, at: s.at, name: s.name, track: s.track, volume: s.volume });
