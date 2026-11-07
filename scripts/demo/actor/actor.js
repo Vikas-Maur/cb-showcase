@@ -1,0 +1,330 @@
+// A scripted stand-in for the Anthropic Messages API, for the demo's "Claude 1" (scripts/demo/skit/README.md). The real
+// Claude Code that Cardboard runs as the person's own agent (provider "claude": ANTHROPIC_BASE_URL reaches it, unlike the
+// Director's, which Cardboard points at its own gateway) talks to this instead of a model. The chat panel, its thinking
+// rows, the tool runs (real `cb`), History: all real; only the model's answers come from a scene file.
+//   node actor.js --scene <scene.json> [--port 8787] [--log <file>] [--cb '<json array: how to run cb>']
+// On Windows with Cardboard's own Node: set ELECTRON_RUN_AS_NODE=1, then "<Cardboard>\Cardboard.exe" actor.js …
+//
+// It never talks to Anthropic or anywhere else, and it never reads, logs or keeps request headers (an API key or a
+// sign-in the client sends stays unread). Its log keeps, per request: the time, the path, what kind of request it was,
+// and what it answered.
+//
+// Requests:
+//   POST /v1/messages with tools: the scene's next message, streamed as the API streams it (thinking, partial text, a
+//     tool call). Which message is next comes from the conversation itself: the tool calls the scene made carry ids
+//     `toolu_actor_<n>`; the next message is the one after the newest of those (so a retry gets the same answer).
+//   POST /v1/messages without tools (Cardboard's naming calls: "Name this conversation…", "Name a video editing
+//     project…", Carton's "Title this change…"; Claude Code's own side calls): the scene's `names`, else a short word.
+//   POST /v1/messages/count_tokens: a count. Anything else: 404, logged.
+//
+// The scene (JSON): {project, cut, names: {conversation, project, turn, other}, steps: [...]}, each step one of
+//   {think: "<words>", ms: 1500}            a thinking row, streamed over ms
+//   {say: "<words>", cps: 40}               a chat message, typed at cps characters a second
+//   {tool: "Bash", command: "…"}           a tool call (ends the message); also Read {file_path}, Edit {file_path,
+//   {tool: "Read", file_path: "{{view}}"}    old_string, new_string}. {{view}}: the view file the last `cb source print
+//                                            --view` printed; {{project}}; {{<name>}} saved by a wait
+//   {pause: <ms>}                           nothing for that long (before the next block)
+//   {wait: {by: "Claude", words: "Added audio 'Hello?'", save: "before_claude", timeout: 900}}
+//                                           held until `cb history` on the cut shows a version by that author (a person
+//                                           named exactly so) whose change, in `cb compare` words, contains `words`;
+//                                           `save` keeps "<cut>@<the version before it>" as {{save}}
+//   {wait: {cue: "gone", timeout: 30}}      held until GET /cue/gone (the operator), or the timeout
+//   {end: "<words or nothing>"}             the turn's last message (end_turn)
+// A message is the blocks up to and including the next tool call. Waits and pauses hold the message's stream (pings
+// keep it open) before its next block, so the chat shows nothing new until the other side has acted.
+const http = require("http"), fs = require("fs"), path = require("path");
+const { spawn } = require("child_process");
+
+const argv = process.argv.slice(2), arg = (k, d) => { const i = argv.indexOf("--" + k); return i >= 0 ? argv[i + 1] : d; };
+const SCENE_FILE = arg("scene"), PORT = Number(arg("port", 8787)), LOG = arg("log", path.join(process.cwd(), "actor.log"));
+if (!SCENE_FILE) { console.error("usage: node actor.js --scene <scene.json> [--port 8787] [--log <file>] [--cb '<json array>']"); process.exit(2); }
+const scene = JSON.parse(fs.readFileSync(SCENE_FILE, "utf8"));
+const CB = JSON.parse(arg("cb", process.env.ACTOR_CB ?? '["cb"]'));
+const vars = { project: scene.project ?? "", ...(scene.vars ?? {}) };
+const cues = new Map(); // operator cues: name → resolve
+
+const logf = fs.openSync(LOG, "a");
+const log = (o) => { const line = JSON.stringify({ at: new Date().toISOString(), ...o }); fs.writeSync(logf, line + "\n"); if (process.env.ACTOR_QUIET !== "1") process.stdout.write(line.slice(0, 300) + "\n"); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ------------------------------------------------------------------ the scene, as messages
+// A message: {holds: [wait|pause before each block], blocks: [{think}|{say}|{tool}], end: bool}
+const messages = [];
+{
+  let cur = { blocks: [] };
+  for (const s of scene.steps) {
+    if (s.wait !== undefined || s.pause !== undefined) cur.blocks.push({ hold: s });
+    else if (s.think !== undefined) cur.blocks.push({ think: s.think, ms: s.ms ?? 1500 });
+    else if (s.say !== undefined) cur.blocks.push({ say: s.say, cps: s.cps ?? scene.cps ?? 45 });
+    else if (s.tool !== undefined) { cur.blocks.push({ tool: s }); messages.push(cur); cur = { blocks: [] }; }
+    else if (s.end !== undefined) { cur.blocks.push({ say: s.end, cps: scene.cps ?? 45 }); cur.end = true; messages.push(cur); cur = null; break; }
+    else throw new Error("unknown step: " + JSON.stringify(s));
+  }
+  if (cur && cur.blocks.length) { cur.end = true; messages.push(cur); }
+}
+log({ event: "scene", file: SCENE_FILE, messages: messages.length, port: PORT });
+
+// ------------------------------------------------------------------ cb, for the waits
+function cb(args) {
+  return new Promise((resolve) => {
+    const p = spawn(CB[0], [...CB.slice(1), ...args], { env: { ...process.env, CARDBOARD_ACTOR: "" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let out = "", err = "";
+    p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    p.on("error", (e) => resolve({ code: -1, out: "", err: String(e) }));
+    p.on("exit", (code) => resolve({ code, out: out.replace(/^\[carton\][^\n]*\n/gm, ""), err }));
+  });
+}
+const words = new Map(); // "<cut>|<seq>" → its change in words
+async function changeWords(cut, version) {
+  const [kind, seq] = [version.split("@")[0], Number(version.split("@")[1])];
+  const key = cut + "|" + version;
+  if (!words.has(key)) {
+    const r = await cb(["compare", vars.project, `${kind}@${seq - 1}`, version, "--json"]);
+    if (r.code !== 0) return null;
+    try { words.set(key, JSON.parse(r.out).changes.join("\n")); } catch { return null; }
+  }
+  return words.get(key);
+}
+let lastMatchSeq = null; // a wait looks at versions after the one the previous wait matched
+async function waitFor(w, alive) {
+  const t0 = Date.now(), cut = w.cut ?? scene.cut ?? "Main cut", timeout = (w.timeout ?? 900) * 1000;
+  if (w.cue) {
+    log({ event: "wait", cue: w.cue });
+    await Promise.race([new Promise((r) => cues.set(w.cue, r)), sleep(timeout)]);
+    cues.delete(w.cue);
+    return;
+  }
+  log({ event: "wait", by: w.by, words: w.words ?? null });
+  let from = lastMatchSeq;
+  if (from === null) { // the first wait: from the head as the scene began (vars.startSeq, set at the first request)
+    from = vars._startSeq ?? 0;
+  }
+  while (alive()) {
+    const r = await cb(["history", vars.project, "--cut", cut, "--limit", "40", "--json"]);
+    // words without `save`: one comparison of everything since the last match (one cb call, not one per version), and
+    // a version by that author among them
+    if (r.code === 0 && w.words && !w.save) {
+      let versions = [];
+      try { versions = JSON.parse(r.out).versions; } catch {}
+      const head = versions[0], theirs = versions.filter((v) => Number(v.version.split("@")[1]) > from && (!w.by || (v.by?.kind === "human" && (v.by.name === w.by || v.by.id === w.by))));
+      if (head && theirs.length) {
+        const kind = head.version.split("@")[0], top = Number(head.version.split("@")[1]);
+        const c = await cb(["compare", vars.project, `${kind}@${from}`, head.version, "--json"]);
+        let said = "";
+        try { said = JSON.parse(c.out).changes.join("\n"); } catch {}
+        if (said.includes(w.words)) {
+          lastMatchSeq = top;
+          log({ event: "waited", by: w.by, version: head.version, ms: Date.now() - t0 });
+          return;
+        }
+      }
+      if (Date.now() - t0 > timeout) { log({ event: "wait-timeout", by: w.by, words: w.words }); return; }
+      await sleep(400);
+      continue;
+    }
+    if (r.code === 0) {
+      let versions = [];
+      try { versions = JSON.parse(r.out).versions; } catch {}
+      for (const v of versions.slice().reverse()) {
+        const seq = Number(v.version.split("@")[1]);
+        if (seq <= from) continue;
+        const a = v.by ?? {};
+        if (w.by && !(a.kind === "human" && (a.name === w.by || a.id === w.by))) continue;
+        const said = w.words ? await changeWords(cut, v.version) : "";
+        if (w.words && !(said ?? "").includes(w.words)) continue;
+        lastMatchSeq = seq;
+        if (w.save) vars[w.save] = `${v.version.split("@")[0]}@${seq - 1}`;
+        log({ event: "waited", by: a.name ?? a.id, version: v.version, ms: Date.now() - t0, ...(w.save ? { saved: { [w.save]: vars[w.save] } } : {}) });
+        return;
+      }
+    }
+    if (Date.now() - t0 > timeout) { log({ event: "wait-timeout", by: w.by, words: w.words }); return; }
+    await sleep(600);
+  }
+}
+
+// ------------------------------------------------------------------ the conversation's state, read from the request
+const fill = (s) => String(s).replace(/\{\{(\w+)\}\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
+function readRequest(body) {
+  let n = -1, lastResult = "";
+  for (const m of body.messages ?? []) {
+    if (!Array.isArray(m.content)) continue;
+    for (const c of m.content) {
+      if (c.type === "tool_use" && /^toolu_actor_(\d+)$/.test(c.id)) n = Math.max(n, Number(/(\d+)$/.exec(c.id)[1]));
+      if (c.type === "tool_result") lastResult = typeof c.content === "string" ? c.content : (c.content ?? []).map((x) => x.text ?? "").join("\n");
+    }
+  }
+  // the view file the last print named (cb source print --view: "Your view "x" is at <path> (version …)")
+  const v = /Your view "[^"]*" is at (.+?) \(version /.exec(lastResult);
+  if (v) vars.view = v[1].trim();
+  return { next: n + 1, lastResult };
+}
+
+// ------------------------------------------------------------------ streaming as the API does
+function sse(res) {
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+  const ev = (type, data) => { if (!res.writableEnded) res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`); };
+  return ev;
+}
+const usage = { input_tokens: 1200, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const newId = (p) => p + Math.random().toString(36).slice(2, 12);
+function chunks(text, n) { const out = []; for (let i = 0; i < text.length; i += n) out.push(text.slice(i, i + n)); return out; }
+
+async function streamMessage(req, res, body, msg, index) {
+  // the client gone (a request's own `close` comes once its body is read: never taken for that)
+  let open = true;
+  res.on("close", () => { open = false; });
+  req.socket?.on("close", () => { open = false; });
+  const alive = () => open && !res.destroyed;
+  // a non-streaming request (Claude Code's retry of a failed stream) gets the same message whole, holds included
+  if (!body.stream) return wholeMessage(res, body, msg, index, alive);
+  const ev = sse(res);
+  const model = body.model ?? "claude-opus-5-5";
+  ev("message_start", { message: { id: newId("msg_actor_"), type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } });
+  const ping = setInterval(() => ev("ping", {}), 5000);
+  let i = 0, outTokens = 0, stop = "end_turn";
+  try {
+    for (const b of msg.blocks) {
+      if (!alive()) return;
+      if (b.hold) {
+        if (b.hold.pause !== undefined) { log({ event: "pause", ms: b.hold.pause }); await sleep(b.hold.pause); }
+        else await waitFor(b.hold.wait, alive);
+        continue;
+      }
+      if (b.think !== undefined) {
+        ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "", signature: "" } });
+        const parts = chunks(fill(b.think), 12), step = Math.max(20, Math.floor(b.ms / Math.max(1, parts.length)));
+        for (const p of parts) { if (!alive()) return; ev("content_block_delta", { index: i, delta: { type: "thinking_delta", thinking: p } }); await sleep(step); }
+        ev("content_block_delta", { index: i, delta: { type: "signature_delta", signature: "actor-" + index + "-" + i } });
+        ev("content_block_stop", { index: i++ });
+      } else if (b.say !== undefined) {
+        const text = fill(b.say);
+        if (!text) continue;
+        ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
+        const per = Math.max(2, Math.round(b.cps / 10));
+        for (const p of chunks(text, per)) { if (!alive()) return; ev("content_block_delta", { index: i, delta: { type: "text_delta", text: p } }); await sleep(100); }
+        ev("content_block_stop", { index: i++ });
+        outTokens += Math.ceil(text.length / 4);
+      } else if (b.tool) {
+        const tools = new Set((body.tools ?? []).map((t) => t.name));
+        let name = b.tool.tool;
+        // a Windows Claude Code without Git Bash offers PowerShell in place of Bash: the same command line
+        if (!tools.has(name) && name === "Bash" && tools.has("PowerShell")) name = "PowerShell";
+        const input = {};
+        for (const [k, v] of Object.entries(b.tool)) if (k !== "tool" && k !== "powershell") input[k] = typeof v === "string" ? fill(v) : v;
+        if (name === "PowerShell" && b.tool.powershell) input.command = fill(b.tool.powershell);
+        const id = `toolu_actor_${index}`;
+        ev("content_block_start", { index: i, content_block: { type: "tool_use", id, name, input: {} } });
+        ev("content_block_delta", { index: i, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } });
+        ev("content_block_stop", { index: i++ });
+        stop = "tool_use";
+        log({ event: "tool", index, name, input: name === "Edit" ? { file_path: input.file_path, old: String(input.old_string).slice(0, 60), new: String(input.new_string).slice(0, 80) } : input });
+      }
+    }
+    if (stop === "end_turn" && !outTokens) {
+      // a message with no text and no tool call reads as a broken stream to Claude Code, and only spaces as an empty answer
+      // it asks again for: a zero-width space, which shows as nothing
+      ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
+      ev("content_block_delta", { index: i, delta: { type: "text_delta", text: "\u200b" } });
+      ev("content_block_stop", { index: i++ });
+    }
+    ev("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: Math.max(1, outTokens) } });
+    ev("message_stop", {});
+  } finally {
+    clearInterval(ping);
+    res.end();
+  }
+}
+
+// the same message as one JSON answer (no partial text: a non-streaming request)
+async function wholeMessage(res, body, msg, index, alive) {
+  const content = [];
+  let stop = "end_turn";
+  for (const b of msg.blocks) {
+    if (b.hold) { if (b.hold.pause !== undefined) await sleep(b.hold.pause); else await waitFor(b.hold.wait, alive); continue; }
+    if (b.think !== undefined) { await sleep(b.ms); content.push({ type: "thinking", thinking: fill(b.think), signature: "actor-" + index }); }
+    else if (b.say !== undefined) { const t = fill(b.say); if (t) content.push({ type: "text", text: t }); }
+    else if (b.tool) {
+      const { tool: name, powershell: _p, ...rest } = b.tool;
+      const input = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, typeof v === "string" ? fill(v) : v]));
+      content.push({ type: "tool_use", id: `toolu_actor_${index}`, name, input });
+      stop = "tool_use";
+    }
+  }
+  if (!content.some((c) => c.type === "text" || c.type === "tool_use")) content.push({ type: "text", text: "\u200b" });
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ id: newId("msg_actor_"), type: "message", role: "assistant", model: body.model ?? "claude-opus-5-5", content, stop_reason: stop, stop_sequence: null, usage }));
+}
+
+// a short answer, streamed or not, for a request that isn't the scene's
+function answerText(res, body, text) {
+  const model = body.model ?? "claude-haiku-5-5";
+  if (!body.stream) {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ id: newId("msg_actor_"), type: "message", role: "assistant", model, content: [{ type: "text", text }], stop_reason: "end_turn", stop_sequence: null, usage }));
+  }
+  const ev = sse(res);
+  ev("message_start", { message: { id: newId("msg_actor_"), type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } });
+  ev("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+  ev("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
+  ev("content_block_stop", { index: 0 });
+  ev("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } });
+  ev("message_stop", {});
+  res.end();
+}
+
+const systemText = (body) => (typeof body.system === "string" ? body.system : (body.system ?? []).map((s) => s.text ?? "").join("\n"));
+function naming(body) {
+  const s = systemText(body), names = scene.names ?? {};
+  if (/Name this conversation/i.test(s)) return { kind: "name-conversation", text: names.conversation ?? "Everyday work" };
+  if (/Name a video editing project/i.test(s)) return { kind: "name-project", text: names.project ?? "Morning Brew Promo" };
+  if (/Title this change/i.test(s)) return { kind: "title-turn", text: names.turn ?? "Everyday work" };
+  return null;
+}
+
+let started = false;
+http.createServer((req, res) => {
+  const url = new URL(req.url, "http://127.0.0.1");
+  if (req.method === "GET" && url.pathname.startsWith("/cue/")) {
+    const name = decodeURIComponent(url.pathname.slice(5)), go = cues.get(name);
+    log({ event: "cue", name, waiting: !!go });
+    if (go) go();
+    res.writeHead(200, { "content-type": "text/plain" });
+    return res.end(go ? "ok\n" : "nobody waits for it\n");
+  }
+  let raw = "";
+  req.on("data", (c) => (raw += c));
+  req.on("end", async () => {
+    let body = {};
+    try { body = raw ? JSON.parse(raw) : {}; } catch {}
+    if (req.method === "POST" && /\/v1\/messages\/count_tokens/.test(url.pathname)) {
+      log({ event: "request", path: url.pathname, kind: "count_tokens" });
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ input_tokens: 1200 }));
+    }
+    if (req.method !== "POST" || !/\/v1\/messages$/.test(url.pathname)) {
+      log({ event: "request", method: req.method, path: url.pathname, kind: "unknown", answered: 404 });
+      res.writeHead(404, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "not here" } }));
+    }
+    const nm = naming(body);
+    const tools = (body.tools ?? []).map((t) => t.name);
+    if (nm || !tools.length) {
+      const text = nm?.text ?? (scene.names?.other ?? "OK");
+      log({ event: "request", path: url.pathname, kind: nm?.kind ?? "side", model: body.model ?? null, stream: !!body.stream, answered: text });
+      return answerText(res, body, text);
+    }
+    const st = readRequest(body);
+    if (!started) {
+      started = true;
+      // the cut's head as the scene starts: the first wait looks only at versions after it
+      const r = await cb(["history", vars.project, "--cut", scene.cut ?? "Main cut", "--limit", "1", "--json"]);
+      try { vars._startSeq = Number(JSON.parse(r.out).versions[0].version.split("@")[1]); } catch { vars._startSeq = 0; }
+      log({ event: "start", tools, model: body.model ?? null, thinking: body.thinking ?? null, startSeq: vars._startSeq });
+    }
+    const msg = messages[st.next];
+    log({ event: "request", path: url.pathname, kind: "scene", message: st.next, of: messages.length, lastResult: st.lastResult.slice(0, 160) });
+    if (!msg) return answerText(res, body, scene.after ?? "Done.");
+    await streamMessage(req, res, body, msg, st.next);
+  });
+}).listen(PORT, "127.0.0.1", () => log({ event: "listening", url: `http://127.0.0.1:${PORT}` }));

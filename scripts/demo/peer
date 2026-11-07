@@ -18,7 +18,7 @@
 // Rehearsal only (the app's side, played from this box; host on 127.0.0.1):
 //   peer host start [--port 8791] | stop         a local sharing server with open creation, as the live one
 //   peer app --name "<Name>"                     a participant that makes and shares the project
-//   peer create "<project name>"                 a project with a short clip, in that participant's library
+//   peer create "<project name>" [--tsx <file>]  a project with a short clip (or that timeline), in that participant's library
 //   peer share [--host <url>]                    share it (default: the local server)
 //   peer invite [--role editor]                  print an invite link
 //   peer cb [--actor <id>] -- <cb args…>         Cardboard's own cb on that participant's library (its agent's commands)
@@ -120,22 +120,31 @@ const COMMANDS = {
     return dir;
   },
   async create() {
+    // a project in this participant's library: a 12 s test clip on "Footage", or `--tsx <file>`: that timeline, made in
+    // Cardboard itself (titles, code graphics: no footage), applied with Cardboard's own cb
     const dir = which(), name = words.join(" ") || "Demo rehearsal";
-    const b = lib.build(), cfg = lib.readJson(path.join(dir, "peer.json"));
-    const clip = path.join(lib.DEMO, "media", "rehearsal-clip.mp4");
-    if (!fs.existsSync(clip)) {
-      fs.mkdirSync(path.dirname(clip), { recursive: true });
-      // 12 s of plain footage (a slow colour field and a quiet tone), small enough for the live server
-      execFileSync("ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "400k", "-c:a", "aac", "-b:a", "64k", "-shortest", clip]);
-    }
+    const cfg = lib.readJson(path.join(dir, "peer.json"));
     const must = (r, what) => { if (r.code !== 0) throw new Error(`${what}: ${r.out}${r.err}`.slice(0, 1500)); return r; };
     // as the person at the app (CARDBOARD_ACTOR=person: Carton's store bridge maps it to them), never a nameless "Terminal"
     must(lib.cb(dir, ["project", "create", name], { actor: "person" }), "project create");
-    must(lib.cb(dir, ["media", "add", name, clip], { actor: "person" }), "media add");
-    const tsx = `export default (\n  <timeline aspect="16:9">\n    <track name="Footage">\n      <clip name="Opening shot" src="rehearsal-clip.mp4" start={0} end={12} />\n    </track>\n  </timeline>\n);\n`;
-    must(lib.cb(dir, ["source", "apply", name, "-"], { input: tsx, actor: "person" }), "source apply");
+    let what;
+    if (flags.tsx) {
+      must(lib.cb(dir, ["source", "apply", name, "-"], { input: fs.readFileSync(flags.tsx, "utf8"), actor: "person" }), "source apply");
+      what = `the timeline of ${path.basename(flags.tsx)}`;
+    } else {
+      const clip = path.join(lib.DEMO, "media", "rehearsal-clip.mp4");
+      if (!fs.existsSync(clip)) {
+        fs.mkdirSync(path.dirname(clip), { recursive: true });
+        // 12 s of plain footage (a slow colour field and a quiet tone), small enough for the live server
+        execFileSync("ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "400k", "-c:a", "aac", "-b:a", "64k", "-shortest", clip]);
+      }
+      must(lib.cb(dir, ["media", "add", name, clip], { actor: "person" }), "media add");
+      const tsx = `export default (\n  <timeline aspect="16:9">\n    <track name="Footage">\n      <clip name="Opening shot" src="rehearsal-clip.mp4" start={0} end={12} />\n    </track>\n  </timeline>\n);\n`;
+      must(lib.cb(dir, ["source", "apply", name, "-"], { input: tsx, actor: "person" }), "source apply");
+      what = "a 12 s clip on “Footage”";
+    }
     const r = await lib.request(dir, "adopt", {});
-    say(`Made “${r.name}” in ${cfg.name}'s library (a 12 s clip on “Footage”).`);
+    say(`Made “${r.name}” in ${cfg.name}'s library (${what}).`);
   },
   async share() {
     const dir = which();

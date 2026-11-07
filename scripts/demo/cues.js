@@ -91,7 +91,7 @@ async function run(file, { from = 1, dry = false, peer } = {}) {
   // voice and speed, so a sheet run again makes none
   const voices = new Map();
   if (!dry) {
-    const lines = steps.slice(from - 1).filter((s) => s.speak && !s.file);
+    const lines = steps.slice(from - 1).filter((s) => s.speak && !s.file && !s.parts);
     if (lines.length) out(`${stamp()}  making ${lines.length} spoken line${lines.length === 1 ? "" : "s"}…`);
     for (const s of lines) {
       const key = require("crypto").createHash("sha256").update(JSON.stringify([s.speak, s.voice ?? "ryan", s.speed ?? 1])).digest("hex").slice(0, 12);
@@ -126,6 +126,8 @@ async function run(file, { from = 1, dry = false, peer } = {}) {
         }
         case "say": r = await lib.request(dir, "say", { text: s.say, at: s.at, dur: s.for, style: s.style, name: s.name, track: s.track, color: s.color, size: s.size, y: s.y }); break;
         case "speak": {
+          // a line in parts (each its own file and spot): imported, shared and placed together
+          if (Array.isArray(s.parts)) { r = await lib.request(dir, "speakAll", { parts: s.parts, track: s.track, volume: s.volume }); break; }
           let file = s.file ?? voices.get(s), made = null;
           if (!file) { made = await require("./tts.js").synth(s.speak, { voice: s.voice ?? "ryan", speed: s.speed ?? 1, out: path.join(dir, "voice", voiceName(s.speak)) }); file = made.file; }
           r = await lib.request(dir, "speak", { file, text: s.speak, at: s.at, name: s.name, track: s.track, volume: s.volume });

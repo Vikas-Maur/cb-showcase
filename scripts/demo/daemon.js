@@ -303,6 +303,49 @@ async function speak({ file, at, name, track = "Voice", text, volume, seconds, s
 }
 
 
+/**
+ * Several sounds at once (a line in parts): one `cb media add` of every file, one share, one wait for the other side
+ * (REASK_MS), and one save placing every clip, so a two-part line costs about what one does. parts: [{file, at, name}].
+ */
+async function speakAll({ parts, track = "Voice", volume }) {
+  if (!Array.isArray(parts) || !parts.length) throw new Error("No parts");
+  for (const p of parts) if (!p.file || !fs.existsSync(p.file)) throw new Error("No sound file: " + p.file);
+  const t0 = Date.now();
+  const had = new Set(((await read()).media ?? []).map((m) => m.id));
+  const r = await cbAsync(["media", "add", projectId(), ...parts.map((p) => path.resolve(p.file))], cfg.agent ? cfg.agent.id : "person");
+  if (r.code !== 0) throw new Error("Cardboard didn't take the sounds: " + (r.out + r.err).trim().split("\n").slice(-2).join(" "));
+  const ids = new Map(); // part index → media id, by the file's name
+  for (let i = 0; i < 100 && ids.size < parts.length; i++) {
+    const fresh = ((await read()).media ?? []).filter((m) => !had.has(m.id) && m.data?.type === "audio");
+    parts.forEach((p, k) => { const m = fresh.find((x) => x.data?.fileName === path.basename(p.file)); if (m) ids.set(k, m.id); });
+    if (ids.size < parts.length) await new Promise((res) => setTimeout(res, 50));
+  }
+  if (ids.size < parts.length) throw new Error("The sounds didn't all reach the project");
+  const importedMs = Date.now() - t0, importedAt = Date.now();
+  const s0 = Date.now(), want = [...ids.values()];
+  for (;;) {
+    const got = await call("carton.liveShareMedia", { projectId: projectId(), mediaIds: want });
+    const err = (got ?? []).find((x) => x.error);
+    if (err) throw new Error("A sound didn't reach the sharing server: " + err.error);
+    if (want.every((id) => (got ?? []).some((x) => x.mediaId === id && x.hash))) break;
+    if (Date.now() - s0 > 15_000) { log("speakAll: not every sound was shared within 15 s; the clips go on anyway"); break; }
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  const sharedMs = Date.now() - s0;
+  { const wait = importedAt + REASK_MS - Date.now(); if (wait > 0) await new Promise((res) => setTimeout(res, wait)); }
+  const doc = await read();
+  const { tracks, track: tr } = trackFor(doc, track, true);
+  const items = parts.map((p, k) => {
+    const dur = Number(require("child_process").execFileSync(process.env.CARDBOARD_FFPROBE ?? "ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", p.file], { encoding: "utf8" }).trim());
+    return { id: randomUUID(), trackId: tr.id, type: "audio", startTime: round(p.at), endTime: round(p.at + dur), trimStart: 0, trimEnd: round(dur), mediaItemId: ids.get(k), name: p.name ?? clipLabel(p.text ?? path.basename(p.file)), ...(volume !== undefined ? { volume: Number(volume) } : {}) };
+  });
+  await save(doc, { ...doc, tracks, timelineItems: [...(doc.timelineItems ?? []), ...items] });
+  for (const it of items) mine({ id: it.id, name: it.name, kind: "sound", mediaId: it.mediaItemId });
+  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, savedMs: Date.now() - t0, savedAt: Date.now() };
+  emit({ type: "self", op: "speak", ...out });
+  return out;
+}
+
 // Cardboard's cb on this participant's library, in its own process (never blocking this one: the worker answers the
 // lease's pings and the editor's calls here).
 function cbAsync(args, actor) {
@@ -415,7 +458,7 @@ const OPS = {
     return r;
   },
   invite: ({ role = "editor" }) => call("carton.liveInvite", { projectId: projectId(), role }),
-  say, speak, clear, edit,
+  say, speak, speakAll, clear, edit,
   async presence({ activity, idle, gone }) {
     await sendPresence(gone ? null : idle ? { activity: null, idle: true } : { activity: activity ?? (cfg.agent ? "Working on the edit" : "Editing") });
     return { presence: presenceState };
