@@ -299,7 +299,11 @@ const fold: CommandSpec = {
       const text = [...noticeLines(r.notices ?? []), `Folded in, but ${n} card${n === 1 ? "" : "s"} came back: the other side's value was kept.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`), "See them with `cb conflicts <project>`, and pick with `cb resolve`."].join("\n");
       return { json: r, text, exitCode: exitCodeOf(r) };
     }
-    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
+    // and what core kept out with them: a record whose track (parent) stays out and isn't here, a kept-out title's own
+    // entry (laptop rehearsal: a clip added on a kept-out track came in on a made-up "Missing track")
+    const also = (((r as any).keptOut ?? []) as string[]).filter((k) => !a.reject?.includes(k));
+    const keptWords = a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")}${also.length ? `; and with them, since they can't come in without them: ${also.join(", ")}` : ""})` : null;
+    return writeOut(r, keptWords ?? ((r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in"));
   },
 };
 

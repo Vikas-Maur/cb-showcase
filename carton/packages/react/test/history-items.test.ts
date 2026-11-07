@@ -273,3 +273,27 @@ test("baseline P3-2: an Undo right after a Restore reads \"Undid the restore\", 
   assert.equal(u.details?.length, 2);
   ui.dispose();
 });
+
+// Laptop rehearsal 2026-11-07: Fold in with a new track left out (its row unticked) brought in a clip on that track,
+// pointing at no track (Cardboard printed it on a made-up "Missing track"). It stays out with its track, the fold's row
+// counts it as left out, and a clip on a track that comes in still comes.
+test("Fold in with a new track left out keeps out the clips on it, counted as left out; a clip on a track that comes in comes", async () => {
+  const o = await open();
+  const main = o.carton.cut;
+  const v = await o.carton.fork("Alt");
+  const ins = (coll: string, value: Rec) => ({ op: "insert" as const, path: [coll, String(value.id)], value });
+  await o.carton.commit({ cut: v.id, ops: [ins("tracks", { id: "talk", name: "Talk", [POS]: "W" }), ins("items", { ...clip("x", 20, 22), trackId: "talk", name: "Psst" })], author: bob });
+  await o.carton.commit({ cut: v.id, ops: [ins("items", { ...clip("y", 22, 24), trackId: "talk", name: "Hello again" }), ins("items", { ...clip("z", 24, 26), name: "B-roll" })], author: bob });
+  await o.ui.refresh();
+  const plan = await o.ui.planFold(v.id, main);
+  assert.ok(plan.changes.some((c) => c.id === "tracks/talk"), JSON.stringify(plan.changes.map((c) => c.id)));
+  // the Talk track's row unticked (an older list: the clips on it ticked)
+  assert.equal((await o.ui.fold(v.id, main, { leaveOut: ["tracks/talk"], choices: {} })).ok, true);
+  const d = (await o.carton.head(main)).doc;
+  const tracks = new Set((d.tracks as Rec[]).map((t) => t.id));
+  assert.deepEqual((d.items as Rec[]).filter((i) => !tracks.has(i.trackId as string)).map((i) => i.id), [], "no clip on a track the cut doesn't have");
+  assert.ok(!(d.items as Rec[]).some((i) => i.id === "x" || i.id === "y"), "the clips on Talk stayed out with it");
+  assert.ok((d.items as Rec[]).some((i) => i.id === "z"), "B-roll, on a track that comes in, came");
+  const f = (await rows(o.ui))[0]!;
+  assert.deepEqual([f.kind, f.summary, f.changes, f.leftOut], ["fold", "Folded in “Alt”", 1, 3], "History counts the clips kept out with their track");
+});

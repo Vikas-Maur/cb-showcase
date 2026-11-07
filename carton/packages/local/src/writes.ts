@@ -552,6 +552,9 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       r = op.reject?.length
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
+      // what core kept out with the given paths (a clip on a kept-out track, a kept-out title's own entry): told to cb
+      const keptOut = (r as { keptOut?: unknown }).keptOut;
+      if (Array.isArray(keptOut)) extra = { ...extra, keptOut };
       // nothing new to fold in, but a partial fold of this cut kept some of it out: folding again folds in the rest
       // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4).
       // A retry finds the first try's answer recorded as a no-op (confirmed, empty) and carries on from there

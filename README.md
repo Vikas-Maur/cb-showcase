@@ -783,7 +783,12 @@ What changes with it on:
   sharing footage reads "Linked 'clip.mp4' for sharing" (it read `Set 'clip.mp4' content to "8291f1d9…"`), and a clip
   dragged onto a new track names that track. **Fold in some of it** is one version, "Folded 'Client review' into 'Main
   cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
-  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. Changes are
+  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. A track left out
+  keeps out the clips on it when the cut folded into doesn't have that track, and a title left out keeps out its own
+  text entry: in the demo rehearsals `cb fold … --reject tracks/<Talk>`, with its list made before a teammate added
+  another title on Talk, brought that title in on no track, which Cardboard's print showed on a made-up "Missing
+  track", and History's Fold in did the same for a track's row left unticked. They count as left out, and `cb fold`
+  names them ("and with them, since they can't come in without them: …"). Changes are
   counted one way everywhere (laptop re-check, 2026-11-02): a change per clip or field, a split one change, so the
   Fold dialog's "2 changes", History's "1 of 2 changes" and `cb history`'s "merge (1 left out)" agree (they read 2, "1
   of 4" and "3 left out"), as do Compare's and Watch the changes' counts (Watch's counter now steps through
@@ -1128,7 +1133,11 @@ with Carton off none of it runs at all.
   the next time the file was read it looked like another program's save: it was imported over the newest version,
   and a teammate's change that had arrived meanwhile was deleted for everyone (in the demo rehearsals, a title added
   right after a sound was dropped on the timeline, 11 of 12 times). Each such write is now known for what it is. Its
-  waveform and art stay in the file, and a real save by another program is still taken as one.
+  waveform and art stay in the file, and a real save by another program is still taken as one: as what it changed
+  against the version the file showed before (merged with what reached the project meanwhile; before, its whole
+  document went over the newest version, and a teammate's change on its way into the file was taken out), also
+  when the program kept the file's own rev (the file is that version only while what Carton keeps of it is that
+  version's).
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
@@ -1136,7 +1145,8 @@ with Carton off none of it runs at all.
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
   through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. A teammate's new sound or
   still plays as soon as their app has sent it: the editor's first ask for its clip, which can come before the file is
-  on its way, is answered once it is (for up to 12 s) instead of with "Source file missing", and the app that adds a
+  on its way, is answered once it is (for up to 12 s after the clip arrived, however slow the sharing server is to
+  answer meanwhile) instead of with "Source file missing", and the app that adds a
   sound or a still sends it at once, while its person goes on editing (a video still goes once editing pauses for 2 s,
   so its preview can be made from Cardboard's own). Before, the sound played 2 to 4 s after it could have, and the
   editor was first told it was missing. The agent's ffmpeg tools
@@ -1207,13 +1217,14 @@ Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`); Cardboard's back
 derive main asks for) followed by a teammate's change, which stays, and another program's save, still taken as one
 (`derive-race.test.js`); a teammate's new sound, its clip asked for the moment it arrives, and sent while its person
 goes on editing (`teammate-sound.test.js`); Share on a cut of your own, with the sharing server gone and back
-(`share-own-cut.test.js`); `cb restore --clip --remove` on a shared cut (`restore-remove-shared.test.js`). The timings are `save-bench.js`'s, a measurement and
+(`share-own-cut.test.js`); `cb restore --clip --remove` on a shared cut (`restore-remove-shared.test.js`); a fold
+that keeps a track out while a teammate adds to it (`fold-kept-out.test.js`). The timings are `save-bench.js`'s, a measurement and
 not a test: a GUI save's round trip to the worker and how soon `timeline.tsx` shows it, Carton off and on alternated
 round by round (run it alone, on a quiet machine, on mains power).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js scripts/carton/test/sync/restore-remove-shared.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js scripts/carton/test/sync/restore-remove-shared.test.js scripts/carton/test/sync/fold-kept-out.test.js
 ```
 
 Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
