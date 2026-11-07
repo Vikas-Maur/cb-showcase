@@ -1400,7 +1400,7 @@ class CartonImpl implements Carton {
     const ok = await this.store.write(writes, conds);
     if (ok) for (const [cut, k] of kfs) this.#kf.set(cut, k);
     if (ok && confirmed.length) this.#ridSaved = true;
-    if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true });
+    if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true, author: this.#who(change.author, change.id) });
     return ok;
   }
   /** A write with an id: if another process recorded it as a no-op, this handle learns it before acting (by id, not a scan). */
@@ -3513,7 +3513,8 @@ class CartonImpl implements Carton {
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs }), this.#noteCuts();
-    for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
+    // (told by person, as log() tells it: the server's people come before a newly bound replica's rows)
+    for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + "."), author: this.#who(r.author, r.id) });
     this.#tell(cut);
   }
   /** The due events of the cut (#due) whose rows History holds now, in order; `all`: every one, on what it holds. */

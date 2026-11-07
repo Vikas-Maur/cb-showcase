@@ -14,6 +14,12 @@ import type { Actor, Version } from "./model.ts";
 export const ARRIVAL_BURST = 40;
 /** How many arrivals History keeps marks for (the newest): the faint edge of older ones goes. */
 export const ARRIVALS_KEPT = 400;
+/**
+ * An arrival this soon after the one before is part of a burst (a teammate's agent at work, a catch-up): its ring shows
+ * and settles without motion, so a busy project costs no animation (the bench's live cell: 50 a second). One that comes
+ * after a quiet moment, as the demo's title does, fades in and settles softly.
+ */
+export const ARRIVAL_CALM_MS = 2000;
 
 /** Someone other than you and your own agents: a teammate, or a teammate's agent. The system is no one. */
 export const isSomeoneElse = (a: Actor): boolean => a.kind !== "system" && !a.isYou;
@@ -30,9 +36,14 @@ export interface ArrivalState {
   readonly at: ReadonlyMap<string, number>;
   /** The ones this step added, newest first. */
   readonly added: readonly Version[];
+  /** Of `at`, the ones that came in a burst (ARRIVAL_CALM_MS after the arrival before): drawn without motion. */
+  readonly busy: ReadonlySet<string>;
+  /** When the last arrival was (ms since the epoch), or null. */
+  readonly lastAt: number | null;
 }
 
 const NONE: ReadonlyMap<string, number> = new Map();
+const NO_IDS: ReadonlySet<string> = new Set();
 const NO_VERSIONS: readonly Version[] = [];
 
 /**
@@ -47,11 +58,11 @@ export function nextArrivals(
   if (s && s.rev === o.rev && s.source === o.source && s.cut === o.cut) return s;
   const same = !!s && s.source === o.source && s.cut === o.cut;
   // another cut or source: its own arrivals only, from when it is seen
-  const at = same ? s!.at : NONE;
+  const at = same ? s!.at : NONE, busy = same ? s!.busy : NO_IDS, lastAt = same ? s!.lastAt : null;
   let top = all.length - 1;
   while (top >= 0 && all[top]!.provisional) top--;
   const newest = !o.loading && top >= 0 ? all[top]!.id : null;
-  const state = (last: string | null, map = at, added = NO_VERSIONS): ArrivalState => ({ source: o.source, cut: o.cut, last, rev: o.rev, at: map, added });
+  const state = (last: string | null, map = at, added = NO_VERSIONS, b = busy, when = lastAt): ArrivalState => ({ source: o.source, cut: o.cut, last, rev: o.rev, at: map, added, busy: b, lastAt: when });
   // not watching yet (History still loading, or nothing confirmed), or the first look: what is there now was there
   if (!newest || !same || s!.last === null) return state(newest);
   if (newest === s!.last) return state(newest);
@@ -71,9 +82,14 @@ export function nextArrivals(
   if (!found || !added.length) return state(newest);
   const next = new Map(at);
   for (let i = added.length - 1; i >= 0; i--) next.set(added[i]!.id, o.now);
+  // (a burst: soon after the arrival before; its marks are kept as long as theirs)
+  const burst = lastAt !== null && o.now - lastAt < ARRIVAL_CALM_MS;
+  const nextBusy = new Set(busy);
+  if (burst) for (const v of added) nextBusy.add(v.id);
   for (const id of next.keys()) {
     if (next.size <= ARRIVALS_KEPT) break;
     next.delete(id);
+    nextBusy.delete(id);
   }
-  return state(newest, next, added);
+  return state(newest, next, added, nextBusy, o.now);
 }

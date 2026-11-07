@@ -110,7 +110,9 @@ lead, side names, Keep names, viewing labels), so the card, `view()`'s label and
 - **Someone else's arrivals** (`arrivals.ts`). A teammate's or their agent's version arriving while History is open
   outlines its row in their colour (`ArrivalRing`: a ring and glow for `ARRIVAL_GLOW_MS`, then a faint edge). Each
   History change reads only what arrived: from the newest confirmed version back to the one it saw last, never the
-  whole list; a load, a reload or another cut is never taken for arrivals. Working alone, nothing is ever marked.
+  whole list; a load, a reload or another cut is never taken for arrivals. Working alone, nothing is ever marked. The
+  ring is one element; it fades in and settles by animation only after a quiet moment (`ARRIVAL_CALM_MS`), so a burst
+  (the bench's live cell: 50 a second) animates nothing and draws as fast as before.
 - **60 fps playback.** Play runs outside React (`SpanPlayer`): each animation frame moves the lit row's progress line
   and the change map's playhead by transform and calls your `onFrame(time)`. React hears only when the lit row or
   play/pause changes. Ghosts move their elements directly too.
