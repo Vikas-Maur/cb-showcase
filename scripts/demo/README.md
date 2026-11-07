@@ -29,11 +29,17 @@ scripts/demo/peer say "Psst. Is anyone else in here?" --at 3.5 --for 3 --style c
 scripts/demo/peer speak "Can we talk here?" --at 7 --voice ryan
 scripts/demo/peer edit "Psst" --text "Hello?"   |   scripts/demo/peer clear "Psst"
 scripts/demo/peer presence "Editing captions"   |   --idle   |   --gone
-scripts/demo/peer status
+scripts/demo/peer status                                   # with the sounds sent, and any not on the sharing server yet
 scripts/demo/peer run scripts/demo/sample-cues.yaml        # a cue sheet instead of typing; --from <n>, --dry
 scripts/demo/peer restart                                  # after a crash: the same participant, its project kept
-scripts/demo/peer leave
+scripts/demo/peer settle                                   # waits until every sound sent is on the sharing server
+scripts/demo/peer leave                                    # waits for those too, saying so (--now: doesn't)
 ```
+
+Every sound a participant sends is checked on the sharing server once its clip is placed: its shared record is there,
+and its bytes come back whole and the same as the file sent (shared again if not). A teammate who opens the project
+later gets the sounds only from there, so a cue sheet ends only once they all are, and `peer leave` waits for them
+(FINDINGS.md §6.4).
 
 Every command answers in a line, with how long it took. `peer` with no command lists them all. Which participant:
 `--peer <name>`, else `$PEER`, else the last one joined here.
@@ -75,6 +81,7 @@ the chat kept out, a check, and the editor switched to it last), `agent_clear`.
 | `app-player.js` | the running app for `cb app` (seek, play, pause, context) on this box: that editor behind Cardboard's control socket, its playback traced (FINDINGS.md §6.3) |
 | `bench-latency.js` | how soon a remote edit shows on the app's side |
 | `repro-import-race.js` | FINDINGS.md §6.1: a teammate's change deleted after an import |
+| `repro-slow-records.js` | FINDINGS.md §6.4: a teammate's sounds, all on the server, reported "still on their way" when the server is slow (`host.mjs` `DEMO_HOST_RECORD_DELAY_MS`) |
 | `race-hide.js` | FINDINGS.md §4.1: the hide while the remote keeps talking (a line between the agent's reading and its fold), checked on its own |
 | `rehearse.sh`, `rehearsal-cues.yaml`, `sample-cues.yaml` | the rehearsal, and a sheet for the real session |
 | `actor/actor.js` | a scripted stand-in for the Messages API: the real Claude Code inside Cardboard plays a scene (`skit/README.md`) |

@@ -466,7 +466,46 @@ behind a control socket served as Cardboard's main serves it, each request hande
 `control:request`), every playback state written to a trace (`--media-delay` holds back each sound's first fetch, as
 the laptop waits for its download). The skit's Linux rehearsal runs Claude 1's seek/play/pause through it.
 
-### 6.4 Everything else
+### 6.4 Carton bug: a teammate's sounds, all on the server, reported "still on their way" when the server is slow
+
+What the laptop saw (2026-11-07, the project reopened after a rehearsal, Claude 2 gone): "2 clips are still on their way
+from your teammate: “Reply 1.wav” and “Reply 1 (2).wav” show as Offline until they arrive".
+
+**Not the upload.** The sharer's files (that rehearsal's participant on this box, read only afterwards) show all six
+voices shared completely before it left: each is in its `media-shared.json`, which a clip's share writes only once its
+original is uploaded and its shared record is on the server (`sync/media.js` `shareClip`, `worker.js` `shareMediaOf`);
+no unfinished upload is left; and the project's own media entries carry a `contentHash` and `shared: {…, original:
+"shared"}` (`recordShare`), the same for all six. The cue log has each line on the server before its clips went on.
+
+**The opener's check.** When a shared project opens, the editor asks the worker which of the clips it found no file for
+are a teammate's and on the server (`sync/patches/media.js` → `liveMediaHere`). The worker reads each one's shared
+record from the server, and a record not read within 2 s counts as "waiting": the clip goes to Cardboard's Offline
+placeholder, and the notice says it is "still on their way from" the teammate. For a sound or a still the project's own
+record is never used (`recordIn` takes it only when it has a video proxy), so each of them needs a server round trip
+within those 2 s. The notice asks again every 15 s and then says "Your teammate's footage has arrived. Close and reopen
+the project to play it"; until then the clips stay Offline.
+
+**Reproduced here** (`repro-slow-records.js`: the local server with each record read held back 2.5 s, `host.mjs`
+`DEMO_HOST_RECORD_DELAY_MS`; one run): four sounds shared and checked, the sharer gone, the project reopened:
+`liveMediaHere` answered `{"waiting":4}` at its 2 s deadline, while streaming one of them (`liveMediaSource`, no
+deadline) answered "playable" (the WAV, all of it); with the server answering at once, `{"playable":4}`. In the
+editor itself (`editor-page.js` in Chromium, DevTools on), `skit/laptop/media-check.js` shows the same: all four "on their way" with
+the slow server, each one playable when streamed. Whether the laptop's reads took over 2 s isn't measured:
+`media-check.js` measures it there.
+
+Why it matters to real users: on a slow or distant connection, or a server slow to wake, a teammate's sounds and stills
+that are on the server show as Offline with words that put it on the teammate, until the project is reopened. Fix
+direction (not done here): `recordIn` answers from the project's own record when it says the original is shared
+(`shared.original === "shared"` and a `contentHash`: `playable` needs nothing more), as it does for a finished proxy;
+and a record the 2 s cut off says "couldn't be checked", as the notice already can, not "on their way".
+
+**The rig** settles the sharer's side for good: each sound a participant sends is checked on the server (its record
+there, its bytes downloaded and compared with the file sent, sha-256) and shared again if it isn't; `peer status` lists
+any not there yet; `peer leave` waits for them, saying so, and doesn't leave without them (`--now` does); a cue sheet
+ends only once they are all there. The notice itself comes only when a project opens, never during a take on an open
+project (and `go.js` dismisses it).
+
+### 6.5 Everything else
 
 - **The server down or the network gone**: edits wait and go when it is back, on both sides (`live.test.js` "offline
   and rejoin"); the participant reconnects by itself. Presence fades after 30 s and goes after 120 s.

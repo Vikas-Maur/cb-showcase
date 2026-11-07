@@ -11,8 +11,10 @@
 //   peer clear <clip> [--all]                    (a clip's name, words of it, or its id; `all-mine` for every clip of ours)
 //   peer presence ["<what you're doing>"] [--idle] [--gone]
 //   peer watch [--json] [--mine]                 the other side's edits, presence and cuts, live
-//   peer status [--json]
-//   peer leave | peer restart                  (restart: the same participant again, after a crash)
+//   peer status [--json]                         (with the sounds sent, and any not on the sharing server yet)
+//   peer settle [--timeout 120]                  wait until every sound sent is on the sharing server, checked
+//   peer leave [--now] | peer restart            leave waits for sounds not on the server yet, saying so (--now: doesn't);
+//                                                restart: the same participant again, after a crash
 //   peer run <cues.yaml> [--from <n>] [--dry]    a cue sheet (sample-cues.yaml)
 //   peer list
 // Rehearsal only (the app's side, played from this box; host on 127.0.0.1):
@@ -26,6 +28,16 @@
 const fs = require("fs"), path = require("path"), readline = require("readline");
 const { spawn, spawnSync, execFileSync } = require("child_process");
 const lib = require("./lib.js");
+// the sounds a participant sent, in words: all on the sharing server, or which aren't yet and why
+const soundWords = (s) => (!s.pending.length ? `${s.sent} sent, all on the sharing server (checked byte for byte)` : `${s.sent} sent, ${s.onServer} on the sharing server; not yet: ${s.pending.map((p) => `“${p.name}” (${p.why})`).join(", ")}`);
+async function settleSounds(dir, timeout) {
+  const before = (await lib.request(dir, "status")).sounds ?? { sent: 0, onServer: 0, pending: [] };
+  if (!before.pending.length) { if (before.sent) console.log(`sounds: ${soundWords(before)}`); return before; }
+  console.log(`Waiting for ${before.pending.length} sound${before.pending.length > 1 ? "s" : ""} to reach the sharing server: ${before.pending.map((p) => `“${p.name}”`).join(", ")} (up to ${timeout} s)…`);
+  const r = await lib.request(dir, "settle", { timeout }, { timeout: (timeout + 30) * 1000 });
+  console.log(`${r.pending.length ? "✗" : "✓"} sounds: ${soundWords(r)} (${(r.ms / 1000).toFixed(1)} s)`);
+  return r;
+}
 
 const argv = process.argv.slice(2);
 const flags = {}, pos = [];
@@ -34,7 +46,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--") { pos.push(...argv.slice(i + 1).map((x) => ({ raw: x }))); break; }
   if (a.startsWith("--")) {
     const k = a.slice(2), v = argv[i + 1];
-    if (["json", "idle", "gone", "all", "dry", "mine", "help"].includes(k)) flags[k] = true;
+    if (["json", "idle", "gone", "all", "dry", "mine", "help", "now"].includes(k)) flags[k] = true;
     else { flags[k] = v; i++; }
   } else pos.push(a);
 }
@@ -206,10 +218,16 @@ const COMMANDS = {
     say(`  here: ${(st.live?.peers ?? []).map((p) => `${p.actor?.owner ? p.actor.owner.name + "'s " : ""}${p.actor?.name}${p.idle ? " (idle)" : p.activity ? ` · ${p.activity}` : ""}${p.cut ? ` [on ${(st.cuts ?? []).find((c) => c.id === p.cut)?.name ?? "a cut not here"}]` : ""}`).join(", ") || "nobody else"}`);
     say(`  cuts: ${(st.cuts ?? []).map((c) => `${c.name === st.cut ? "*" : ""}${c.name} (${c.where})`).join(", ")}`);
     if (st.mine.length) say(`  ours: ${st.mine.map((m) => `“${m.name}”`).join(", ")}`);
+    if (st.sounds?.sent) say(`  sounds: ${soundWords(st.sounds)}`);
+  },
+  async settle() {
+    const r = await settleSounds(which(), Number(flags.timeout ?? 120));
+    if (r.pending.length) process.exitCode = 1;
   },
   async restart() {
     // the same participant again (its project, name and label kept): after a crash, or to load a newer rig
     const dir = which(), cfg = lib.readJson(path.join(dir, "peer.json"));
+    if (alive(dir) && !flags.now) await settleSounds(dir, Number(flags.timeout ?? 60)).catch(() => {});
     if (alive(dir)) { await lib.request(dir, "leave").catch(() => {}); for (let i = 0; i < 50 && alive(dir); i++) await new Promise((r) => setTimeout(r, 100)); }
     await start(cfg.name, {});
     const st = await lib.request(dir, "status");
@@ -217,6 +235,11 @@ const COMMANDS = {
   },
   async leave() {
     const dir = which();
+    // a sound not on the sharing server yet would be lost with this participant: wait for it, unless --now
+    if (!flags.now && alive(dir)) {
+      const r = await settleSounds(dir, Number(flags.timeout ?? 120)).catch((e) => ({ pending: [], error: e.message }));
+      if (r.pending.length) { say("✗ not leaving: a teammate would never get those sounds (peer leave --now leaves anyway)"); process.exitCode = 1; return; }
+    }
     await lib.request(dir, "leave").catch(() => {});
     say("✓ left (shown as gone); the project stays in this participant's library");
   },
@@ -261,7 +284,8 @@ const COMMANDS = {
 
 (async () => {
   if (!cmd || flags.help || !COMMANDS[cmd]) {
-    process.stdout.write(fs.readFileSync(__filename, "utf8").split("\n").filter((l) => l.startsWith("//")).slice(1, 32).map((l) => l.slice(3)).join("\n") + "\n");
+    const lines = fs.readFileSync(__filename, "utf8").split("\n").slice(1);
+    process.stdout.write(lines.slice(0, lines.findIndex((l) => !l.startsWith("//"))).slice(1).map((l) => l.slice(3)).join("\n") + "\n");
     process.exit(cmd && !flags.help ? 2 : 0);
   }
   await COMMANDS[cmd]();

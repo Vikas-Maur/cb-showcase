@@ -173,6 +173,22 @@ async function run(file, { from = 1, dry = false, peer } = {}) {
   }
   await new Promise((res) => setTimeout(res, 1500)); // the last edits' echoes, into the log
   for (const st of streams.values()) st.close();
+  // the sheet ends only once every sound its participants sent is on the sharing server, checked byte for byte: a
+  // teammate who opens the project later (or has it open after this side has gone) gets them only from there
+  if (!dry) {
+    for (const who of new Set(steps.map((s) => s.as ?? dflt).filter(Boolean))) {
+      const dir = lib.peerDir(who);
+      let r = await lib.request(dir, "status", {}, { timeout: 10_000 }).then((st) => st.sounds).catch(() => null);
+      if (!r?.sent) continue;
+      if (r.pending.length) {
+        out(`${stamp()}  ${who}: waiting for ${r.pending.length} sound${r.pending.length > 1 ? "s" : ""} to reach the sharing server: ${r.pending.map((p) => `“${p.name}”`).join(", ")}…`);
+        r = await lib.request(dir, "settle", { timeout: 180 }, { timeout: 210_000 }).catch((e) => ({ ...r, error: e.message }));
+      }
+      rec({ settle: who, sounds: r });
+      if (r.pending?.length) { ok = false; out(`${stamp()}  ✗ ${who}: ${r.pending.length} of ${r.sent} sounds not on the sharing server: ${r.pending.map((p) => `“${p.name}” (${p.why})`).join(", ")}`); }
+      else out(`${stamp()}  ✓ ${who}: all ${r.sent} sounds on the sharing server, checked byte for byte`);
+    }
+  }
   out(`${stamp()}  ${ok ? "■ done" : "■ stopped"}  log: ${base}.log`);
   if (!ok) process.exitCode = 1;
 }
