@@ -1,0 +1,259 @@
+#!/usr/bin/env node
+// A remote teammate in a shared Cardboard project, from this box, for the demo recording (scripts/demo/README.md).
+// Each command answers in a line or two, at once; `peer watch` streams what the other side does.
+//
+//   peer setup                                   stage Cardboard 1.4.0 with every patch (once; CARDBOARD_PRISTINE)
+//   peer join <invite link> --name "<Name>" [--agent <label>] [--activity "<words>"] [--machine <computer name>]
+//   peer say "<text>" [--at <s>] [--for <s>] [--style title|chat|reply|caption|whisper] [--name "<label>"] [--track <name>]
+//                     [--color #rrggbb] [--size <px>] [--y <px from centre>]
+//   peer speak "<text>" [--at <s>] [--voice ryan|lessac|amy|alan] [--speed 1] [--file <wav|mp3>] [--name …] [--track …]
+//   peer edit <clip> [--text "<new words>"] [--at <s>] [--for <s>] [--style …]
+//   peer clear <clip> [--all]                    (a clip's name, words of it, or its id; `all-mine` for every clip of ours)
+//   peer presence ["<what you're doing>"] [--idle] [--gone]
+//   peer watch [--json] [--mine]                 the other side's edits, presence and cuts, live
+//   peer status [--json]
+//   peer leave | peer restart                  (restart: the same participant again, after a crash)
+//   peer run <cues.yaml> [--from <n>] [--dry]    a cue sheet (sample-cues.yaml)
+//   peer list
+// Rehearsal only (the app's side, played from this box; host on 127.0.0.1):
+//   peer host start [--port 8791] | stop         a local sharing server with open creation, as the live one
+//   peer app --name "<Name>"                     a participant that makes and shares the project
+//   peer create "<project name>"                 a project with a short clip, in that participant's library
+//   peer share [--host <url>]                    share it (default: the local server)
+//   peer invite [--role editor]                  print an invite link
+//   peer cb [--actor <id>] -- <cb args…>         Cardboard's own cb on that participant's library (its agent's commands)
+// Which participant: --peer <name>, else $PEER, else the one last joined or started here.
+const fs = require("fs"), path = require("path"), readline = require("readline");
+const { spawn, spawnSync, execFileSync } = require("child_process");
+const lib = require("./lib.js");
+
+const argv = process.argv.slice(2);
+const flags = {}, pos = [];
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === "--") { pos.push(...argv.slice(i + 1).map((x) => ({ raw: x }))); break; }
+  if (a.startsWith("--")) {
+    const k = a.slice(2), v = argv[i + 1];
+    if (["json", "idle", "gone", "all", "dry", "mine", "help"].includes(k)) flags[k] = true;
+    else { flags[k] = v; i++; }
+  } else pos.push(a);
+}
+const words = pos.filter((x) => typeof x === "string");
+const raw = pos.filter((x) => typeof x === "object").map((x) => x.raw);
+const cmd = words.shift();
+const num = (v, what) => { if (v === undefined) return undefined; const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error(`${what} wants seconds (a number): ${v}`); return n; };
+const say = (s) => process.stdout.write(s + "\n");
+const t = (ms) => (ms / 1000).toFixed(2) + " s";
+
+const CURRENT = path.join(lib.DEMO, "current-peer");
+function which() {
+  const n = flags.peer ?? process.env.PEER ?? (fs.existsSync(CURRENT) ? fs.readFileSync(CURRENT, "utf8").trim() : null);
+  if (!n) throw new Error("Which participant? Join first, or pass --peer <name>");
+  const dir = lib.peerDir(n);
+  if (!fs.existsSync(path.join(dir, "peer.json"))) throw new Error(`No participant "${n}" here (peer list)`);
+  return dir;
+}
+
+// An agent's label → the actor id Carton reads it from (@carton/local parseActorId): its first part names it.
+function agentOf(label, name) {
+  if (!label) return null;
+  const s = lib.slug(name);
+  const known = { director: ["director", `director/demo/${s}`, "Director"], "claude code": ["claude-code", `claude-code/${s}`, "Claude Code"], codex: ["codex", `codex/${s}`, "Codex"], gemini: ["gemini", `gemini/${s}`, "Gemini"], cursor: ["cursor", `cursor/${s}`, "Cursor"] };
+  const k = known[String(label).trim().toLowerCase()];
+  if (k) return { id: k[1], name: k[2] };
+  if (!/^[A-Za-z][A-Za-z0-9.-]{0,31}$/.test(label)) throw new Error(`An agent's label is one word (letters, digits, . and -), or Director, "Claude Code", Codex, Gemini, Cursor: ${label}`);
+  return { id: `${label}/${s}`, name: label };
+}
+
+async function start(name, { agent, activity, machine } = {}) {
+  const b = lib.build();
+  const dir = lib.peerDir(name);
+  fs.mkdirSync(path.join(dir, "tmp"), { recursive: true });
+  const was = lib.readJson(path.join(dir, "peer.json"));
+  if (was && alive(dir)) throw new Error(`"${name}" is already running (peer leave, or pick another --name)`);
+  const cfg = was?.projectId ? { ...was, name, agent: agentOf(agent, name) ?? was.agent ?? null, activity: activity ?? was.activity, machine: machine ?? was.machine ?? null } : { name, agent: agentOf(agent, name), activity: activity ?? null, machine: machine ?? null, root: path.join(dir, "library"), mine: [] };
+  fs.mkdirSync(cfg.root, { recursive: true });
+  lib.writeJson(path.join(dir, "peer.json"), cfg);
+  const out = fs.openSync(path.join(dir, "daemon.log"), "a");
+  const p = spawn(process.execPath, [path.join(__dirname, "daemon.js"), dir], { env: lib.peerEnv(dir, b), detached: true, stdio: ["ignore", out, out] });
+  p.unref();
+  fs.writeFileSync(path.join(dir, "daemon.pid"), String(p.pid));
+  for (let i = 0; i < 600; i++) {
+    try { await lib.request(dir, "status", {}, { timeout: 2000 }); break; } catch {}
+    if (p.exitCode !== null) throw new Error("It stopped while starting: see " + path.join(dir, "daemon.log"));
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  fs.writeFileSync(CURRENT, name);
+  return dir;
+}
+function alive(dir) {
+  const pid = Number(fs.existsSync(path.join(dir, "daemon.pid")) ? fs.readFileSync(path.join(dir, "daemon.pid"), "utf8") : 0);
+  if (!pid) return false;
+  try { process.kill(pid, 0); return fs.existsSync(path.join(dir, "ctl.sock")); } catch { return false; }
+}
+
+// ------------------------------------------------------------------ the commands
+const COMMANDS = {
+  async setup() {
+    const t0 = Date.now();
+    const b = await lib.setup();
+    say(`Staged Cardboard 1.4.0 with this tree's patches (${b.commit}) in ${t(Date.now() - t0)}: ${lib.BUILD}`);
+  },
+  async join() {
+    const link = words[0];
+    if (!link || !flags.name) throw new Error('peer join <invite link> --name "<Name>" [--agent <label>]');
+    const dir = await start(flags.name, { agent: flags.agent, activity: flags.activity, machine: flags.machine });
+    const t0 = Date.now();
+    try {
+      const r = await lib.request(dir, "join", { link, name: flags.name }, { timeout: 180_000 });
+      const st = await lib.request(dir, "status");
+      say(`Joined “${r.name}” as ${st.as} in ${t(Date.now() - t0)}. Sync: ${st.live?.label ?? st.live?.status}. ${st.live?.peers?.length ? "Here: " + st.live.peers.map((p) => p.actor?.name).join(", ") : "Nobody else is here yet."}`);
+    } catch (e) {
+      await lib.request(dir, "leave").catch(() => {});
+      throw e;
+    }
+  },
+  async app() {
+    if (!flags.name) throw new Error('peer app --name "<Name>"');
+    const dir = await start(flags.name, {});
+    say(`${flags.name} is running (the app's side). Next: peer create "<project name>", then peer share.`);
+    return dir;
+  },
+  async create() {
+    const dir = which(), name = words.join(" ") || "Demo rehearsal";
+    const b = lib.build(), cfg = lib.readJson(path.join(dir, "peer.json"));
+    const clip = path.join(lib.DEMO, "media", "rehearsal-clip.mp4");
+    if (!fs.existsSync(clip)) {
+      fs.mkdirSync(path.dirname(clip), { recursive: true });
+      // 12 s of plain footage (a slow colour field and a quiet tone), small enough for the live server
+      execFileSync("ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "400k", "-c:a", "aac", "-b:a", "64k", "-shortest", clip]);
+    }
+    const must = (r, what) => { if (r.code !== 0) throw new Error(`${what}: ${r.out}${r.err}`.slice(0, 1500)); return r; };
+    must(lib.cb(dir, ["project", "create", name]), "project create");
+    must(lib.cb(dir, ["media", "add", name, clip]), "media add");
+    const tsx = `export default (\n  <timeline aspect="16:9">\n    <track name="Footage">\n      <clip name="Opening shot" src="rehearsal-clip.mp4" start={0} end={12} />\n    </track>\n  </timeline>\n);\n`;
+    must(lib.cb(dir, ["source", "apply", name, "-"], { input: tsx }), "source apply");
+    const r = await lib.request(dir, "adopt", {});
+    say(`Made “${r.name}” in ${cfg.name}'s library (a 12 s clip on “Footage”).`);
+  },
+  async share() {
+    const dir = which();
+    const host = flags.host ?? lib.readJson(path.join(lib.DEMO, "host", "host.json"))?.origin;
+    if (!host) throw new Error("No sharing server: peer host start, or --host <url>");
+    const t0 = Date.now();
+    const r = await lib.request(dir, "share", { host }, { timeout: 180_000 });
+    say(`Shared on ${host} (${r.status}) in ${t(Date.now() - t0)}.`);
+  },
+  async invite() {
+    const r = await lib.request(which(), "invite", { role: flags.role ?? "editor" });
+    say(r.link);
+  },
+  async say() {
+    const text = words.join(" ");
+    const r = await lib.request(which(), "say", { text, at: num(flags.at, "--at"), dur: num(flags.for, "--for"), style: flags.style, name: flags.name, track: flags.track, color: flags.color, size: flags.size, y: flags.y });
+    say(`✓ “${r.name}” on ${r.track}, ${r.start.toFixed(1)}–${r.end.toFixed(1)} s (saved in ${t(r.savedMs)})`);
+  },
+  async speak() {
+    const text = words.join(" ");
+    const tts = require("./tts.js");
+    let file = flags.file, made = null;
+    const dir = which();
+    if (!file) {
+      if (!text) throw new Error('peer speak "<text>" [--voice …] (or --file <wav|mp3>)');
+      made = await tts.synth(text, { voice: flags.voice ?? "ryan", speed: flags.speed ? Number(flags.speed) : 1, out: path.join(dir, "voice", require("./cues.js").voiceName(text)) });
+      file = made.file;
+    }
+    const r = await lib.request(dir, "speak", { file, text: text || undefined, at: num(flags.at, "--at"), name: flags.name, track: flags.track, volume: flags.volume });
+    say(`✓ “${r.name}” on ${r.track}, ${r.start.toFixed(1)}–${r.end.toFixed(1)} s${made ? ` (voice made in ${t(made.ms)};` : " ("} imported in ${t(r.importedMs)}${r.sharedMs !== null ? `, on the sharing server in ${t(r.sharedMs)}` : ""}, on the timeline at ${t(r.savedMs)})`);
+  },
+  async edit() {
+    const r = await lib.request(which(), "edit", { clip: words.join(" "), text: flags.text, at: num(flags.at, "--at"), dur: num(flags.for, "--for"), style: flags.style });
+    say(`✓ “${r.name}” now ${r.start.toFixed(1)}–${r.end.toFixed(1)} s (saved in ${t(r.savedMs)})`);
+  },
+  async clear() {
+    const r = await lib.request(which(), "clear", { clip: words.join(" "), all: !!flags.all });
+    say(`✓ removed ${r.removed.map((n) => `“${n}”`).join(", ")} (saved in ${t(r.savedMs)})`);
+  },
+  async presence() {
+    const r = await lib.request(which(), "presence", { activity: words.join(" ") || undefined, idle: !!flags.idle, gone: !!flags.gone });
+    say(r.presence ? `✓ shown as ${r.presence.idle ? "here, not editing" : `“${r.presence.activity}”`}` : "✓ shown as gone");
+  },
+  async watch() {
+    const dir = which();
+    const since = flags.since ? Date.now() - Number(flags.since) * 1000 : undefined;
+    const st = await lib.request(dir, "status");
+    say(`Watching “${st.project?.name}” as ${st.as} (Ctrl+C stops). Cut here: ${st.cut}.`);
+    const s = lib.subscribe(dir, (ev) => { if (flags.json) return say(JSON.stringify(ev)); const l = lib.line(ev, { mine: !!flags.mine }); if (l) say(l); }, { since });
+    s.socket.on("close", () => { say("(the participant stopped)"); process.exit(0); });
+    await new Promise(() => {});
+  },
+  async status() {
+    const st = await lib.request(which(), "status");
+    if (flags.json) return say(JSON.stringify(st, null, 2));
+    say(`${st.name}: shown as ${st.as}${st.presence ? ` · ${st.presence.idle ? "here, not editing" : st.presence.activity}` : " · not shown"}`);
+    if (!st.project) return say("  no project yet");
+    say(`  “${st.project.name}”: ${st.project.items} clips, ${st.project.duration.toFixed(1)} s; on cut ${st.cut}; sync ${st.live?.label ?? st.live?.status}${st.live?.problem ? ` (${st.live.problem.words})` : ""}`);
+    say(`  here: ${(st.live?.peers ?? []).map((p) => `${p.actor?.owner ? p.actor.owner.name + "'s " : ""}${p.actor?.name}${p.idle ? " (idle)" : p.activity ? ` · ${p.activity}` : ""}${p.cut ? ` [on ${(st.cuts ?? []).find((c) => c.id === p.cut)?.name ?? "a cut not here"}]` : ""}`).join(", ") || "nobody else"}`);
+    say(`  cuts: ${(st.cuts ?? []).map((c) => `${c.name === st.cut ? "*" : ""}${c.name} (${c.where})`).join(", ")}`);
+    if (st.mine.length) say(`  ours: ${st.mine.map((m) => `“${m.name}”`).join(", ")}`);
+  },
+  async restart() {
+    // the same participant again (its project, name and label kept): after a crash, or to load a newer rig
+    const dir = which(), cfg = lib.readJson(path.join(dir, "peer.json"));
+    if (alive(dir)) { await lib.request(dir, "leave").catch(() => {}); for (let i = 0; i < 50 && alive(dir); i++) await new Promise((r) => setTimeout(r, 100)); }
+    await start(cfg.name, {});
+    const st = await lib.request(dir, "status");
+    say(`✓ ${st.name} is back as ${st.as}${st.project ? ` in “${st.project.name}”` : ""}`);
+  },
+  async leave() {
+    const dir = which();
+    await lib.request(dir, "leave").catch(() => {});
+    say("✓ left (shown as gone); the project stays in this participant's library");
+  },
+  async list() {
+    for (const d of fs.readdirSync(lib.DEMO).filter((x) => x.startsWith("peer-"))) {
+      const c = lib.readJson(path.join(lib.DEMO, d, "peer.json"));
+      if (c) say(`${alive(path.join(lib.DEMO, d)) ? "●" : "○"} ${c.name}${c.agent ? ` (as ${c.agent.name})` : ""}${c.projectName ? ` in “${c.projectName}”` : ""}`);
+    }
+  },
+  async cb() {
+    const dir = which();
+    const r = lib.cb(dir, raw.length ? raw : words, { actor: flags.actor, json: !!flags.json });
+    process.stdout.write(r.out);
+    if (r.err.trim()) process.stderr.write(r.err.split("\n").filter((l) => !/ExperimentalWarning|--trace-warnings/.test(l)).join("\n"));
+    process.exitCode = r.code ?? 1;
+  },
+  async host() {
+    const sub = words[0] ?? "status", hdir = path.join(lib.DEMO, "host"), file = path.join(hdir, "host.json");
+    const h = lib.readJson(file);
+    const up = h && (() => { try { process.kill(h.pid, 0); return true; } catch { return false; } })();
+    if (sub === "status") return say(up ? `local sharing server at ${h.origin} (pid ${h.pid})` : "no local sharing server running");
+    if (sub === "stop") { if (up) process.kill(h.pid, "SIGTERM"); fs.rmSync(file, { force: true }); return say("stopped"); }
+    if (sub !== "start") throw new Error("peer host start|stop|status");
+    if (up) return say(`already running at ${h.origin}`);
+    fs.mkdirSync(hdir, { recursive: true });
+    const out = fs.openSync(path.join(hdir, "host.log"), "a");
+    const p = spawn(process.execPath, [path.join(__dirname, "host.mjs"), path.join(hdir, "state"), String(flags.port ?? 8791)], { detached: true, stdio: ["ignore", "pipe", out] });
+    const ready = await new Promise((resolve, reject) => {
+      let buf = "";
+      p.stdout.on("data", (d) => { buf += d; const m = buf.match(/\{[^\n]*"ready"[^\n]*\}/); if (m) resolve(JSON.parse(m[0])); });
+      p.on("exit", () => reject(new Error("the server stopped: see " + path.join(hdir, "host.log"))));
+      setTimeout(() => reject(new Error("the server didn't start in 30 s")), 30_000);
+    });
+    p.stdout.destroy(); p.unref();
+    lib.writeJson(file, { pid: p.pid, origin: ready.origin, port: ready.port });
+    say(`local sharing server at ${ready.origin}`);
+  },
+  async run() {
+    await require("./cues.js").run(words[0], { from: flags.from ? Number(flags.from) : 1, dry: !!flags.dry, peer: flags.peer ?? process.env.PEER });
+  },
+};
+
+(async () => {
+  if (!cmd || flags.help || !COMMANDS[cmd]) {
+    process.stdout.write(fs.readFileSync(__filename, "utf8").split("\n").filter((l) => l.startsWith("//")).slice(1, 32).map((l) => l.slice(3)).join("\n") + "\n");
+    process.exit(cmd && !flags.help ? 2 : 0);
+  }
+  await COMMANDS[cmd]();
+})().catch((e) => { process.stderr.write("✗ " + (e?.message ?? e) + "\n"); process.exit(1); });
+

@@ -1190,6 +1190,12 @@ set CARDBOARD_PRISTINE=C:\cb-pristine
 node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
 ```
 
+**A remote teammate for demos** (`scripts\demo\`, tooling only, Linux): headless participants that join a shared
+project from an invite link and edit its timeline live (titles, spoken lines made with Piper), a cue-sheet runner,
+rehearsals with two participants on a local or the live server, and real-browser shots of the app's side. What a
+teammate's edits look like on the other side, how an agent finds them with `cb`, and how cuts keep a conversation out of
+the person's view: `scripts\demo\FINDINGS.md`; how to run it: `scripts\demo\README.md`.
+
 Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
 (Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
 under Defender.

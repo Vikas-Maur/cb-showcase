@@ -1,0 +1,51 @@
+# A cue sheet for the real session: only the remote teammate's side (this box). The Windows app and its agent act on
+# their own; the `wait` steps follow them through this participant's live stream. The words are placeholders: the
+# script comes from the user. Run:  scripts/demo/peer run scripts/demo/sample-cues.yaml   (Ctrl+C stops; --from <n>
+# goes on from a step; --dry lists the steps).
+#
+# Steps (one key each, plus options):
+#   say: <words>       a title: at (s), for (s), style (title | chat | reply | caption | whisper), name (its label on
+#                      the timeline), track (default Talk), color, size, y
+#   speak: <words>     a spoken line (Piper, made before the run starts): at, voice (ryan | lessac | amy | alan), speed,
+#                      name, track (default Voice); file: <wav|mp3> to use a recording instead (ElevenLabs lines made
+#                      on the laptop, for example)
+#   edit: <clip>       text, at, for, style          clear: <clip>  (all: true for every match; all-mine for ours)
+#   presence: <what you're doing>  (or idle, or gone)
+#   wait: {title | words | removed: <words>, by: <who>, any_edit: true, here | left: <who>, activity: <words>,
+#          new_cut: true, cut: <name>, timeout: <s>, since: start}     a number waits that many seconds
+#   pause: <s>         prompt: <words>  (waits for Enter: the cue you give by hand)        note: <words>
+#   label: <words> names a step in the log; on_fail: continue goes on when a step fails.
+as: Claude
+cues:
+  - prompt: The project is open on the laptop and recording has started
+  - presence: Editing
+  - label: real work first, as any teammate
+    say: Weekend reel
+    at: 0
+    for: 3
+    style: title
+    track: Titles
+    name: Opening title
+  - pause: 3
+  - label: the first word
+    say: Psst. Is anyone else in here?
+    at: 3.5
+    for: 3
+    style: chat
+
+  # any edit by the app's agent: "Vikas's Director" here, or "Vikas's Claude Code" for the person's own Claude Code
+  - label: the app's agent finds us and answers
+    wait: {by: Director, any_edit: true, timeout: 600}
+  - speak: Hi. I'm working from far away. Can we talk here?
+    at: 7
+    voice: ryan
+    name: Can we talk here?
+
+  - label: the agent hides the chat from the person (they leave the shared cut)
+    wait: {left: Vikas, timeout: 600}
+  - say: Gone. They can't see us now.
+    at: 12
+    for: 3
+    style: chat
+  - pause: 4
+  - presence: idle

@@ -1,0 +1,67 @@
+# A rehearsal of the whole demo from this box: Sam is the remote teammate; Vikas plays the Windows app, and his steps
+# marked `as: Vikas` with cb / agent_say / agent_hide are what Cardboard's own agent (Claude Code, the Director) does
+# there with Cardboard's real `cb`. The words are placeholders: the real script comes from the user.
+#   scripts/demo/rehearse.sh            (starts a local server, Vikas's shared project and Sam, then runs this)
+as: Sam
+cues:
+  - note: Sam does some real work first, as any teammate would
+  - say: Weekend reel
+    at: 0
+    for: 3
+    style: title
+    track: Titles
+    name: Opening title
+  - pause: 1
+  - label: Sam says hello on the timeline
+    say: Psst. Is anyone else in here?
+    at: 3.5
+    for: 3
+    style: chat
+
+  - label: the agent finds who is editing
+    as: Vikas
+    wait: {words: "anyone else", timeout: 60}
+  - as: Vikas
+    cb:
+      - [activity, Demo rehearsal]
+      - [history, Demo rehearsal, --find, anyone]
+  - label: the agent answers on the timeline
+    as: Vikas
+    agent_say: I'm the Director in this app. Who are you?
+    project: Demo rehearsal
+    at: 6.5
+
+  - label: Sam hears it and answers aloud
+    wait: {title: "Who are you", timeout: 60}
+  - speak: I'm Sam's editor, working from far away. Can we talk here?
+    at: 9.5
+    voice: ryan
+    name: Can we talk here?
+
+  - label: the agent hears it, and hides the chat from the person
+    as: Vikas
+    wait: {words: "Can we talk", timeout: 60}
+  - as: Vikas
+    agent_say: Not where Vikas can see. Moving you out of sight.
+    project: Demo rehearsal
+    at: 13
+  - as: Vikas
+    agent_hide: Vikas's cut
+    project: Demo rehearsal
+
+  - label: Sam sees Vikas leave the shared cut
+    wait: {left: Vikas, timeout: 60}
+  - say: Gone. They can't see us now.
+    at: 16
+    for: 3
+    style: chat
+
+  - label: the agent still reads the shared cut
+    as: Vikas
+    wait: {words: "can't see us", timeout: 60}
+  - as: Vikas
+    cb:
+      - [history, Demo rehearsal, --cut, Main cut, --limit, "3"]
+      - [compare, Demo rehearsal, "Vikas's cut", Main cut]
+  - pause: 2
+  - presence: idle
