@@ -623,7 +623,8 @@ What changes with it on:
   fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
   minute. A teammate's change that arrived live also reads by name now: History used to say "Teammate" for their edits
   and "Claude Code" for their Claude Code, the same as yours, until History was loaded again; it now says "Leo" and
-  "Leo's Claude Code" as soon as the row is shown.
+  "Leo's Claude Code", in Leo's colour, from the moment the row appears, with no flash of another name first, also
+  when two people's Cardboards share one computer.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and

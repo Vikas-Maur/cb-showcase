@@ -3,8 +3,9 @@
 // project (Alice is you; the Director, Claude Code and Codex are your agents; Bob, Priya and Bob's Director are
 // teammates): rows there when History opens, yours and your agents' never wear it; a teammate's group or turn row wears
 // it by its newest version; without motion it shows with no animation; a screen reader hears who. `npm test` runs it on
-// React 19 and on preact/compat.
-import { $, $$, React, act, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
+// React 19 and on preact/compat. Over the real engine (two replicas synced through the in-process host): Leo's rows
+// are drawn as "Leo" and "Leo's Claude Code", in Leo's colour, from their first frame.
+import { $, $$, React, act, cleanup, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, remoteUi, serveUi } from "../src/index.ts";
@@ -13,6 +14,7 @@ import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import { actorColor } from "../src/actors.ts";
 import { cardboardSkin, injectCardboardSkin } from "../src/skin/cardboard.ts";
 import type { Actor, CartonUi } from "../src/model.ts";
+import { clip, leoClaude, setOp, twoPeople } from "./two-people.fixture.ts";
 
 const h = React.createElement;
 afterEach(cleanup);
@@ -225,4 +227,37 @@ test(name("through the bridge (serveUi → remoteUi, as Cardboard's renderer rea
   assert.equal(rings(m.container).length, 1);
   await m.unmount();
   server.close();
+});
+
+test(name("over the engine: a teammate's arriving row is drawn as Leo's, in Leo's colour, from its first frame; never \"Teammate\" or a bare \"Claude Code\""), { timeout: 30_000 }, async () => {
+  const { leo, ui, close } = await twoPeople();
+  try {
+    const m = await panel(ui);
+    const leoColor = actorColor({ key: "human/leo", kind: "human", name: "Leo Park" });
+    // every DOM state committed while Leo's versions arrive: each row wearing a ring, as it reads then
+    const drawn: string[] = [];
+    const look = () => {
+      for (const r of rows(m.container)) {
+        const ring = ringOf(r);
+        if (!ring) continue;
+        // (the name as shown: a teammate's whole name is its hover text)
+        const who = (r.querySelector(".carton-version-meta .carton-actor-name .carton-more-short") ?? r.querySelector(".carton-version-meta .carton-actor-name"))?.textContent ?? "";
+        drawn.push(`${who} ${ring.style.getPropertyValue("--carton-actor")}`);
+      }
+    };
+    const mo = new MutationObserver(look);
+    mo.observe(m.container, { subtree: true, childList: true, attributes: true, characterData: true });
+    await act(async () => void (await leo.commit({ ops: [setOp("b", "endTime", 4.5), setOp("b", "trimEnd", 2)], wait: 5000 })));
+    await act(async () => void (await leo.commit({ ops: [{ op: "insert", path: ["items", "t"], value: clip("t", 1, { type: "text", name: "Summer launch" }) }], author: leoClaude, wait: 5000 })));
+    await waitFor(() => rings(m.container).length === 2, "both of Leo's rows outlined");
+    await flush();
+    look();
+    mo.disconnect();
+    const seen = [...new Set(drawn)];
+    assert.deepEqual(seen.filter((x) => x !== `Leo ${leoColor}` && x !== `Leo's Claude Code ${leoColor}`), [], `only Leo's names and colour, ever (${seen.join(" | ")})`);
+    assert.ok(seen.includes(`Leo ${leoColor}`) && seen.includes(`Leo's Claude Code ${leoColor}`));
+    await m.unmount();
+  } finally {
+    await close();
+  }
 });

@@ -1146,7 +1146,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // what an undo undid, and a redo's undo, as log() says them (undoTurnOf skips what is out already)
         const undoes = c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
         const redoOf = c.kind === "revert" && typeof c.reverts === "string" && rows[pos.get(c.reverts) ?? -1]?.core?.kind === "undo" ? c.reverts : undefined;
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
+        // (a teammate's as core tells it, by person: "Leo", "Leo's Claude Code" in Leo's colour from the row's first
+        // frame, never first "Teammate" or a Claude Code that reads as yours; yours as before. feat/history-arrival)
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : (e.author ?? c.author), at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
