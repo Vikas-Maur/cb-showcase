@@ -718,8 +718,16 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   // project.json under head's rev, the next print showed the older values as that version, and its apply put them back)
   const passed = passedOthers(r, await knownOf(lc, baseRef));
   // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased, or past others:
-  // the writer's document is older than head in other fields, so the file gets head, below.)
-  if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) return { ...r, doc, merged: false };
+  // the writer's document is older than head in other fields, so the file gets head, below.) Its rev names head, as any
+  // write's does. Cardboard's background writes change only what Carton doesn't version (the derive's waveform, album
+  // art and thumbnails, a transcript's status, a relink's new date), so each is an empty commit; the rev each wrote
+  // into project.json was never recorded, and the next read of the file (sawDisk) or the next write made on it took it
+  // for an outside save and imported it on head: a teammate's change that had reached head meanwhile was deleted, for
+  // everyone, by "external:project.json" (demo rehearsal, FINDINGS §6.1: 11 of 12 runs).
+  if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) {
+    await setRev(lc, doc.stateUpdatedAt, r.ref);
+    return { ...r, doc, merged: false };
+  }
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
   // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
   const head = r.head?.doc ? r.head : await c.head();
