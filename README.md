@@ -1137,10 +1137,12 @@ with Carton off none of it runs at all.
   against the version the file showed before (merged with what reached the project meanwhile; before, its whole
   document went over the newest version, and a teammate's change on its way into the file was taken out), also
   when the program kept the file's own rev (the file is that version only while what Carton keeps of it is that
-  version's), and when that version still had edits waiting for the sharing server: such a version's document is kept
-  in the project's history file beside the rev that names it, once per version, so a restart doesn't lose it. An
-  outside save is taken at once, never held; one whose version is gone (only past 512 kept versions) is taken against
-  that version's confirmed state, and a clash with an edit made since is the person's conflict card. Carton knows its
+  version's), and when that version still had edits waiting for the sharing server: the file Carton wrote for such a
+  version is kept as written (a hard link in the project's `.carton\bases` folder, not a copy), so a restart doesn't
+  lose it. An outside save is taken at once, never held; one whose kept file is gone (only past the newest 512) is
+  taken against that version's confirmed state, and a clash with an edit made since is the person's conflict card.
+  Offline, a second change of the same thing (moving a clip twice) stays too: it was made on the first, still unsent,
+  as if on the state before it, clashed with it ("You" vs "You"), and the clip went back to the first. Carton knows its
   own `project.json` by the bytes it wrote (their hash), never by a file's size and date alone. None
   of this costs a save: in an independent check of this branch with six alternating pairs of 120 saves at 200 items,
   the gap after subtracting the Carton-off control's had a median of −0.565 ms.
