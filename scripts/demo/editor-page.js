@@ -28,7 +28,8 @@ const fakeMain = () => {
     if (channel in BOOT) return BOOT[channel];
     // control:reply is the editor's answer to main's control:request (`cb app …`, see app-player.js)
     if (channel === "library:call" || channel === "carton:call" || channel === "control:reply") return window.__demoMain(channel, data);
-    if (channel === "project:patch") return { ok: true }; // the page never saves: the worker holds the project
+    // the editor's own save: written as main writes it (`saves`), else answered and dropped (shots never save)
+    if (channel === "project:patch") return window.__demoMain(channel, data);
     return null;
   };
   const fix = (u) => (typeof u === "string" && u.startsWith("cardboard-media://") ? "http://localhost:5199/" + u.slice("cardboard-media://".length) : u);
@@ -59,7 +60,9 @@ const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/htm
 // The editor of the app participant `app` (its folder), on its project, in a new context of `browser`.
 //   mediaDelay: the first fetch of each media file waits this long (ms), as the laptop waits for a teammate's sound to
 //     come down from the sharing server; onControlReply: the editor's control:reply answers.
-async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null, onMedia = null } = {}) {
+//   saves: the editor's own saves (project:patch) are written as Cardboard's main writes them (the worker's
+//     projects.updateScoped, Carton's fields with the person as its actor: patch-carton.js H1), not dropped; onPatch: each.
+async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null, onMedia = null, saves = false, onPatch = null } = {}) {
   const b = lib.build(), RENDERER = path.dirname(b.assets);
   const cfg = lib.readJson(path.join(app, "peer.json"));
   const PID = cfg.projectId;
@@ -70,6 +73,14 @@ async function openEditor(browser, { app, mediaDelay = 0, onControlReply = null,
   page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") logs.push(m.text().slice(0, 300)); });
   await page.exposeBinding("__demoMain", async (_src, channel, data) => {
     if (channel === "control:reply") { onControlReply?.(data); return null; }
+    if (channel === "project:patch") {
+      if (!saves) return true;
+      const { document: doc, scope, carton } = data ?? {};
+      const t0 = Date.now();
+      const r = await worker("projects.updateScoped", [doc, carton ? { ...scope, carton: { ...carton, actor: "person" } } : scope]).catch((e) => ({ error: String(e?.message ?? e) }));
+      onPatch?.({ fields: scope?.ownedFields ?? null, carton: !!carton, ms: Date.now() - t0, ok: !!r && !r.error, ...(r?.error ? { error: r.error } : {}) });
+      return !!r && !r.error;
+    }
     if (channel === "library:call") {
       if (data.method === "projects.list") { const d = await worker("projects.read", [PID]); return d ? [d] : []; }
       return worker(data.method, data.args ?? []);
