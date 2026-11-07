@@ -638,6 +638,10 @@ export const words = {
   holding: "Holding",
   holdingLabel: (label: string) => `${label} · holding`,
   peekShowing: (label: string) => `Showing ${label}. Release to go back.`,
+  // someone else's change arriving in History while it is open (said for screen readers; the row wears their colour):
+  // "Leo made a change", "Leo's Claude Code made a change", "Leo and Mia made changes"
+  madeAChange: (names: readonly string[]) =>
+    names.length < 2 ? `${names[0] ?? ""} made a change` : `${names.length > 3 ? `${names.slice(0, 2).join(", ")} and ${plural(names.length - 2, "other", "others")}` : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`} made changes`,
   compare: "Compare",
   compareYourEditWith: "Compare your edit with…",
   versionYouSent: "The version you sent",
