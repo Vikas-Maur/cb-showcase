@@ -15,7 +15,12 @@
 // - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel, with
 //   why sync is failing when it is (core's `sync-error`, foundation's REQ-8: a host too old for this app, a refused
 //   token, an unreachable host), in plain words, instead of "Syncing" for ever.
-// - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut.
+// - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut, and also
+//   NEW_MEDIA_MS after a change that adds a sound or a still (FINDINGS §6.2: a teammate waits for a new sound until it
+//   is shared, and the editing that follows its import, its clip placed and trimmed, kept putting that off). Those go
+//   up as they are; a video waits as before, so Carton's proxy can still be made from Cardboard's own once it exists.
+//   The run after the last change still comes: it shares what the early one couldn't yet (a file project.json didn't
+//   list yet).
 import path from "node:path";
 import { keepLease, holderSocketPath, CartonHolderEngine } from "@carton/local";
 import { LEASE_PRINTS } from "../carton-node.js";
@@ -23,12 +28,16 @@ import { LEASE_PRINTS } from "../carton-node.js";
 const MATERIALIZE_MS = 40;
 const PEER_IDLE_MS = 30_000;
 const ON_CHANGE_MS = 2000;
+const NEW_MEDIA_MS = 150;
+const AS_THEY_ARE = new Set(["audio", "image"]);
+const addsMedia = (change) => Array.isArray(change?.ops) && change.ops.some((o) => o?.op === "insert" && o.path?.length === 2 && o.path[0] === "media" && AS_THEY_ARE.has(o.value?.data?.type));
 
 export class Live {
   constructor({ api, bundlePath, projectId, lc, log, onChange, view }) {
     this.onChange = onChange ?? null;
     this.owner = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
+    this.newMediaTimer = null; // the early run for a change that added a sound or a still (NEW_MEDIA_MS)
     this.api = api;
     this.bundlePath = bundlePath;
     this.projectId = projectId;
@@ -91,10 +100,15 @@ export class Live {
         if (e.branchId === this.lc.carton.cut) {
           this.#materializeSoon();
           if (this.onChange && !this.stopped) {
+            const run = () => Promise.resolve().then(this.onChange).catch((err) => this.log({ type: "on-change-failed", error: String(err?.message ?? err) }));
+            if (!this.newMediaTimer && addsMedia(e.change)) {
+              this.newMediaTimer = setTimeout(() => { this.newMediaTimer = null; if (!this.stopped) run(); }, NEW_MEDIA_MS);
+              this.newMediaTimer.unref?.();
+            }
             clearTimeout(this.changeTimer);
             this.changeTimer = setTimeout(() => {
               this.changeTimer = null;
-              Promise.resolve().then(this.onChange).catch((err) => this.log({ type: "on-change-failed", error: String(err?.message ?? err) }));
+              run();
             }, ON_CHANGE_MS);
             this.changeTimer.unref?.();
           }
@@ -195,6 +209,7 @@ export class Live {
     this.stopped = true;
     clearTimeout(this.timer);
     clearTimeout(this.changeTimer);
+    clearTimeout(this.newMediaTimer);
     this.off?.();
     // the View's holder is the View's to stop
     await this.lease?.stop().catch(() => {});

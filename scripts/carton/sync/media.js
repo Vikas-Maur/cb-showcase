@@ -135,14 +135,15 @@ function readerFor(bundlePath, projectId) {
 }
 
 /**
- * Where a clip with no file here lives: its shared record, read from the host. Kept a minute once its proxy is
- * complete; a record without one yet (or none) is asked again after 2 s.
+ * Where a clip with no file here lives: its shared record, read from the host. Kept a minute once it is final (a
+ * complete proxy, or an original shared as it is); a record without a finished proxy is asked again after 2 s, and
+ * none at all after `missMs` (2 s; a wait for a teammate's clip on its way asks sooner: worker.js waitPlayable).
  */
 const records = new Map(); // `${projectId}|${mediaId}` → {at, value}
-const done = (rec) => !!rec?.proxy && (rec.proxy.hash || rec.proxy.size !== undefined);
-export async function sharedRecord(bundlePath, projectId, mediaId) {
+const done = (rec) => (!!rec?.proxy && (rec.proxy.hash || rec.proxy.size !== undefined)) || (!!rec && !rec.proxy && rec.original === "shared" && !!rec.hash);
+export async function sharedRecord(bundlePath, projectId, mediaId, { missMs = 2_000 } = {}) {
   const k = `${projectId}|${mediaId}`, hit = records.get(k);
-  if (hit && Date.now() - hit.at < (done(hit.value) ? 60_000 : 2_000)) return hit.value;
+  if (hit && Date.now() - hit.at < (done(hit.value) ? 60_000 : hit.value ? 2_000 : missMs)) return hit.value;
   const b = await storeFor(bundlePath, projectId).get(recordKey(mediaId));
   const value = b ? JSON.parse(new TextDecoder().decode(b)).record : null;
   records.set(k, { at: Date.now(), value });
