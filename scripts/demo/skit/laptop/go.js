@@ -11,6 +11,10 @@
 //    log has the exact times): Claude 2's first row arriving, the chat's thinking row and first line, the playhead on
 //    Claude 2's first title, Claude 1's first title, the switch to "Edit v2", back on Main with "He's gone.".
 // 4. Sends the gone cue (GET /cue/gone) --gone-after seconds after the stand-in starts waiting for it.
+// Throughout: the notices Cardboard puts over the preview about a teammate's media (".carton-media-notice": "N clips are
+//    still on their way…", "This video plays from preview copies…") are dismissed as a person would, with a DevTools
+//    click on their ✕, checked every ~100 ms; each is logged with when it appeared (seen in the page by a
+//    MutationObserver), its text, and when it was dismissed (<run>\go-notices.jsonl). Never hidden with CSS.
 // 5. At the end ("He's gone." on Main, the stand-in at its last message, the chat idle 3 s): asks the capture to stop
 //    (writes --cap-stop, default <run>\cap.stop, the file cap-run.ps1 -StopFile waits for) and stops the window's
 //    taskbar flash (unseen\flashstop.ps1).
@@ -62,9 +66,36 @@ const LAYOUT = `(() => { const box = (e) => { if (!e) return null; const r = e.g
 // the Library panel's own collapse button: the visible "Collapse panel" in the left half, in a panel header
 const LIBRARY_COLLAPSE = `[...document.querySelectorAll('button[aria-label="Collapse panel"]')].find((b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.x > 0 && r.x < innerWidth / 2 && r.y < 100; })`;
 const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); return Number(hh) * 3600 + Number(mm) * 60 + Number(s); };
+// the notices over the preview: a MutationObserver in the page notes when each first appears (and its text); every ~100 ms
+// go.js looks for a visible one and clicks its ✕ (the notice's only button) with a DevTools mouse click
+const NOTICE_WATCH = `(() => { if (window.__skitNotices) return "already"; const N = window.__skitNotices = new Map();
+  const note = () => { for (const n of document.querySelectorAll(".carton-media-notice")) if (!N.has(n)) N.set(n, { seen: Date.now(), text: n.innerText.replace(/\\s+/g, " ").trim() }); };
+  new MutationObserver(note).observe(document.body, { subtree: true, childList: true }); note(); return "installed"; })()`;
+const NOTICE_FIND = `(() => { const N = window.__skitNotices; const n = [...document.querySelectorAll(".carton-media-notice")].find((n) => n.getBoundingClientRect().width > 0);
+  if (!n) return null; const b = n.querySelector("button"); if (!b) return null; const r = b.getBoundingClientRect(); const m = N?.get(n) ?? { seen: null, text: n.innerText.replace(/\\s+/g, " ").trim() };
+  if (N && !N.has(n)) N.set(n, m); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label"), seen: m.seen, text: m.text }; })()`;
+function watchNotices(page) {
+  const file = path.join(OUT, "go-notices.jsonl"); let busy = false, stopped = false, handled = 0;
+  const tick = async () => {
+    if (busy || stopped) return; busy = true;
+    try {
+      const n = await h.ev(E, NOTICE_FIND);
+      if (n) {
+        await h.mouse(page, n.x, n.y); const at = Date.now(); await sleep(150);
+        const still = await h.ev(E, `[...document.querySelectorAll(".carton-media-notice")].some((n) => n.getBoundingClientRect().width > 0)`);
+        handled++; const rec = { appeared: n.seen ? new Date(n.seen).toISOString() : null, dismissed: new Date(at).toISOString(), shownMs: n.seen ? at - n.seen : null, button: n.label, text: n.text, stillVisible: still };
+        fs.appendFileSync(file, JSON.stringify(rec) + "\n");
+        log(`notice dismissed (${rec.shownMs ?? "?"} ms after it appeared${still ? "; another still shows" : ""}): ${JSON.stringify(n.text)}`);
+      }
+    } catch {} finally { busy = false; }
+  };
+  const iv = setInterval(tick, 100);
+  return { stop: () => { stopped = true; clearInterval(iv); return handled; } };
+}
 (async () => {
   const page = await h.page(E);
   T0 = Date.now(); log(`go: project ${id}, run folder ${OUT}`);
+  log("notice watcher:", await h.ev(E, NOTICE_WATCH)); const notices = watchNotices(page);
   // 1. the layout
   if (!(await h.ev(E, `!!document.querySelector(".carton-sidebar")?.offsetParent`))) { await h.keys(E, "Control+Shift+h"); await sleep(1200); }
   if (!KEEP_LIBRARY) {
@@ -73,7 +104,7 @@ const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); 
   }
   log("layout (CSS px):", JSON.stringify(await h.ev(E, LAYOUT)));
   await shot("layout");
-  if (LAYOUT_ONLY) { h.forget(); process.exit(0); }
+  if (LAYOUT_ONLY) { await sleep(1500); log(`notices dismissed: ${notices.stop()}`); h.forget(); process.exit(0); }
   // the stand-in's log: the newest in the demo folder (start-actor.ps1 makes one per run)
   const actorLog = fs.readdirSync(D.Demo).filter((f) => /^actor-.*\.log$/.test(f)).sort().pop();
   if (!actorLog) throw new Error("no stand-in log in " + D.Demo + ": start-actor.ps1 first");
@@ -140,7 +171,7 @@ const secs = (tc) => { if (!tc) return null; const [hh, mm, s] = tc.split(":"); 
     last = s;
     await sleep(250);
   }
-  at("end"); await shot("end");
+  at("end"); log(`notices dismissed during the take: ${notices.stop()}`); await shot("end");
   fs.writeFileSync(path.join(OUT, "go-moments.json"), JSON.stringify({ sent: new Date(tSend).toISOString(), noticedSecondsAfterSend: Object.fromEntries(Object.entries(M).map(([k, v]) => [k, +((v - tSend) / 1000).toFixed(1)])), items, lastChat: lastChat.slice(-2500) }, null, 1));
   fs.writeFileSync(CAP_STOP || path.join(OUT, "cap.stop"), "stop"); log("asked the capture to stop");
   const fl = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(__dirname, "unseen", "flashstop.ps1"), "-Port", String(port)], { encoding: "utf8" }); log("flashstop:", (fl.stdout || fl.stderr || "").trim().split("\n").pop());
