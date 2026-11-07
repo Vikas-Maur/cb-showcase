@@ -376,3 +376,41 @@ const restartWorker = async (pc) => { await pc.stopWorker(); await pc.startWorke
 test("review 3, P1: a background write after an outside save of a pending version evicted by unchanged writes keeps it", t, () => backgroundAfterOutside({ evict: true }));
 test("review 3, P1: the same after an offline restart", t, () => backgroundAfterOutside({ restart: true }));
 test("review 3, P2: a pending version gone from memory, Bob's edit confirmed first, then a restart: nothing held, all of it shown", t, () => backgroundAfterOutside({ evict: true, interleave: true, restart: true }));
+
+// Found in round 4 of fix/demo-sync-bugs: offline, core folds a later edit of the same thing into the pending change still
+// waiting for the server, so two files can name one pending version with different states. An outside save of the
+// earlier file was taken against the later state (the version as head has it), and that later edit was undone. Each
+// such file's own bytes are kept now, by its rev, and an outside save of it is taken against exactly them.
+async function amendedOutside(restart) {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  const port = host.port;
+  await host.stop();
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "offline");
+  const first = restart ? 131 : 121, later = first + 2;
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: first } : null));
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const old = JSON.parse(fs.readFileSync(file, "utf8"));
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: later } : null));
+  const outside = `Outside save of an amended version${restart ? ", then a restart" : ""}`;
+  old.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
+  fs.writeFileSync(file + ".other.tmp", JSON.stringify(old));
+  fs.renameSync(file + ".other.tmp", file);
+  if (restart) await restartWorker(alice);
+  await alice.call("projects.read", id);
+  host = await S.startHost(path.join(S.TMP, "derive-race-host"), port);
+  await readyAt(alice);
+  await readyAt(bob);
+  const title = `Bob after ${outside}`;
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 30_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  for (const [who, d] of [["alice", aliceFile()], ["bob", await S.projectOf(bob, id)]]) {
+    const item = d.timelineItems.find((i) => i.name === "Hello");
+    assert.equal(item.textContent, outside, `${who}: the outside save kept`);
+    assert.equal(item.fontSize, later, `${who}: alice's later edit of the same clip kept`);
+  }
+}
+test("an outside save of a pending version a later edit of the same clip amended keeps that later edit", t, () => amendedOutside(false));
+test("the same after an offline restart", t, () => amendedOutside(true));
