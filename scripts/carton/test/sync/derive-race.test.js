@@ -26,6 +26,11 @@ test.before(async () => {
   alice = await S.computer("derive-race-alice", b);
   bob = await S.computer("derive-race-bob", b);
   S.seed(alice, b);
+  // review 2's fault injection, off until a test makes the file: another program replaces project.json the moment
+  // Carton has linked it into place
+  alice.env.NODE_OPTIONS = `${alice.env.NODE_OPTIONS ?? ""} --require ${path.join(__dirname, "install-race.cjs")}`.trim();
+  alice.env.CARTON_TEST_INSTALL_RACE = path.join(S.TMP, "derive-race-install-race");
+  for (const f of [alice.env.CARTON_TEST_INSTALL_RACE, alice.env.CARTON_TEST_INSTALL_RACE + ".hit"]) fs.rmSync(f, { force: true });
   await alice.startWorker();
   await bob.startWorker();
   [{ id }] = await alice.call("projects.list");
@@ -202,3 +207,112 @@ test("an outside save made while a teammate's change is on its way into the file
     assert.equal(d.timelineItems.find((i) => i.id === text.id)?.fontSize, 77, "the outside edit kept");
   }
 });
+
+// Review 2 of fix/demo-sync-bugs, P1: the journal's stamp of Carton's last install vouched for the file without its bytes.
+// (1) Another program replaced project.json the moment Carton linked it, before the stamp was taken: that program's
+// file went into the journal as Carton's. (2) An in-place edit that kept the size and the mtime kept the stamp. After a
+// restart either was taken for Carton's own file and lost at a teammate's next change (both passed on f3d1dc2b, the
+// content check before the journal). Now only checked bytes are journaled, with their hash, and a stamp alone proves
+// nothing. The reviewer's repros, with Alice's live sync started again and both up to date.
+const restartAlice = async () => {
+  await alice.stopWorker();
+  await alice.startWorker();
+  await alice.call("projects.read", id);
+  await readyAt(alice);
+  await readyAt(bob);
+};
+const helloAt = () => aliceFile().timelineItems.find((i) => i.name === "Hello")?.textContent;
+test("another program's file put in place right after Carton's install is never taken for Carton's, also after a restart", t, async () => {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  const flag = alice.env.CARTON_TEST_INSTALL_RACE;
+  fs.writeFileSync(flag, "go");
+  const doc = await S.projectOf(alice, id);
+  await alice.call("projects.write", { ...doc, stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) });
+  assert.ok(fs.existsSync(flag + ".hit"), "the other program's file landed right after Carton's install");
+  fs.rmSync(flag + ".hit", { force: true });
+  await restartAlice();
+  const title = "Bob after the install race";
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 20_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  assert.equal(helloAt(), "Concurrent outside edit", "the other program's edit kept");
+  assert.ok(aliceFile().timelineItems.some((i) => i.name === title), "bob's title kept");
+});
+
+test("an in-place edit that keeps the file's size and mtime is still checked after a restart", t, async () => {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  const doc = await S.projectOf(alice, id);
+  await alice.call("projects.write", { ...doc, stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) });
+  await S.sleep(300);
+  await alice.stopWorker();
+  const file = path.join(alice.root, "Demo.cardboard", "project.json"), was = fs.statSync(file, { bigint: true });
+  const text = fs.readFileSync(file, "utf8"), now = helloAt();
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const changed = text.replace(new RegExp(`("textContent"\\s*:\\s*)${esc(JSON.stringify(now))}`), `$1${JSON.stringify("X".repeat(now.length))}`);
+  assert.notEqual(changed, text);
+  assert.equal(Buffer.byteLength(changed), Buffer.byteLength(text));
+  fs.writeFileSync(file, changed);
+  execFileSync("python3", ["-c", "import os,sys;os.utime(sys.argv[1],ns=(int(sys.argv[2]),int(sys.argv[3])))", file, String(was.atimeNs), String(was.mtimeNs)]);
+  const st = fs.statSync(file, { bigint: true });
+  assert.equal(`${st.ino}:${st.size}:${st.mtimeNs}`, `${was.ino}:${was.size}:${was.mtimeNs}`, "the same stamp");
+  await alice.startWorker();
+  await alice.call("projects.read", id);
+  await readyAt(alice);
+  await readyAt(bob);
+  const title = "Bob after the same-stamp edit";
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 20_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  assert.equal(helloAt(), "X".repeat(now.length), "the in-place edit kept");
+});
+
+// Review 2, P1: an outside edit of a file whose rev names an older version still waiting for the sharing server (more
+// edits wait after it) wasn't taken: core can't rebuild that state from its seq, the file was marked checked, and the
+// next materialization wrote over it. That version's document is kept now, and the edit is taken against exactly it;
+// after a restart (nothing kept), the file is held, never written over, and taken once those edits are confirmed.
+async function pendingOutside(restart) {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  const port = host.port;
+  await host.stop();
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "offline");
+  const words = restart ? "Alice offline two" : "Alice offline one";
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, textContent: words } : null));
+  const doc = await S.projectOf(alice, id);
+  await alice.call("projects.write", { ...doc, stateUpdatedAt: Math.max(Date.now(), doc.stateUpdatedAt + 1) });
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const old = JSON.parse(fs.readFileSync(file, "utf8"));
+  const size = restart ? 177 : 199;
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: size } : null));
+  const outside = restart ? "Outside edit while offline, then a restart" : "Outside edit of a pending version";
+  old.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
+  fs.writeFileSync(file + ".other.tmp", JSON.stringify(old));
+  fs.renameSync(file + ".other.tmp", file);
+  if (restart) {
+    await alice.stopWorker();
+    await alice.startWorker();
+    await S.sleep(1000);
+  }
+  await alice.call("projects.read", id);
+  await S.sleep(500);
+  if (restart) assert.equal(helloAt(), outside, "held: nothing wrote over it while its version can't be rebuilt");
+  host = await S.startHost(path.join(S.TMP, "derive-race-host"), port);
+  await readyAt(alice);
+  await readyAt(bob);
+  const title = restart ? "Bob after the held outside edit" : "Bob after the pending outside edit";
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 30_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  const item = aliceFile().timelineItems.find((i) => i.name === "Hello");
+  assert.equal(item.textContent, outside, "the outside edit kept");
+  assert.equal(item.fontSize, size, "alice's later edit kept");
+  const atBob = (await S.projectOf(bob, id)).timelineItems.find((i) => i.name === "Hello");
+  assert.deepEqual([atBob.textContent, atBob.fontSize], [outside, size], "both at bob's");
+}
+test("an outside edit of an older version still waiting for the sharing server is taken against exactly it", t, () => pendingOutside(false));
+test("the same after a restart while offline: held, never written over, taken once those edits are confirmed", t, () => pendingOutside(true));
