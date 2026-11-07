@@ -300,7 +300,7 @@ async function pendingOutside(restart) {
   }
   await alice.call("projects.read", id);
   await S.sleep(500);
-  if (restart) assert.equal(helloAt(), outside, "held: nothing wrote over it while its version can't be rebuilt");
+  if (restart) assert.equal(helloAt(), outside, "taken at once, against that version kept in carton.db: nothing wrote over it");
   host = await S.startHost(path.join(S.TMP, "derive-race-host"), port);
   await readyAt(alice);
   await readyAt(bob);
@@ -315,4 +315,64 @@ async function pendingOutside(restart) {
   assert.deepEqual([atBob.textContent, atBob.fontSize], [outside, size], "both at bob's");
 }
 test("an outside edit of an older version still waiting for the sharing server is taken against exactly it", t, () => pendingOutside(false));
-test("the same after a restart while offline: held, never written over, taken once those edits are confirmed", t, () => pendingOutside(true));
+test("the same after a restart while offline: that version is kept in carton.db, the edit taken against it", t, () => pendingOutside(true));
+
+// Review 3 of fix/demo-sync-bugs (its three controls). The pending version an outside save was made on came from a cache
+// that unchanged background writes evicted; a background write then took the unimported outside file as its own base and
+// certified it (P1: also after an offline restart, on 0c498b2b too); and with the version gone, a file held for it never
+// resolved once Bob's edit confirmed between Alice's (P2: Alice's file stayed behind while Live said up to date). The
+// version's document is kept in carton.db once per version now, and an outside save is taken at once against it.
+const unchangedWrites = async (n) => {
+  for (let j = 0; j < n; j++) {
+    const unchanged = await S.projectOf(alice, id);
+    await alice.call("projects.write", { ...unchanged, stateUpdatedAt: Math.max(Date.now(), unchanged.stateUpdatedAt + 1) });
+  }
+};
+async function backgroundAfterOutside({ restart, evict, interleave }) {
+  await readyAt(alice);
+  await readyAt(bob);
+  await S.sleep(2500);
+  const port = host.port;
+  await host.stop();
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "offline");
+  const words = `Alice pending ${restart ? "R" : ""}${evict ? "E" : ""}${interleave ? "I" : ""}`;
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, textContent: words } : null));
+  await unchangedWrites(1);
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const old = JSON.parse(fs.readFileSync(file, "utf8"));
+  const size = 150 + (restart ? 1 : 0) + (evict ? 2 : 0) + (interleave ? 4 : 0);
+  await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: size } : null));
+  if (evict) await unchangedWrites(20);
+  // Bob's own offline title reaches the server before Alice's pending edits
+  if (interleave) await addTitle(bob, "Bob confirms before Alice");
+  const outside = `Outside save ${words}`;
+  old.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
+  fs.writeFileSync(file + ".other.tmp", JSON.stringify(old));
+  fs.renameSync(file + ".other.tmp", file);
+  if (restart && !interleave) await restartWorker(alice);
+  await alice.call("projects.read", id);
+  // a background write after it (Cardboard's derive, a relink): it must not take the outside file for its base
+  if (!interleave) await unchangedWrites(1);
+  if (interleave) await alice.stopWorker();
+  host = await S.startHost(path.join(S.TMP, "derive-race-host"), port);
+  await readyAt(bob);
+  if (interleave) { await alice.startWorker(); await alice.call("projects.read", id); }
+  await readyAt(alice);
+  const title = `Bob after ${words}`;
+  await addTitle(bob, title);
+  await S.until(() => aliceFile().timelineItems.some((i) => i.name === title), 30_000, "bob's title in alice's file");
+  await S.sleep(2500);
+  const st = await alice.call("carton.liveStatus", { projectId: id });
+  for (const [who, d] of [["alice", aliceFile()], ["bob", await S.projectOf(bob, id)]]) {
+    const item = d.timelineItems.find((i) => i.name === "Hello");
+    assert.equal(item.textContent, outside, `${who}: the outside save kept`);
+    assert.equal(item.fontSize, size, `${who}: alice's later edit kept`);
+    assert.ok(d.timelineItems.some((i) => i.name === title), `${who}: bob's title`);
+    if (interleave) assert.ok(d.timelineItems.some((i) => i.name === "Bob confirms before Alice"), `${who}: bob's offline title`);
+  }
+  assert.deepEqual([st.status, st.pending, st.problem], ["up-to-date", 0, null], "up to date, and it is");
+}
+const restartWorker = async (pc) => { await pc.stopWorker(); await pc.startWorker(); await S.sleep(1000); };
+test("review 3, P1: a background write after an outside save of a pending version evicted by unchanged writes keeps it", t, () => backgroundAfterOutside({ evict: true }));
+test("review 3, P1: the same after an offline restart", t, () => backgroundAfterOutside({ restart: true }));
+test("review 3, P2: a pending version gone from memory, Bob's edit confirmed first, then a restart: nothing held, all of it shown", t, () => backgroundAfterOutside({ evict: true, interleave: true, restart: true }));

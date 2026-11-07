@@ -378,20 +378,27 @@ const REVS = "views";
 const refKey = (ref) => ["ref", ref.branchId, ref.seq];
 async function setRev(lc, rev, ref, doc = null) {
   if (typeof rev !== "number" || !ref) return;
-  await lc.store.write([{ table: REVS, key: ["rev", rev], value: ref }, { table: REVS, key: refKey(ref), value: rev }]);
-  if (doc && typeof ref === "object" && ref.pending?.length) keepPending(lc, rev, ref, doc);
+  const pending = doc && typeof ref === "object" && ref.pending?.length;
+  await lc.store.write([{ table: REVS, key: ["rev", rev], value: ref }, { table: REVS, key: refKey(ref), value: rev }, ...(pending ? [{ table: REVS, key: baseKey(ref), value: { at: Date.now(), doc } }] : [])]);
+  if (pending) void pruneBases(lc);
 }
-// Review 2 of fix/demo-sync-bugs, P1: a rev recorded on edits still waiting for the sharing server names a state core
-// can't rebuild once more edits wait after them (it resolves the confirmed seq alone). Its document is kept here, as a
-// reference (no copy, no hash), the last few per project, so an outside edit of that file is taken against exactly it.
-const pendingDocs = new WeakMap(); // LocalCarton → Map(rev → {ref, doc})
-const PENDING_DOCS = 16;
-function keepPending(lc, rev, ref, doc) {
-  let m = pendingDocs.get(lc);
-  if (!m) pendingDocs.set(lc, (m = new Map()));
-  m.delete(rev);
-  m.set(rev, { ref, doc });
-  while (m.size > PENDING_DOCS) m.delete(m.keys().next().value);
+// Review 3 of fix/demo-sync-bugs: the document of a version history can't rebuild (a shared cut's edits still waiting
+// for the sharing server: core resolves its seq alone), kept in carton.db beside the rev that names it, in the same
+// write, once per version (["base", cut, seq, its pending edits]). Durable across restarts; no cache. An outside save of
+// that file is taken against exactly it (takeOutside). Confirmed versions need none: history rebuilds them.
+const baseKey = (ref) => ["base", ref.branchId, ref.seq, sha(ref.pending.join(",")).slice(0, 16)];
+const BASES_KEPT = 512;
+const basesWritten = new WeakMap(); // LocalCarton → writes since the last prune
+async function pruneBases(lc) {
+  const n = (basesWritten.get(lc) ?? 0) + 1;
+  basesWritten.set(lc, n % 64);
+  if (n % 64) return;
+  try {
+    const rows = await lc.store.range(REVS, { prefix: ["base"] });
+    if (rows.length <= BASES_KEPT) return;
+    const old = rows.sort((x, y) => (x.value?.at ?? 0) - (y.value?.at ?? 0)).slice(0, rows.length - BASES_KEPT);
+    await lc.store.write(old.map((r) => ({ table: REVS, key: r.key, value: undefined })));
+  } catch {}
 }
 // A string is a Carton header ref (what the apply reads off a file the Materializer printed: "Main cut@3~3f9a1c0e
 // b:… p:… by …"): its exact version when core can rebuild it, as the string core's commit and checkout take; else
@@ -625,96 +632,70 @@ async function importForeign(lc, project, on = null) {
   const at = on ?? { base: null, doc: (await lc.carton.head()).doc };
   const r = await commitIn(lc, { doc: fromHost(project, at.doc), ...(at.base ? { base: at.base } : {}), author: actorOf("external:project.json") });
   if (r.status === "rejected") throw new Error("Carton rejected the outside save: " + r.reason);
+  // a clash with an edit made since keeps head's value: the outside save's side is the person's card (History, cb
+  // conflicts), never dropped unseen (review 3 of fix/demo-sync-bugs)
+  if (r.status === "conflicts" && r.cards?.length && !r.kept) await keepCards(lc, actorOf("person"), r.cards);
   return r.head?.doc ? r.head : lc.carton.head();
 }
-// Review of fix/demo-sync-bugs, P1. The version a recorded rev names, as {base, ref, doc}: `doc` its state, `base` the
-// ref to commit an edit of it on (null: head, which is that state now), `ref` the version to keep the rev on. A rev on a
-// shared cut's edits still waiting for the sharing server names a state core can't rebuild from its seq (it resolves
-// the confirmed seq without them): head while head is still exactly that, or the version those edits became once
-// confirmed one after another. null when it can't be had here.
-async function revState(lc, ref, rev = null) {
+// Review of fix/demo-sync-bugs (rounds 1 to 3). The version a recorded rev names, as {base, ref, doc, exact}: `doc` its
+// state, `base` what to commit an edit of it on (a ref; core's held base {baseDoc, baseSeq, causal} for a version with
+// edits still waiting for the sharing server; null: head, which is that state now), `ref` the version itself. Never a
+// guess newer than that version: a version whose kept document is gone (pruned) is its confirmed seq (`exact` false:
+// older, so what changed since only shows as a clash, never as a revert). null when it can't be read at all.
+async function revState(lc, ref) {
   try {
-    if (typeof ref === "string" || !ref?.pending?.length) return { base: ref, ref, doc: await lc.carton.checkout(ref) };
+    if (typeof ref === "string" || !ref?.pending?.length) return { base: ref, ref, doc: await lc.carton.checkout(ref), exact: true };
     const head = await lc.carton.head(ref.branchId);
-    if (sameRef(head.ref, ref)) return { base: null, ref: head.ref, doc: head.doc };
-    // Review 2, P1: an older pending version: the document kept when its rev was recorded (pinned when an edit of it is
-    // taken: pinOn), else (a restart) the version its edits became once confirmed one after another
-    const kept = rev !== null ? pendingDocs.get(lc)?.get(rev) : null;
-    if (kept && sameRef(kept.ref, ref)) return { base: null, pin: true, ref, doc: kept.doc };
-    const k = ref.pending.length, ids = new Set(ref.pending);
-    const next = (await lc.carton.log({ cut: ref.branchId, before: ref.seq + k + 1, limit: k })).filter((v) => v.ref.seq > ref.seq);
-    if (next.length !== k || !next.every((v) => ids.has(v.change))) return null;
-    const at = { branchId: ref.branchId, seq: ref.seq + k, pending: [] };
-    return { base: at, ref: at, doc: await lc.carton.checkout(at) };
+    if (sameRef(head.ref, ref)) return { base: null, ref, doc: head.doc, exact: true };
+    const kept = await lc.store.get(REVS, baseKey(ref));
+    if (kept?.doc) return { base: { baseDoc: kept.doc, baseSeq: ref.seq, causal: [...ref.pending] }, ref, doc: kept.doc, exact: true };
+    const at = { branchId: ref.branchId, seq: ref.seq, pending: [] };
+    return { base: at, ref, doc: await lc.carton.checkout(at), exact: false };
   } catch { return null; }
 }
-// A kept pending version as a base core's commit resolves exactly (a held state, as a print of one is: pinHeld).
-async function pinOn(lc, at) {
-  const p = await lc.carton.pin({ owner: OUTSIDE_PIN, cut: at.ref.branchId, seq: at.ref.seq, causal: [...at.ref.pending], doc: at.doc, ttlMs: PRINT_PIN_MS }).catch(() => null);
-  return p?.header && (await lc.carton.resolve(p.header).then(() => true, () => false)) ? p.header : null;
-}
-const OUTSIDE_PIN = "outside-save";
 /**
- * Another program's project.json, taken (review of fix/demo-sync-bugs, P1; review 2, P1): its rev recorded, it is that
- * version while what Carton versions of it is that version's ("same"), else an edit of it, imported as what it changed
- * against exactly that version ("taken"). A rev Carton never recorded: against the version the file showed before
- * (`before`, the store's last read or write of it), when known, else on head, as before. "held": that version can't be
- * rebuilt here yet (edits still waiting for the sharing server, after a restart): nothing is imported, never on head;
- * it is tried again (the next read, a materialization, a review) once those edits are confirmed.
+ * Another program's project.json, taken (review of fix/demo-sync-bugs, rounds 1 to 3): as what it changed against the
+ * version it was made on, merged with what reached the project since (a clash keeps head's value and is the person's
+ * card: nothing is lost, nothing silently). That version: the one its rev names when Carton recorded the rev, else the
+ * one Carton last installed in that file (`installed`, the journal's), else head (as before). Never held, never a whole
+ * older document over head.
  */
-async function takeOutside(lc, project, before = null) {
+async function takeOutside(lc, project, installed = null) {
   const rev = project?.stateUpdatedAt;
-  const ref = await refOf(lc, rev);
-  if (ref) {
-    const at = await revState(lc, ref, rev);
-    if (!at) return "held";
-    if (sameVersioned(lc, project, at.doc)) return "same";
-    if (at.pin && !(at.base = await pinOn(lc, at))) return "held";
-    await importForeign(lc, project, at);
-    return "taken";
-  }
-  const was = typeof before === "number" && before !== rev ? await refOf(lc, before) : null;
-  const at = was ? await revState(lc, was, before) : null;
-  if (was && !at) return "held";
-  if (at?.pin && !(at.base = await pinOn(lc, at))) return "held";
+  let ref = await refOf(lc, rev);
+  const known = !!ref;
+  if (!ref && installed?.ref) ref = installed.ref;
+  const at = ref ? await revState(lc, ref) : null;
   const made = await importForeign(lc, project, at);
-  // its rev names the version it was made on (the file is it plus the edit: a GUI save made on it builds on that
-  // version, and head goes into the file with a rev of its own); on head, what that made
-  await setRev(lc, rev, at?.ref && typeof at.ref === "object" ? at.ref : made.ref, at?.ref && typeof at.ref === "object" ? at.doc : null);
-  return "taken";
+  // a rev Carton never recorded names the version it was made on (the file is it plus the edit: a save made on it builds
+  // on that version, and head goes into the file with a rev of its own); on head, what that made
+  if (!known) await setRev(lc, rev, at?.ref ?? made.ref);
 }
-// project.json files held: read with a version that can't be rebuilt yet (takeOutside "held"), so no materialization
-// writes over them until they are taken (path → {stamp, project, before}).
-const heldFiles = new Map();
-/**
- * Before head is written into a bundle's project.json (materializeIn): the file there now, unless Carton installed it
- * (its stamp: this process's install, or a checked one; another process's install by its bytes' hash), is taken first
- * as another program's save (takeOutside). A fresh process's store lists a project by scanning it, never through the
- * read that takes an outside save (sawDisk), so head went over an edit made while the app was closed; and a file held
- * (its version can't be rebuilt yet) must not be written over. True: write; false: the file stays as it is for now.
- * A stat when the file is Carton's own (review 2 of fix/demo-sync-bugs, P1).
- */
-async function fileTaken(bundlePath, projectId) {
-  const file = path.join(bundlePath, "project.json");
-  const stamp = await statStamp(file, BUSY).catch(() => null);
-  if (!stamp || stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file)) return true;
-  if (await installedHere(bundlePath, file, stamp)) return checkedFiles.set(file, stamp), true;
-  const hold = heldFiles.get(file);
-  const project = hold?.stamp === stamp ? hold.project : readProject(bundlePath);
-  const lc = project?.id === projectId ? await open(bundlePath, { projectId }) : null;
-  if (!lc) return true;
-  const before = hold?.stamp === stamp ? hold.before : null;
-  if ((await takeOutside(lc, project, before)) === "held") return heldFiles.set(file, { stamp, project, before }), false;
-  heldFiles.delete(file);
-  checkedFiles.set(file, stamp);
-  return true;
-}
-// What Carton versions of a project file is exactly `doc`'s (as isKnownState compares).
-const sameVersioned = (lc, project, doc) => {
-  try { return hashDoc(fromHost(project, doc), lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch { return false; }
-};
 // project.json files checked since they were written (path → stamp): a second read of the same file checks nothing.
 const checkedFiles = new Map();
+/**
+ * Whether the project.json there now (`stamp`, `project` as read, else read here) is another program's: then it is taken
+ * (takeOutside) before anything builds on it or writes over it. Carton's own file costs nothing more: the one this
+ * process installed last, or one checked already (their stamps); another process's install (cb's) by its bytes, which
+ * hash to the journal's (one read; a stamp alone proves nothing: review 2, P1). Called where the store reads the file
+ * (sawDisk) and before head is written into it (materializeIn: a fresh process's store lists a project by scanning it,
+ * never through that read).
+ */
+async function fileOutside(lc, bundlePath, stamp, project = null) {
+  const file = path.join(bundlePath, "project.json");
+  if (!stamp || stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file)) return;
+  let bytes;
+  try { bytes = await fs.promises.readFile(file); } catch { return; }
+  const h = sha(bytes), j = readJournal(bundlePath), installed = j[INSTALLED];
+  if ((installed && typeof installed === "object" && installed.sha === h) || j[TAKEN] === h) return void checkedFiles.set(file, stamp);
+  let p = project;
+  try { p = JSON.parse(bytes.toString("utf8")).project ?? project; } catch {}
+  if (!p) return;
+  await takeOutside(lc, p, installed && typeof installed === "object" ? installed : null);
+  checkedFiles.set(file, stamp);
+  // taken: said in the journal too, so another process (or this one after a restart) doesn't take it again
+  await withInstallLock(bundlePath, async () => { const jj = readJournal(bundlePath); jj[TAKEN] = h; await writeJournal(bundlePath, jj); }).catch(() => {});
+}
 
 // ui-words #3: the person's GUI saves whose answer the editor hadn't yet (a save made before the previous one's echo
 // says so: meta.after). A save that landed as it was is a ref (setRev); one merged with someone else's change has no
@@ -833,10 +814,12 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, pendingBase = nul
   // everyone, by "external:project.json" (demo rehearsal, FINDINGS §6.1: 11 of 12 runs).
   // The version it shows is its base's (an empty change of it), edits still waiting for the sharing server included:
   // core's answer names the confirmed head without them (a lease holder's empty write), so the base's ref when it is one
-  // (a pending base pinned for the commit: the pending ref it pinned). Its document is the write's own (`mine`).
+  // (a pending base pinned for the commit: the pending ref it pinned).
   if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) {
     const shows = pendingBase ?? (baseRef && typeof baseRef === "object" && typeof baseRef.branchId === "string" && typeof baseRef.seq === "number" ? baseRef : r.ref);
-    await setRev(lc, doc.stateUpdatedAt, shows, mine);
+    // (no document kept for it here: its base may be another program's save the store read, taken already; the version's
+    // own document was kept when it was first installed)
+    await setRev(lc, doc.stateUpdatedAt, shows);
     return { ...r, doc, merged: false };
   }
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
@@ -1329,7 +1312,7 @@ async function installFile(tmp, file, seenStamp, rev, envelope) {
     // as Carton's). Not checked (replaced already): nothing is said of it.
     const own = await ownAfter(file, bytes);
     if (path.basename(file) === "project.json") {
-      if (installed && own) journal[INSTALLED] = { stamp: own.stamp, sha: written };
+      if (installed && own) journal[INSTALLED] = { stamp: own.stamp, sha: written, ...(ref ? { ref } : {}) };
       else delete journal[INSTALLED];
     }
     await writeJournal(bundle, journal);
@@ -1358,6 +1341,8 @@ async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.
     journal[path.basename(p)] = { at: Date.now(), stamp: st };
     const h = sha(b), mine = (i === 0 && seenStamp && st === seenStamp) || seen.has(h);
     if (!mine) s.foreign = true;
+    // another program's file: the install it replaced, the version its review takes it against (fileOutside's rule)
+    if (!mine && journal[INSTALLED]) journal[path.basename(p)].installed = journal[INSTALLED];
     // The file the writer read is known from now on, so a later process can sweep it if this one exits first.
     else if (!seen.has(h)) await markSeen(file, h, held);
     s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? firstOwn : null);
@@ -1420,16 +1405,10 @@ async function ownAfter(file, bytes) {
 // When each displaced file was moved aside and its stamp then (.carton/displaced.json), written under the install
 // lock. A file's own mtime says nothing: a rename keeps it.
 const journalFile = (bundle) => path.join(bundle, ".carton", "displaced.json");
-// (beside the displaced files: the project.json Carton installed last, {stamp, sha} of its checked bytes)
-const INSTALLED = "#installed:project.json";
-// The file at that stamp is the one Carton's last install wrote: its bytes hash to the journal's (one read of it, never
-// a hash of what Carton versions of it). A stamp alone (an older journal, another program's file, a file edited in place
-// keeping size and mtime) proves nothing.
-async function installedHere(bundlePath, file, stamp) {
-  const j = readJournal(bundlePath)[INSTALLED];
-  if (!j || typeof j !== "object" || j.stamp !== stamp || typeof j.sha !== "string") return false;
-  try { return sha(await fs.promises.readFile(file)) === j.sha; } catch { return false; }
-}
+// Beside the displaced files ("#" names): the project.json Carton installed last, {stamp, sha of its checked bytes, ref of
+// the version it shows}, and the hash of the last outside save taken (fileOutside). A displaced file another program
+// wrote keeps the install it replaced as its `installed` (settle), for its review.
+const INSTALLED = "#installed:project.json", TAKEN = "#taken:project.json";
 const readJournal = (bundle) => { try { return JSON.parse(fs.readFileSync(journalFile(bundle), "utf8")); } catch { return {}; } };
 const writeJournal = async (bundle, j) => {
   const tmp = journalFile(bundle) + "." + process.pid + ".tmp";
@@ -1447,7 +1426,7 @@ async function sweep(file, s, journal, held) {
   const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []), now = Date.now();
   // (a set: a burst of saves leaves hundreds of files here until their review, and this runs at every install)
   const present = new Set(names);
-  for (const n of Object.keys(journal)) if (n !== INSTALLED && !present.has(n)) delete journal[n];
+  for (const n of Object.keys(journal)) if (!n.startsWith("#") && !present.has(n)) delete journal[n];
   for (const n of names) {
     const p = path.join(dir, n), j = journal[n];
     if (s.mine.has(p) || !j || now - j.at < 10_000) continue;
@@ -1460,15 +1439,6 @@ async function sweep(file, s, journal, held) {
 // A displaced file Carton didn't write is someone's save: a project.json is imported as an outside change, a
 // timeline.tsx is applied through Cardboard's own mirror (as its watcher would have), and only then is it deleted.
 // One that can't be applied yet stays in .carton/displaced/ and is reported: never lost, never silently dropped.
-// Whether a project.json's project is exactly a version history holds: its rev recorded against that version (the rev
-// map), and its versioned content that version's. A file under a known rev with other content is still an edit.
-async function isKnownState(lc, project) {
-  const ref = await refOf(lc, project?.stateUpdatedAt).catch(() => undefined);
-  if (!ref || pendingRef(ref)) return false;
-  const doc = await lc.carton.checkout(ref).catch(() => null);
-  if (!doc) return false;
-  try { return hashDoc(fromHost(project, doc), lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch { return false; }
-}
 async function review(file, s) {
   const bundle = path.dirname(file), isProject = path.basename(file) === "project.json";
   const parse = (b) => { try { return JSON.parse(b.toString("utf8")); } catch { return null; } };
@@ -1481,13 +1451,10 @@ async function review(file, s) {
         const p = parse(f.bytes).project;
         // a late copy of a version history already holds is no outside edit (it lost its seen.json entry to a race):
         // imported against head it put that version back over everything since, an undo made meanwhile included, as
-        // "external:project.json" (laptop, final candidate P2-1; review of fix/recover-save). An outside edit of a
-        // version Carton recorded is what it changed against that version (takeOutside); one whose version can't be
-        // rebuilt yet stays held here and is reviewed again (review 2 of fix/demo-sync-bugs, P1).
-        if ((await takeOutside(lc, p)) === "held") {
-          s.files.holdForeign(f.path);
-          continue;
-        }
+        // "external:project.json" (laptop, final candidate P2-1; review of fix/recover-save). An outside edit is what
+        // it changed against the version it was made on (takeOutside: its rev's, else the install it replaced): a late
+        // copy of a version is no change at all.
+        await takeOutside(lc, p, readJournal(bundle)[path.basename(f.path)]?.installed ?? null);
       } else {
         const h = hostOf(bundle), id = h?.store.idForBundlePath?.(path.resolve(bundle));
         if (!id) throw new Error("no mirror for the project in this process");
@@ -1589,27 +1556,11 @@ export const cardboard14 = {
     recovered.set(bundlePath, { text, out: json });
     return json;
   },
-  // A project.json the store read from disk (`stamp`: the file's, as the store read it; `before`: the rev the file had
-  // when the store last read or wrote it).
-  async sawDisk({ bundlePath, doc, stamp = null, before = null }) {
+  // A project.json the store read from disk (`stamp`: the file's, as the store read it): another program's is taken
+  // before anything builds on it (fileOutside: review of fix/demo-sync-bugs, rounds 1 to 3).
+  async sawDisk({ bundlePath, doc, stamp = null }) {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
-    if (!lc) return;
-    const file = path.join(bundlePath, "project.json");
-    // Review of fix/demo-sync-bugs, P1: a rev Carton recorded names a version, but another program may have edited the
-    // file and kept its rev (an empty write's rev is recorded too now): it is that version only while what Carton
-    // versions of it is that version's (takeOutside). Nothing is read or hashed again for the file this process
-    // installed last, or one checked already (their stamps); the file another process installed (cb's) is Carton's
-    // when its bytes are the ones that install wrote (review 2, P1: the journal's hash, not its stamp alone: a stamp can
-    // name another program's file, or one edited in place since).
-    if (stamp && (stamp === installs.get(file)?.own?.stamp || stamp === checkedFiles.get(file))) return;
-    if (stamp && (await installedHere(bundlePath, file, stamp))) return void checkedFiles.set(file, stamp);
-    const took = await takeOutside(lc, doc, before);
-    if (took === "held") {
-      heldFiles.set(file, { stamp, project: doc, before });
-      return warnOnce("held:" + file, `another program's save of ${path.basename(bundlePath)}'s project.json was made on edits still waiting for the sharing server: it is taken once they are sent`);
-    }
-    heldFiles.delete(file);
-    if (stamp) checkedFiles.set(file, stamp);
+    if (lc) await fileOutside(lc, bundlePath, stamp, doc);
   },
   // H2/H3: Carton's versions that reached project.json, newest first, then the older .revs.
   async revisions({ bundlePath, files }) {
@@ -2286,10 +2237,12 @@ async function materializeIn(library, projectId) {
   const bundlePath = projects.bundlePathFor(projectId);
   for (let tries = 1; ; tries++) {
     const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
-    // Review 2 of fix/demo-sync-bugs, P1: the file there now, if another program wrote it, is taken first (fileTaken);
-    // one held (made on a version that can't be rebuilt yet) isn't written over. Replaced since by a save, its review
-    // takes it, or holds it there.
-    if (bundlePath && !(await fileTaken(bundlePath, projectId))) return null;
+    // Review of fix/demo-sync-bugs: the file there now, if another program wrote it, is taken before head goes over it
+    // (fileOutside; a fresh process's store lists a project by scanning it, never through the read that takes it)
+    if (bundlePath) {
+      const lc = await open(bundlePath, { projectId });
+      if (lc) await fileOutside(lc, bundlePath, await statStamp(path.join(bundlePath, "project.json"), BUSY).catch(() => null));
+    }
     const made = await headAt(bundlePath, current);
     if (!made) return null;
     let next = made.project;
