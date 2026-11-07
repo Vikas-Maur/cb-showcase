@@ -715,6 +715,9 @@ async function fileOutside(lc, bundlePath, stamp, project = null) {
 // says so: meta.after). A save that landed as it was is a ref (setRev); one merged with someone else's change has no
 // ref for the person's document, so it is held here, per bundle, as core's HeldBase: the person's document as it was
 // saved, on the version it was made on, with that save in its causal past. Kept for the last few saves of a bundle.
+// Also a save that landed while edits wait for the sharing server (offline): its ref is pending, which core rebuilds as
+// the confirmed seq alone, so the version it made is held (round 4 of fix/demo-sync-bugs; commit looks it up by the
+// editor's base rev, with the store's document and the kept file behind it).
 const heldSaves = new Map();
 const HELD_PER_BUNDLE = 4;
 function holdSave(bundlePath, rev, held) {
@@ -781,12 +784,14 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // Found in round 4 of fix/demo-sync-bugs, and so in 0c498b2b: a GUI save made on a version still waiting for the
   // sharing server (offline, the editor's echo of its previous save) went to core as that pending ref, which core
   // rebuilds as its confirmed seq alone: a second change of the same thing clashed with the first ("You" vs "You") and
-  // the timeline went back to the first value. The version the editor had is the store's document when it is at that
-  // rev, else that file's kept bytes (keepBase): the save goes on it as core's held base, as a chained save does.
+  // the timeline went back to the first value. The save goes on the version the editor had, as core's held base (as a
+  // chained save does): the previous save's own result, held when it landed (committed: no work here); else (a restart,
+  // or past the last few) the store's document when it is at that rev, else that file's kept bytes (keepBase).
   let guiHeld = null;
   if (meta?.base !== undefined && !chained && pendingRef(baseRef)) {
-    const at = base && base.stateUpdatedAt === rev ? fromHost(base, await c.checkout({ branchId: baseRef.branchId, seq: baseRef.seq, pending: [] })) : await keptBase(lc, bundlePath, rev, baseRef);
-    if (at) baseRef = guiHeld = { baseDoc: at, baseSeq: baseRef.seq, causal: [...baseRef.pending] };
+    const held = heldSaves.get(bundlePath)?.get(rev);
+    const at = held ? null : base && base.stateUpdatedAt === rev ? fromHost(base, await c.checkout(baseRef)) : await keptBase(lc, bundlePath, rev, baseRef);
+    if (held || at) baseRef = guiHeld = held ?? { baseDoc: at, baseSeq: baseRef.seq, causal: [...baseRef.pending] };
   }
   // Review P1: a cb write's base still pending in the lease holder resolves here (and in the holder, from a ref without
   // its hash) as the confirmed state it was built on, where an edit back to that state's value reads as no change. Its
@@ -857,6 +862,9 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, pendingBase = nul
     }
     const out = { ...(await projectFor(bundlePath, head.doc, doc)), stateUpdatedAt: doc.stateUpdatedAt };
     await setRev(lc, out.stateUpdatedAt, head.ref);
+    // the version the editor has now, its edits still waiting for the sharing server: held, so its next save goes on
+    // exactly it (commit: round 4 of fix/demo-sync-bugs)
+    if (pendingRef(head.ref)) holdSave(bundlePath, out.stateUpdatedAt, { baseDoc: head.doc, baseSeq: head.ref.seq, causal: [...head.ref.pending] });
     return { ...r, doc: out, merged: false };
   }
   // A clash keeps head's value; the writer's side is a conflict card, kept as a notice for its author until it is

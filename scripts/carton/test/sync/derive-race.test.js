@@ -382,22 +382,24 @@ test("review 3, P2: a pending version gone from memory, Bob's edit confirmed fir
 // first ("You" vs "You") and the timeline went back to the first value. It goes on the version the editor had now (the
 // store's document, else that file's kept bytes). And an outside save of the earlier file is taken against that file's
 // own bytes (kept by its rev), so the later save stays too, also after a restart.
-async function twiceOffline(restart) {
+async function twiceOffline(restart, between = false) {
   await readyAt(alice);
   await readyAt(bob);
   await S.sleep(2500);
   const port = host.port;
   await host.stop();
   await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "offline");
-  const first = restart ? 131 : 121, later = first + 2;
+  const first = between ? 141 : restart ? 131 : 121, later = first + 2;
   await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: first } : null));
   const file = path.join(alice.root, "Demo.cardboard", "project.json");
   const old = JSON.parse(fs.readFileSync(file, "utf8"));
+  // nothing of the first save's held in memory: the second goes on what the store read back
+  if (between) await restartWorker(alice);
   await S.guiSave(alice, id, (it) => (it.name === "Hello" ? { ...it, fontSize: later } : null));
   await S.sleep(500);
   assert.equal(aliceFile().timelineItems.find((i) => i.name === "Hello").fontSize, later, "the second save shows");
   assert.deepEqual(alice.cb(["conflicts", "Demo"]).json().cards, [], "no clash with the first");
-  const outside = `Outside save of the first of two${restart ? ", then a restart" : ""}`;
+  const outside = `Outside save of the first of two${restart ? ", then a restart" : ""}${between ? ", a restart between them" : ""}`;
   old.project.timelineItems.find((i) => i.name === "Hello").textContent = outside;
   fs.writeFileSync(file + ".other.tmp", JSON.stringify(old));
   fs.renameSync(file + ".other.tmp", file);
@@ -418,3 +420,4 @@ async function twiceOffline(restart) {
 }
 test("two offline saves of the same clip keep the second, and an outside save of the first file keeps both", t, () => twiceOffline(false));
 test("the same with a restart after the outside save", t, () => twiceOffline(true));
+test("the same with a restart between the two saves", t, () => twiceOffline(false, true));
