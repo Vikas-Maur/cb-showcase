@@ -11,7 +11,7 @@ import { CartonProvider, HistoryPanel, remoteUi, serveUi } from "../src/index.ts
 import { ARRIVAL_GLOW_MS } from "../src/components/HistoryPanel.ts";
 import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import { actorColor } from "../src/actors.ts";
-import { injectCardboardSkin } from "../src/skin/cardboard.ts";
+import { cardboardSkin, injectCardboardSkin } from "../src/skin/cardboard.ts";
 import type { Actor, CartonUi } from "../src/model.ts";
 
 const h = React.createElement;
@@ -170,10 +170,16 @@ test(name("without motion (prefers-reduced-motion): the ring shows, with no fade
   const ui = createMockUi({ versions: 10, seed: 19 });
   const m = await panel(ui);
   await arrive(ui, people.bob, "Added title “Summer launch”");
-  const moving = getComputedStyle(ringOf(rows(m.container)[0])!);
-  assert.match(moving.animation, /^carton-arrive /, "with motion: it fades in");
-  assert.match(moving.transition, /^box-shadow 1\.4s/, "with motion: it settles slowly");
+  const first = ringOf(rows(m.container)[0])!;
+  assert.match(getComputedStyle(first).animation, /^carton-arrive /, "with motion: it fades in");
   await m.unmount();
+  // (happy-dom computes no ::after: the glow layer's rules as the skin has them; live.mjs reads them in Chromium)
+  const rules = cardboardSkin.split("\n:where").filter((r) => r.includes("carton-arrival") || r.includes("carton-arrive"));
+  assert.ok(rules.some((r) => /\.carton-arrival\)::after\{[^}]*transition:opacity 1\.4s/.test(r)), "it settles slowly, by the glow layer's opacity");
+  assert.ok(rules.some((r) => /\.carton-arrival\[data-glow\]\)::after\{opacity:1\}/.test(r)));
+  assert.match(cardboardSkin, /@keyframes carton-arrive\{from\{opacity:0\}\}/, "it fades in by opacity alone");
+  assert.ok(!rules.some((r) => /transition:[^;}]*box-shadow|@keyframes carton-arrive\{[^}]*box-shadow/.test(r)), "no shadow moves: nothing repainted frame by frame");
+  assert.match(cardboardSkin, /@media \(prefers-reduced-motion: reduce\)\{\s*:where\(\[data-carton-skin="cardboard"\]\) \*, :where\(\[data-carton-skin="cardboard"\]\) \*::before, :where\(\[data-carton-skin="cardboard"\]\) \*::after\{animation:none!important;transition:none!important\}/, "without motion, the glow layer's settling is off too");
   settings.device.prefersReducedMotion = "reduce";
   try {
     const ui2 = createMockUi({ versions: 10, seed: 19 });
@@ -182,10 +188,9 @@ test(name("without motion (prefers-reduced-motion): the ring shows, with no fade
     const ring = ringOf(rows(m2.container)[0])!;
     assert.ok(ring && ring.hasAttribute("data-glow"), "the outline still shows");
     const cs = getComputedStyle(ring);
-    assert.equal(cs.animation, "none");
-    assert.equal(cs.transition, "none");
-    assert.match(cs.boxShadow, /^inset 0 0 0 1\.5px #[0-9a-f]{6},inset 0 0 14px/, "drawn as its ring and glow, still");
+    assert.equal(cs.animation, "none", "no fade-in");
     assert.equal(cs.position, "absolute");
+    assert.match(cs.boxShadow, /^inset 0 0 0 1px /, "the faint edge, under the glow layer");
     await m2.unmount();
   } finally {
     settings.device.prefersReducedMotion = "no-preference";

@@ -1771,40 +1771,51 @@ const ArrivalNews = memo(function ArrivalNews({ added, holding }: { added: reado
   // `tick`: 0 until the first arrival (no live region yet), then one step per check
   const [tick, setTick] = useState(0);
   const [text, setText] = useState("");
-  const pending = useRef<{ ids: string[]; since: number }>({ ids: [], since: 0 });
+  // what arrived and isn't said yet: each version and its author's key as it arrived (told by person later, maybe)
+  const pending = useRef<{ ids: { id: string; key: string }[]; since: number }>({ ids: [], since: 0 });
+  // when each person (by either key) last made a change
   const heard = useRef(new Map<string, number>());
   const holdingNow = useRef(holding);
   holdingNow.current = holding;
+  const quiet = (key: string, now: number) => {
+    const last = heard.current.get(key);
+    return last === undefined || now - last >= ARRIVAL_QUIET_MS;
+  };
   useEffect(() => {
     if (!added.length) return;
-    const p = pending.current;
-    if (!p.ids.length) p.since = Date.now();
-    p.ids.push(...added.map((v) => v.id));
+    const p = pending.current, now = Date.now();
+    // (someone heard within the minute goes on unsaid, and keeps the minute running: no work, no render)
+    const fresh = added.filter((v) => quiet(v.author.key, now) || (heard.current.set(v.author.key, now), false));
+    if (!fresh.length) return;
+    if (!p.ids.length) p.since = now;
+    p.ids.push(...fresh.map((v) => ({ id: v.id, key: v.author.key })));
     setTick((t) => t + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [added]);
   // (after the commit that drew the region: what it says next is announced)
   useEffect(() => {
     const p = pending.current;
     if (!p.ids.length) return;
     const hs = ui.history();
-    const vs = p.ids.map((id) => {
-      const i = hs.indexOf("all", id);
-      return i >= 0 ? hs.at("all", i) : undefined;
-    }).filter((v): v is Version => !!v);
-    if (vs.some((v) => !v.summary) && Date.now() - p.since < 1500) {
+    const vs = p.ids.map((x) => {
+      const i = hs.indexOf("all", x.id);
+      return { v: i >= 0 ? hs.at("all", i) : undefined, key: x.key };
+    }).filter((x): x is { v: Version; key: string } => !!x.v);
+    if (vs.some((x) => !x.v.summary) && Date.now() - p.since < 1500) {
       const t = setTimeout(() => setTick((n) => n + 1), 100);
       return () => clearTimeout(t);
     }
     p.ids = [];
     const now = Date.now(), names: string[] = [];
-    for (const v of vs) {
-      const last = heard.current.get(v.author.key);
-      heard.current.set(v.author.key, now);
+    for (const { v, key } of vs) {
+      const say = quiet(v.author.key, now) && quiet(key, now);
+      heard.current.set(v.author.key, now).set(key, now);
       const who = actorLabel(v.author, ui.actor.bind(ui), words.you);
-      if ((last === undefined || now - last >= ARRIVAL_QUIET_MS) && who && !names.includes(who)) names.push(who);
+      if (say && who && !names.includes(who)) names.push(who);
     }
     if (names.length && !holdingNow.current) setText(words.madeAChange(names));
     return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick, ui, words]);
   return tick ? h("p", { className: "carton-sr carton-arrival-news", role: "status", "aria-live": "polite" }, text) : null;
 });
