@@ -296,6 +296,9 @@ async function streamMessage(req, res, body, msg, index) {
   ev("message_start", { message: { id: newId("msg_actor_"), type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } });
   const ping = setInterval(() => ev("ping", {}), 5000);
   let i = 0, outTokens = 0, stop = "end_turn";
+  // A quiet scene's lines all go into one text block, a paragraph each: Cardboard's chat shows only a message's newest
+  // text block, so separate ones replaced each other there (take 5), and a thought after the first line is time only
+  let openText = null;
   try {
     for (const b of msg.blocks) {
       if (!alive()) return;
@@ -305,6 +308,7 @@ async function streamMessage(req, res, body, msg, index) {
         continue;
       }
       if (b.do) { await doTool(b.do, index); continue; }
+      if (b.think !== undefined && openText !== null) { await sleep(b.ms); continue; }
       if (b.think !== undefined) {
         ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "", signature: "" } });
         const parts = chunks(fill(b.think), 12), step = Math.max(20, Math.floor(b.ms / Math.max(1, parts.length)));
@@ -314,8 +318,17 @@ async function streamMessage(req, res, body, msg, index) {
       } else if (b.say !== undefined) {
         const text = fill(b.say);
         if (!text) continue;
-        ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
         const per = Math.max(2, Math.round(b.cps / 10));
+        if (scene.quiet) {
+          // (the one text block: opened by the first line, each next line a new paragraph in it, closed at the end)
+          const at = openText ?? i;
+          if (openText === null) { ev("content_block_start", { index: i, content_block: { type: "text", text: "" } }); openText = i++; }
+          else ev("content_block_delta", { index: at, delta: { type: "text_delta", text: "\n\n" } });
+          for (const p of chunks(text, per)) { if (!alive()) return; ev("content_block_delta", { index: at, delta: { type: "text_delta", text: p } }); await sleep(100); }
+          outTokens += Math.ceil(text.length / 4);
+          continue;
+        }
+        ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
         for (const p of chunks(text, per)) { if (!alive()) return; ev("content_block_delta", { index: i, delta: { type: "text_delta", text: p } }); await sleep(100); }
         ev("content_block_stop", { index: i++ });
         outTokens += Math.ceil(text.length / 4);
@@ -335,6 +348,7 @@ async function streamMessage(req, res, body, msg, index) {
         log({ event: "tool", index, name, input: name === "Edit" ? { file_path: input.file_path, old: String(input.old_string).slice(0, 60), new: String(input.new_string).slice(0, 80) } : input });
       }
     }
+    if (openText !== null) ev("content_block_stop", { index: openText });
     if (stop === "end_turn" && !outTokens) {
       // a message with no text and no tool call reads as a broken stream to Claude Code, and only spaces as an empty answer
       // it asks again for: a zero-width space, which shows as nothing
@@ -358,7 +372,11 @@ async function wholeMessage(res, body, msg, index, alive) {
     if (b.hold) { if (b.hold.pause !== undefined) await sleep(b.hold.pause); else await waitFor(b.hold.wait, alive); continue; }
     if (b.do) { await doTool(b.do, index); continue; }
     if (b.think !== undefined) { await sleep(b.ms); content.push({ type: "thinking", thinking: fill(b.think), signature: "actor-" + index }); }
-    else if (b.say !== undefined) { const t = fill(b.say); if (t) content.push({ type: "text", text: t }); }
+    else if (b.say !== undefined) {
+      const t = fill(b.say), last = content.at(-1);
+      if (t && scene.quiet && last?.type === "text") last.text += "\n\n" + t;
+      else if (t) content.push({ type: "text", text: t });
+    }
     else if (b.tool) {
       const { tool: name, powershell: _p, ...rest } = b.tool;
       const input = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, typeof v === "string" ? fill(v) : v]));
