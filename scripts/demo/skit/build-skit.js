@@ -206,13 +206,19 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
   // the operator (go.js) clicks the chip, the cut, and "Switch now" (a turn is running), then sends the cue
   bash(`cb cut new "${PROJECT}" "${CUT}" --from {{before_claude}}`);
   think(`Over to ${CUT}.`, 900);
+  // the playhead on the headline first (1.5 s, the same on both cuts), so the switch lands on it: a switch keeps the
+  // playhead, and ~90 s is past Edit v2's 24 s end (the dry run: ~2 s of black)
+  bash(`cb app seek 1.5 "${PROJECT}"`);
   steps.push({ wait: { cue: "cut-v2", timeout: 30 } });
   appHas({ itemsAtMost: PROMO_ITEMS }); // the editor on Edit v2
-  bash(`cb app seek 1.5 "${PROJECT}"`); // the headline in the preview, so its change shows
   view();
   edit("fontSize={150}", "fontSize={144}");
   steps.push({ wait: { cue: "gone", timeout: 6 } }); // the human leaves: the operator's cue, else 6 s
   steps.push({ wait: { cue: "cut-main", timeout: 30 } }); // back to Main cut, through the chip (as above)
+  // back on Main, the playhead straight back to Claude 1's last line (the dry run: ~3 s of the promo's headline), once
+  // the editor has Main's conversation again (a seek before then stops at Edit v2's end)
+  appHas({ duration: at("l4").end, items });
+  bash(`cb app seek ${r2(at("l5").at - LEAD)} "${PROJECT}"`);
   title(at("l5"));
   show(at("l5")); // "He's gone." typed in, and the playhead stays on it
   // the turn stays open until the operator ends it (GET /cue/end): at its end the chat folds it into "Worked for …"

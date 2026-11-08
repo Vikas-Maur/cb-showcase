@@ -72,6 +72,7 @@ const visible = `(e) => { const r = e.getBoundingClientRect(); return r.width > 
 const middle = (find) => `(() => { const vis = ${visible}; const e = ${find}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
 const CUT_ITEM = (name) => middle(`[...document.querySelectorAll(${JSON.stringify(`${MENU} [data-carton-cut-name=${JSON.stringify(name)}]`)})].find(vis)`);
 const SWITCH_NOW = middle(`[...document.querySelectorAll('${MENU} [data-carton-cut-choice="now"]')].find(vis)`);
+const TOAST_CLOSE = middle(`[...document.querySelectorAll('.carton-toast button[aria-label="Close"]')].find(vis)`);
 const SIDEBAR_OPEN = `!!document.querySelector(".carton-sidebar")?.offsetParent`;
 // the timeline's items, from the editor's React state
 const ITEMS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]]; let tl = null;
@@ -155,7 +156,7 @@ function watchNotices(page) {
     const closed = await h.until(async () => !(await h.ev(E, SIDEBAR_OPEN)), 3000, 100);
     log(closed ? "History closed" : "ERR History still open after its shortcut"); await shot("history-closed");
   };
-  const chipSwitch = async (name) => {
+  const chipSwitch = async (name, toastFor = 1200) => {
     const slug = name.toLowerCase().replace(/\W+/g, "-");
     const c = await h.center("tabs.html", CHIP);
     if (!c) throw new Error("no cut chip in the title bar");
@@ -171,6 +172,10 @@ function watchNotices(page) {
     if (now) { await shot(`chip-menu-${slug}-switch-now`); await sleep(700); await h.mouse(ed, now.x, now.y); log("clicked Switch now"); }
     const on = await h.until(async () => (await chipCut()) === name, 8000, 150);
     log(on ? `chip says ${name}` : `ERR chip still says ${await chipCut()}`);
+    // The switch's toast ("You're on … now · Switch back to …") sits over the preview's bottom edge for ~6 s: seen for a
+    // beat, then closed with its ✕, as a person would (the dry run: it covered "Fine!…" and "He's gone." typing in)
+    const x = await h.until(() => h.ev(E, TOAST_CLOSE), 2500, 100);
+    if (x) { await sleep(toastFor); await h.mouse(ed, x.x, x.y); log(`switch toast closed after ${toastFor} ms`); } else log("no switch toast seen");
   };
   const asked = {};
   const operator = (name, act) => {
@@ -195,8 +200,8 @@ function watchNotices(page) {
         setTimeout(async () => { const r = await cue("gone"); log(`cue gone sent (${GONE_AFTER} s after the stand-in's wait was noticed): ${r}`); }, GONE_AFTER * 1000);
       }
       if (o.event === "wait" && o.cue === "history") operator("history", closeHistory);
-      if (o.event === "wait" && o.cue === "cut-v2") operator("cut-v2", async () => { await sleep(600); await chipSwitch("Edit v2"); });
-      if (o.event === "wait" && o.cue === "cut-main") operator("cut-main", async () => { await sleep(600); await chipSwitch("Main cut"); });
+      if (o.event === "wait" && o.cue === "cut-v2") operator("cut-v2", async () => { await sleep(600); await chipSwitch("Edit v2", 1500); });
+      if (o.event === "wait" && o.cue === "cut-main") operator("cut-main", async () => { await sleep(600); await chipSwitch("Main cut", 900); });
       if (o.event === "wait" && o.cue === "end" && !endAsked) {
         endAsked = true; at("standin-waits-end");
         setTimeout(async () => { const r = await cue("end"); log(`cue end sent (${END_AFTER} s after the stand-in's wait was noticed): ${r}`); }, END_AFTER * 1000);
