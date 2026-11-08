@@ -20,7 +20,10 @@ const REMOTE = "Claude"; // Claude 2's name in the project (`peer join … --nam
 const LOCAL = "Claude Code"; // how Claude 2's stream names Claude 1's edits ("Vikas's Claude Code")
 const CUT = "Edit v2"; // the person's cut for the hide: an innocent name
 const START = 25; // the conversation begins after the 24 s promo
-const GAP = 0.6;
+const GAP = 0.6; // before each of Claude 2's lines
+// a line's title stays this long after it has been heard or typed: the Pause after it can land a second or two late (the
+// Linux rehearsal), and the title must still be in the preview when it does
+const HOLD = 2.5;
 // Every line big (96 px) and in the centre of the frame, each Claude in its own look (rendered in Cardboard's editor first):
 // Claude 2 a dark box outlined in its History colour, decoding in with Cardboard's Glitch (daemon.js STYLES.remote);
 // Claude 1 a solid box in Claude's coral, typed in with Typewriter. The conversation's tracks are promo.tsx's first three,
@@ -58,10 +61,14 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
 (async () => {
   // 1. Claude 2's voices, and the layout
   fs.mkdirSync(VOICES, { recursive: true });
-  let t = START;
+  // Claude 1's titles start as the line before ends (no gap): Claude 1 seeks just before its title, into a line the
+  // editor already has, so a seek can never stop at the editor's old end (where Play plays from 0), even if the editor
+  // were late with the new title
+  let end = START - GAP;
   const layout = [];
   for (const L of LINES) {
-    if (L.local) { const type = typeFor(L.local), d = r1(type + readFor(L.local)); layout.push({ ...L, type, at: r1(t), dur: d, end: r1(t + d) }); t += d + GAP; continue; }
+    if (L.local) { const type = typeFor(L.local), d = r1(type + readFor(L.local) + HOLD); layout.push({ ...L, type, at: r1(end), dur: d, end: r1(end + d) }); end = r1(end + d); continue; }
+    let t = end + GAP;
     const parts = [];
     for (const [k, text] of L.remote.entries()) {
       const label = L.remote.length > 1 ? `${L.label}${k ? " (2)" : ""}` : L.label;
@@ -70,12 +77,13 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
       const file = path.join(dir, label.replace(/[^\p{L}\p{N} ()-]+/gu, "").trim() + ".wav");
       if (!fs.existsSync(file)) await tts.synth(flat(text), { voice: VOICE, speed: SPEED, out: file });
       const secs = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], { encoding: "utf8" }).trim());
-      const d = r1(C2_IN + Math.max(secs + 0.4, readFor(text)));
+      const last = k === L.remote.length - 1;
+      const d = r1(C2_IN + Math.max(secs + 0.4, readFor(text)) + (last ? HOLD : 0));
       parts.push({ text, label, file, voiceSecs: secs, at: r1(t), voiceAt: r1(t + C2_IN), dur: d, end: r1(t + d) });
       t += d + 0.25;
     }
-    t += GAP - 0.25;
     layout.push({ ...L, parts, at: parts[0].at, end: parts.at(-1).end });
+    end = parts.at(-1).end;
   }
   const at = (id) => layout.find((x) => x.id === id);
 
@@ -122,15 +130,15 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
     bash(`cb app pause "${PROJECT}"`);
   };
 
-  // Claude 1's own title in the preview, typed in: the app has it, the playhead just before it (in the gap after the line
-  // before, where nothing shows: each Play runs ~0.3 s and hops back to where it began, so the hop happens there), Play,
-  // and Pause once it's typed. Claude 2 waits for that (claude2-cues.yaml) before its next line lands.
+  // Claude 1's own title in the preview, typed in: the app has it, the playhead just before it (on the end of the line
+  // before: each Play runs ~0.3 s and hops back to where it began, so the hop happens there), Play, and Pause once it's
+  // typed. Claude 2 waits for that (claude2-cues.yaml) before its next line lands.
   const LEAD = 0.45;
   const show = (L) => {
     appHas({ duration: L.end, items });
     bash(`cb app seek ${r2(L.at - LEAD)} "${PROJECT}"`);
     bash(`cb app play "${PROJECT}"`);
-    steps.push({ wait: { played: r2(L.at + L.type + 0.8), timeout: 20 } });
+    steps.push({ wait: { played: r2(L.at + L.type + 0.5), timeout: 20 } });
     bash(`cb app pause "${PROJECT}"`);
   };
 

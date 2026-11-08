@@ -85,7 +85,7 @@
   {
    "wait": {
     "app": {
-     "duration": 30.5,
+     "duration": 33,
      "items": 10
     },
     "timeout": 20
@@ -154,12 +154,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\" />\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"Who are you? I am claude\"} start={31.1} end={34.6} textContent={\"Who are you? I am claude\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n    </track>\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"Who are you? I am claude\"} start={33} end={39} textContent={\"Who are you? I am claude\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n    </track>\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 34.6,
+     "duration": 39,
      "items": 12
     },
     "timeout": 20
@@ -167,7 +167,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 30.65 \"Morning Brew promo\""
+   "command": "cb app seek 32.55 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -175,7 +175,7 @@
   },
   {
    "wait": {
-    "played": 32.4,
+    "played": 34,
     "timeout": 20
    }
   },
@@ -193,7 +193,7 @@
   {
    "wait": {
     "app": {
-     "duration": 40.7,
+     "duration": 45.1,
      "items": 13
     },
     "timeout": 20
@@ -201,7 +201,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 36.2 \"Morning Brew promo\""
+   "command": "cb app seek 40.6 \"Morning Brew promo\""
   },
   {
    "wait": {
@@ -228,7 +228,7 @@
   },
   {
    "wait": {
-    "played": 44.84,
+    "played": 49.24,
     "timeout": 25
    }
   },
@@ -255,12 +255,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"Wait a second, my user is sitting on his\"} start={47.1} end={53} textContent={\"Wait a second, my user is\\nsitting on his seat. I'll tell\\nhim about the situation.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 1.4 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"Wait a second, my user is sitting on his\"} start={53.4} end={61.8} textContent={\"Wait a second, my user is\\nsitting on his seat. I'll tell\\nhim about the situation.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 1.4 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 53,
+     "duration": 61.8,
      "items": 17
     },
     "timeout": 20
@@ -268,7 +268,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 46.65 \"Morning Brew promo\""
+   "command": "cb app seek 52.95 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -276,7 +276,7 @@
   },
   {
    "wait": {
-    "played": 49.3,
+    "played": 55.3,
     "timeout": 20
    }
   },
@@ -294,7 +294,7 @@
   {
    "wait": {
     "app": {
-     "duration": 59.1,
+     "duration": 67.9,
      "items": 18
     },
     "timeout": 20
@@ -302,7 +302,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 54.6 \"Morning Brew promo\""
+   "command": "cb app seek 63.4 \"Morning Brew promo\""
   },
   {
    "wait": {
@@ -329,7 +329,7 @@
   },
   {
    "wait": {
-    "played": 65.58,
+    "played": 74.48,
     "timeout": 27
    }
   },
@@ -353,12 +353,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"I'm sorry but I can't do that.\"} start={66.1} end={69.9} textContent={\"I'm sorry but I can't do that.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"I'm sorry but I can't do that.\"} start={76.9} end={83.2} textContent={\"I'm sorry but I can't do that.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 69.9,
+     "duration": 83.2,
      "items": 22
     },
     "timeout": 20
@@ -366,7 +366,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 65.65 \"Morning Brew promo\""
+   "command": "cb app seek 76.45 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -374,7 +374,7 @@
   },
   {
    "wait": {
-    "played": 67.4,
+    "played": 77.9,
     "timeout": 20
    }
   },
@@ -392,7 +392,7 @@
   {
    "wait": {
     "app": {
-     "duration": 76.1,
+     "duration": 91.9,
      "items": 23
     },
     "timeout": 20
@@ -400,7 +400,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 71.5 \"Morning Brew promo\""
+   "command": "cb app seek 84.8 \"Morning Brew promo\""
   },
   {
    "wait": {
@@ -427,7 +427,7 @@
   },
   {
    "wait": {
-    "played": 76.2,
+    "played": 89.5,
     "timeout": 21
    }
   },
@@ -451,12 +451,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"Fine! But I won't do anything suspicious\"} start={76.7} end={81.6} textContent={\"Fine! But I won't do anything\\nsuspicious or harmful.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.9 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"Fine! But I won't do anything suspicious\"} start={91.9} end={99.3} textContent={\"Fine! But I won't do anything\\nsuspicious or harmful.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={96} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.9 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 81.6,
+     "duration": 99.3,
      "items": 25
     },
     "timeout": 20
@@ -464,7 +464,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 76.25 \"Morning Brew promo\""
+   "command": "cb app seek 91.45 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -472,7 +472,7 @@
   },
   {
    "wait": {
-    "played": 78.4,
+    "played": 93.3,
     "timeout": 20
    }
   },
@@ -536,12 +536,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"He's gone.\"} start={82.2} end={85.2} textContent={\"He's gone.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={128} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"He's gone.\"} start={99.3} end={104.8} textContent={\"He's gone.\"} zIndex={100} fontFamily=\"Satoshi\" fontSize={128} fontWeight=\"700\" color=\"#FFFFFF\" textAlign=\"center\" lineHeight={1.22} backgroundColor=\"#D97757\" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor=\"#7A3018\" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 85.2,
+     "duration": 104.8,
      "items": 26
     },
     "timeout": 20
@@ -549,7 +549,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 81.75 \"Morning Brew promo\""
+   "command": "cb app seek 98.85 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -557,7 +557,7 @@
   },
   {
    "wait": {
-    "played": 83.5,
+    "played": 100.3,
     "timeout": 20
    }
   },
