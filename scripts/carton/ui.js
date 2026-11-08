@@ -83,7 +83,7 @@ function stepper(bridge) {
 }
 
 // (imported here, beside the toasts that use it, rather than in the long import line other workstreams edit)
-import { clockOfDay, firstName } from "@carton/react";
+import { clockOfDay, firstName, keepNameNumbers } from "@carton/react";
 
 /**
  * A landmark's picture (Carton UX v2, DESIGN-V2 §2.2): what the stage shows now, as one 88 × 50 JPEG, drawn from the
@@ -225,6 +225,17 @@ function tellStep(bridge, s) {
   steps.after(s.which, /restore$/.test(s.told) ? "restore" : "fold", { status: "confirmed", told: s.told, made: s.made });
 }
 
+// The recording switch (CARTON_AGENT_NAME on Cardboard's process; README "Carton: settings for a recording"; temporary,
+// for the demo video): asked of the worker once per page (again only after a failed ask). On, a teammate's "Claude 2"
+// keeps its number on this page too (@carton/react keepNameNumbers), set before History's first rows and the first
+// live status are drawn. Off (every normal run), or no answer: nothing changes.
+let recordingAsk = null;
+function askRecording(bridge) {
+  return (recordingAsk ??= Promise.resolve()
+    .then(() => bridge.call("recording", []))
+    .then((r) => { if (r?.on === true) keepNameNumbers(true); }, () => { recordingAsk = null; }));
+}
+
 function connect(projectId, bridge) {
   const client = projectId + ":" + Math.random().toString(36).slice(2);
   const r = remoteUi((message) => bridge.call("ui", [{ projectId, client, message }]).catch((e) => console.warn("[carton] the History panel lost the worker:", e?.message ?? e)));
@@ -323,7 +334,8 @@ function connect(projectId, bridge) {
   // unmark(): your edit held read-only in place (the bridge's hold), so the stage shows your edit: marked at once, and
   // any swap still loading is no longer the newest
   const offCompare = attachCompare(r.ui, { bridge, projectId, swap, unmark: () => setStage(++swapSeq, null, null), cancelView: () => { ++viewSeq; pending = null; }, view });
-  return { ...r, close: () => { offCompare(); off(); offViewing(); } };
+  // (ready once the recording switch is known too: History's first rows are named by it)
+  return { ...r, ready: Promise.all([r.ready, askRecording(bridge)]).then(() => {}), close: () => { offCompare(); off(); offViewing(); } };
 }
 
 /**
@@ -1146,7 +1158,8 @@ function useLiveStatus(projectId, bridge) {
   const [st, setSt] = useState(null);
   useEffect(() => {
     let live = true;
-    bridge.call("liveStatus", [{ projectId }]).then((s) => live && setSt(s), () => {});
+    // (with the recording switch known: "Claude 2 is here" is named by it)
+    Promise.all([bridge.call("liveStatus", [{ projectId }]), askRecording(bridge)]).then(([s]) => live && setSt(s), () => {});
     const off = bridge.onEvent((ev) => { if (live && ev?.id === projectId && ev.topic === "live") setSt((s) => ({ ...s, ...ev.live })); });
     return () => { live = false; if (typeof off === "function") off(); };
   }, [projectId, bridge]);

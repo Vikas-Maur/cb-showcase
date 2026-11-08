@@ -127,6 +127,13 @@ export interface FromCartonOptions {
    * per version). Without it the panel shows no pictures. `put` takes a `data:image/jpeg` URL (at most 64 KB).
    */
   pictures?: { get(key: string): Promise<string | null>; put(key: string, jpeg: string): Promise<void> };
+  /**
+   * Names the person's own agents go by, per product (`{ "claude-code": "Claude 1" }`), in place of the product's name:
+   * every slot this handle names them in (rows, a turn, credits, cards, landmarks; so the page's toasts and tooltips
+   * too). Someone else's agents, and what other computers show, are unchanged. Cardboard: CARTON_AGENT_NAME, for
+   * recordings. Default: none.
+   */
+  ownAgentNames?: Readonly<Record<string, string>>;
 }
 
 export interface CartonUiHandle extends CartonUi {
@@ -199,6 +206,15 @@ const agentIdOf = (a: CoreActor): string => {
 // Agents by their product name, from their id ("director/<chat>/<turn>", "claude-code/<session>", "codex/<name>",
 // "claude-code@<host>"), never the machine or the terminal they ran in.
 const PRODUCTS: Readonly<Record<string, string>> = { director: "Director", "claude-code": "Claude Code", codex: "Codex", gemini: "Gemini", cursor: "Cursor" };
+/** Which of PRODUCTS an agent is (its key: "claude-code"), by its id, a view's provider or an old view's name; else undefined. */
+function productOf(a: CoreActor): string | undefined {
+  if (a.kind === "external") {
+    if (!viewAgent(a)) return undefined;
+    return a.provider && PRODUCTS[a.provider] ? a.provider : Object.keys(PRODUCTS).find((k) => PRODUCTS[k] === viewAgent(a));
+  }
+  const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
+  return PRODUCTS[head] ? head : a.provider && head.startsWith(a.provider) && PRODUCTS[a.provider] ? a.provider : undefined;
+}
 function productName(a: CoreActor): string {
   const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
   const known = PRODUCTS[head] ?? (a.provider && head.startsWith(a.provider) ? PRODUCTS[a.provider] : undefined);
@@ -239,8 +255,12 @@ const isPersonsWriter = (a: CoreActor): boolean => (a.kind === "external" && !vi
  * agent's change with its `owner`, the person behind the replica that made it: someone else's agent gets them as its
  * parent ("Leo's Director"); with no owner known, an agent is yours when it is in your undo group. A system actor
  * (the cut's start) has no name. Keys follow core's actorKey(); a subagent's parent is its agent.
+ *
+ * `ownNames` (FromCartonOptions.ownAgentNames): the person's own agents of a product go by that name instead ("Claude
+ * 1" for their Claude Code); someone else's never. `inApp`: the agent is the person's own whoever core says recorded it
+ * (an in-app turn main told, setWorking), for its name only.
  */
-export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
+export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string, ownNames?: Readonly<Record<string, string>>, inApp = false): Actor {
   if (!a) return SYSTEM;
   const key = actorKey(a);
   if (a.kind === "system") return { key, kind: "system", name: "" };
@@ -253,7 +273,8 @@ export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGrou
     if (a.kind === "human") return { key, kind: "human", name: a.name ?? (a.id === PERSON ? "Teammate" : a.id) };
     return owner ? { key: ownerKey!, kind: "human", name: owner.name } : { key, kind: "human", name: "Teammate" };
   }
-  const name = viewAgent(a) ?? productName(a);
+  const product = ownNames && (mine || inApp) ? productOf(a) : undefined;
+  const name = (product !== undefined ? ownNames![product] : undefined) || (viewAgent(a) ?? productName(a));
   const model = modelWords(a.model);
   const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : mine ? meKey : ownerKey;
   return { key, kind: a.kind === "subagent" ? "subagent" : "agent", name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(model ? { model } : {}), ...(mine ? { isYou: true } : {}) };
@@ -379,8 +400,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const schema = carton.schema;
   const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
-  const ui = (a: CoreActor | null | undefined): Actor => {
-    const x = toUiActor(a, opts.me, myGroup);
+  const ownNames = opts.ownAgentNames && Object.keys(opts.ownAgentNames).length ? opts.ownAgentNames : undefined;
+  const ui = (a: CoreActor | null | undefined, inApp = false): Actor => {
+    const x = toUiActor(a, opts.me, myGroup, ownNames, inApp);
     const known = actors.get(x.key);
     if (known && known.name === x.name && known.parent === x.parent && known.isYou === x.isYou) return known;
     actors.set(x.key, x);
@@ -2133,7 +2155,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       const since = turn.since ?? clock();
       const actorsNow = new Set(turn.actors?.length ? turn.actors : [turn.actor.id]);
-      const actor = ui(turn.actor);
+      // (the turn is an in-app agent's: the person's own, named as their own agents are)
+      const actor = ui(turn.actor, true);
       // the same turn again (a panel told twice): what it changed so far stays (review of the UX data #9)
       const same = !!workingTurn && !!working && working.actor.key === actor.key && workingTurn.since === since && (workingTurn.cut ?? null) === (turn.cut ?? null);
       const records = same ? workingTurn!.records : new Set<string>();

@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { extend, cardboard14, headScope } from "../carton-node.js";
+import { extend, cardboard14, headScope, RECORDING } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
 import { cardboardAdapter, materializeProject, projectProblems } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
@@ -560,19 +560,27 @@ extend({
         if (!cfg) throw new Error("Share this project first");
         const token = await store.sessionFor(bundlePath, projectId).token();
         const inv = await host.createInvite({ host: cfg.host, projectId, token, role, ttlMs });
-        // Carton UX v2 (N0): a link made is a Sent landmark (DESIGN-V2 §2.1), off the answer's path
-        void Promise.resolve(api.carton?.(projectId)).then((lc) => lc?.carton.mark?.("sent", { label: role === "viewer" ? "Shared a link to watch" : "Shared a link to edit", ...(api.actorOf ? { by: api.actorOf("person") } : {}) })).catch(() => {});
+        // Carton UX v2 (N0): a link made is a Sent landmark (DESIGN-V2 §2.1), off the answer's path. Not while recording
+        // (carton-node.js RECORDING, CARTON_AGENT_NAME; fix/take5-names): the demo wants no "Shared with Shared a link to
+        // edit" row (landmarkTitle wraps this label), so a link made then marks nothing.
+        if (!RECORDING) void Promise.resolve(api.carton?.(projectId)).then((lc) => lc?.carton.mark?.("sent", { label: role === "viewer" ? "Shared a link to watch" : "Shared a link to edit", ...(api.actorOf ? { by: api.actorOf("person") } : {}) })).catch(() => {});
         // with when it stops working, when its token says (the Share dialog keeps a link only until then)
         const expiresAt = host.inviteExpiry(inv);
         return { link: host.inviteLink(cfg.host, projectId, inv), role, ...(expiresAt ? { expiresAt } : {}) };
       },
-      /** Join a shared project from an invite link: a new project in this library, synced from the host. */
-      async liveJoin({ link, name }) {
+      /**
+       * Join a shared project from an invite link: a new project in this library, synced from the host. `account`
+       * (optional): the account to join under, where it would otherwise be made from `name` ("Claude 2" → "Claude-2").
+       * The person is then shown by `name` and coloured by `account` (History's colour hashes `human/<account>`), so a
+       * recording's "Claude 2" keeps the colour of account "Claude". Taken through accountId(), as a name is.
+       */
+      async liveJoin({ link, name, account: asAccount }) {
         const l = host.parseInviteLink(link);
         if (!l) throw new Error("That isn't an invite link (it looks like https://host/#join=…)");
+        if (asAccount != null && (typeof asAccount !== "string" || !asAccount.trim())) throw new Error("The account to join under must be a name");
         const library = api.library;
         if ((await library.projects.list()).some((p) => p.id === l.projectId)) throw new Error("This project is already in your library");
-        const account = host.accountId(name);
+        const account = host.accountId(asAccount ?? name);
         const s = await host.join({ host: l.host, projectId: l.projectId, invite: l.invite, account, installKey: store.installKey() });
         const bytes = await host.getBlob({ host: l.host, projectId: l.projectId, token: s.token, key: host.DESCRIPTOR_KEY });
         if (!bytes) throw new Error("The host has no share data for this project yet: ask its owner to share it again");

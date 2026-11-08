@@ -42,11 +42,23 @@ export const NO_NAME = "Teammate";
 
 /**
  * A teammate as every author slot names them (design QA G27): their first name, "Leo" for "Leo Park", as DESIGN has it
- * ("Leo's Director", "Leo's Main cut", "Leo and Mia are here"). No name at all: NO_NAME.
+ * ("Leo's Director", "Leo's Main cut", "Leo and Mia are here"). No name at all: NO_NAME. With the recording's rule on
+ * (keepNameNumbers), a name whose rest is only a number is all of it: "Claude 2", "Cam 3".
  */
 export function firstName(name: unknown): string {
   const n = typeof name === "string" ? name.trim() : "";
-  return n ? n.split(/\s+/)[0]! : NO_NAME;
+  if (!n) return NO_NAME;
+  const parts = n.split(/\s+/);
+  return keepNumbers && parts.length === 2 && /^\p{Nd}+$/u.test(parts[1]!) ? `${parts[0]} ${parts[1]}` : parts[0]!;
+}
+
+// A recording's setting, off unless a host turns it on (Cardboard: CARTON_AGENT_NAME on its process, README "Carton:
+// settings for a recording"; temporary, for the demo video): a name whose rest is only a number keeps it, "Claude 2"
+// where firstName() would say "Claude". Per process: Cardboard's worker and its editor page each turn it on.
+let keepNumbers = false;
+/** Turns the recording's name rule on or off (off by default): firstName("Claude 2") is then "Claude 2". */
+export function keepNameNumbers(on: boolean): void {
+  keepNumbers = on === true;
 }
 
 /**

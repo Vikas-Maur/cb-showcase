@@ -21,7 +21,7 @@ import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
-import { fromCarton, serveUi, commentsUi, serveComments, toUiActor, actorLabel } from "@carton/react";
+import { fromCarton, serveUi, commentsUi, serveComments, toUiActor, actorLabel, keepNameNumbers } from "@carton/react";
 import { Comments } from "@carton/comments";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
@@ -546,6 +546,20 @@ const meOf = (lc) => {
   const who = lc.carton.identity?.();
   return who ? { kind: "human", id: who.id, name: who.name, group: localGroup(), app: true } : actorOf("person");
 };
+// The recording switch (README "Carton: settings for a recording"; temporary, for the demo video): CARTON_AGENT_NAME on
+// Cardboard's process ("Claude 1") turns it on. Main forks this worker without an env of its own, so it has main's.
+// Unset, as in every normal run, nothing changes. On, on this machine only:
+//   - the person's own Claude Code goes by that name wherever this app names it (History's rows and its working turn,
+//     credits, cards, toasts, tooltips, who asked for a Compare), where it reads "Claude Code": the panels' view model
+//     names it so (fromCarton's ownAgentNames). A teammate's agents, and what other computers show, are as they were.
+//   - a teammate's name whose rest is only a number keeps it, "Claude 2" (@carton/react keepNameNumbers): in this
+//     process, and in the editor's page, which asks `recording` (scripts/carton/ui.js).
+//   - making an invite link adds no Sent landmark (sync/worker.js liveInvite).
+export const RECORDING = (() => {
+  const n = String(process.env.CARTON_AGENT_NAME ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 40);
+  return n ? Object.freeze({ agentName: n, ownAgentNames: Object.freeze({ "claude-code": n }) }) : null;
+})();
+if (RECORDING) keepNameNumbers(true);
 
 // The app's Ctrl+Z and redo (H6): the person's undo group in the editor's session (`since`, the bridge's), only what was
 // made from the app (`app`). An undo whose inverse clashes with a later change of the same thing changes nothing
@@ -1772,7 +1786,7 @@ export const cardboard14 = {
       try {
         const lc = await lcOf(projectId);
         const me = lc ? meOf(lc) : actorOf("person");
-        const x = by && typeof by.id === "string" && typeof by.kind === "string" ? toUiActor(by, me, localGroup()) : null;
+        const x = by && typeof by.id === "string" && typeof by.kind === "string" ? toUiActor(by, me, localGroup(), RECORDING?.ownAgentNames) : null;
         const said = x ? actorLabel(x, undefined, "You") : "";
         if (said) return said;
       } catch {}
@@ -1788,7 +1802,7 @@ export const cardboard14 = {
       // docs/carton-ux PLAN 7.1), in the same units.
       const bundlePath = bundleOf(projectId);
       // Carton UX v2 (N0): a landmark's picture (DESIGN-V2 §2.2), kept beside the project's history as a small JPEG
-      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue, ...(bundlePath ? { pictures: landmarkPictures(bundlePath) } : {}) });
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard, valueWords: cardboardValue, ...(bundlePath ? { pictures: landmarkPictures(bundlePath) } : {}), ...(RECORDING ? { ownAgentNames: RECORDING.ownAgentNames } : {}) });
       const ui = handle.ui ?? handle;
       // the editor opened the project: how it was then is a Start landmark (once per version, this person's own)
       void lc.carton.mark?.("start", { once: "version", by: me }).catch(() => {});
@@ -2009,6 +2023,8 @@ export const cardboard14 = {
     };
     return {
       ping: async () => "pong",
+      // The recording switch (RECORDING), for the editor's page: on, it turns on the name rule there too. Off: { on: false }.
+      recording: async () => ({ on: !!RECORDING }),
       // Carton UX v2 (N0): a page's answer to an agent's Compare (`compare` event): opened, offered or refused
       compareAnswer: async ({ request, status, why }) => {
         const f = compareAsks.get(String(request));

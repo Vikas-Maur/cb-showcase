@@ -1260,6 +1260,35 @@ Still to check on the Windows laptop: the Share panel in the real editor, a team
 (Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
 under Defender.
 
+#### Carton: settings for a recording
+
+A temporary switch for recording the demo video. Two Claude Code agents appear in it: "Claude 1" in your Cardboard,
+and "Claude 2", which joins the shared project from another machine. **It is off unless set, and off it changes
+nothing.**
+
+- **`CARTON_AGENT_NAME`** (e.g. `Claude 1`) in Cardboard's environment turns it on for that computer. Set it in a
+  console and start Cardboard from there: `set CARTON_AGENT_NAME=Claude 1`, then `Cardboard.exe`. The library worker
+  gets it from the app, and the editor's page asks the worker once (`carton.recording`). With it on:
+  - your own Claude Code goes by that name wherever this app names it: History's rows and its turn while it works,
+    credits, conflict cards, toasts, tooltips, and who asked for a Compare. Without the switch it reads "Claude Code".
+    Its mark stays Claude's for a name with "Claude" in it. A teammate's agents keep their names, and other computers
+    still see yours as before. The name is cut to 40 characters.
+  - a teammate's name whose rest is only a number keeps it: "Claude 2" stays "Claude 2" in History, the title bar's
+    "… is here", presence and the cards. Without the switch it is shortened to "Claude", like "Leo" for "Leo Park".
+    "Leo Park" is still "Leo" either way.
+  - making an invite link adds no Sent landmark. Without the switch it adds one, which History shows as "Shared with
+    Shared a link to edit". A Sent made before the switch was turned on still shows that way.
+- **Joining under a given account** (any computer, no switch needed): `carton.liveJoin({ link, name, account })`.
+  The participant is shown as `name` and coloured by `account`, because History colours a person by their account.
+  So `{ name: "Claude 2", account: "Claude" }` keeps the colour account "Claude" always had, where the name alone
+  would make account "Claude-2" and a new colour. `account` is cleaned like a name (letters, digits, `.`, `_`, `~`
+  and `-`, at most 64 characters), and anything but a non-empty string is refused. Leave it out and the account
+  comes from the name, as before.
+
+Tests: `scripts/carton/test/sync/take5-recording.test.js` (two real workers, one with the switch),
+`scripts/carton/test/recording.test.js` (the editor's page with the switch on, off, and unanswered), and
+`carton/packages/react/test/take5-names.test.ts`.
+
 ### Benchmarks
 
 `scripts\bench\` measures builds against each other on one machine, the way someone uses Cardboard. It runs the real
