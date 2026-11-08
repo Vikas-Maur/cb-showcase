@@ -296,9 +296,16 @@ async function streamMessage(req, res, body, msg, index) {
   ev("message_start", { message: { id: newId("msg_actor_"), type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage } });
   const ping = setInterval(() => ev("ping", {}), 5000);
   let i = 0, outTokens = 0, stop = "end_turn";
-  // A quiet scene's lines all go into one text block, a paragraph each: Cardboard's chat shows only a message's newest
-  // text block, so separate ones replaced each other there (take 5), and a thought after the first line is time only
-  let openText = null;
+  // A quiet scene's lines: Cardboard's chat shows only a message's newest text block (separate lines replaced each other,
+  // take 5), so each line's block holds every line so far; between lines a thinking block stays open (see below)
+  let openThink = null;
+  const said = [];
+  const closeThink = () => {
+    if (openThink === null) return;
+    ev("content_block_delta", { index: openThink, delta: { type: "signature_delta", signature: "actor-" + index + "-" + openThink } });
+    ev("content_block_stop", { index: openThink });
+    openThink = null;
+  };
   try {
     for (const b of msg.blocks) {
       if (!alive()) return;
@@ -308,7 +315,13 @@ async function streamMessage(req, res, body, msg, index) {
         continue;
       }
       if (b.do) { await doTool(b.do, index); continue; }
-      if (b.think !== undefined && openText !== null) { await sleep(b.ms); continue; }
+      if (b.think !== undefined && scene.quiet) {
+        // (quiet: one thinking block stays open from a line to the next, through the waits and tool steps, so the chat's
+        // status line reads "Thinking" the whole time: Cardboard drops it while a text block streams, take 6)
+        if (openThink === null) { ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "" , signature: "" } }); ev("content_block_delta", { index: i, delta: { type: "thinking_delta", thinking: fill(b.think) } }); openThink = i++; }
+        await sleep(b.ms);
+        continue;
+      }
       if (b.think !== undefined) {
         ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "", signature: "" } });
         const parts = chunks(fill(b.think), 12), step = Math.max(20, Math.floor(b.ms / Math.max(1, parts.length)));
@@ -320,11 +333,16 @@ async function streamMessage(req, res, body, msg, index) {
         if (!text) continue;
         const per = Math.max(2, Math.round(b.cps / 10));
         if (scene.quiet) {
-          // (the one text block: opened by the first line, each next line a new paragraph in it, closed at the end)
-          const at = openText ?? i;
-          if (openText === null) { ev("content_block_start", { index: i, content_block: { type: "text", text: "" } }); openText = i++; }
-          else ev("content_block_delta", { index: at, delta: { type: "text_delta", text: "\n\n" } });
-          for (const p of chunks(text, per)) { if (!alive()) return; ev("content_block_delta", { index: at, delta: { type: "text_delta", text: p } }); await sleep(100); }
+          // (each line a new text block holding every line so far, a paragraph each, whole at once: the chat shows a
+          // message's newest text block, so the lines list up; then thinking again at once, so "Thinking" stays put)
+          closeThink();
+          said.push(text);
+          ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
+          ev("content_block_delta", { index: i, delta: { type: "text_delta", text: said.join("\n\n") } });
+          ev("content_block_stop", { index: i++ });
+          ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "", signature: "" } });
+          ev("content_block_delta", { index: i, delta: { type: "thinking_delta", thinking: "Checking what comes next." } });
+          openThink = i++;
           outTokens += Math.ceil(text.length / 4);
           continue;
         }
@@ -348,7 +366,7 @@ async function streamMessage(req, res, body, msg, index) {
         log({ event: "tool", index, name, input: name === "Edit" ? { file_path: input.file_path, old: String(input.old_string).slice(0, 60), new: String(input.new_string).slice(0, 80) } : input });
       }
     }
-    if (openText !== null) ev("content_block_stop", { index: openText });
+    closeThink();
     if (stop === "end_turn" && !outTokens) {
       // a message with no text and no tool call reads as a broken stream to Claude Code, and only spaces as an empty answer
       // it asks again for: a zero-width space, which shows as nothing

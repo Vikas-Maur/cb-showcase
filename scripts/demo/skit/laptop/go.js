@@ -104,6 +104,59 @@ const NOTICE_WATCH = `(() => { if (window.__skitNotices) return "already"; const
 const NOTICE_FIND = `(() => { const N = window.__skitNotices; const n = [...document.querySelectorAll(".carton-media-notice")].find((n) => n.getBoundingClientRect().width > 0);
   if (!n) return null; const b = n.querySelector("button"); if (!b) return null; const r = b.getBoundingClientRect(); const m = N?.get(n) ?? { seen: null, text: n.innerText.replace(/\\s+/g, " ").trim() };
   if (N && !N.has(n)) N.set(n, m); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label"), seen: m.seen, text: m.text }; })()`;
+// Recording only (take 7): History's own first rows (START "How it was when you opened it", the promo setup's version by
+// "Teammate", "Project created") are hidden, and three made-up rows by You are drawn in their place, so the project reads
+// as one You had been editing. Drawn over Carton's virtual list, from a copy of a real row; nothing in Cardboard changes.
+const FAKE_HISTORY = `(() => {
+  if (window.__skitFake) return "already";
+  const now = Date.now(), clock = (m) => new Date(now - m * 60000).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  const DUMMY = [["Swapped in the new product shots", "4 changes", 9], ["Tightened the intro", "2 changes", 23], ["First cut of the promo", "12 changes", 41]];
+  const isSetup = (row) => row.matches(".carton-start") || !!row.querySelector('.carton-landmark-tag[data-kind="start"], .carton-landmark-tile[data-kind="start"]') || /Teammate/.test(row.querySelector(".carton-version-meta")?.textContent ?? "");
+  const ty = (w) => Number((/translateY\\(([-\\d.]+)px\\)/.exec(w.style.transform) ?? [])[1] ?? 0);
+  const make = (tpl, [title, count, ago]) => {
+    const r = tpl.cloneNode(true);
+    r.removeAttribute("id"); r.removeAttribute("aria-selected"); r.removeAttribute("data-active"); r.removeAttribute("data-start"); r.classList.remove("carton-start");
+    r.setAttribute("data-kind", "edit"); r.style.pointerEvents = "none";
+    const mark = r.querySelector(".carton-landmark-tile, .carton-version-mark");
+    const av = document.createElement("span"); av.className = "carton-version-mark"; av.setAttribute("aria-hidden", "true");
+    av.innerHTML = '<span class="carton-avatar" data-kind="human" style="width:20px;height:20px;font-size:8px;--carton-actor:#8f9cff"><span class="carton-avatar-initials">Y</span></span>';
+    if (mark) mark.replaceWith(av); else r.prepend(av);
+    const t = r.querySelector(".carton-version-title"); if (t) { t.removeAttribute("data-tail"); t.textContent = title; }
+    let meta = r.querySelector(".carton-version-meta");
+    if (!meta) { meta = document.createElement("span"); meta.className = "carton-version-meta"; (r.querySelector(".carton-version-main") ?? r).append(meta); }
+    meta.textContent = count + " \u00b7 You";
+    for (const w of r.querySelectorAll(".carton-version-when")) { w.removeAttribute("data-now"); w.removeAttribute("data-viewing"); w.textContent = clock(ago); }
+    r.querySelectorAll(".carton-version-more, .carton-version-group, .carton-version-back, .carton-version-pick").forEach((e) => e.remove());
+    return r;
+  };
+  let tplHtml = null;
+  const apply = () => {
+    for (const list of document.querySelectorAll(".carton-sidebar .carton-vlist")) {
+      const inner = list.firstElementChild; if (!inner) continue;
+      const rows = [...inner.querySelectorAll(":scope > .carton-vrow > .carton-version")];
+      const setup = rows.filter(isSetup);
+      for (const w of inner.querySelectorAll(":scope > .carton-vrow[data-skit-hid]")) if (!setup.includes(w.firstElementChild)) { w.style.visibility = ""; w.removeAttribute("data-skit-hid"); }
+      let box = inner.querySelector(":scope > [data-skit-fake]");
+      if (!setup.length) { if (box) box.style.display = "none"; continue; }
+      const tpl = setup.find((r) => !r.matches(".carton-start")) ?? setup[0];
+      if (!box) {
+        box = document.createElement("div"); box.setAttribute("data-skit-fake", "");
+        box.style.cssText = "position:absolute;top:0;left:0;right:0;pointer-events:none";
+        DUMMY.forEach((d) => { const w = document.createElement("div"); w.className = "carton-vrow"; w.style.cssText = "position:relative;height:56px"; w.append(make(tpl, d)); box.append(w); });
+        inner.append(box);
+      }
+      let base = Infinity;
+      for (const r of setup) { const w = r.parentElement; base = Math.min(base, ty(w)); if (w.style.visibility !== "hidden") { w.style.visibility = "hidden"; w.setAttribute("data-skit-hid", ""); } }
+      const want = "translateY(" + base + "px)"; if (box.style.transform !== want) box.style.transform = want;
+      if (box.style.display) box.style.display = "";
+      const minH = base + 56 * DUMMY.length + "px"; if (inner.style.minHeight !== minH) inner.style.minHeight = minH;
+    }
+  };
+  window.__skitFake = new MutationObserver(apply);
+  window.__skitFake.observe(document.body, { childList: true, subtree: true });
+  setInterval(apply, 200); apply();
+  return "installed";
+})()`;
 function watchNotices(page) {
   const file = path.join(OUT, "go-notices.jsonl"); let busy = false, stopped = false, handled = 0;
   const tick = async () => {
@@ -126,6 +179,7 @@ function watchNotices(page) {
   const page = await h.page(E);
   T0 = Date.now(); log(`go: project ${id}, run folder ${OUT}`);
   log("notice watcher:", await h.ev(E, NOTICE_WATCH)); const notices = watchNotices(page);
+  log("fake History rows:", await h.ev(E, FAKE_HISTORY));
   // 1. the layout
   if (!(await h.ev(E, `!!document.querySelector(".carton-sidebar")?.offsetParent`))) { await h.keys(E, "Control+Shift+h"); await sleep(1200); }
   if (!KEEP_LIBRARY) {
