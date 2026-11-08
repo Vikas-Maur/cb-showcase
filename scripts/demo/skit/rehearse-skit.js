@@ -48,7 +48,7 @@ const peer = (...args) => {
   try { peer("host", "stop"); } catch {} // before its folder moves (host stop reads its pid there)
   await new Promise((r) => setTimeout(r, 600));
   const old = path.join(DEMO, "old", new Date().toISOString().replace(/[:.]/g, "-"));
-  for (const d of ["peer-claude", "peer-vikas", "host"]) if (fs.existsSync(path.join(DEMO, d))) { fs.mkdirSync(old, { recursive: true }); fs.renameSync(path.join(DEMO, d), path.join(old, d)); }
+  for (const d of new Set(["peer-claude", path.basename(lib.peerDir(C2NAME)), "peer-vikas", "host"])) if (fs.existsSync(path.join(DEMO, d))) { fs.mkdirSync(old, { recursive: true }); fs.renameSync(path.join(DEMO, d), path.join(old, d)); }
   if (!fs.existsSync(path.join(DEMO, "build", "build.json"))) note(peer("setup"));
   note(peer("host", "start", "--port", String(HOST_PORT)));
   note(peer("app", "--name", "Vikas"));
