@@ -36,7 +36,7 @@ const f2 = (n) => (typeof n === "number" ? n.toFixed(2) : String(n));
   let nextId = 1;
   const browser = await editor.launch();
   const ed = await editor.openEditor(browser, {
-    app: APP, mediaDelay: DELAY, onMedia: (x) => { trace({ what: "media", ...x }); out(`editor fetched media ${x.id.slice(0, 8)} (${x.bytes} bytes${x.delayed ? `, after ${DELAY} ms` : ""})`); },
+    app: APP, mediaDelay: DELAY, saves: true, onPatch: (x) => { trace({ what: "patch", ...x }); out(`editor saved its project (${(x.fields ?? []).join(", ") || "?"}): ${x.ok ? "written" : "failed " + (x.error ?? "")} in ${x.ms} ms`); }, onMedia: (x) => { trace({ what: "media", ...x }); out(`editor fetched media ${x.id.slice(0, 8)} (${x.bytes} bytes${x.delayed ? `, after ${DELAY} ms` : ""})`); },
     onControlReply: (r) => { const p = pending.get(r.id); if (!p) return; pending.delete(r.id); r.ok ? p.resolve(r.data) : p.reject(r.error); },
   });
   const { page } = ed;

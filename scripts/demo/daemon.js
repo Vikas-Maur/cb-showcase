@@ -296,7 +296,8 @@ async function speak({ file, at, name, track = "Voice", text, volume, seconds, s
   const id = randomUUID();
   const item = { id, trackId: tr.id, type: "audio", startTime: round(start), endTime: round(start + dur), trimStart: 0, trimEnd: round(dur), mediaItemId: mediaId, name: name ?? clipLabel(text ?? path.basename(file)), ...(volume !== undefined ? { volume: Number(volume) } : {}) };
   await save(doc2, { ...doc2, tracks, timelineItems: [...(doc2.timelineItems ?? []), item] });
-  mine({ id, name: item.name, kind: "sound", mediaId });
+  mine({ id, name: item.name, kind: "sound", mediaId, file: path.resolve(file) });
+  checkSoon(mediaId);
   const out = { id, mediaId, name: item.name, start: item.startTime, end: item.endTime, track: tr.name, importedMs, sharedMs, savedMs: Date.now() - t0, savedAt: Date.now() };
   emit({ type: "self", op: "speak", ...out, text: text ?? null });
   return out;
@@ -336,9 +337,14 @@ async function speakAll({ parts, track = "Voice", volume, titles = [] }) {
     await new Promise((res) => setTimeout(res, 100));
   }
   const sharedMs = Date.now() - s0;
+  // each sound checked on the server (its record, its bytes the file sent) before its clip goes on, so the other side
+  // can play it the moment it sees the clip; during the wait below, so it costs nothing when the server is quick
+  const checked = Promise.all(parts.map((p, k) => onServerBefore({ name: p.name ?? path.basename(p.file), mediaId: ids.get(k), file: path.resolve(p.file) })));
   const said = [];
   for (const t of titles) said.push(await say(t));
   { const wait = importedAt + REASK_MS - Date.now(); if (wait > 0) await new Promise((res) => setTimeout(res, wait)); }
+  const checks = await checked;
+  const checkedMs = Date.now() - s0;
   const doc = await read();
   const { tracks, track: tr } = trackFor(doc, track, true);
   const items = parts.map((p, k) => {
@@ -346,8 +352,8 @@ async function speakAll({ parts, track = "Voice", volume, titles = [] }) {
     return { id: randomUUID(), trackId: tr.id, type: "audio", startTime: round(p.at), endTime: round(p.at + dur), trimStart: 0, trimEnd: round(dur), mediaItemId: ids.get(k), name: p.name ?? clipLabel(p.text ?? path.basename(p.file)), ...(volume !== undefined ? { volume: Number(volume) } : {}) };
   });
   await save(doc, { ...doc, tracks, timelineItems: [...(doc.timelineItems ?? []), ...items] });
-  for (const it of items) mine({ id: it.id, name: it.name, kind: "sound", mediaId: it.mediaItemId });
-  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, titles: said.map((x) => x.name), savedMs: Date.now() - t0, savedAt: Date.now() };
+  items.forEach((it, k) => { mine({ id: it.id, name: it.name, kind: "sound", mediaId: it.mediaItemId, file: path.resolve(parts[k].file) }); checkSoon(it.mediaItemId); });
+  const out = { parts: items.map((it) => ({ id: it.id, name: it.name, start: it.startTime, end: it.endTime })), name: items.map((it) => it.name).join(" + "), start: items[0].startTime, end: items.at(-1).endTime, track: tr.name, importedMs, sharedMs, checkedMs, notChecked: checks.filter((c) => !c.ok).map((c) => c.name), titles: said.map((x) => x.name), savedMs: Date.now() - t0, savedAt: Date.now() };
   emit({ type: "self", op: "speak", ...out });
   return out;
 }
@@ -376,6 +382,82 @@ async function settle(mediaId) {
 }
 
 function mine(x) { cfg.mine = [...(cfg.mine ?? []).filter((m) => m.id !== x.id), { ...x, at: Date.now() }]; saveCfg(); }
+
+// ------------------------------------------------------------------ the sounds this participant sent, on the server
+// A teammate who opens the project later, or has it open when this participant has gone, gets a sound only from the
+// sharing server. A sound counts as there once the server has its shared record and its bytes come back from the server
+// whole and the same as the file sent (sha-256): read the way a teammate's tools read it (the worker's liveMediaUrl: the
+// host's record, then its bytes, checked part by part against the record's hash; a part this computer has read before
+// comes from its cache). Each is checked once its clip is placed, then every second until it passes, and shared again
+// every third failed check (a share that failed or timed out: speakAll places the clips after 15 s regardless); `status`
+// says which are still pending, `settle` waits for them: cue sheets end with it, and `peer leave` waits on it.
+const onServer = new Map(); // mediaId → {bytes, ms}
+const lastCheck = new Map(); // mediaId → the last failed check's reason
+const sounds = () => (cfg.mine ?? []).filter((m) => m.kind === "sound" && m.mediaId);
+async function checkSound(s) {
+  const t0 = Date.now();
+  let r;
+  // (the worker reads the record from the server: its error is the server's, unreachable or failing)
+  try { r = await call("carton.liveMediaUrl", { mediaId: s.mediaId }); } catch (e) { return { ok: false, why: "the sharing server didn't answer: " + (e?.message ?? e) }; }
+  if (!r?.url) return { ok: false, why: "its shared record isn't on the server yet" };
+  let body;
+  try {
+    const res = await fetch(r.url, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) return { ok: false, why: `the server's copy didn't come (HTTP ${res.status})` };
+    body = Buffer.from(await res.arrayBuffer());
+  } catch (e) { return { ok: false, why: "the server's copy didn't come: " + (e?.message ?? e) }; }
+  const sha = (b) => require("crypto").createHash("sha256").update(b).digest("hex");
+  if (s.file && fs.existsSync(s.file)) {
+    const sent = fs.readFileSync(s.file);
+    if (body.length !== sent.length || sha(body) !== sha(sent)) return { ok: false, why: `the server's copy (${body.length} bytes) isn't the file sent (${sent.length} bytes)` };
+  } else if (typeof r.size === "number" && body.length !== r.size) return { ok: false, why: `the server's copy has ${body.length} of its ${r.size} bytes` };
+  return { ok: true, bytes: body.length, ms: Date.now() - t0 };
+}
+const checking = new Set();
+function checkSoon(mediaId) {
+  if (checking.has(mediaId) || onServer.has(mediaId)) return;
+  checking.add(mediaId);
+  (async () => {
+    const t0 = Date.now();
+    let failed = 0;
+    while (Date.now() - t0 < 600_000) {
+      const s = sounds().find((m) => m.mediaId === mediaId);
+      if (!s) break; // taken out
+      const r = await checkSound(s);
+      if (r.ok) { onServer.set(mediaId, r); lastCheck.delete(mediaId); log(`sound on the server: ${s.name} (${r.bytes} bytes, the same as sent; checked in ${r.ms} ms)`); break; }
+      lastCheck.set(mediaId, r.why);
+      if (++failed % 3 === 0) {
+        log(`sound not on the server yet: ${s.name} (${r.why}); sharing it again`);
+        await call("carton.liveShareMedia", { projectId: projectId(), mediaIds: [mediaId], force: /isn't the file sent|of its/.test(r.why) }).catch((e) => log(`sharing ${s.name} again failed: ${e?.message ?? e}`));
+      }
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    checking.delete(mediaId);
+  })().catch(() => checking.delete(mediaId));
+}
+/** Before a clip goes on: its sound checked on the server, shared again if it isn't there, up to `timeoutMs`. */
+async function onServerBefore(s, timeoutMs = 30_000) {
+  const t0 = Date.now();
+  for (let n = 1; ; n++) {
+    const r = await checkSound(s);
+    if (r.ok) { onServer.set(s.mediaId, r); return { ok: true, name: s.name }; }
+    lastCheck.set(s.mediaId, r.why);
+    if (Date.now() - t0 > timeoutMs) { log(`speakAll: ${s.name} not on the server after ${timeoutMs / 1000} s (${r.why}); its clip goes on, checked again after`); return { ok: false, name: s.name, why: r.why }; }
+    if (n % 3 === 0) await call("carton.liveShareMedia", { projectId: projectId(), mediaIds: [s.mediaId], force: /isn't the file sent|of its/.test(r.why) }).catch(() => {});
+    await new Promise((res) => setTimeout(res, 500));
+  }
+}
+function soundsState() {
+  const all = sounds(), pending = all.filter((s) => !onServer.has(s.mediaId));
+  for (const s of pending) checkSoon(s.mediaId); // (after a restart: checked again)
+  return { sent: all.length, onServer: all.length - pending.length, pending: pending.map((s) => ({ name: s.name, mediaId: s.mediaId, why: lastCheck.get(s.mediaId) ?? "being checked" })) };
+}
+async function settle({ timeout = 120 } = {}) {
+  const t0 = Date.now();
+  let st = soundsState();
+  while (st.pending.length && Date.now() - t0 < timeout * 1000) { await new Promise((res) => setTimeout(res, 500)); st = soundsState(); }
+  return { ...st, ms: Date.now() - t0 };
+}
 /** Clips by id, exact name, or (when that finds none) words in the name or text; `onlyMine`: the ones this participant added. */
 function findClips(doc, ref, { onlyMine = false } = {}) {
   const items = (doc.timelineItems ?? []).filter((i) => !onlyMine || (cfg.mine ?? []).some((m) => m.id === i.id));
@@ -435,8 +517,10 @@ const OPS = {
       const doc = await call("projects.read", projectId()).catch(() => null);
       project = doc ? { id: doc.id, name: doc.name, items: doc.timelineItems?.length ?? 0, duration: Math.max(0, ...(doc.timelineItems ?? []).map((i) => i.endTime)) } : null;
     }
-    return { name: cfg.name, as: cfg.agent ? `${firstName(cfg.name)}'s ${cfg.agent.name}` : firstName(cfg.name), agent: cfg.agent ?? null, pid: process.pid, project, cut, cuts, live, presence: presenceState, mine: cfg.mine ?? [] };
+    return { name: cfg.name, as: cfg.agent ? `${firstName(cfg.name)}'s ${cfg.agent.name}` : firstName(cfg.name), agent: cfg.agent ?? null, pid: process.pid, project, cut, cuts, live, presence: presenceState, mine: cfg.mine ?? [], sounds: soundsState() };
   },
+  /** Waits (up to `timeout` s) until every sound this participant sent is on the server, checked; says which aren't. */
+  settle,
   async join({ link, name }) {
     if (projectId()) throw new Error("Already in a project; leave it first");
     const r = await call("carton.liveJoin", { link, name: name ?? cfg.name });
@@ -482,6 +566,7 @@ const OPS = {
   async sync() { const lc = await handle(); return { cut: lc.carton.cut, state: lc.carton.sync?.state() ?? null, error: lc.carton.sync?.error?.() ?? null }; },
   async media({ mediaId }) { return { source: await call("carton.liveMediaSource", { mediaId }), here: await call("carton.liveMediaHere", { projectId: projectId(), mediaIds: [mediaId] }) }; },
   async worker({ method, args = [] }) { return call(method, ...args); },
+  // `peer leave` settles first (and says so): leaving with a sound not yet on the server would leave it nowhere
   async leave() {
     await sendPresence(null).catch(() => {});
     setTimeout(() => process.exit(0), 300);

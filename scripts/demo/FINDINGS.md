@@ -466,7 +466,62 @@ behind a control socket served as Cardboard's main serves it, each request hande
 `control:request`), every playback state written to a trace (`--media-delay` holds back each sound's first fetch, as
 the laptop waits for its download). The skit's Linux rehearsal runs Claude 1's seek/play/pause through it.
 
-### 6.4 Everything else
+### 6.4 Carton bug: a teammate's sounds, all on the server, reported "still on their way" when a read is slow or fails
+
+What the laptop saw (2026-11-07, the project reopened after a rehearsal; Claude 2 still in it, connected and up to
+date): "2 clips are still on their way from your teammate: “Reply 1.wav” and “Reply 1 (2).wav” show as Offline until
+they arrive".
+
+**Not the upload: all six voices are on the server, the same way.** The sharer (that rehearsal's participant on this
+box, still running; inspected read only): each voice is in its `media-shared.json`, which a clip's share writes only
+once its original is uploaded and its shared record is on the server (`sync/media.js` `shareClip`, `worker.js`
+`shareMediaOf`); no unfinished upload is left; the project's own media entries (its Main, up to date with the server)
+carry a `contentHash` and `shared: {…, original: "shared"}` (`recordShare`), the same for all six. Read back from the
+server through that participant's own worker (`liveMediaSource`: the server's record; `liveMediaUrl`: its bytes, its
+leaf cache empty until then), every voice's record is there and playable, its hash the entry's `contentHash`, and its
+bytes the sharer's file exactly (sha-256): "Reply 1.wav" and "Reply 1 (2).wav" no different from "Hello.wav" or
+"Reply 2.wav". Asked for all six at once, as an opening asks them, the server answered every one, from this box in
+about half a second (three rounds; this box, not the laptop).
+
+**The opener's check.** When a shared project opens, the editor asks the worker which of the clips it found no file for
+are a teammate's and on the server (`sync/patches/media.js` → `liveMediaHere`). The worker reads each one's shared
+record from the server, and a record not read within 2 s counts as "waiting": the clip goes to Cardboard's Offline
+placeholder, and the notice says it is "still on their way from" the teammate. For a sound or a still the project's own
+record is never used (`recordIn` takes it only when it has a video proxy), so each of them needs a server round trip
+within those 2 s. The notice asks again every 15 s and then says "Your teammate's footage has arrived. Close and reopen
+the project to play it"; until then the clips stay Offline.
+
+**Reproduced here** (`repro-slow-records.js`: the local server with each record read held back 2.5 s, `host.mjs`
+`DEMO_HOST_RECORD_DELAY_MS`; one run): four sounds shared and checked, the sharer gone, the project reopened:
+`liveMediaHere` answered `{"waiting":4}` at its 2 s deadline, while streaming one of them (`liveMediaSource`, no
+deadline) answered "playable" (the WAV, all of it); with the server answering at once, `{"playable":4}`. In the
+editor itself (`editor-page.js` in Chromium, DevTools on), `skit/laptop/media-check.js` shows the same: all four "on their way" with
+the slow server, each one playable when streamed. Whether the laptop's reads took over 2 s isn't measured:
+`media-check.js` measures it there.
+
+So the laptop's two were the opener's check: their record reads on the laptop didn't answer "playable" within the 2 s
+(slow, or failed: a failed read counts the same, `recordIn(…).catch(() => null)`). Which of the two it was, and why
+those two, the laptop's own reads tell: `skit/laptop/media-check.js` there. Nothing on the server or in the project
+sets them apart.
+
+Why it matters to real users: on a slow or distant connection, a server slow to wake, or one failed request, a
+teammate's sounds and stills that are on the server show as Offline with words that put it on the teammate, until the
+project is reopened.
+
+**`fix/demo-sync-bugs` fixes it** (by its code, 2289072f; not run here): its `recordIn` answers from the project's own
+record first (`ownRecord`: a complete proxy, or, for a sound or a still, `shared.original === "shared"` with a
+`contentHash`), and its `liveMediaHere` asks through `recordIn`, so a sound whose entry says it is shared is "playable"
+at opening with no server read and no 2 s cutoff. All six voices' entries say so on the shared Main (the sharer's copy, up to date with the server). The laptop's
+build (013ca5c3) doesn't have that branch. Left either way: a clip whose entry doesn't say it yet still goes to the
+server, and one the 2 s cut off still reads "on their way" rather than "couldn't be checked".
+
+**The rig** settles the sharer's side for good: each sound a participant sends is checked on the server (its record
+there, its bytes downloaded and compared with the file sent, sha-256) and shared again if it isn't; `peer status` lists
+any not there yet; `peer leave` waits for them, saying so, and doesn't leave without them (`--now` does); a cue sheet
+ends only once they are all there. The notice itself comes only when a project opens, never during a take on an open
+project (and `go.js` dismisses it).
+
+### 6.5 Everything else
 
 - **The server down or the network gone**: edits wait and go when it is back, on both sides (`live.test.js` "offline
   and rejoin"); the participant reconnects by itself. Presence fades after 30 s and goes after 120 s.

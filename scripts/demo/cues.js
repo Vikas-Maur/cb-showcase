@@ -173,6 +173,22 @@ async function run(file, { from = 1, dry = false, peer } = {}) {
   }
   await new Promise((res) => setTimeout(res, 1500)); // the last edits' echoes, into the log
   for (const st of streams.values()) st.close();
+  // the sheet ends only once every sound its participants sent is on the sharing server, checked byte for byte: a
+  // teammate who opens the project later (or has it open after this side has gone) gets them only from there
+  if (!dry) {
+    for (const who of new Set(steps.map((s) => s.as ?? dflt).filter(Boolean))) {
+      const dir = lib.peerDir(who);
+      let r = await lib.request(dir, "status", {}, { timeout: 10_000 }).then((st) => st.sounds).catch(() => null);
+      if (!r?.sent) continue;
+      if (r.pending.length) {
+        out(`${stamp()}  ${who}: waiting for ${r.pending.length} sound${r.pending.length > 1 ? "s" : ""} to reach the sharing server: ${r.pending.map((p) => `“${p.name}”`).join(", ")}…`);
+        r = await lib.request(dir, "settle", { timeout: 180 }, { timeout: 210_000 }).catch((e) => ({ ...r, error: e.message }));
+      }
+      rec({ settle: who, sounds: r });
+      if (r.pending?.length) { ok = false; out(`${stamp()}  ✗ ${who}: ${r.pending.length} of ${r.sent} sounds not on the sharing server: ${r.pending.map((p) => `“${p.name}” (${p.why})`).join(", ")}`); }
+      else out(`${stamp()}  ✓ ${who}: all ${r.sent} sounds on the sharing server, checked byte for byte`);
+    }
+  }
   out(`${stamp()}  ${ok ? "■ done" : "■ stopped"}  log: ${base}.log`);
   if (!ok) process.exitCode = 1;
 }
@@ -181,7 +197,7 @@ const clip = (t) => { const x = String(t).replace(/\s+/g, " ").trim(); return x.
 const voiceName = (text) => (String(text).replace(/[^\p{L}\p{N} '-]+/gu, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 7).join(" ") || "line") + ".wav";
 function summary(kind, r) {
   if (!r) return kind;
-  if (kind === "say" || kind === "speak" || kind === "edit") return `“${r.name}” ${r.start?.toFixed(1)}–${r.end?.toFixed(1)} s on ${r.track ?? "its track"} (${kind === "speak" ? `imported in ${(r.importedMs / 1000).toFixed(2)} s, on the server in ${((r.sharedMs ?? 0) / 1000).toFixed(2)} s, on the timeline at` : "saved in"} ${(r.savedMs / 1000).toFixed(2)} s${r.voiceMs ? `, voice made in ${(r.voiceMs / 1000).toFixed(2)} s` : ""})`;
+  if (kind === "say" || kind === "speak" || kind === "edit") return `“${r.name}” ${r.start?.toFixed(1)}–${r.end?.toFixed(1)} s on ${r.track ?? "its track"} (${kind === "speak" ? `imported in ${(r.importedMs / 1000).toFixed(2)} s, on the server in ${((r.sharedMs ?? 0) / 1000).toFixed(2)} s${r.checkedMs !== undefined ? `, checked there by ${(r.checkedMs / 1000).toFixed(2)} s` : ""}, on the timeline at` : "saved in"} ${(r.savedMs / 1000).toFixed(2)} s${r.voiceMs ? `, voice made in ${(r.voiceMs / 1000).toFixed(2)} s` : ""}${r.notChecked?.length ? `; NOT confirmed on the server: ${r.notChecked.join(", ")}` : ""})`;
   if (kind === "clear") return `removed ${r.removed.map((x) => `“${x}”`).join(", ")}`;
   if (kind === "wait" && r.matched) return `seen: ${r.by} ${r.what ?? ""}${r.lagMs !== null ? ` (${(r.lagMs / 1000).toFixed(2)} s after it was made)` : ""}`;
   if (kind === "cb" || kind === "agent_say" || kind === "agent_clear" || kind === "agent_hide") return r.text;

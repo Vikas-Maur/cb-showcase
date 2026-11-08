@@ -109,7 +109,12 @@ Rehearsed on the laptop (2026-11-07, Cardboard 013ca5c3, muted, Claude 2 from EC
    scripts/demo/peer join "<the link>" --name Claude
    scripts/demo/peer run scripts/demo/skit/claude2-cues.yaml --peer Claude
    ```
-   It shows as "Claude · Here now · editing" in the laptop's Share and title bar, and waits.
+   It shows as "Claude · Here now · editing" in the laptop's Share and title bar, and waits. Its sheet ends only once
+   every voice it sent is on the sharing server, checked ("✓ Claude: all 6 sounds on the sharing server"); leave with
+   `scripts/demo/peer leave --peer Claude`, which waits for any still on their way, saying so. A notice "N clips are
+   still on their way" when the project is opened again later is the laptop's own check, whose server read for them
+   was slow or failed (FINDINGS.md §6.4; `fix/demo-sync-bugs` makes it read the project's own record instead):
+   `node laptop\media-check.js <port> <project id>` tells which.
 6. **Record:** OBS, a Window Capture of Cardboard (Windows Graphics Capture) and an Application Audio Capture of
    `Cardboard.exe` (the voices play in the app). Start recording.
 7. **Go:** in the chat panel, pick Claude Code (not the Director), and send `Everyday work: tidy up the promo`.
@@ -130,9 +135,16 @@ to the OS; paths from `demo-env.ps1`):
 |---|---|
 | `launch-demo.ps1` | the demo Cardboard with `start-cardboard.ps1`'s environment, started unseen on desktop 2 (`unseen\start-unseen.ps1`, never activated), muted unless `-Sound`, DevTools on `-DebugPort` (9420); prints `pid=… hwnd=…` |
 | `share.js <port> <project id>` | first-run screens, the project's tab, Share as "Vikas" on the default server; prints `LINK <url>` (read from the dialog: Copy link would overwrite the clipboard) |
+| `media-check.js <port> <project id>` | whether a teammate's sounds are on the sharing server, as this Cardboard sees them: what opening the project asks (a 2 s deadline: "still on their way") and what streaming each asks, with times (FINDINGS.md §6.4; read only) |
 | `cap-run.ps1 -Hwnd <hwnd> -Out <file.mkv>` | records that window only (Windows Graphics Capture → Quick Sync → Matroska) until its stop file appears |
 | `go.js <port> <project id>` | History open, the Library panel closed, a Claude Code row picked, the prompt sent; shoots the key moments, sends the gone cue 3 s after the stand-in waits for it (`--gone-after`) and the end cue 4 s after (`--end-after`), then stops the capture and the taskbar flash |
 | `unseen\` | the launcher, its Win32 calls, and `flashstop.ps1` |
+| `obs\make-config.ps1` | our own OBS settings in OBS's portable config folder (the user's `%APPDATA%\obs-studio` is never read or written): scene "Cardboard" = Window Capture (Windows Graphics Capture) + Application Audio Capture of `Cardboard.exe`, 1080p60, NVENC, hybrid MP4 into `D:\OBS` |
+| `obs\obs-rec.ps1 -Start` / `-Stop [-Name skit-take1.mp4]` | starts OBS on that config recording at once (minimized), and stops it with a graceful close |
+
+For a take OBS records, start the demo Cardboard with `launch-demo.ps1 -Sound -CurrentDesktop`: OBS's Window Capture
+records a window on another virtual desktop as black. OBS is started minimized, not `--minimize-to-tray` (closing it from
+the tray crashed in its preview's teardown, after the file was finished).
 | `lib\` | DevTools helpers (over `scripts/cdp.js`), the first-run screens, opening a project's tab, `demo-env.ps1`'s paths for Node |
 
 A rehearsal: `make-project.ps1`, `start-actor.ps1`, `launch-demo.ps1`, `node share.js 9420 <id>` (send the link), then
