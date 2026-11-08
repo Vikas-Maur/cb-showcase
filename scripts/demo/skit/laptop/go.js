@@ -157,6 +157,18 @@ const FAKE_HISTORY = `(() => {
   setInterval(apply, 200); apply();
   return "installed";
 })()`;
+// Recording only (take 8): (1) the chat's "Thinking" shine. Cardboard turns it off under prefers-reduced-motion (this
+// laptop asks for less motion, so take 7's "Thinking" stood still); the user wants Cardboard's default animation, so
+// its default rule is put back over that. (2) History's Working row without its "0 changes so far": the skit's edits
+// are made by the stand-in under their own name, so the turn itself counts none.
+const RECORDING_CSS = `(() => {
+  if (document.getElementById("skit-css")) return "already";
+  const st = document.createElement("style"); st.id = "skit-css";
+  st.textContent = ".agent-shine{color:#0000!important;background-image:linear-gradient(90deg,#0000,#fffffff2,#0000),linear-gradient(#ffffff80,#ffffff80)!important;background-repeat:no-repeat!important;background-size:4.5rem 100%,100% 100%!important;-webkit-background-clip:text!important;background-clip:text!important;animation:2.2s steps(30,end) infinite agent-shine!important}"
+    + ".carton-working .carton-version-meta > .carton-version-count{display:none!important}";
+  document.head.append(st);
+  return "installed (reduced motion " + matchMedia("(prefers-reduced-motion: reduce)").matches + ")";
+})()`;
 function watchNotices(page) {
   const file = path.join(OUT, "go-notices.jsonl"); let busy = false, stopped = false, handled = 0;
   const tick = async () => {
@@ -180,6 +192,7 @@ function watchNotices(page) {
   T0 = Date.now(); log(`go: project ${id}, run folder ${OUT}`);
   log("notice watcher:", await h.ev(E, NOTICE_WATCH)); const notices = watchNotices(page);
   log("fake History rows:", await h.ev(E, FAKE_HISTORY));
+  log("recording CSS:", await h.ev(E, RECORDING_CSS));
   // 1. the layout
   if (!(await h.ev(E, `!!document.querySelector(".carton-sidebar")?.offsetParent`))) { await h.keys(E, "Control+Shift+h"); await sleep(1200); }
   if (!KEEP_LIBRARY) {
