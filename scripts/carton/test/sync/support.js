@@ -204,8 +204,20 @@ const probeDuration = (input) => Number(execFileSync(process.env.CARDBOARD_FFPRO
 function killHelpers() {
   spawnSync("pkill", ["-f", `--db ${TMP}`]);
 }
-/** A project's file as it is on a computer's disk (its worker may be stopped). */
-const fileOf = (pc, bundle = "Demo") => JSON.parse(fs.readFileSync(path.join(pc.root, bundle + ".cardboard", "project.json"), "utf8")).project;
+/**
+ * A project's file as it is on a computer's disk (its worker may be stopped). A read in the instant Carton installs the
+ * file (displace, then link: the name is missing for a moment) waits for it, as Cardboard's own reads do (the store
+ * bridge's readFile); a poll on it failed with ENOENT now and then.
+ */
+function fileOf(pc, bundle = "Demo") {
+  const file = path.join(pc.root, bundle + ".cardboard", "project.json");
+  for (let i = 0; ; i++) {
+    try { return JSON.parse(fs.readFileSync(file, "utf8")).project; } catch (e) {
+      if (e?.code !== "ENOENT" || i >= 100) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+}
 
 /** A .cbproj's members (Cardboard writes a stored zip), and a member's bytes. */
 function zipOf(file) {

@@ -6,7 +6,7 @@ export function shots(h) {
   const { P, T, W, B, D, ED, menuItem, foldOlder, uxMenu, openCard, changes, playDirector, holdBefore } = h;
   const side = (p, s) => p.locator(`.carton-conflict-side[data-side=${s}]`).first();
   const seeTheirs = async (p) => { await side(p, "theirs").click(); await side(p, "theirs").locator(".carton-see").click(); await p.waitForTimeout(350); };
-  const cutsFromChip = async (p) => { await p.locator("[data-carton-cut]").first().click(); await p.locator(".carton-menu-pop").first().waitFor(); await p.waitForTimeout(250); };
+  const cutsFromChip = async (p) => { await p.locator("[data-carton-cut-chip] > button[data-carton-cut]").first().click(); await p.locator("[data-carton-cuts-pop] [role=menu]").first().waitFor(); await p.waitForTimeout(250); };
   // an editor composition at the mockups' size (1522 × 810)
   const E = (name, s, how, steps, o = {}) => W(name, s, how, steps, { viewport: ED, ...o });
   const NARROW = { width: 960, height: 700 };
@@ -24,7 +24,7 @@ export function shots(h) {
     E("editor-conflict-pill", "qa-conflict-panel", "History open with two conflicts: the pill (after/editor-conflict-pill.png).", foldOlder),
     E("editor-other-cut", "ws1-other-cut", "On 30s Instagram cut, panel closed (after/editor-other-cut.png).", null),
     E("editor-teammate-cut", "qa-teammate-window", "Leo's Main cut on screen with History open (after/history-teammate-cut + titlebar-teammate-cut).", null),
-    E("editor-chip-menu", "ws1-other-cut", "The chip clicked with the panel closed: History opens with its cuts menu (PLAN 2.2 v1).", cutsFromChip),
+    E("editor-chip-menu", "ws1-other-cut", "The chip clicked with the panel closed: its cuts menu drops down under it; History stays closed (PLAN 2.2 v2).", cutsFromChip),
     E("editor-comments-see", "ws59-comments", "Comments → See it as it was: the frame's label tab (History's list isn't on screen).", async (p) => { await p.locator('[role=tab][aria-label="Comments"]').click(); await p.waitForTimeout(250); await p.getByRole("button", { name: /See it as it was/ }).first().click(); await p.waitForTimeout(400); }),
     E("editor-play-fail", "ux-history", "Play all on an older version that can't load (the bridge's preview rejects): what the chip, frame and row say.", async (p) => { await failPreview(p); await playDirector(p); await p.waitForTimeout(800); }),
     E("editor-play-slow", "ux-history", "Play all on an older version that takes 3 s to load: shot at 1 s.", async (p) => { await p.evaluate(() => { const orig = window.__carton.preview; window.__carton.preview = (...a) => new Promise((r) => setTimeout(() => r(orig(...a)), 3000)); }); await foldOlder(p); await openCard(p, "Add captions to the interview"); await p.locator(".carton-card-version .carton-btn", { hasText: "Play all" }).click(); await p.waitForTimeout(1000); }),

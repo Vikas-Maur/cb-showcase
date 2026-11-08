@@ -398,10 +398,11 @@ function makeBridge(sc) {
     onEvent(f) { events.add(f); return () => events.delete(f); },
     // a command sent before the panel listens (the page mounts late on a busy machine) waits for it, as a menu click
     // in the app can't come before the window: the panel used not to open now and then (a rig race, design QA §1)
-    onCommand(f) { commands.add(f); for (const action of early.splice(0)) setTimeout(() => f({ action }), 0); return () => commands.delete(f); },
+    // (a command is the action's name, or the whole command as main passes it on: the chip's carries its box)
+    onCommand(f) { commands.add(f); for (const ev of early.splice(0)) setTimeout(() => f(ev), 0); return () => commands.delete(f); },
     // a notice (the failed-save toast) sent before the stage listens waits for it, as a command does
     onNotice(f) { notices.add(f); for (const text of earlyNotices.splice(0)) setTimeout(() => f(text), 0); return () => notices.delete(f); },
-    command(action) { if (!commands.size) early.push(action); for (const f of [...commands]) f({ action }); },
+    command(c) { const ev = typeof c === "string" ? { action: c } : c; if (!commands.size) early.push(ev); for (const f of [...commands]) f(ev); },
     notice(text) { if (!notices.size) earlyNotices.push(text); for (const f of [...notices]) f(text); },
     // the title bar's report, as main hands it to the strip (main-bridge.js panel): the cut chip's part too
     reportPanel(panel, live, chip) { window.__cap.strip = { panel, live: live ?? null, ...(chip ?? {}) }; for (const f of stripSubs) f(window.__cap.strip); },
@@ -451,7 +452,7 @@ if (scenario.name) localStorage.setItem("carton.name", scenario.name);
 const [Strip, CutChip] = new Function("n", "w", "I", "C", "c", "G", stripSource + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(
   jsxRuntime,
   (...a) => a.filter(Boolean).join(" "),
-  (cmd) => bridge.command(cmd.action),
+  (cmd) => bridge.command(cmd),
   __STRIP_BUTTON_CLASS__,
   React,
   (k) => "Ctrl+" + k.replace("⇧", "Shift+"),
@@ -541,9 +542,19 @@ function N1Host({ pid }) {
   return h("div", { className: "bg-muted/60 relative flex min-w-0 flex-1 flex-col overflow-hidden", "data-carton-stage-host": "", "data-carton-compare": mode?.mode || undefined, style },
     h(N1Stage, { subscribe: subscribePreview }), h(CartonStage, { projectId: pid, bridge, key: pid, player: scenario.n1.player ? N1Player : null, portal: createPortal }));
 }
+// The editor's page starts under the title bar in the app (the title bar is a page of its own). What CartonSide draws into
+// the editor's <body> (the title bar chip's cuts menu, through the editor's createPortal) goes into this box instead,
+// which stands for that page: its top at the title bar's bottom, and a transform, so a position: fixed inside it is
+// placed as on the editor's page. It lets clicks through but where something is drawn in it.
+const editorBody = document.createElement("div");
+editorBody.setAttribute("data-cap-editor-body", "");
+Object.assign(editorBody.style, { position: "fixed", left: "0", right: "0", bottom: "0", top: "50px", transform: "translateZ(0)", pointerEvents: "none", zIndex: "60" });
+document.body.appendChild(editorBody);
+const editorPortal = (el) => createPortal(el, editorBody);
 function Editor() {
   const strip = useStrip();
   const pid = bridge.projectId;
+  useEffect(() => { const bar = document.querySelector(".cap-titlebar"); if (bar) editorBody.style.top = `${bar.getBoundingClientRect().bottom}px`; }, []);
   return h("div", { className: "cap-window" },
     h(TitleBar, { strip }),
     h("div", { className: "cap-row" },
@@ -554,7 +565,7 @@ function Editor() {
             ? h(N1Host, { pid })
             : h("div", { className: "cap-stage bg-muted/60 relative", "data-carton-stage-host": "" }, h(Video), h(CartonStage, { projectId: pid, bridge, key: pid }))),
         scenario.n1 ? h(N1Timeline, { Wrap: TimelineWrap }) : h(Timeline)),
-      h(CartonSide, { projectId: pid, bridge, key: pid }),
+      h(CartonSide, { projectId: pid, bridge, key: pid, portal: editorPortal }),
       // Cardboard's chat region (display: contents, its column inside), as Compare measures it
       h("div", { style: { display: "contents" }, "data-analytics-region": "editor-chat" }, h(Chat))));
 }

@@ -127,6 +127,13 @@ export interface FromCartonOptions {
    * per version). Without it the panel shows no pictures. `put` takes a `data:image/jpeg` URL (at most 64 KB).
    */
   pictures?: { get(key: string): Promise<string | null>; put(key: string, jpeg: string): Promise<void> };
+  /**
+   * Names the person's own agents go by, per product (`{ "claude-code": "Claude 1" }`), in place of the product's name:
+   * every slot this handle names them in (rows, a turn, credits, cards, landmarks; so the page's toasts and tooltips
+   * too). Someone else's agents, and what other computers show, are unchanged. Cardboard: CARTON_AGENT_NAME, for
+   * recordings. Default: none.
+   */
+  ownAgentNames?: Readonly<Record<string, string>>;
 }
 
 export interface CartonUiHandle extends CartonUi {
@@ -199,6 +206,15 @@ const agentIdOf = (a: CoreActor): string => {
 // Agents by their product name, from their id ("director/<chat>/<turn>", "claude-code/<session>", "codex/<name>",
 // "claude-code@<host>"), never the machine or the terminal they ran in.
 const PRODUCTS: Readonly<Record<string, string>> = { director: "Director", "claude-code": "Claude Code", codex: "Codex", gemini: "Gemini", cursor: "Cursor" };
+/** Which of PRODUCTS an agent is (its key: "claude-code"), by its id, a view's provider or an old view's name; else undefined. */
+function productOf(a: CoreActor): string | undefined {
+  if (a.kind === "external") {
+    if (!viewAgent(a)) return undefined;
+    return a.provider && PRODUCTS[a.provider] ? a.provider : Object.keys(PRODUCTS).find((k) => PRODUCTS[k] === viewAgent(a));
+  }
+  const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
+  return PRODUCTS[head] ? head : a.provider && head.startsWith(a.provider) && PRODUCTS[a.provider] ? a.provider : undefined;
+}
 function productName(a: CoreActor): string {
   const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
   const known = PRODUCTS[head] ?? (a.provider && head.startsWith(a.provider) ? PRODUCTS[a.provider] : undefined);
@@ -239,8 +255,12 @@ const isPersonsWriter = (a: CoreActor): boolean => (a.kind === "external" && !vi
  * agent's change with its `owner`, the person behind the replica that made it: someone else's agent gets them as its
  * parent ("Leo's Director"); with no owner known, an agent is yours when it is in your undo group. A system actor
  * (the cut's start) has no name. Keys follow core's actorKey(); a subagent's parent is its agent.
+ *
+ * `ownNames` (FromCartonOptions.ownAgentNames): the person's own agents of a product go by that name instead ("Claude
+ * 1" for their Claude Code); someone else's never. `inApp`: the agent is the person's own whoever core says recorded it
+ * (an in-app turn main told, setWorking), for its name only.
  */
-export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
+export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string, ownNames?: Readonly<Record<string, string>>, inApp = false): Actor {
   if (!a) return SYSTEM;
   const key = actorKey(a);
   if (a.kind === "system") return { key, kind: "system", name: "" };
@@ -253,7 +273,8 @@ export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGrou
     if (a.kind === "human") return { key, kind: "human", name: a.name ?? (a.id === PERSON ? "Teammate" : a.id) };
     return owner ? { key: ownerKey!, kind: "human", name: owner.name } : { key, kind: "human", name: "Teammate" };
   }
-  const name = viewAgent(a) ?? productName(a);
+  const product = ownNames && (mine || inApp) ? productOf(a) : undefined;
+  const name = (product !== undefined ? ownNames![product] : undefined) || (viewAgent(a) ?? productName(a));
   const model = modelWords(a.model);
   const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : mine ? meKey : ownerKey;
   return { key, kind: a.kind === "subagent" ? "subagent" : "agent", name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(model ? { model } : {}), ...(mine ? { isYou: true } : {}) };
@@ -379,8 +400,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const schema = carton.schema;
   const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
-  const ui = (a: CoreActor | null | undefined): Actor => {
-    const x = toUiActor(a, opts.me, myGroup);
+  const ownNames = opts.ownAgentNames && Object.keys(opts.ownAgentNames).length ? opts.ownAgentNames : undefined;
+  const ui = (a: CoreActor | null | undefined, inApp = false): Actor => {
+    const x = toUiActor(a, opts.me, myGroup, ownNames, inApp);
     const known = actors.get(x.key);
     if (known && known.name === x.name && known.parent === x.parent && known.isYou === x.isYou) return known;
     actors.set(x.key, x);
@@ -769,13 +791,29 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const j = pos.get(id);
     if (j === undefined || disposed) return;
     const row = rows[j]!;
+    // A teammate's version that came live is as its event recorded it (their app's generic person, their agent with no
+    // owner): log() tells it by person, as History's load reads every other version, so it reads "Leo" and "Leo's
+    // Claude Code" in Leo's colour, never "Teammate", or "Claude Code" as if it were yours, until History is loaded
+    // again (feat/history-arrival). Yours are told as they were recorded: the same actor, nothing changes.
+    let told = false;
+    if (got?.author && row.core && got.change === row.core.change) {
+      const a = ui(got.author), was = row.v.author;
+      if (a !== was && (a.key !== was.key || a.name !== was.name || a.parent !== was.parent || !!a.isYou !== !!was.isYou)) {
+        row.core = { ...row.core, author: got.author };
+        row.v = { ...row.v, author: a };
+        told = true;
+      }
+    }
     const tb = turnBase(row.v);
     const { turn, ...own } = w;
     const shown = tb ? (turn?.base === tb ? turn : null) : own;
-    if (!shown) return; // the row became another turn's meanwhile: it asks again
-    const { base: _b, ...words } = shown as Words & { base?: string };
-    row.v = { ...row.v, ...words };
-    changed(j);
+    if (shown) {
+      const { base: _b, ...words } = shown as Words & { base?: string };
+      row.v = { ...row.v, ...words };
+    } else if (!told) return; // the row became another turn's meanwhile: it asks again
+    // (an author told otherwise re-indexes from it: "Your changes" lists by author)
+    if (told) reindexFrom(j);
+    else changed(j);
     hub.notify("history");
   };
 
@@ -1130,7 +1168,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // what an undo undid, and a redo's undo, as log() says them (undoTurnOf skips what is out already)
         const undoes = c.kind === "undo" && c.reverts ? [c.reverts].flat() : undefined;
         const redoOf = c.kind === "revert" && typeof c.reverts === "string" && rows[pos.get(c.reverts) ?? -1]?.core?.kind === "undo" ? c.reverts : undefined;
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
+        // (a teammate's as core tells it, by person: "Leo", "Leo's Claude Code" in Leo's colour from the row's first
+        // frame, never first "Teammate" or a Claude Code that reads as yours; yours as before. feat/history-arrival)
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : (e.author ?? c.author), at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])], startsAt: e.seq - 2 } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}), ...(undoes ? { undoes } : {}), ...(redoOf ? { redoOf } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -1586,7 +1626,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const x = t.of ? versionAt(t.of) : undefined;
       const from = x?.name ? `“${x.name}”` : x ? at(x.at) : "an earlier version";
       const clip = t.name ? `“${t.name}”` : "a clip";
-      summary = list.length > 0 && list.every((r) => r.kind === "remove") ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
+      // (core's `removed` says it took the clip out, as `cb history` words it; for a version from a core without it,
+      // the rows decide)
+      summary = t.removed || (list.length > 0 && list.every((r) => r.kind === "remove")) ? `Took out ${clip}` : `Brought back ${clip} from ${from}`;
     }
     else if (t?.kind === "undo-restore" || t?.kind === "redo-restore") summary = `${t.kind === "undo-restore" ? "Undid" : "Redid"} the restore of ${restored(t.of)}`;
     else if (t?.kind === "undo-fold" || t?.kind === "redo-fold") summary = `${t.kind === "undo-fold" ? "Undid" : "Redid"} the fold of ${t.rest ? "the rest of " : ""}${cutName(t.cut)}`;
@@ -2113,7 +2155,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       const since = turn.since ?? clock();
       const actorsNow = new Set(turn.actors?.length ? turn.actors : [turn.actor.id]);
-      const actor = ui(turn.actor);
+      // (the turn is an in-app agent's: the person's own, named as their own agents are)
+      const actor = ui(turn.actor, true);
       // the same turn again (a panel told twice): what it changed so far stays (review of the UX data #9)
       const same = !!workingTurn && !!working && working.actor.key === actor.key && workingTurn.since === since && (workingTurn.cut ?? null) === (turn.cut ?? null);
       const records = same ? workingTurn!.records : new Set<string>();

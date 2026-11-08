@@ -3,7 +3,7 @@
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, CutsMenu, FoldInDialog, HistoryPanel, TeammateCutActions, cancelQueuedSwitch, openCutsMenu, queuedSwitch, switchWhenDone } from "../src/index.ts";
+import { CartonProvider, CutsMenu, CutsMenuPop, FoldInDialog, HistoryPanel, TeammateCutActions, cancelQueuedSwitch, openCutsMenu, queuedSwitch, switchWhenDone } from "../src/index.ts";
 import { createMockUi, people, type MockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
 
@@ -139,6 +139,48 @@ test(name("openCutsMenu (PLAN 2.2 v1): the chip opens the mounted menu with focu
   await m2.unmount();
   // nobody mounts one: false, after the wait
   assert.equal(await openCutsMenu(ui, { within: 20 }), false);
+});
+
+test(name("CutsMenuPop (PLAN 2.2 v2): the chip's menu where the host puts it; a click open focuses the menu, Up from it is the last item; why it closes"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const closes: string[] = [];
+  const history: number[] = [];
+  const m = await render(wrap(ui, h(CutsMenuPop, { left: 640, top: 4, width: 300, maxHeight: 500, focusFirst: false, onClose: (why) => void closes.push(why), onOpenHistory: () => void history.push(1) })));
+  const pop = $(m.container, "[data-carton-cuts-pop]")!;
+  assert.deepEqual([pop.style.position, pop.style.left, pop.style.top, pop.style.width], ["fixed", "640px", "4px", "300px"]);
+  const menu = $(pop, "[role=menu]")!;
+  assert.equal(menu.style.maxHeight, "500px");
+  assert.equal(document.activeElement, menu, "the menu itself has the focus: no cut shown as picked");
+  // the stable names (a recorded demo's DevTools clicks): each cut by its shown name, the items by theirs
+  const own = ui.cuts().filter((c) => !c.readOnly).map((c) => c.label), theirs = ui.cuts().filter((c) => c.readOnly).map((c) => c.label).sort();
+  assert.deepEqual($$(pop, "[data-carton-cut-name]").map((e) => e.getAttribute("data-carton-cut-name")), [...own, ...theirs]);
+  assert.ok($(pop, '[data-carton-item="new-cut"]') && $(pop, '[data-carton-item="open-history"]'));
+  await key(menu, "ArrowUp");
+  assert.equal(document.activeElement?.getAttribute("data-carton-item"), "open-history", "Up from the menu: its last item");
+  await key(document.activeElement, "Escape");
+  await click($(pop, '[data-carton-item="open-history"]'));
+  assert.deepEqual([closes, history], [["escape", "done"], [1]]);
+  // a pointer down elsewhere
+  await act(() => void document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+  assert.equal(closes.at(-1), "outside");
+  await m.unmount();
+});
+
+test(name("CutsMenuPop: opened from the keyboard its first cut has the focus; a switch that fails after it closed goes to onError"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const errors: string[] = [];
+  ui.switchCut = async () => { throw new Error("The cut couldn't be opened."); };
+  function Host() {
+    const [open, setOpen] = React.useState(true);
+    return open ? h(CutsMenuPop, { left: 8, top: 4, focusFirst: true, onClose: () => setOpen(false), onError: (e) => void errors.push(e) }) : null;
+  }
+  const m = await render(wrap(ui, h(Host)));
+  assert.equal(document.activeElement?.getAttribute("data-carton-cut-name"), "Main cut");
+  await click($(m.container, '[data-carton-cut-name="30s Instagram cut"]'));
+  await flush();
+  assert.ok(!$(m.container, "[data-carton-cuts-pop]"), "closed at the pick");
+  assert.deepEqual(errors, ["The cut couldn't be opened."], "the host says it");
+  await m.unmount();
 });
 
 test(name("a teammate's cut (PLAN 6.2): View only in the menu, viewed with its way back; fold it in or copy it, no Restore"), async () => {

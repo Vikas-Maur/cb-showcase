@@ -582,7 +582,11 @@ What changes with it on:
   - `cb history <project> --landmarks` lists the versions people remember: exported, sent (a link made), named,
     agent turns, how it was when you opened the project, and just before a restore. Start and Before are yours only.
   - `cb restore <project> <version> --clip <name>` brings back one clip as it was, and nothing else changes (Ctrl+Z
-    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`.
+    takes it back). A clip deleted since comes back; one that wasn't there then is taken out only with `--remove`, and
+    its version says so in History and in `cb history` alike: "Took out 'Psst…'" (`cb history` read "Brought back
+    'Psst…' from an earlier version" for it), and so does `cb restore` itself on a shared cut, where it answered
+    "Brought back “Psst…” as it was in …" (the lease holder's answer, after the sharing server's, lost what the write
+    had said of itself).
     It never lands on top of another clip: if its place is taken now it goes on a new track just above, at the same
     time. A clip deleted with a ripple comes back with the rest of its track moved back; one added with a ripple,
     taken out, moves the rest earlier. The History panel's confirmation is refused if the clip changed again meanwhile.
@@ -613,6 +617,19 @@ What changes with it on:
   **Compare with…** picks any second version (or another cut) to compare with. A filter (the icon by the cut) shows
   landmarks, named versions, agent turns, your changes, or only the versions that touched the clip selected on the
   timeline, with that clip's credits.
+- **A teammate's change stands out as it arrives.** On a shared project, when a teammate's change (or their agent's)
+  comes in while History is open, its row fades in with a ring in that person's colour, the colour of their avatar,
+  and a soft glow; after a few seconds it settles into a faint edge of that colour, which stays while History is open.
+  So with your own Claude Code adding rows as it works, "Leo's Claude Code · Added title “Summer launch”" reads at a
+  glance as someone else. Your own changes and your agents' never get it, nor what was there when you opened History,
+  nor a cut you switch to. When a teammate's edit joins their row of edits, or their agent's turn goes on, that row
+  glows again for it. Changes arriving in a burst (a teammate's agent at work) get the ring without the fade, so a busy
+  project costs no frames. With Windows' animation effects off (reduced motion), the ring and then the edge show
+  without fading. A screen reader hears "Leo made a change", and nothing more from that person until they have been quiet for a
+  minute. A teammate's change that arrived live also reads by name now: History used to say "Teammate" for their edits
+  and "Claude Code" for their Claude Code, the same as yours, until History was loaded again; it now says "Leo" and
+  "Leo's Claude Code", in Leo's colour, from the moment the row appears, with no flash of another name first, also
+  when two people's Cardboards share one computer.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
@@ -634,8 +651,14 @@ What changes with it on:
 - **The cut you're on, in the title bar**: on every project tab, before Cardboard's own "16:9 ⌄", a chip names the cut
   the editor shows: "✂ Main cut ⌄", or a colour dot and the name for any other cut ("● 30s Instagram cut ⌄"; a long
   name is cut off at 220 px, 150 px in a window under 1180 px wide, and shown whole in its tooltip). It follows every
-  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click opens History
-  with its cuts menu open, the keyboard in it (arrows, Enter, Esc). While the editor shows something other than your
+  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click drops the
+  cuts menu down under the chip, History staying closed: every cut with who changed it last and when (a click switches;
+  while an agent works on your cut, the cut opens in place with "Switch when it finishes" and "Switch now"), New cut
+  from your edit, Fold in changes from a cut…, Rename, Open History, and "Agents work on the cut you're on." The chip
+  shows it open. The title bar is a page of its own above the editor's, so the chip sends where it is with its click
+  and the editor's page draws the menu under the title bar at the chip's left edge (at any window width or zoom, kept
+  inside the window). The keyboard is in it at once (arrows, Enter, Esc). Esc, a click anywhere else (the title bar
+  included) or the chip again closes it, and focus goes back to the editor. While the editor shows something other than your
   own edit (an earlier version opened, a teammate's cut), the chip grows a second part saying what ("👁 The version
   from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. In a narrow window the chip is what gives way, never the
   window's own buttons: the editor controls beside the tabs may shrink now (they kept their full width and could push
@@ -779,7 +802,12 @@ What changes with it on:
   sharing footage reads "Linked 'clip.mp4' for sharing" (it read `Set 'clip.mp4' content to "8291f1d9…"`), and a clip
   dragged onto a new track names that track. **Fold in some of it** is one version, "Folded 'Client review' into 'Main
   cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
-  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. Changes are
+  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. A track left out
+  keeps out the clips on it when the cut folded into doesn't have that track, and a title left out keeps out its own
+  text entry (ordinary media, a video a kept-out clip uses, comes in as before): in the demo rehearsals `cb fold … --reject tracks/<Talk>`, with its list made before a teammate added
+  another title on Talk, brought that title in on no track, which Cardboard's print showed on a made-up "Missing
+  track", and History's Fold in did the same for a track's row left unticked. They count as left out, and `cb fold`
+  names them ("and with them, since they can't come in without them: …"). Changes are
   counted one way everywhere (laptop re-check, 2026-11-02): a change per clip or field, a split one change, so the
   Fold dialog's "2 changes", History's "1 of 2 changes" and `cb history`'s "merge (1 left out)" agree (they read 2, "1
   of 4" and "3 left out"), as do Compare's and Watch the changes' counts (Watch's counter now steps through
@@ -1104,7 +1132,13 @@ with Carton off none of it runs at all.
   top as the library's empty view gave way to the grid) and brings the new tile into view.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
-  The Share dialog shows the status and who is in the project, with what they are doing. The title bar shows it too,
+  The Share dialog shows the status and who is in the project, with what they are doing. On a cut of your own (one
+  that isn't shared: `cb cut switch`, the cuts menu), the status beside the title and the title bar's dot are the
+  shared cut's, which stays connected; a plain line says "You're on “Vikas's cut”, which isn't shared. Your edits
+  there stay on this computer, and teammates don't see you until you're back on “Main cut”.", and You read "Vikas · on
+  “Vikas's cut”", without the ring of someone here (switching to it takes you out of the shared cut's presence).
+  Before, Share kept "Up to date" from before the switch, or turned amber "Offline" and stayed so while the shared cut
+  was up to date. The title bar shows it too,
   with nothing open: a dot on the Share icon (amber offline, white
   while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
   says "Offline · 3 changes not sent yet" (or "Sending 2 changes") while changes wait (a click opens Share). Someone with the project open but idle stays
@@ -1112,12 +1146,39 @@ with Carton off none of it runs at all.
   with the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   dialog says why instead of "Syncing" for ever: a host older than the app ("it needs an update", the host's own
   message in the tooltip), access refused, the host out of reach.
+- **Cardboard's background work never undoes a teammate's change.** An import's waveform and album art, the
+  thumbnails Cardboard makes again, a transcript's status and a relinked file's new date are written into `project.json`
+  after the edit that caused them. They change nothing Carton versions, and Carton recorded no version for them, so
+  the next time the file was read it looked like another program's save: it was imported over the newest version,
+  and a teammate's change that had arrived meanwhile was deleted for everyone (in the demo rehearsals, a title added
+  right after a sound was dropped on the timeline, 11 of 12 times). Each such write is now known for what it is. Its
+  waveform and art stay in the file, and a real save by another program is still taken as one: as what it changed
+  against the version the file showed before (merged with what reached the project meanwhile; before, its whole
+  document went over the newest version, and a teammate's change on its way into the file was taken out), also
+  when the program kept the file's own rev (the file is that version only while what Carton keeps of it is that
+  version's), and when that version still had edits waiting for the sharing server: the file Carton wrote for such a
+  version is kept as written (a hard link in the project's `.carton\bases` folder, not a copy), so a restart doesn't
+  lose it. An outside save is taken at once, never held; one whose kept file is gone (only past the newest 512) is
+  taken against that version's confirmed state, and a clash with an edit made since is the person's conflict card.
+  Offline, a second change of the same thing (moving a clip twice) stays too: it was made on the first, still unsent,
+  as if on the state before it, clashed with it ("You" vs "You"), and the clip went back to the first. An outside save
+  Carton can't take at all (it rejects the document) is kept as it is in the project's `.carton\outside` folder and
+  said in the app's log, and the project goes on showing the newest version. Carton knows its
+  own `project.json` by the bytes it wrote (their hash), never by a file's size and date alone. None
+  of this costs a save: in an independent check of this branch with six alternating pairs of 120 saves at 200 items,
+  the gap after subtracting the Carton-off control's had a median of −0.565 ms.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
   chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
   before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
   made it, which the host knows, so nothing in the history is rewritten.)
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
-  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
+  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. A teammate's new sound or
+  still plays as soon as their app has sent it: the editor's first ask for its clip, which can come before the file is
+  on its way, is answered once it is (for up to 12 s after the clip arrived, however slow the sharing server is to
+  answer meanwhile) instead of with "Source file missing", and the app that adds a
+  sound or a still sends it at once, while its person goes on editing (a video still goes once editing pauses for 2 s,
+  so its preview can be made from Cardboard's own). Before, the sound played 2 to 4 s after it could have, and the
+  editor was first told it was missing. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
   into the project itself, as a version by whoever shared it.
 - **Opening a project you joined**: its clips were never on your computer, so 1.4.0's loader would stop at "Missing
@@ -1181,13 +1242,18 @@ the panel's words when sync fails (`ui.test.js`); and what a GUI save costs the 
 a busy machine can't hide it: no print of `timeline.tsx` made and thrown away, the editor's save projection run only
 for the items that changed, a bound on file system calls per save (each one a trip through NTFS on Windows), no
 second read of `project.json` to print `timeline.tsx` (the facade hands Carton the file the save just wrote), and
-Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`). The timings are `save-bench.js`'s, a measurement and
+Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`); Cardboard's background writes (an import's derive, the
+derive main asks for) followed by a teammate's change, which stays, and another program's save, still taken as one
+(`derive-race.test.js`); a teammate's new sound, its clip asked for the moment it arrives, and sent while its person
+goes on editing (`teammate-sound.test.js`); Share on a cut of your own, with the sharing server gone and back
+(`share-own-cut.test.js`); `cb restore --clip --remove` on a shared cut (`restore-remove-shared.test.js`); a fold
+that keeps a track out while a teammate adds to it (`fold-kept-out.test.js`). The timings are `save-bench.js`'s, a measurement and
 not a test: a GUI save's round trip to the worker and how soon `timeline.tsx` shows it, Carton off and on alternated
 round by round (run it alone, on a quiet machine, on mains power).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js scripts/carton/test/sync/derive-race.test.js scripts/carton/test/sync/teammate-sound.test.js scripts/carton/test/sync/share-own-cut.test.js scripts/carton/test/sync/restore-remove-shared.test.js scripts/carton/test/sync/fold-kept-out.test.js
 ```
 
 **A remote teammate for demos** (`scripts\demo\`, tooling only, Linux): headless participants that join a shared
@@ -1199,6 +1265,35 @@ the person's view: `scripts\demo\FINDINGS.md`; how to run it: `scripts\demo\READ
 Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
 (Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
 under Defender.
+
+#### Carton: settings for a recording
+
+A temporary switch for recording the demo video. Two Claude Code agents appear in it: "Claude 1" in your Cardboard,
+and "Claude 2", which joins the shared project from another machine. **It is off unless set, and off it changes
+nothing.**
+
+- **`CARTON_AGENT_NAME`** (e.g. `Claude 1`) in Cardboard's environment turns it on for that computer. Set it in a
+  console and start Cardboard from there: `set CARTON_AGENT_NAME=Claude 1`, then `Cardboard.exe`. The library worker
+  gets it from the app, and the editor's page asks the worker once (`carton.recording`). With it on:
+  - your own Claude Code goes by that name wherever this app names it: History's rows and its turn while it works,
+    credits, conflict cards, toasts, tooltips, and who asked for a Compare. Without the switch it reads "Claude Code".
+    Its mark stays Claude's for a name with "Claude" in it. A teammate's agents keep their names, and other computers
+    still see yours as before. The name is cut to 40 characters.
+  - a teammate's name whose rest is only a number keeps it: "Claude 2" stays "Claude 2" in History, the title bar's
+    "… is here", presence and the cards. Without the switch it is shortened to "Claude", like "Leo" for "Leo Park".
+    "Leo Park" is still "Leo" either way.
+  - making an invite link adds no Sent landmark. Without the switch it adds one, which History shows as "Shared with
+    Shared a link to edit". A Sent made before the switch was turned on still shows that way.
+- **Joining under a given account** (any computer, no switch needed): `carton.liveJoin({ link, name, account })`.
+  The participant is shown as `name` and coloured by `account`, because History colours a person by their account.
+  So `{ name: "Claude 2", account: "Claude" }` keeps the colour account "Claude" always had, where the name alone
+  would make account "Claude-2" and a new colour. `account` is cleaned like a name (letters, digits, `.`, `_`, `~`
+  and `-`, at most 64 characters), and anything but a non-empty string is refused. Leave it out and the account
+  comes from the name, as before.
+
+Tests: `scripts/carton/test/sync/take5-recording.test.js` (two real workers, one with the switch),
+`scripts/carton/test/recording.test.js` (the editor's page with the switch on, off, and unanswered), and
+`carton/packages/react/test/take5-names.test.ts`.
 
 ### Benchmarks
 

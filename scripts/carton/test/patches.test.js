@@ -208,7 +208,7 @@ test("Carton on: the cut chip sits before the aspect ratio, the icons before Rep
   assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");
   const main = fs.readFileSync(carton.main, "utf8");
   assert.equal(count(main, '_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))})'), 1);
-  assert.equal(count(main, "if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}"), 1);
+  assert.equal(count(main, "if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",__cartonMain.command(t));return}"), 1);
   // main's own command handler, where it sends the active tab's webContents (r) the strip's commands
   assert.ok(main.includes("activeContents(){return this.model.activeView()?.webContents??null}"), "r is the active tab's webContents");
 });

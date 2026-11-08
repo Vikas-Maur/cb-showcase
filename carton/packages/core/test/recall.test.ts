@@ -187,6 +187,10 @@ test("bring back one clip: as it was then, everything else as it is now; deleted
     assert.equal((await c.head()).ref.seq, seq, "nothing written");
     const gone = await c.restoreClip(`${c.cut}@0`, "items/c9", { remove: true });
     assert.equal(gone.brought.how, "removed");
+    // named for what it did (demo rehearsal FINDINGS §4.4: it read "Brought back 'Drone shot' from an earlier version")
+    const out = (await c.log({ limit: 1, summary: true, rows: true }))[0]!;
+    assert.equal(out.summary, "Took out 'Drone shot'");
+    assert.deepEqual(out.title, { kind: "bring-back", of: `${c.cut}@0`, record: "items/c9", name: "Drone shot", removed: true });
     assert.equal(items((await c.head()).doc).c9, undefined);
     assert.ok((await c.head()).doc.media && ((await c.head()).doc.media as Rec[]).some((m) => m.id === "m1"), "a shared media file stays");
 

@@ -313,7 +313,7 @@ export interface Carton {
    */
   share(cut?: string): Promise<CutRecord>;
   /** Fold in some of it: everything except the rejected record paths, which an inverse change lists. */
-  foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult>;
+  foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult & { keptOut?: PathKey[] }>;
   /**
    * What partial folds of cut `from` into `into` (default: current cut) left out and is still left out (UI audit P1-4:
    * "you can fold in the rest later"), newest first: each partial fold's inverse change, its version and who folded,
@@ -1400,7 +1400,7 @@ class CartonImpl implements Carton {
     const ok = await this.store.write(writes, conds);
     if (ok) for (const [cut, k] of kfs) this.#kf.set(cut, k);
     if (ok && confirmed.length) this.#ridSaved = true;
-    if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true });
+    if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true, author: this.#who(change.author, change.id) });
     return ok;
   }
   /** A write with an id: if another process recorded it as a no-op, this handle learns it before acting (by id, not a scan). */
@@ -1703,9 +1703,12 @@ class CartonImpl implements Carton {
         summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
         title = { kind: "fold", ...(from ? { cut: from } : {}), taken: n, total: n };
       } else if (c.kind === "restore" && c.restoreRecord) {
-        // a bring-back of one clip (Carton UX v2): the app says when from ("Brought back “Intro” from Mon 4:10 pm")
-        summary = `Brought back '${c.restoreName ?? "a clip"}' from an earlier version`;
-        title = { kind: "bring-back", ...(c.restoreOf ? { of: c.restoreOf } : {}), record: c.restoreRecord, ...(c.restoreName ? { name: c.restoreName } : {}) };
+        // a bring-back of one clip (Carton UX v2): the app says when from ("Brought back “Intro” from Mon 4:10 pm"). One
+        // that took the clip out (it wasn't there then: `cb restore --clip … --remove`) says so, as History, its toast and
+        // cb restore do: `cb history` read "Brought back 'Psst…' from an earlier version" (demo rehearsal FINDINGS §4.4)
+        const removed = ops.some((o) => o.op === "remove" && o.path.length === 2 && E.pathKey(o.path) === c.restoreRecord);
+        summary = removed ? `Took out '${c.restoreName ?? "a clip"}'` : `Brought back '${c.restoreName ?? "a clip"}' from an earlier version`;
+        title = { kind: "bring-back", ...(c.restoreOf ? { of: c.restoreOf } : {}), record: c.restoreRecord, ...(c.restoreName ? { name: c.restoreName } : {}), ...(removed ? { removed: true } : {}) };
       } else if (c.kind === "restore") {
         summary = "Restored an earlier version";
         title = { kind: "restore", ...(c.restoreOf ? { of: c.restoreOf } : {}) };
@@ -2828,15 +2831,56 @@ class CartonImpl implements Carton {
     }
     return out as FoldResult;
   }
-  async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
+  async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult & { keptOut?: PathKey[] }> {
     const into = opts.into ?? this.#h.current;
     await this.#whole();
     this.#writable(into);
     if (this.#isShared(into)) return this.#foldShared(into, from, opts);
     const author = this.#actor(opts.author);
-    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
+    let reject = opts.reject;
+    const r = await this.#mutate(undefined, () => {
+      const y = this.#foldable(from);
+      reject = this.#widenReject(into, y, opts);
+      return this.#h.foldSome(into, y, { ...opts, reject, author });
+    }, { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
-    return out as FoldResult;
+    return { ...(out as FoldResult), ...(reject.length > opts.reject.length ? { keptOut: reject } : {}) };
+  }
+  /**
+   * Fold-some's reject list with what can't come in without the records it keeps out (laptop rehearsal, 2026-11-07):
+   * a record whose parent is kept out and isn't in the cut folded into stays out too (a clip added on a kept-out track
+   * after the list was made came in pointing at no track, which Cardboard printed on a made-up "Missing track"), and so
+   * does a private part the fold would add that only kept-out records name (a kept-out title's own text entry, which
+   * came into the media bin with the title's words; never ordinary media, which stays as a fold brings it). Each counts
+   * as left out ("N left out"). The given list as it is (its own form) when nothing more is needed.
+   */
+  #widenReject(into: string, y: NodeId, opts: FoldOptions & { reject: PathKey[] }): PathKey[] {
+    const dry = this.#h.fold(into, y, { ...opts, check: true });
+    if (dry.status !== "confirmed" || !(dry as { doc?: Doc }).doc) return opts.reject;
+    const post = (dry as { doc: Doc }).doc, pre = this.#h.stateOf(this.#h.head(into))!;
+    const keyOf = (coll: string) => this.schema.collections[coll]?.key ?? "id";
+    const recs = (doc: Doc, coll: string) => (Array.isArray(doc[coll]) ? (doc[coll] as Rec[]) : []);
+    const holds = (doc: Doc, coll: string, id: unknown) => recs(doc, coll).some((r) => r[keyOf(coll)] === id);
+    const out = new Set(opts.reject.map((k) => (typeof k === "string" ? k : E.pathKey(k as unknown as string[]))));
+    const given = out.size;
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [coll, spec] of Object.entries(this.schema.collections)) {
+        for (const r of recs(post, coll)) {
+          const id = r[keyOf(coll)], k = E.pathKey([coll, String(id)]);
+          if (out.has(k)) continue;
+          const parent = spec.parent, part = spec.partOf;
+          const orphan = !!parent && out.has(E.pathKey([parent.collection, String(r[parent.field])])) && !holds(pre, parent.collection, r[parent.field]);
+          // only a private part (`nounOf` null: a title's or a graphic's own entry, no media file of its own), never
+          // ordinary media a kept-out clip uses: a video stays in the bin when only its placement is kept out (review 2
+          // of fix/demo-sync-bugs, P2)
+          const holders = part && spec.nounOf?.(r) === null && !holds(pre, coll, id) ? recs(post, part.collection).filter((h) => h[part.field] === id) : [];
+          const partOfOut = holders.length > 0 && holders.every((h) => out.has(E.pathKey([part!.collection, String(h[keyOf(part!.collection)])])));
+          if (orphan || partOfOut) out.add(k), (grew = true);
+        }
+      }
+    }
+    return out.size > given ? [...out] : opts.reject;
   }
   /** Name a version; `author`: who named it (default: this handle's actor). */
   async name(ref: StateRef | string, name: string, opts: { author?: Actor; asked?: string; ifName?: string | null } = {}): Promise<boolean> {
@@ -3513,7 +3557,8 @@ class CartonImpl implements Carton {
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs }), this.#noteCuts();
-    for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
+    // (told by person, as log() tells it: the server's people come before a newly bound replica's rows)
+    for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + "."), author: this.#who(r.author, r.id) });
     this.#tell(cut);
   }
   /** The due events of the cut (#due) whose rows History holds now, in order; `all`: every one, on what it holds. */
@@ -3855,11 +3900,13 @@ class CartonImpl implements Carton {
     if (waiting && !opts.check) throw new Error(`Carton.fold: ${waiting} edit${waiting === 1 ? "" : "s"} waiting to sync on this cut; fold once it is up to date`);
     const author = this.#actor(opts.author);
     const y = this.#foldable(from);
-    const some = opts.reject ? this.#h.planFoldSome(into, y, { ...opts, reject: opts.reject, author }) : null;
+    const reject = opts.reject ? this.#widenReject(into, y, { ...opts, reject: opts.reject }) : null;
+    const some = reject ? this.#h.planFoldSome(into, y, { ...opts, reject, author }) : null;
     if (some && !("reject" in some)) {
       const { merge: _m, base: _b, doc: _d, retry: _r, ...out } = some as FoldResult & { merge?: unknown; base?: unknown; doc?: unknown; retry?: unknown };
       return out as FoldResult;
     }
+    const keptOut = reject && opts.reject && reject.length > opts.reject.length ? { keptOut: reject } : {};
     const r = some ? some.dry : this.#h.fold(into, y, { ...opts, check: true, author });
     const { merge, base, doc, edges, retry: _r, ...out } = r;
     if (r.status !== "confirmed" || !doc) return out as FoldResult;
@@ -3880,7 +3927,7 @@ class CartonImpl implements Carton {
     // an empty fold under its partial revert: no write spends its id here, so its waits are told at once, as before
     if (res.status === "confirmed") sc.settleEmpty(id, { status: "confirmed", id, seq: res.seq });
     const inv = this.#enqueue(sc, into, inverse!, author, some.ops, {}, { kind: "partial-revert", rejected: some.reject, reverts: id });
-    return this.#persistEnqueued(sc, into, inverse!, inv, undefined, [id]);
+    return { ...(await this.#persistEnqueued(sc, into, inverse!, inv, undefined, [id])), ...keptOut };
   }
   /**
    * Undo, revert and restore on a shared cut: planned on the optimistic state (this replica's pending edits included,

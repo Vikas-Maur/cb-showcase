@@ -49,7 +49,8 @@ async function playAll(p, ms = 1300) { await p.locator(".carton-changes-view .ca
 async function holdBefore(p, scope = ".carton-changes-view") { const b = p.locator(`${scope} .carton-before`).first(); const box = await b.boundingBox(); await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await p.mouse.down(); await p.waitForTimeout(300); }
 
 // ------------------------------------------------------------------ the shots
-// target: panel (the side panel, full height), stage (the layer over the preview), window, titlebar, join (the dialog).
+// target: panel (the side panel, full height), stage (the layer over the preview), window, titlebar, join (the dialog),
+// clip (a region the shot's clip(page) measures).
 // perWidth: shot at each panel width. how: the steps in words, for INDEX.md.
 const P = (name, s, how, steps, o = {}) => ({ name, s, how, steps, target: "panel", perWidth: true, ...o });
 // Stage shots with the side panel closed: a window whose stage is 700 px wide (the panel's room goes to the stage).
@@ -202,6 +203,8 @@ try {
         const animations = shot.keepAnimations || shot.anim ? "allow" : "disabled";
         if (shot.target === "window") await page.screenshot({ path, animations });
         else if (shot.target === "dialog") await page.locator(".carton-dialog").first().screenshot({ path, animations: "disabled" });
+        // a region the shot measures itself (its `clip(page)`: {x, y, width, height} in CSS px)
+        else if (shot.target === "clip") await page.screenshot({ path, animations, clip: await shot.clip(page) });
         else if (shot.target === "titlebar") {
           const bar = await page.locator(".cap-titlebar").boundingBox();
           const crop = shot.crop ?? 560;

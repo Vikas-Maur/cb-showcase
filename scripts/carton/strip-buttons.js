@@ -5,8 +5,14 @@
 //   same chip look: "✂ Main cut ⌄", or a colour dot for any other cut. The person always knows which cut they're on,
 //   on every project tab, without opening History. While they're looking at something other than their own edit
 //   (viewing: an older version played, a conflict side, a teammate's cut), it grows a second part, "👁 <label> ✕".
-//   Its click sends carton-cuts (the editor's page opens History with its cuts menu open and focused: version 1 of
-//   PLAN 2.2, since the menu can't be drawn by this page in the editor's); the ✕ sends carton-back (back to your edit).
+//   Its click drops the cuts menu down under it (PLAN 2.2 version 2): this page can't draw into the editor's, which is
+//   another page under this one, so the click sends carton-cuts with the chip's box (its left, right and bottom in this
+//   page's CSS px, and this page's devicePixelRatio), and the editor's page draws the menu under the title bar at the
+//   chip's left edge (scripts/carton/ui.js ChipCutsMenu); `open` says whether the menu was open as the chip was pressed
+//   (a press here takes the focus from the editor's page, which may close the menu before the click is sent: the click
+//   still means close then), `pointer` that a pointer clicked it (the menu itself takes focus, not its first cut). While
+//   the menu is open the page's report says so (cutsMenu), and the chip shows it: aria-expanded, a pressed look. The ✕
+//   sends carton-back (back to your edit).
 // - The History and Share icons (__cbCartonStrip), just before "Report an issue", in its size, style and hover (icon
 //   only, the name in the tooltip).
 // They show only on a project tab in the editor with Carton on: the strip renders them when the tab's editor state
@@ -17,7 +23,11 @@
 // The report: `panel` ("history", "comments" or null), `live` (a shared project's summary, or null), `share` (the Share
 // dialog is open), `cut` ({name, dot}: dot is a CSS colour for any cut but Main, null for Main), `viewing` ({label,
 // loading}: loading while the version is slow to come, its label "Loading …" then, or null), `comparing` ({label}, or
-// null: Compare in the editor). An older report is a bare panel name: no chip then.
+// null: Compare in the editor), `cutsMenu` (true while the chip's cuts menu is open). An older report is a bare panel
+// name: no chip then.
+// Stable names for scripts (a recorded demo clicks the chip with DevTools mouse events): the chip
+// [data-carton-cut-chip], its button [data-carton-cut-chip] > button[data-carton-cut] (aria-expanded while its menu
+// is open), its ✕ [data-carton-back].
 // A narrow window (QA G4): the chip is the one part of the editor's controls that gives way (patch-carton.js lets that
 // row shrink), so the window's own buttons are never pushed out; below 1000 px, while the chip has its second part, the
 // cut shows as its dot or scissors only, its name in the tooltip, and Compare's part says "⇆ Comparing ✕" (laptop: the
@@ -110,8 +120,18 @@ const __cbCartonChipPart = (p) => {
 function __cbCartonCutChip({ panel }) {
   const p = __cbCartonReport(panel);
   const narrow = __cbCartonUseNarrow(), tight = __cbCartonUseMedia(__cbCartonTight);
+  // whether the menu was open when the chip was pressed (see the head of this file)
+  const down = c.useRef(null);
   const cut = p.cut && typeof p.cut.name === "string" ? p.cut : null;
   if (!cut) return null;
+  const expanded = p.cutsMenu === true;
+  const ask = (e) => {
+    // (detail 0: a click from the keyboard, Enter or Space on the chip; its menu opens with focus on its first cut)
+    const pointer = e.detail > 0, was = pointer && down.current ? down.current.open : expanded;
+    down.current = null;
+    const box = e.currentTarget.closest?.("[data-carton-cut-chip]")?.getBoundingClientRect?.();
+    I({ action: "carton-cuts", open: !was, pointer, ...(box ? { at: { left: box.left, right: box.right, bottom: box.bottom, dpr: globalThis.devicePixelRatio || 1 } } : {}) });
+  };
   const part = __cbCartonChipPart(p);
   // below 1000 px with a second part: the cut is its mark only (QA G4)
   const markOnly = tight && !!part;
@@ -126,9 +146,12 @@ function __cbCartonCutChip({ panel }) {
       title: cut.name,
       "data-carton-cut": cut.dot ? "other" : "main",
       "data-mark-only": markOnly ? "" : void 0,
-      onClick: () => I({ action: "carton-cuts" }),
+      "aria-expanded": expanded,
+      onPointerDown: () => { down.current = { open: expanded }; },
+      onClick: ask,
       className: w(C, "min-w-0 gap-1.5 px-2 text-white/85 hover:bg-white/[0.06] hover:text-white"),
-      style: part ? { borderRadius: 0 } : void 0,
+      // pressed while its menu is open (inline: this page's stylesheet has only the classes Cardboard itself uses)
+      style: part || expanded ? { ...(part ? { borderRadius: 0 } : {}), ...(expanded ? { background: "rgba(255,255,255,0.08)", color: "#fff" } : {}) } : void 0,
       children: [
         cut.dot ? n.jsx("span", { "aria-hidden": !0, "data-carton-cut-dot": "", style: { width: 8, height: 8, flex: "none", borderRadius: 999, background: cut.dot } }, "dot") : __cbCartonSvg("cut", "size-3.5 shrink-0"),
         // narrow with a second part: both parts must fit beside the tabs, the label shortened first (DESIGN §9)

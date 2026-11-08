@@ -186,6 +186,11 @@ export interface MenuListProps {
   className?: string;
   /** Elements whose clicks don't count as "outside" (the trigger). */
   ignore?: () => (HTMLElement | null)[];
+  /**
+   * Focus goes to its first item when it opens (default: a menu opened from the keyboard). False: the menu itself takes
+   * focus and no item shows as picked until an arrow key (a menu opened by a click, as Cardboard's own dropdowns do).
+   */
+  focusFirst?: boolean;
 }
 
 /** role=menu with arrow-key focus, Escape and click-outside to close. Positioned by the caller. */
@@ -203,7 +208,7 @@ export function MenuList(p: MenuListProps) {
   useLayoutEffect(() => {
     const el = ref.current;
     const lost = !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected;
-    if (el && (lost || !el.contains(document.activeElement)) && (lost || !focused.current)) (focusables(el)[0] ?? el).focus({ preventScroll: true });
+    if (el && (lost || !el.contains(document.activeElement)) && (lost || !focused.current)) ((p.focusFirst === false && !focused.current ? null : focusables(el)[0]) ?? el).focus({ preventScroll: true });
     focused.current = true;
   });
 
@@ -234,7 +239,8 @@ export function MenuList(p: MenuListProps) {
     const i = items.indexOf(document.activeElement as HTMLElement);
     let n = -1;
     if (e.key === "ArrowDown") n = (i + 1) % items.length;
-    else if (e.key === "ArrowUp") n = (i - 1 + items.length) % items.length;
+    // (from the menu itself, nothing focused in it yet: Up is its last item)
+    else if (e.key === "ArrowUp") n = i < 0 ? items.length - 1 : (i - 1 + items.length) % items.length;
     else if (e.key === "Home") n = 0;
     else if (e.key === "End") n = items.length - 1;
     if (n >= 0) {
@@ -260,6 +266,8 @@ export interface MenuItemProps {
   hint?: ReactNode;
   /** What it does, in a line under its name (never a tooltip over the item below). */
   title?: string;
+  /** A stable name for scripts and tests, as data-carton-item (the cuts menu's "new-cut", "open-history"). */
+  item?: string;
 }
 
 export function MenuItem(p: MenuItemProps) {
@@ -274,6 +282,7 @@ export function MenuItem(p: MenuItemProps) {
       className: "carton-menu-item",
       "data-danger": p.danger || undefined,
       "data-described": p.title ? "" : undefined,
+      "data-carton-item": p.item,
       tabIndex: -1,
       onClick: () => !p.disabled && p.onSelect(),
     },

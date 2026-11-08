@@ -54,6 +54,13 @@ export function storeFor(bundlePath, projectId) {
   }
   return c.client;
 }
+/** A client of the host's media scope whose requests `signal` aborts (one read's; storeFor's is kept for reuse). */
+function abortableStore(bundlePath, projectId, signal) {
+  const cfg = store.readConfig(bundlePath, projectId);
+  if (!cfg) throw new Error("This project isn't shared from this computer");
+  const session = store.sessionFor(bundlePath, projectId);
+  return mediaStore({ host: cfg.host, projectId, token: () => session.token(), fetchFn: (u, i) => fetch(u, { ...(i ?? {}), signal }) });
+}
 /** The clients of the bundles `inside(bundlePath)` says are in a folder Cardboard is done with go. */
 export function forget(inside) {
   for (const [key, c] of clients) if (inside(c.bundlePath)) clients.delete(key);
@@ -135,15 +142,18 @@ function readerFor(bundlePath, projectId) {
 }
 
 /**
- * Where a clip with no file here lives: its shared record, read from the host. Kept a minute once its proxy is
- * complete; a record without one yet (or none) is asked again after 2 s.
+ * Where a clip with no file here lives: its shared record, read from the host. Kept a minute once it is final (a
+ * complete proxy, or an original shared as it is); a record without a finished proxy is asked again after 2 s, and
+ * none at all after `missMs` (2 s; a wait for a teammate's clip on its way asks sooner: worker.js waitPlayable).
  */
 const records = new Map(); // `${projectId}|${mediaId}` → {at, value}
-const done = (rec) => !!rec?.proxy && (rec.proxy.hash || rec.proxy.size !== undefined);
-export async function sharedRecord(bundlePath, projectId, mediaId) {
+const done = (rec) => (!!rec?.proxy && (rec.proxy.hash || rec.proxy.size !== undefined)) || (!!rec && !rec.proxy && rec.original === "shared" && !!rec.hash);
+export async function sharedRecord(bundlePath, projectId, mediaId, { missMs = 2_000, signal } = {}) {
   const k = `${projectId}|${mediaId}`, hit = records.get(k);
-  if (hit && Date.now() - hit.at < (done(hit.value) ? 60_000 : 2_000)) return hit.value;
-  const b = await storeFor(bundlePath, projectId).get(recordKey(mediaId));
+  if (hit && Date.now() - hit.at < (done(hit.value) ? 60_000 : hit.value ? 2_000 : missMs)) return hit.value;
+  // `signal`: a read its caller may abort (a wait past its deadline: worker.js waitPlayable), through a client of its own
+  const b = await (signal ? abortableStore(bundlePath, projectId, signal) : storeFor(bundlePath, projectId)).get(recordKey(mediaId));
+  if (signal?.aborted) throw signal.reason ?? new Error("aborted");
   const value = b ? JSON.parse(new TextDecoder().decode(b)).record : null;
   records.set(k, { at: Date.now(), value });
   return value;

@@ -168,7 +168,8 @@ export function People({ st }) {
     h("section", { className: "carton-share-section" },
       h("h3", { className: "carton-share-heading" }, words.people),
       h("ul", { className: "carton-share-people" },
-        h(Person, { key: "you", you: true, actor: me, name: words.you, sub: offline ? st.name : words.youHereNow(st.name), role: roleWords(st.role), here: !offline }),
+        // on a cut of your own, teammates don't see you (core left the shared cut's presence at the switch): no ring
+        h(Person, { key: "you", you: true, actor: me, name: words.you, sub: st.ownCut ? words.youOnCut(st.name, st.ownCut.name) : offline ? st.name : words.youHereNow(st.name), role: roleWords(st.role), here: !offline && !st.ownCut }),
         ...people.flatMap((p) => [
           h(Person, { key: p.actor.key, actor: p.actor, name: p.actor.name ?? p.actor.id, sub: p.idle && !p.activity ? words.hereNotEditing : p.activity ? `${words.hereNowLine} · ${lower(p.activity)}` : words.hereNowLine, role: roleWords(p.role), here: true, idle: p.idle }),
           ...(under.get(p.actor.key) ?? []).map(agent),
@@ -266,13 +267,20 @@ function StatusWord({ st }) {
 /**
  * A shared project, below the title: one amber line (QA G9) that says why sync fails when it does, or, offline, that
  * your changes are kept and sent later (an unreachable server while offline is that line), then People. The server's
- * own message is that line's tooltip, for support, never its text (P2-12, H-SV).
+ * own message is that line's tooltip, for support, never its text (P2-12, H-SV). On a cut of your own (not shared), a
+ * plain line says so first: the status by the title is the shared cut's, and your edits there aren't sent (FINDINGS
+ * §4.4).
  */
 export function LiveStatus({ st }) {
   const offline = isOffline(st);
   const problem = st.problem && !(offline && st.problem.code === "unreachable") ? st.problem : null;
   const line = problem ? problem.words : st.pending ? words.offlineLine(st.pending) : words.offlineLineNone;
   return h("div", { className: "carton-share-live" },
+    st.ownCut
+      ? h("div", { className: "carton-share-offline", "data-tone": "info", role: "status", "data-own-cut": "" },
+          h(Icon, { name: "cut", size: 16 }),
+          h("p", null, ...firstSentence(words.onOwnCut(st.ownCut.name, st.ownCut.shared))))
+      : null,
     problem || offline
       ? h("div", { className: "carton-share-offline", role: problem ? "alert" : "status", "data-code": problem?.code, title: st.problem?.detail ?? undefined },
           h(Icon, { name: problem ? "warning" : "cloudSlash", size: 16 }),

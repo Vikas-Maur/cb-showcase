@@ -638,6 +638,10 @@ export const words = {
   holding: "Holding",
   holdingLabel: (label: string) => `${label} · holding`,
   peekShowing: (label: string) => `Showing ${label}. Release to go back.`,
+  // someone else's change arriving in History while it is open (said for screen readers; the row wears their colour):
+  // "Leo made a change", "Leo's Claude Code made a change", "Leo and Mia made changes"
+  madeAChange: (names: readonly string[]) =>
+    names.length < 2 ? `${names[0] ?? ""} made a change` : `${names.length > 3 ? `${names.slice(0, 2).join(", ")} and ${plural(names.length - 2, "other", "others")}` : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`} made changes`,
   compare: "Compare",
   compareYourEditWith: "Compare your edit with…",
   versionYouSent: "The version you sent",
@@ -671,6 +675,11 @@ export const words = {
   sharingServerPlaceholder: "share.example.com",
   sharingNow: "Sharing…",
   youHereNow: (name: string) => `${name} · here now`,
+  // On a cut of your own (not shared), Share says so: the status beside the title is the shared cut's (demo rehearsal,
+  // FINDINGS §4.4: it read "Offline" there), and teammates don't see you while you're on it (core leaves the shared
+  // cut's presence at a switch)
+  onOwnCut: (cut: string, shared: string | null) => `You're on “${cut}”, which isn't shared. Your edits there stay on this computer, and teammates don't see you until you're back on ${shared ? `“${shared}”` : "a shared cut"}.`,
+  youOnCut: (name: string, cut: string) => `${name} · on “${cut}”`,
   hereNotEditing: "Here, not editing",
   nobodyElseHere: "Nobody else is here right now.",
   whoCanDoWhat: "Who can do what",

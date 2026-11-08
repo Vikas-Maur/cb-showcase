@@ -2,8 +2,13 @@
 // it last, teammates' cuts marked View only, New cut from your edit, one "Fold in changes from a cut…", Rename, and the
 // one fact that surprises people: "Agents work on the cut you're on." While an agent's turn holds the timeline, a switch
 // doesn't happen silently: the cut opens in place with "Switch when it finishes" (queued: cuts.ts) and "Switch now".
-// More than 8 cuts scroll; more than 12 get a search field. The same menu opens from the title bar's cut chip
-// (openCutsMenu, cuts.ts).
+// More than 8 cuts scroll; more than 12 get a search field. The same menu hangs from the title bar's cut chip
+// (CutsMenuPop: its body without the cut bar, at the place the host gives it, with Open History; PLAN 2.2 v2).
+//
+// Stable names for scripts (a recorded demo drives it with DevTools mouse events) and tests: each cut's row button
+// [data-carton-cut-name="<the cut's name as shown>"] (and data-carton-cut-id), a turn's choices
+// [data-carton-cut-choice="wait" | "now" | "no"] (Switch when it finishes, Switch now, Don't switch), the items
+// [data-carton-item="new-cut" | "fold-in" | "rename" | "open-history"], and the chip's menu [data-carton-cuts-pop].
 //
 // Before (AUDIT §7, 4/10): bare names, a "Fold “X” in here" line per cut beside "Fold into Main cut", a 12 px lock for a
 // teammate's cut, nothing on agents, and a menu wider than a 300 px panel.
@@ -14,7 +19,7 @@ import { briefWhen, cancelQueuedSwitch, cutColor, cutRef, dismissQueuedSwitchErr
 import { useCartonUi, useCuts, useLocale, useNow, useShownCuts, useViewing, useWords, useWorking } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { CartonUi, Cut, Working } from "../model.ts";
-import { Button, InlineName, MenuButton, MenuItem, MenuLabel, MenuSeparator, cx, tipIfCut } from "./ui.ts";
+import { Button, InlineName, MenuButton, MenuItem, MenuLabel, MenuList, MenuSeparator, cx, tipIfCut } from "./ui.ts";
 import { Glyph } from "./CompareView.ts";
 
 export interface CutsMenuProps {
@@ -98,7 +103,7 @@ export function CutsMenu(p: CutsMenuProps) {
       (e: unknown) => setError(e instanceof Error && e.message ? e.message : words.failed),
     );
   };
-  // openCutsMenu(ui) (the title bar's chip) opens this menu and puts focus in it
+  // openCutsMenu(ui) (a host, from elsewhere) opens this menu and puts focus in it
   const openRef = useRef<(() => void) | null>(null);
   useEffect(() => registerCutsMenu(ui, () => openRef.current?.()), [ui]);
 
@@ -156,6 +161,88 @@ function QueuedLine({ queued, attempt }: { queued: QueuedSwitch; attempt: (run: 
       { className: "carton-cuts-queued-actions" },
       h(Button, { variant: "ghost", onClick: () => (cancelQueuedSwitch(ui), attempt(() => ui.switchCut(queued.cutId))) }, words.switchNow),
       h(Button, { variant: "ghost", onClick: () => cancelQueuedSwitch(ui) }, words.dontSwitch),
+    ),
+  );
+}
+
+export interface CutsMenuPopProps extends CutsMenuProps {
+  /** Where it hangs, in the page's px (position: fixed): its left edge and its top. */
+  left: number;
+  top: number;
+  /** Its width in px (the host keeps it inside the window). Default 300, the mockup's. */
+  width?: number;
+  /** The most it may be tall, in px: past that it scrolls. */
+  maxHeight?: number;
+  /**
+   * It asks to close: "escape" (Esc in it), "outside" (a pointer down anywhere else on the page), "done" (a pick: a
+   * cut switched to, New cut made, Rename saved, Open History, Fold in…, the cut you're on, Don't switch). The host
+   * unmounts it, and gives focus back to the page except after "outside" (the click's target has it then).
+   */
+  onClose: (why: "escape" | "outside" | "done") => void;
+  /** Focus its first cut when it opens (opened from the keyboard). False: the menu itself takes focus (a click). */
+  focusFirst?: boolean;
+  /** A switch that fails once it has closed: said by the host (the menu that would say it is gone). */
+  onError?: (message: string) => void;
+  /** Elements whose pointer-down isn't "outside" (what opens it, where that shares the page: it toggles it itself). */
+  ignore?: () => (HTMLElement | null)[];
+}
+
+/**
+ * The cuts menu on its own, without History's cut bar: the title bar's chip drops it down under itself (Carton UX
+ * redesign PLAN 2.2 version 2, DESIGN §4.1, after/titlebar-cuts-menu.png). The title bar is a page of its own, so the
+ * editor's page draws it, at the chip's place (the host's left and top). The same body as History's menu: the cuts with
+ * who changed each and when, a switch that opens in place during an agent's turn ("Switch when it finishes" / "Switch
+ * now"), New cut from your edit, Fold in…, Rename, and Open History when the host gives onOpenHistory. Esc and a click
+ * outside close it (MenuList); its own errors show in it while it is open, and through onError once it has closed.
+ */
+export function CutsMenuPop(p: CutsMenuPopProps) {
+  const ui = useCartonUi();
+  const words = useWords();
+  const queuedError = useQueuedSwitchError(ui);
+  const [mode, setMode] = useState<"menu" | "new" | "rename">("menu");
+  const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const onError = useRef(p.onError);
+  onError.current = p.onError;
+  const attempt = (run: () => Promise<unknown>, after?: () => void) => {
+    setError(null);
+    dismissQueuedSwitchError(ui);
+    run().then(
+      () => after?.(),
+      (e: unknown) => {
+        const message = e instanceof Error && e.message ? e.message : words.failed;
+        if (mounted.current) setError(message);
+        else onError.current?.(message);
+      },
+    );
+  };
+  const onClose = useRef(p.onClose);
+  onClose.current = p.onClose;
+  const close = useCallback(() => onClose.current("done"), []);
+  const err = error ?? (queuedError !== null ? queuedError || words.failed : null);
+  return h(
+    "div",
+    {
+      className: "carton-cuts-pop",
+      "data-carton-cuts-pop": "",
+      style: { position: "fixed", left: p.left, top: p.top, width: p.width ?? 300, zIndex: 60, pointerEvents: "auto" },
+    },
+    h(
+      MenuList,
+      {
+        label: words.cuts,
+        onClose: (why) => onClose.current(why ?? "escape"),
+        ignore: p.ignore,
+        className: "carton-cuts-menu",
+        focusFirst: p.focusFirst,
+        style: p.maxHeight ? { maxHeight: p.maxHeight, overflowY: "auto", overscrollBehavior: "contain" } : undefined,
+      },
+      h(CutsMenuBody, { onFoldIn: p.onFoldIn, fromRef: p.fromRef, onOpenHistory: p.onOpenHistory, close, mode, setMode, attempt, setError }),
+      err ? h("p", { className: "carton-cuts-error carton-cuts-pop-error", role: "alert" }, err) : null,
     ),
   );
 }
@@ -262,6 +349,8 @@ function CutsMenuBody(p: BodyProps) {
         role: "menuitemradio",
         "aria-checked": c.current,
         "aria-expanded": isOpen || undefined,
+        "data-carton-cut-name": c.label,
+        "data-carton-cut-id": c.id,
         tabIndex: -1,
         className: "carton-menu-item carton-cut-item",
         onClick: () => select(c),
@@ -320,13 +409,14 @@ function CutsMenuBody(p: BodyProps) {
       : null,
     h("div", { key: "cuts", className: many ? "carton-cuts-scroll" : "carton-cuts-list" }, ...list),
     h(MenuSeparator, { key: "s1" }),
-    home ? h(MenuItem, { key: "new", icon: "plus", onSelect: () => p.setMode("new") }, words.newCutFromYourEdit) : null,
+    home ? h(MenuItem, { key: "new", icon: "plus", item: "new-cut", onSelect: () => p.setMode("new") }, words.newCutFromYourEdit) : null,
     canFold
       ? h(
           MenuItem,
           {
             key: "fold",
             icon: "fold",
+            item: "fold-in",
             onSelect: () => {
               p.close();
               // The shown cuts don't follow head moves: hand the host the cuts as they are now (their heads, F-5).
@@ -338,8 +428,8 @@ function CutsMenuBody(p: BodyProps) {
         )
       : null,
     // Offered only when the engine can rename cuts, and never a teammate's
-    rename && current && !current.readOnly ? h(MenuItem, { key: "ren", icon: "pencil", onSelect: () => p.setMode("rename") }, words.renameCutNamed(current.label)) : null,
-    p.onOpenHistory ? h(MenuItem, { key: "hist", icon: "versions", onSelect: () => (p.close(), p.onOpenHistory!()) }, words.openHistory) : null,
+    rename && current && !current.readOnly ? h(MenuItem, { key: "ren", icon: "pencil", item: "rename", onSelect: () => p.setMode("rename") }, words.renameCutNamed(current.label)) : null,
+    p.onOpenHistory ? h(MenuItem, { key: "hist", icon: "versions", item: "open-history", onSelect: () => (p.close(), p.onOpenHistory!()) }, words.openHistory) : null,
     h(MenuSeparator, { key: "s2" }),
     h("div", { key: "note", className: "carton-cuts-note", role: "presentation" }, info, words.agentsWorkHere),
   ];
@@ -357,7 +447,7 @@ function TurnPane(p: { cut: Cut; current: Cut | undefined; turn: Working | null;
   const who = agent ? actorLabel(agent, byKey, words.you) : "";
   const waitingHere = p.queued?.cutId === p.cut.id;
   const choice = (key: string, primary: boolean, label: string, run: () => void, ref?: typeof first) =>
-    h("button", { key, ref, type: "button", role: "menuitem", tabIndex: -1, className: "carton-btn", "data-variant": primary ? "primary" : "secondary", "data-size": "sm", onClick: run }, h("span", { className: "carton-btn-text" }, label));
+    h("button", { key, ref, type: "button", role: "menuitem", tabIndex: -1, className: "carton-btn", "data-variant": primary ? "primary" : "secondary", "data-size": "sm", "data-carton-cut-choice": key, onClick: run }, h("span", { className: "carton-btn-text" }, label));
   return h(
     "div",
     { className: "carton-cut-turn" },

@@ -515,7 +515,7 @@ test("laptop P2-3: comparing at 960 px, the chip's second part is “⇆ Compari
   assert.match(viewing, /<span class="sr-only">Looking at <\/span>Director&#x27;s “Add captions…”/);
 });
 
-test("PLAN 2.1, 2.2: the chip's click asks for the cuts menu, its ✕ for your edit", opt, async () => {
+test("PLAN 2.1, 2.2 v2: the chip's click asks for its cuts menu with its box (open or close, as it was when pressed), its ✕ for your edit", opt, async () => {
   const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
   const w = new Window({ url: "http://localhost/" });
   const keep = globalThis.document;
@@ -526,10 +526,33 @@ test("PLAN 2.1, 2.2: the chip's click asks for the cuts menu, its ✕ for your e
   const root = client.createRoot(el);
   try {
     const s = strip();
-    await React.act(async () => root.render(React.createElement(s.Chip, { panel: { cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" } } })));
-    await React.act(async () => el.querySelector("[data-carton-cut]").click());
+    const report = (o = {}) => ({ cut: { name: "Main cut", dot: null }, viewing: { label: "Leo's Main cut" }, ...o });
+    await React.act(async () => root.render(React.createElement(s.Chip, { panel: report() })));
+    const btn = () => el.querySelector("[data-carton-cut-chip] > button[data-carton-cut]");
+    assert.equal(btn().getAttribute("aria-expanded"), "false");
+    // a pointer's click (pointer down, then a click with a click count)
+    const press = async (o = {}) => {
+      await React.act(async () => btn().dispatchEvent(new w.PointerEvent("pointerdown", { bubbles: true })));
+      if (o.between) await o.between();
+      await React.act(async () => btn().dispatchEvent(new w.MouseEvent("click", { bubbles: true, detail: 1 })));
+    };
+    await press();
+    // (happy-dom lays nothing out: the box is all 0; the app's is the chip's place in the title bar)
+    const box = { left: 0, right: 0, bottom: 0, dpr: 1 };
+    assert.deepEqual(s.sent.at(-1), { action: "carton-cuts", open: true, pointer: true, at: box });
+    // the page says it is open: the chip shows it, and its next click closes it
+    await React.act(async () => root.render(React.createElement(s.Chip, { panel: report({ cutsMenu: true }) })));
+    assert.equal(btn().getAttribute("aria-expanded"), "true");
+    assert.match(btn().getAttribute("style") ?? "", /background: rgba\(255, 255, 255, 0\.08\)/, "a pressed look");
+    // the press took the focus from the editor's page, whose menu closed (its report came back) before the click: still
+    // a close, since it was open when pressed
+    await press({ between: () => React.act(async () => root.render(React.createElement(s.Chip, { panel: report() }))) });
+    assert.deepEqual(s.sent.at(-1), { action: "carton-cuts", open: false, pointer: true, at: box });
+    // Enter on the chip (a click with no click count): opens, focus on its first cut there
+    await React.act(async () => btn().click());
+    assert.deepEqual(s.sent.at(-1), { action: "carton-cuts", open: true, pointer: false, at: box });
     await React.act(async () => el.querySelector("[data-carton-back]").click());
-    assert.deepEqual(s.sent, [{ action: "carton-cuts" }, { action: "carton-back" }]);
+    assert.deepEqual(s.sent.at(-1), { action: "carton-back" });
   } finally {
     await React.act(async () => root.unmount());
     globalThis.document = keep;

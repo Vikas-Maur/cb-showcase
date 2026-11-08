@@ -626,6 +626,21 @@ test("PLAN 2.1: the title bar's report keeps the panel, live summary, Share, the
   assert.equal(m.panel({ cut: { name: 42 } }).cut, null);
   // the commands that open something taking keys in the editor's page hand it the keyboard
   assert.deepEqual(["carton-cuts", "carton-share", "carton-history", "carton-back"].map(m.takesKeys), [true, true, false, false]);
+  // the chip's cuts menu open in the page (PLAN 2.2 v2): only `true` passes
+  assert.equal(m.panel({ cut: { name: "Main cut" }, cutsMenu: true }).cutsMenu, true);
+  assert.equal("cutsMenu" in m.panel({ cut: { name: "Main cut" }, cutsMenu: "yes" }), false);
+});
+
+// PLAN 2.2 v2: the strip's command as the editor's page hears it: the chip's box, open and pointer, checked; nothing else.
+test("PLAN 2.2 v2: a strip command reaches the page with its action, and the chip's box, open and pointer, numbers only", () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  assert.deepEqual(m.command({ action: "carton-history", at: { left: 1 }, extra: 1 }), { action: "carton-history" });
+  const at = { left: 712.5, right: 850, bottom: 36, dpr: 1.25 };
+  assert.deepEqual(m.command({ action: "carton-cuts", open: true, pointer: true, at: { ...at, html: "<b>" }, more: "x" }), { action: "carton-cuts", open: true, pointer: true, at });
+  assert.deepEqual(m.command({ action: "carton-cuts", open: "yes", pointer: 1, at: { ...at, left: "712" } }), { action: "carton-cuts" }, "a box with a non-number is no box");
+  assert.deepEqual(m.command({ action: "carton-cuts", at: { ...at, dpr: 0 } }), { action: "carton-cuts" });
+  assert.deepEqual(m.command({ action: "carton-cuts", at: { ...at, left: Infinity } }), { action: "carton-cuts" });
+  assert.deepEqual(m.command({ action: "carton-cuts", open: false }), { action: "carton-cuts", open: false });
 });
 
 test("UX redesign 0.7: an in-app turn shows its agent working on the project while it runs, and stops when it ends; the prompt is never logged", async () => {

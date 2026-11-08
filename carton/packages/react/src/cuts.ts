@@ -4,7 +4,8 @@
 // - the cut you came from while you look at a teammate's cut (where ✕ and "New cut from your edit" go);
 // - the switch that waits for an agent's turn to end ("Switch when it finishes"), queued per view model, so it outlives
 //   the menu that asked for it;
-// - openCutsMenu(): the call that opens the cuts menu from elsewhere (the title bar's cut chip, PLAN 2.2 version 1).
+// - openCutsMenu(): the call that opens a mounted cuts menu from elsewhere (PLAN 2.2 version 1's title bar chip; the
+//   chip now drops its own menu down, CutsMenuPop, and this stays for a host that opens History's menu from elsewhere).
 //
 // None of it renders: the components read it, and a host can call it.
 
@@ -220,8 +221,8 @@ const openers = new WeakMap<CartonUi, Opener[]>();
 const waiting = new WeakMap<CartonUi, { resolve: (opened: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
 
 /**
- * Open the cuts menu of this view model and put focus in it (the title bar's cut chip, PLAN 2.2 version 1: the host
- * opens History, then calls this). The newest mounted CutsMenu opens; if none is mounted yet (History is still
+ * Open the cuts menu of this view model and put focus in it (PLAN 2.2 version 1's title bar chip: the host opened
+ * History, then called this; version 2's chip has a menu of its own, CutsMenuPop). The newest mounted CutsMenu opens; if none is mounted yet (History is still
  * opening), the next one to mount within `within` ms (2000) opens itself. Resolves true once a menu opened, false if
  * none did in time.
  */

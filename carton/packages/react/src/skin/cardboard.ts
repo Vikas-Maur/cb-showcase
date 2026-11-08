@@ -176,6 +176,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cuts > .carton-menu-anchor){position:static;min-width:0;max-width:100%}
 :where(${S}) :where(.carton-cuts .carton-menu-pop){left:0;right:0}
 :where(${S}) :where(.carton-cuts-menu){min-width:0;max-width:none;padding:6px}
+/* The title bar chip's menu (CutsMenuPop, PLAN 2.2 v2): hangs from the chip, so it grows from its top-left corner */
+:where(${S}) :where(.carton-cuts-pop > .carton-menu){transform-origin:top left}
+:where(${S}) :where(.carton-cuts-pop-error){margin:0;padding:4px 8px 2px}
 :where(${S}) :where(.carton-cut-dot){flex:none;width:8px;height:8px;border-radius:50%}
 :where(${S}) :where(.carton-cut-item){align-items:flex-start;min-height:44px;padding:7px 8px}
 :where(${S}) :where(.carton-cut-item .carton-menu-icon){margin-top:1px}
@@ -323,6 +326,18 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version[data-folded]){padding-left:24px}
 :where(${S}) :where(.carton-version[data-folded])::before{content:"";position:absolute;left:17px;top:10px;bottom:10px;width:1px;border-radius:1px;background:var(--cb-line-2)}
 :where(${S}) :where(.carton-version[data-folded] .carton-version-title){font-weight:500;color:var(--cb-fg-2)}
+/* someone else's row that arrived while History is open (HistoryPanel's ArrivalRing, in their avatar's colour): a 1.5 px
+   ring with a soft inner glow and tint, which after a few seconds settles into a faint 1 px edge that stays. One
+   element, no layer of its own. It moves only when it came after a quiet moment ([data-calm]): it fades in and
+   settles softly. In a burst (a teammate's agent at work) it shows and settles without motion, and costs no frames.
+   Without motion: neither (the reduced-motion rule below), the ring then the edge */
+:where(${S}) :where(.carton-arrival){position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--carton-actor) 40%, transparent)}
+:where(${S}) :where(.carton-arrival[data-glow]){background:color-mix(in srgb, var(--carton-actor) 7%, transparent);
+  box-shadow:inset 0 0 0 1.5px var(--carton-actor),inset 0 0 14px -6px color-mix(in srgb, var(--carton-actor) 80%, transparent)}
+:where(${S}) :where(.carton-arrival[data-calm]){transition:box-shadow 1.2s var(--cb-ease),background-color 1.2s var(--cb-ease)}
+:where(${S}) :where(.carton-arrival[data-calm][data-pop]){animation:carton-arrive .6s var(--cb-decel) both}
+@keyframes carton-arrive{from{opacity:0}}
 /* the history's start, and an agent working */
 :where(${S}) :where(.carton-start){grid-template-rows:18px}
 :where(${S}) :where(.carton-start .carton-version-mark){grid-row:1}
@@ -722,6 +737,8 @@ export const cardboardSkin = `
   background:color-mix(in srgb, var(--cb-warn) 8%, transparent);border:1px solid color-mix(in srgb, var(--cb-warn) 28%, transparent)}
 :where(${S}) :where(.carton-share-offline > .carton-icon){margin-top:2px;color:var(--cb-warn)}
 :where(${S}) :where(.carton-share-offline strong){font-weight:600}
+:where(${S}) :where(.carton-share-offline[data-tone=info]){background:#ffffff08;border-color:#ffffff14}
+:where(${S}) :where(.carton-share-offline[data-tone=info] > .carton-icon){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-share-section){display:flex;flex-direction:column;gap:8px}
 :where(${S}) :where(.carton-share-invite){padding-top:16px;border-top:1px solid #ffffff12}
 :where(${S}) :where(.carton-share-heading){font-size:13px;line-height:18px;font-weight:500;color:var(--cb-fg-3)}

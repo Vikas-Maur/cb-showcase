@@ -179,7 +179,11 @@ const patchStore = (replace, k) => {
   // earlier build's restore or recovery wrote them so) get them as the file is read (the store bridge's `loaded`), so
   // the editor's saves land again; the next save writes them. A project whose entries have them costs one check.
   replace(s.recover[0], `let r=${s.recover[1]}(t)??(__carton.on?${s.recover[1]}(await __carton.recover(e,t)??""):null);if(!r)return null;__carton.on&&(r=__carton.loaded(e,r));let n=await Promise.all(r.media.map(`);
-  replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
+  // (with the file's stamp as the store read it: the facade knows a file it installed itself without reading it again,
+  // and checks any other file whose rev it knows against that version: review of fix/demo-sync-bugs, P1)
+  const stampVar = /stamp:([\w$]+)/.exec(s.read[0])?.[1];
+  if (!stampVar) throw new Error("patch-carton.js: the store's read keeps no stamp to pass the facade");
+  replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]},${stampVar}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.
   for (const [from, to] of s.revFiles) replace(from, to);
@@ -294,8 +298,10 @@ if (mode === "--cli") {
     // and the strip gets {panel, live} instead of the panel's name alone. The cut chip (Carton UX redesign PLAN 2.1)
     // adds the cut and what is being viewed to the report, and its own commands (carton-cuts, carton-back); the cut
     // chip and Share hand the keyboard to the page they open something in (main-bridge.js takesKeys), so the cuts
-    // menu and the Share dialog take arrows and Esc at once, not after a click.
-    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",{action:t.action});return}");
+    // menu and the Share dialog take arrows and Esc at once, not after a click. The chip's click also carries where
+    // the chip is and whether its menu opens or closes (PLAN 2.2 v2: the editor's page draws the menu under the chip);
+    // main-bridge.js command passes only those fields on, checked.
+    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",__cartonMain.command(t));return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
     replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
     replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))}),');
