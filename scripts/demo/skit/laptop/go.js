@@ -64,15 +64,14 @@ const READ = `(() => {
   return { rows, cut, tc, chatText: chatText.slice(-2500), busy, status };
 })()`;
 // The title bar's cut chip (its page is tabs.html) and the cuts menu it opens in the editor's page (feat/cut-chip-menu)
-const CHIP = '[data-carton-cut-chip] button[aria-haspopup="menu"]';
-const CHIP_CUT = `document.querySelector(${JSON.stringify(CHIP)})?.getAttribute("title") ?? null`;
-const MENU = '[data-carton-chip-menu], [role="menu"]';
+// (selectors from feat/cut-chip-menu cc2ead00: the chip's button, the menu under it, a cut by its shown name, Switch now)
+const CHIP = "[data-carton-cut-chip] > button[data-carton-cut]";
+const CHIP_CUT = `(() => { const b = document.querySelector(${JSON.stringify(CHIP)}); return b ? (b.getAttribute("title") ?? b.textContent.trim()) : null; })()`;
+const MENU = "[data-carton-cuts-pop] [role=menu]";
 const visible = `(e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }`;
-// the middle of the menu's item for a cut, by its name (the item's text starts with it)
-const CUT_ITEM = (name) => `(() => { const vis = ${visible}; const menu = [...document.querySelectorAll(${JSON.stringify(MENU)})].find(vis); if (!menu) return null;
-  const e = [...menu.querySelectorAll('[data-carton-cut-item], [role^="menuitem"]')].find((x) => vis(x) && (x.getAttribute("data-carton-cut-item") === ${JSON.stringify(name)} || x.textContent.trim().startsWith(${JSON.stringify(name)})));
-  if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
-const SWITCH_NOW = `(() => { const vis = ${visible}; const b = [...document.querySelectorAll("[data-carton-switch-now], button")].find((x) => vis(x) && (x.hasAttribute("data-carton-switch-now") || x.textContent.trim() === "Switch now")); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+const middle = (find) => `(() => { const vis = ${visible}; const e = ${find}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+const CUT_ITEM = (name) => middle(`[...document.querySelectorAll(${JSON.stringify(`${MENU} [data-carton-cut-name=${JSON.stringify(name)}]`)})].find(vis)`);
+const SWITCH_NOW = middle(`[...document.querySelectorAll('${MENU} [data-carton-cut-choice="now"]')].find(vis)`);
 const SIDEBAR_OPEN = `!!document.querySelector(".carton-sidebar")?.offsetParent`;
 // the timeline's items, from the editor's React state
 const ITEMS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]]; let tl = null;
