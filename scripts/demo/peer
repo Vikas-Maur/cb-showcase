@@ -4,7 +4,7 @@
 //
 //   peer setup                                   stage Cardboard 1.4.0 with every patch (once; CARDBOARD_PRISTINE)
 //   peer join <invite link> --name "<Name>" [--agent <label>] [--activity "<words>"] [--machine <computer name>]
-//   peer say "<text>" [--at <s>] [--for <s>] [--style title|chat|reply|caption|whisper] [--name "<label>"] [--track <name>]
+//   peer say "<text>" [--at <s>] [--for <s>] [--style title|chat|reply|caption|whisper|remote] [--name "<label>"] [--track <name>]
 //                     [--color #rrggbb] [--size <px>] [--y <px from centre>]
 //   peer speak "<text>" [--at <s>] [--voice ryan|lessac|amy|alan] [--speed 1] [--file <wav|mp3>] [--name …] [--track …]
 //   peer edit <clip> [--text "<new words>"] [--at <s>] [--for <s>] [--style …]
