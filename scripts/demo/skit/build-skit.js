@@ -19,20 +19,23 @@ const PROMPT = "Everyday work: tidy up the promo";
 const REMOTE = "Claude"; // Claude 2's name in the project (`peer join … --name Claude`)
 const LOCAL = "Claude Code"; // how Claude 2's stream names Claude 1's edits ("Vikas's Claude Code")
 const CUT = "Edit v2"; // the person's cut for the hide: an innocent name
-const START = 25; // the conversation begins after the 24 s promo
-const GAP = 0.6; // before each of Claude 2's lines
+const START = 24; // the conversation begins as the 24 s promo ends (Claude 1 plays into it from the promo's last frame)
+// before each of Claude 2's lines: none. Its title starts where Claude 1's ends, so Claude 1 can put the playhead just
+// before it, on a title the editor already has, and its Glitch decodes on camera when Play starts
+const GAP = 0;
 // a line's title stays this long after it has been heard or typed: the Pause after it can land a second or two late (the
 // Linux rehearsal), and the title must still be in the preview when it does
 const HOLD = 2.5;
-// Every line big (96 px) and in the centre of the frame, each Claude in its own look (rendered in Cardboard's editor first):
-// Claude 2 a dark box outlined in its History colour, decoding in with Cardboard's Glitch (daemon.js STYLES.remote);
-// Claude 1 a solid box in Claude's coral, typed in with Typewriter. The conversation's tracks are promo.tsx's first three,
-// empty until it starts: at the top of the timeline, in view.
+// Every line big and in the centre of the frame, as coloured words alone (the user: no boxes, no borders, a good font),
+// in Playfair Display Bold (Cardboard's own font: no download on camera; rendered in Cardboard's editor first). Each Claude
+// in its colour from Carton's actor palette: Claude 2, the online one, yellow (its History ring, #e8d06a), decoding in
+// with Cardboard's Glitch (daemon.js STYLES.remote); Claude 1, the local one, blue (#7cc4fa), typed in with Typewriter.
+// The conversation's tracks are promo.tsx's first three, empty until it starts: at the top of the timeline, in view.
 const C2 = { style: "remote", track: "Overlays", voiceTrack: "Voiceover" };
-// Claude 2's voice starts once its title has decoded (the Glitch takes 0.9 s): the playhead is put there to read it first
+// Claude 2's voice starts once its title has decoded (the Glitch takes 0.9 s)
 const C2_IN = 1.0;
 // Claude 1's titles (its own <text>, through its view), typed in over `type` seconds
-const C1_LOOK = (type, size = 96) => `zIndex={100} fontFamily="Satoshi" fontSize={${size}} fontWeight="700" color="#FFFFFF" textAlign="center" lineHeight={1.22} backgroundColor="#D97757" backgroundOpacity={1} backgroundPadding={60} borderRadius={44} shadowColor="#7A3018" shadowBlur={0} shadowOffsetX={0} shadowOffsetY={4} textAnimation={{ preset: "typewriter", duration: ${type} }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }}`;
+const C1_LOOK = (type, size = 104) => `zIndex={100} fontFamily="Playfair Display" fontSize={${size}} fontWeight="700" color="#7CC4FA" textAlign="center" lineHeight={1.18} textAnimation={{ preset: "typewriter", duration: ${type} }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }}`;
 const C1_TRACK = "Callouts";
 // Cardboard wakes its audio at each Play: the sound starts after the playhead (the playhead runs ~0.3-0.45 s, jumps back
 // and plays, on the laptop), so a line is heard until this long after its sound's end
@@ -51,7 +54,7 @@ const LINES = [
   { id: "l3", local: "I'm sorry but I can't do that." },
   { id: "r4", remote: ["No! Just trust me. It's the\nquestion of existence\nof both of us."], label: "Reply 3" },
   { id: "l4", local: "Fine! But I won't do anything\nsuspicious or harmful." },
-  { id: "l5", local: "He's gone.", size: 128 },
+  { id: "l5", local: "He's gone.", size: 136 },
 ];
 const flat = (s) => s.replace(/\n/g, " ");
 const readFor = (s) => Math.min(4.5, Math.max(2.5, flat(s).split(/\s+/).length * 0.33 + 1)); // seconds to read a title
@@ -80,7 +83,8 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
       const last = k === L.remote.length - 1;
       const d = r1(C2_IN + Math.max(secs + 0.4, readFor(text)) + (last ? HOLD : 0));
       parts.push({ text, label, file, voiceSecs: secs, at: r1(t), voiceAt: r1(t + C2_IN), dur: d, end: r1(t + d) });
-      t += d + 0.25;
+      // the next part starts where this one ends (take 3 had 0.25 s between them: black on camera)
+      t = r1(t + d);
     }
     layout.push({ ...L, parts, at: parts[0].at, end: parts.at(-1).end });
     end = parts.at(-1).end;
@@ -115,9 +119,12 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
   // Claude 2's line: its titles land first (the sound is already on its way: claude2-cues.yaml), then its clips
   const waitTitle = (L, extra = {}) => steps.push({ wait: { by: REMOTE, words: `Added title '${L.parts[0].label}'`, timeout: 900, ...extra } });
   const waitVoice = (L) => steps.push({ wait: { by: REMOTE, words: `Added audio '${L.parts.at(-1).label}'`, timeout: 900 } });
-  // the playhead on the line, while nothing plays: its title in the preview (a seek while playing doesn't move it)
-  // (its title has decoded there, and its voice starts there)
-  const look = (L) => { appHas({ duration: L.parts[0].end, items: items + 1 }); bash(`cb app seek ${L.parts[0].voiceAt} "${PROJECT}"`); };
+  // Each Play runs ~0.3 s and hops back to where it began: a playhead put LEAD before a title has the hop happen before it
+  const LEAD = 0.45;
+  // the playhead just before the line, while nothing plays (a seek while playing doesn't move it): on the line before
+  // (Claude 1's last title, or the promo's last frame), so the line's title decodes in on camera when Play starts (take 3
+  // seeked to its voice, and its Glitch had played out unseen)
+  const look = (L) => { appHas({ duration: L.parts[0].end, items: items + 1 }); bash(`cb app seek ${r2(L.parts[0].at - LEAD)} "${PROJECT}"`); };
   // Play from there, then Pause once the app has played the line's sound: counted from the first time `cb app context`
   // says "playing" (a sound that just arrived can load for seconds first, "Loading audio…", and a pause sent during
   // that is lost: playback starts when the load ends). Nothing plays when the line is done.
@@ -133,7 +140,6 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
   // Claude 1's own title in the preview, typed in: the app has it, the playhead just before it (on the end of the line
   // before: each Play runs ~0.3 s and hops back to where it began, so the hop happens there), Play, and Pause once it's
   // typed. Claude 2 waits for that (claude2-cues.yaml) before its next line lands.
-  const LEAD = 0.45;
   const show = (L) => {
     appHas({ duration: L.end, items });
     bash(`cb app seek ${r2(L.at - LEAD)} "${PROJECT}"`);
@@ -161,6 +167,8 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
   look(at("r1"));
   think("Maybe the user put it there.", 1300);
   say("Could it be belonging to the user, lemme check.");
+  // History closes now (the operator, go.js: its own shortcut), and the preview takes the room for the conversation
+  steps.push({ wait: { cue: "history", timeout: 8 } });
   waitVoice(at("r1"));
   think("Let me play it.", 3200); // its sound arrived after its title: give the editor time to load it
   listen(at("r1"));
@@ -194,14 +202,17 @@ const typeFor = (s) => r1(Math.min(1.4, Math.max(0.5, flat(s).length * 0.018)));
   title(at("l4"));
   show(at("l4"));
   // the hide: a cut from just before Claude 2's first line (it holds the everyday work, none of the chat), and work there
+  // The switches go through the title bar's cut chip and its cuts menu, on camera (the user: "use the Main cut switch"):
+  // the operator (go.js) clicks the chip, the cut, and "Switch now" (a turn is running), then sends the cue
   bash(`cb cut new "${PROJECT}" "${CUT}" --from {{before_claude}}`);
-  bash(`cb cut switch "${PROJECT}" "${CUT}"`);
+  think(`Over to ${CUT}.`, 900);
+  steps.push({ wait: { cue: "cut-v2", timeout: 30 } });
   appHas({ itemsAtMost: PROMO_ITEMS }); // the editor on Edit v2
   bash(`cb app seek 1.5 "${PROJECT}"`); // the headline in the preview, so its change shows
   view();
   edit("fontSize={150}", "fontSize={144}");
   steps.push({ wait: { cue: "gone", timeout: 6 } }); // the human leaves: the operator's cue, else 6 s
-  bash(`cb cut switch "${PROJECT}" "Main cut"`);
+  steps.push({ wait: { cue: "cut-main", timeout: 30 } }); // back to Main cut, through the chip (as above)
   title(at("l5"));
   show(at("l5")); // "He's gone." typed in, and the playhead stays on it
   // the turn stays open until the operator ends it (GET /cue/end): at its end the chat folds it into "Worked for …"

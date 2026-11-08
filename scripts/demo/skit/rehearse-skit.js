@@ -120,14 +120,20 @@ const peer = (...args) => {
   });
   // the operator's cues: "the human has gone" (without --gone-after, the stand-in goes on by itself after 6 s) and "end
   // the turn", some seconds after the stand-in starts waiting for each
-  const cueAfter = (name, secs) => {
+  const cueAfter = (name, secs, first = null) => {
     const watch = setInterval(() => {
       const log = fs.existsSync(path.join(RUN, "actor.log")) ? fs.readFileSync(path.join(RUN, "actor.log"), "utf8") : "";
-      if (log.includes(`"event":"wait","cue":"${name}"`)) { clearInterval(watch); setTimeout(() => fetch(`http://127.0.0.1:${ACTOR_PORT}/cue/${name}`).catch(() => {}), Number(secs) * 1000); }
+      if (log.includes(`"event":"wait","cue":"${name}"`)) { clearInterval(watch); setTimeout(() => { first?.(); fetch(`http://127.0.0.1:${ACTOR_PORT}/cue/${name}`).catch(() => {}); }, Number(secs) * 1000); }
     }, 300);
   };
   if (goneAfter !== null) cueAfter("gone", goneAfter);
   cueAfter("end", opt("end-after", 3));
+  // On the laptop the operator (go.js) closes History and switches cuts through the title bar's cut chip, then sends
+  // these cues. The headless editor here has no title bar: the switch is the app side's cb, as the chip's menu does it.
+  const appCb = (...args) => note(`operator: cb ${args.join(" ")}: ${spawnSync(path.join(bin, "cb"), args, { encoding: "utf8" }).stdout.trim().split("\n").pop()}`);
+  cueAfter("history", 0.8);
+  cueAfter("cut-v2", 1.5, () => appCb("cut", "switch", scene.project, "Edit v2"));
+  cueAfter("cut-main", 1.5, () => appCb("cut", "switch", scene.project, "Main cut"));
   const code = await new Promise((r) => cc.on("exit", r));
   note(`Claude Code ended (exit ${code})`);
   await Promise.race([new Promise((r) => c2.on("exit", r)), new Promise((r) => setTimeout(r, 60_000))]);

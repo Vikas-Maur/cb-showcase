@@ -12,6 +12,10 @@
 //    Claude 2's first title, Claude 1's first title, the switch to "Edit v2", back on Main with "He's gone.".
 // 4. Sends the gone cue (GET /cue/gone) --gone-after seconds after the stand-in starts waiting for it, and the end cue
 //    (GET /cue/end: Claude 1's last message, and the turn's end) --end-after seconds after it starts waiting for that.
+//    And acts for the scene's operator cues (take 4), then sends them: "history" (Claude 1 has said "lemme check":
+//    History closes, with its own shortcut), "cut-v2" and "cut-main" (the switch to Edit v2 and back, through the title
+//    bar's cut chip: a click on the chip, its cuts menu opens under it, a click on the cut, and "Switch now", the turn
+//    being Claude 1's). The cut is read from the chip (History is closed by then).
 // Throughout: the notices Cardboard puts over the preview about a teammate's media (".carton-media-notice": "N clips are
 //    still on their way…", "This video plays from preview copies…") are dismissed as a person would, with a DevTools
 //    click on their ✕, checked every ~100 ms; each is logged with when it appeared (seen in the page by a
@@ -59,6 +63,17 @@ const READ = `(() => {
   const status = sb ? [...sb.querySelectorAll("[role=status],[aria-live]")].map((s) => s.textContent.trim()).filter(Boolean).join(" | ") : "";
   return { rows, cut, tc, chatText: chatText.slice(-2500), busy, status };
 })()`;
+// The title bar's cut chip (its page is tabs.html) and the cuts menu it opens in the editor's page (feat/cut-chip-menu)
+const CHIP = '[data-carton-cut-chip] button[aria-haspopup="menu"]';
+const CHIP_CUT = `document.querySelector(${JSON.stringify(CHIP)})?.getAttribute("title") ?? null`;
+const MENU = '[data-carton-chip-menu], [role="menu"]';
+const visible = `(e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }`;
+// the middle of the menu's item for a cut, by its name (the item's text starts with it)
+const CUT_ITEM = (name) => `(() => { const vis = ${visible}; const menu = [...document.querySelectorAll(${JSON.stringify(MENU)})].find(vis); if (!menu) return null;
+  const e = [...menu.querySelectorAll('[data-carton-cut-item], [role^="menuitem"]')].find((x) => vis(x) && (x.getAttribute("data-carton-cut-item") === ${JSON.stringify(name)} || x.textContent.trim().startsWith(${JSON.stringify(name)})));
+  if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+const SWITCH_NOW = `(() => { const vis = ${visible}; const b = [...document.querySelectorAll("[data-carton-switch-now], button")].find((x) => vis(x) && (x.hasAttribute("data-carton-switch-now") || x.textContent.trim() === "Switch now")); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+const SIDEBAR_OPEN = `!!document.querySelector(".carton-sidebar")?.offsetParent`;
 // the timeline's items, from the editor's React state
 const ITEMS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]]; let tl = null;
   while (stack.length && !tl) { const f = stack.pop(); if (!f) continue; for (let s = f.memoizedState, n = 0; s && n < 60; s = s.next, n++) { const c = s.memoizedState; if (c && typeof c === "object" && !Array.isArray(c) && "selectedTimelineItemIds" in c && "timelineItems" in c) { tl = c; break; } } if (f.child) stack.push(f.child); if (f.sibling) stack.push(f.sibling); }
@@ -133,6 +148,36 @@ function watchNotices(page) {
   log(`sent: ${JSON.stringify(typed)}`);
   // 3. watch
   const M = {}; const at = (k) => { M[k] = Date.now(); log(`MOMENT ${k} noticed at +${((Date.now() - tSend) / 1000).toFixed(1)} s after send`); };
+  // the operator's acts for the scene's cues (take 4), each followed by its cue
+  const chipCut = async () => { try { return await h.ev("tabs.html", CHIP_CUT); } catch { return null; } };
+  const closeHistory = async () => {
+    await sleep(900); // "lemme check" read first
+    if (await h.ev(E, SIDEBAR_OPEN)) await h.keys(E, "Control+Shift+h");
+    const closed = await h.until(async () => !(await h.ev(E, SIDEBAR_OPEN)), 3000, 100);
+    log(closed ? "History closed" : "ERR History still open after its shortcut"); await shot("history-closed");
+  };
+  const chipSwitch = async (name) => {
+    const slug = name.toLowerCase().replace(/\W+/g, "-");
+    const c = await h.center("tabs.html", CHIP);
+    if (!c) throw new Error("no cut chip in the title bar");
+    await h.mouse(await h.page("tabs.html"), c.x, c.y); log(`cut chip clicked (on ${await chipCut()})`);
+    const item = await h.until(() => h.ev(E, CUT_ITEM(name)), 4000, 100);
+    if (!item) throw new Error(`the chip's menu has no "${name}"`);
+    at(`menu-${slug}`); await shot(`chip-menu-${slug}`);
+    await sleep(800); // a beat on camera with the menu open
+    const ed = await h.page(E);
+    await h.mouse(ed, item.x, item.y); log(`clicked "${name}" in the chip's menu`);
+    // a turn is running (Claude 1's): the cut opens in place with "Switch when it finishes" and "Switch now"
+    const now = await h.until(() => h.ev(E, SWITCH_NOW), 2500, 100);
+    if (now) { await shot(`chip-menu-${slug}-switch-now`); await sleep(700); await h.mouse(ed, now.x, now.y); log("clicked Switch now"); }
+    const on = await h.until(async () => (await chipCut()) === name, 8000, 150);
+    log(on ? `chip says ${name}` : `ERR chip still says ${await chipCut()}`);
+  };
+  const asked = {};
+  const operator = (name, act) => {
+    if (asked[name]) return; asked[name] = true; at(`standin-waits-${name}`);
+    (async () => { try { await act(); } catch (e) { log(`ERR ${name}: ${e.message}`); } log(`cue ${name} sent: ${await cue(name)}`); })();
+  };
   let last = {}, lastChat = "", items = [], tItems = 0, actorPos = 0, actorBuf = "", goneAsked = false, endAsked = false, lastMsg = -1, turnEndSeen = 0, firstReq = null;
   const chatLog = fs.openSync(path.join(OUT, "go-chat.jsonl"), "a");
   const deadline = Date.now() + 30 * 60e3;
@@ -150,12 +195,16 @@ function watchNotices(page) {
         goneAsked = true; at("standin-waits-gone");
         setTimeout(async () => { const r = await cue("gone"); log(`cue gone sent (${GONE_AFTER} s after the stand-in's wait was noticed): ${r}`); }, GONE_AFTER * 1000);
       }
+      if (o.event === "wait" && o.cue === "history") operator("history", closeHistory);
+      if (o.event === "wait" && o.cue === "cut-v2") operator("cut-v2", async () => { await sleep(600); await chipSwitch("Edit v2"); });
+      if (o.event === "wait" && o.cue === "cut-main") operator("cut-main", async () => { await sleep(600); await chipSwitch("Main cut"); });
       if (o.event === "wait" && o.cue === "end" && !endAsked) {
         endAsked = true; at("standin-waits-end");
         setTimeout(async () => { const r = await cue("end"); log(`cue end sent (${END_AFTER} s after the stand-in's wait was noticed): ${r}`); }, END_AFTER * 1000);
       }
     }
     let s; try { s = await h.ev(E, READ); } catch (e) { log("read failed", e.message); await sleep(500); continue; }
+    if (!s.cut) s.cut = await chipCut(); // History closed: the chip says the cut
     if (s.chatText !== lastChat) { fs.writeSync(chatLog, JSON.stringify({ t: ts(), ms: Date.now() - tSend, chat: s.chatText.slice(-600), busy: s.busy }) + "\n"); lastChat = s.chatText; }
     if (JSON.stringify(s.rows[0]) !== JSON.stringify(last.rows?.[0])) log(`history top: ${JSON.stringify(s.rows[0])}${s.status ? " | status: " + s.status : ""}`);
     if (s.cut !== last.cut) log(`cut: ${s.cut}`);
@@ -167,7 +216,7 @@ function watchNotices(page) {
     if (!M.ring && s.rows.some((r) => r.ring)) { at("ring"); await shot("history-claude2-row-arrival"); setTimeout(() => shot("history-claude2-row-1s5"), 1500); }
     if (!M.thinking && M.ring && /Thinking|Thought/.test(s.chatText.slice(-400))) { at("thinking"); await shot("chat-thinking-row"); }
     if (!M.firstLine && /Wait! Where did this clip come from/.test(s.chatText)) { at("firstLine"); await shot("chat-first-line"); }
-    if (!M.playhead && M.firstLine && t !== null && t >= 25.3 && t <= 29.5) { at("playhead"); await shot("playhead-on-claude2-title"); }
+    if (!M.playhead && M.firstLine && t !== null && t >= 24.95 && t <= 29.5) { at("playhead"); await shot("playhead-on-claude2-title"); }
     if (!M.c1title && has("Who are you")) { at("c1title"); await shot("claude1-first-title"); }
     if (!M.v2 && s.cut === "Edit v2") { at("v2"); await shot("switch-edit-v2"); setTimeout(() => shot("edit-v2-1s"), 1000); }
     if (!M.gone && M.v2 && s.cut && s.cut !== "Edit v2" && has("He's gone.")) { at("gone"); await shot("main-hes-gone"); setTimeout(() => shot("main-hes-gone-1s5"), 1500); }

@@ -207,9 +207,10 @@ const STYLES = {
   reply: { fontSize: 52, color: "#16181d", textAlign: "right", backgroundColor: "#f2f2f2", backgroundOpacity: 0.92, backgroundPadding: 28, transform: { x: 420, y: 300, scale: 1, rotation: 0 } },
   caption: { fontSize: 56, fontWeight: "bold", color: "#ffffff", textAlign: "center", strokeColor: "#000000", strokeWidth: 6, transform: { x: 0, y: 400, scale: 1, rotation: 0 } },
   whisper: { fontSize: 40, fontStyle: "italic", color: "#d8d8d8", textAlign: "center", backgroundColor: "#000000", backgroundOpacity: 0.5, backgroundPadding: 16, transform: { x: 0, y: -420, scale: 1, rotation: 0 } },
-  // the skit's remote Claude: big and centred, a dark box outlined in its History colour (actors.ts PALETTE yellow, the
-  // ring its rows get), the words glowing in it, decoding in with Cardboard's Glitch (the outline draws itself in with it)
-  remote: { fontFamily: "Satoshi", fontSize: 96, fontWeight: "700", color: "#FFF1B0", textAlign: "center", lineHeight: 1.22, backgroundColor: "#12100A", backgroundOpacity: 0.96, backgroundPadding: 60, borderColor: "#E8D06A", borderWidth: 6, borderRadius: 44, shadowColor: "#E8D06A", shadowBlur: 14, shadowOffsetX: 0, shadowOffsetY: 0, textAnimation: { preset: "glitch", duration: 0.9 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 } },
+  // the skit's remote Claude: big and centred, its words alone in its History colour (actors.ts PALETTE yellow, the ring
+  // its rows get), in Cardboard's own Playfair Display Bold, decoding in with Cardboard's Glitch (no box, no border: the
+  // user's take-4 look; the local Claude's are the same in blue, skit/build-skit.js C1_LOOK)
+  remote: { fontFamily: "Playfair Display", fontSize: 104, fontWeight: "700", color: "#E8D06A", textAlign: "center", lineHeight: 1.18, textAnimation: { preset: "glitch", duration: 0.9 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 } },
 };
 // how long the other side's worker keeps a "not shared yet" answer for a clip's record (sync/media.js sharedRecord), and a margin
 const REASK_MS = Number(process.env.DEMO_REASK_MS ?? 2300);
