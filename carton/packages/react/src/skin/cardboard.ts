@@ -176,6 +176,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cuts > .carton-menu-anchor){position:static;min-width:0;max-width:100%}
 :where(${S}) :where(.carton-cuts .carton-menu-pop){left:0;right:0}
 :where(${S}) :where(.carton-cuts-menu){min-width:0;max-width:none;padding:6px}
+/* The title bar chip's menu (CutsMenuPop, PLAN 2.2 v2): hangs from the chip, so it grows from its top-left corner */
+:where(${S}) :where(.carton-cuts-pop > .carton-menu){transform-origin:top left}
+:where(${S}) :where(.carton-cuts-pop-error){margin:0;padding:4px 8px 2px}
 :where(${S}) :where(.carton-cut-dot){flex:none;width:8px;height:8px;border-radius:50%}
 :where(${S}) :where(.carton-cut-item){align-items:flex-start;min-height:44px;padding:7px 8px}
 :where(${S}) :where(.carton-cut-item .carton-menu-icon){margin-top:1px}

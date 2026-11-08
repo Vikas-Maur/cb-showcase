@@ -1,6 +1,6 @@
 // Carton in the editor bundle (EditorRoute-*.js), prepended by patch-carton.js (scripts/carton/ui.js has the parts):
 // - __cbCartonSide: the History or Share panel, a full-height column beside the agent's chat sidebar, opened from the
-//   title bar's icons.
+//   title bar's icons, and the title bar chip's cuts menu, which hangs from the chip into this page.
 // - __cbCartonStageHost: the stage (the preview's column, above the timeline, left of the chat), as Cardboard renders
 //   it but `relative`, plus a layer with the conflict cards' floating stack and the preview banner. It covers exactly
 //   the stage, never the timeline's controls or the chat.
@@ -113,9 +113,11 @@ function __cbCartonTimeline(props) {
   if (!m || (!m.viewing && !m.cut && !m.compare)) return c.jsx("div", props);
   return c.jsx("div", { ...props, "data-carton-viewing": m.viewing ? "" : void 0, "data-carton-compare": m.compare ? "" : void 0, "data-carton-cut": m.cut || void 0, style: m.cut ? { "--carton-cut-label": JSON.stringify(String(m.cut)), "--carton-cut-dot": m.dot || "#f59e0b" } : void 0 });
 }
+// (portal: the editor's createPortal, for the title bar chip's cuts menu, drawn into the editor's <body> above its
+// layout: Carton UX redesign PLAN 2.2 version 2)
 function __cbCartonSide() {
   const m = __cbCartonModule();
   const projectId = window.__carton?.projectId ?? null;
-  return m && projectId ? c.jsx(m.CartonSide, { projectId, bridge: window.__carton }, projectId) : null;
+  return m && projectId ? c.jsx(m.CartonSide, { projectId, bridge: window.__carton, portal: __cbCartonPortal }, projectId) : null;
 }
 `;

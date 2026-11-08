@@ -69,7 +69,8 @@ async function mount(ui = createMockUi({ versions: 6 }), { live = { shared: fals
     },
     onEvent: (f) => (evs.add(f), () => evs.delete(f)),
     onCommand: (f) => (cmds.add(f), () => cmds.delete(f)),
-    command: (action) => { for (const f of [...cmds]) f({ action }); },
+    // (the action's name, or the whole command as main passes it on: the chip's carries its box)
+    command: (c) => { const ev = typeof c === "string" ? { action: c } : c; for (const f of [...cmds]) f(ev); },
     reportPanel: (panel, l, chip) => reports.push({ panel, live: l ?? null, ...chip }),
     preview: async (_p, ref) => { previews.push(ref); },
   };
@@ -174,45 +175,180 @@ test("PLAN 2.1: while a version is viewed the chip has its label, and its ✕ (c
   } finally { await m.done(); }
 });
 
-test("PLAN 2.2 (version 1): the chip opens History with its cuts menu open, focus on its first item; Esc closes the menu only", opt, async () => {
+// PLAN 2.2 version 2: the chip's click drops the cuts menu down under the chip, drawn by this page (the title bar is a page
+// of its own); History stays closed. The command as main passes it on (main-bridge.js command): the chip's box in the
+// title bar's px with its devicePixelRatio, whether to open or close, and whether a pointer clicked it.
+const CHIP = { left: 700, right: 840, bottom: 36, dpr: 1 };
+const chipClick = (o = {}) => ({ action: "carton-cuts", open: true, pointer: true, at: CHIP, ...o });
+const pop = (m) => m.container.querySelector("[data-carton-cuts-pop]");
+const esc = (el) => act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(10); });
+const clickEl = (el) => act(async () => { el.click(); await sleep(30); });
+
+test("PLAN 2.2 v2: the chip's click drops its cuts menu down under the chip; History stays closed; Esc closes it and focus goes back", opt, async () => {
+  const m = await mount();
+  // what had the focus on the page before (a button of the editor's)
+  const before = document.createElement("button");
+  document.body.appendChild(before);
+  before.focus();
+  try {
+    await m.cmd(chipClick(), 60);
+    assert.ok(!m.container.querySelector(".carton-sidebar"), "no History");
+    const el = pop(m);
+    assert.ok(el, "the menu is open");
+    // under the title bar (this page starts where it ends), at the chip's left edge, the mockup's 300 px
+    assert.deepEqual([el.style.position, el.style.left, el.style.top, el.style.width], ["fixed", "700px", "4px", "300px"]);
+    const menu = el.querySelector("[role=menu]");
+    assert.equal(menu.getAttribute("aria-label"), "Cuts");
+    assert.equal(document.activeElement, menu, "a click: the menu itself has the focus, no cut shown as picked");
+    assert.equal(last(m).cutsMenu, true, "the chip shows it open (aria-expanded)");
+    // the documented selectors (requirement 5: a recorded demo drives it with DevTools clicks)
+    for (const sel of ['[data-carton-cut-name="Main cut"][aria-checked=true]', '[data-carton-cut-name="30s Instagram cut"]', '[data-carton-item="new-cut"]', '[data-carton-item="open-history"]', '[data-carton-item="fold-in"]'])
+      assert.ok(el.querySelector(sel), sel);
+    assert.match(el.textContent, /Agents work on the cut you're on\./);
+    await esc(menu);
+    assert.ok(!pop(m), "Esc closed it");
+    assert.equal(document.activeElement, before, "focus back where it was on the page");
+    assert.equal(last(m).cutsMenu, undefined, "the chip shows it closed");
+    assert.ok(!m.container.querySelector(".carton-sidebar"), "and nothing else opened");
+  } finally { before.remove(); await m.done(); }
+});
+
+test("PLAN 2.2 v2: from the keyboard focus is on its first cut; the chip again closes it; a command without `open` toggles", opt, async () => {
   const m = await mount();
   try {
-    await m.cmd("carton-cuts", 60);
-    const side = m.container.querySelector(".carton-sidebar");
-    assert.ok(side, "History opened");
-    assert.match(side.querySelector("[role=tab][aria-selected=true]")?.textContent ?? "", /History/);
-    const pop = m.container.querySelector(".carton-menu-pop");
-    assert.ok(pop, "its cuts menu is open");
-    assert.ok(pop.contains(document.activeElement), "focus is in the menu: " + document.activeElement?.outerHTML?.slice(0, 80));
-    assert.match(pop.textContent, /30s Instagram cut/);
-    assert.equal(last(m).panel, "history", "the title bar's History icon shows it open");
-    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(10); });
-    assert.equal(m.container.querySelector(".carton-menu-pop"), null, "Esc closed the menu");
-    assert.ok(m.container.querySelector(".carton-sidebar"), "and only the menu");
-    assert.equal(document.activeElement?.getAttribute("aria-haspopup"), "menu", "focus back on the cuts button");
-    // again, with History already open: the menu opens again
-    await m.cmd("carton-cuts", 60);
-    assert.ok(m.container.querySelector(".carton-menu-pop"), "a second click opens it again");
-    // the menu's item switches the cut, and the chip follows
-    const ig = [...m.container.querySelectorAll(".carton-menu-pop [role=menuitemradio], .carton-menu-pop [role=menuitem], .carton-menu-pop button")].find((b) => /30s Instagram cut/.test(b.textContent));
-    await act(async () => { ig.click(); await sleep(20); });
-    assert.equal(last(m).cut.name, "30s Instagram cut");
+    await m.cmd(chipClick({ pointer: false }), 60);
+    assert.equal(document.activeElement?.getAttribute("data-carton-cut-name"), "Main cut", "Enter on the chip: its first cut");
+    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); await sleep(10); });
+    assert.equal(document.activeElement?.getAttribute("data-carton-cut-name"), "30s Instagram cut", "the arrows go down the list");
+    // the chip clicked again: it was open when pressed
+    await m.cmd(chipClick({ open: false }), 40);
+    assert.ok(!pop(m), "the chip again closed it");
+    assert.equal(last(m).cutsMenu, undefined);
+    // a click that came while it was open (open: true again) keeps it open, at the new place
+    await m.cmd(chipClick(), 40);
+    await m.cmd(chipClick({ at: { ...CHIP, left: 640 } }), 40);
+    assert.equal(pop(m)?.style.left, "640px");
+    // an older strip's bare command toggles
+    await m.cmd("carton-cuts", 40);
+    assert.ok(!pop(m));
+    await m.cmd("carton-cuts", 40);
+    assert.ok(pop(m), "open, in the window's middle");
+    assert.equal(pop(m).style.left, `${Math.round((1280 - 300) / 2)}px`);
   } finally { await m.done(); }
 });
 
-// Review of feat/ux-2-8 #3: the chip's request is spent once its menu opens, whatever happens to History after.
-test("PLAN 2.2: the chip's menu request is spent: History reopened from its icon opens without the menu", opt, async () => {
+test("PLAN 2.2 v2: picking a cut switches and closes it; Open History opens History and closes it", opt, async () => {
   const m = await mount();
   try {
-    await m.cmd("carton-cuts", 60);
-    assert.ok(m.container.querySelector(".carton-menu-pop"), "the chip opened the menu");
-    await act(async () => { document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await sleep(10); });
-    await m.cmd("carton-history");
-    assert.equal(m.container.querySelector(".carton-sidebar"), null, "History closed");
-    await m.cmd("carton-history", 60);
-    assert.ok(m.container.querySelector(".carton-sidebar"), "History open again");
-    assert.equal(m.container.querySelector(".carton-menu-pop"), null, "without the cuts menu");
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-cut-name="30s Instagram cut"]'));
+    assert.equal(m.ui.cuts().find((c) => c.current).id, "cut-ig", "switched");
+    assert.ok(!pop(m), "closed");
+    assert.equal(last(m).cut.name, "30s Instagram cut", "the chip follows");
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-item="open-history"]'));
+    await act(async () => { await sleep(30); });
+    assert.ok(!pop(m), "closed");
+    const side = m.container.querySelector(".carton-sidebar");
+    assert.ok(side, "History opened");
+    assert.match(side.querySelector("[role=tab][aria-selected=true]")?.textContent ?? "", /History/);
+    assert.ok(side.contains(document.activeElement), "focus in History");
+    assert.equal(last(m).panel, "history");
+    assert.ok(!side.querySelector(".carton-menu-pop"), "History's own cuts menu stays closed");
   } finally { await m.done(); }
+});
+
+test("PLAN 2.2 v2, K4: during an agent's turn a cut opens in place; Switch now switches, Switch when it finishes waits", opt, async () => {
+  const { people } = await import(pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+  const m = await mount();
+  try {
+    await act(async () => { m.ui.setWorking({ actor: people.terminal, label: "Tighten the intro", edits: 1, since: Date.now(), cutId: "cut-main" }); await sleep(20); });
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-cut-name="30s Instagram cut"]'));
+    assert.equal(m.ui.cuts().find((c) => c.current).id, "cut-main", "no switch while Claude Code works");
+    assert.match(pop(m).querySelector(".carton-cut-turn-text").textContent, /Claude Code is working on Main cut/);
+    assert.equal(document.activeElement?.getAttribute("data-carton-cut-choice"), "wait", "focus on Switch when it finishes");
+    await clickEl(pop(m).querySelector('[data-carton-cut-choice="now"]'));
+    assert.equal(m.ui.cuts().find((c) => c.current).id, "cut-ig", "Switch now switched");
+    assert.ok(!pop(m), "and closed it");
+    // Switch when it finishes: queued, the menu closed; the turn's end switches (a turn on the cut you're on now: one on
+    // another cut doesn't hold a switch, the agent's edits stay where they are)
+    await act(async () => { m.ui.setWorking({ actor: people.terminal, label: "Tighten the intro", edits: 1, since: Date.now(), cutId: "cut-ig" }); await sleep(20); });
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-cut-name="Director\'s cut: punchier open"]'));
+    await clickEl(pop(m).querySelector('[data-carton-cut-choice="wait"]'));
+    assert.ok(!pop(m));
+    assert.equal(m.ui.cuts().find((c) => c.current).id, "cut-ig", "waits for the turn");
+    await act(async () => { m.ui.setWorking(null); await sleep(40); });
+    assert.equal(m.ui.cuts().find((c) => c.current).id, "cut-dir", "switched when it finished");
+  } finally { await m.done(); }
+});
+
+test("PLAN 2.2 v2: New cut from your edit names it in the menu and makes it; Fold in… opens History with Fold in", opt, async () => {
+  const m = await mount();
+  try {
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-item="new-cut"]'));
+    const input = pop(m).querySelector("input");
+    assert.ok(input, "the name field, in the menu");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value").set.call(input, "Teaser");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(10);
+    });
+    await act(async () => { input.closest("form").requestSubmit(); await sleep(40); });
+    assert.equal(m.ui.cuts().find((c) => c.current)?.label, "Teaser", "made and switched to");
+    assert.ok(!pop(m), "closed");
+    await m.cmd(chipClick(), 60);
+    await clickEl(pop(m).querySelector('[data-carton-item="fold-in"]'));
+    await act(async () => { await sleep(40); });
+    assert.ok(!pop(m));
+    assert.ok(m.container.querySelector(".carton-sidebar"), "History opened");
+    assert.ok(m.container.querySelector("[role=dialog].carton-fold, .carton-fold [role=dialog], [role=dialog] .carton-fold"), "with Fold in open");
+  } finally { await m.done(); }
+});
+
+test("PLAN 2.2 v2: a click elsewhere on the page, the page losing focus (a click in the title bar) and a resize close it", opt, async () => {
+  const m = await mount();
+  const keep = document.hasFocus;
+  try {
+    await m.cmd(chipClick(), 60);
+    await act(async () => { document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); await sleep(10); });
+    assert.ok(!pop(m), "a pointer down outside closed it");
+    // the focus went to the title bar and didn't come back
+    await m.cmd(chipClick(), 60);
+    document.hasFocus = () => false;
+    await act(async () => { window.dispatchEvent(new Event("blur")); await sleep(220); });
+    assert.ok(!pop(m), "losing the focus closed it");
+    // the focus back within 150 ms (main gave it back for the chip's own click): it stays
+    document.hasFocus = () => true;
+    await m.cmd(chipClick(), 60);
+    await act(async () => { window.dispatchEvent(new Event("blur")); await sleep(220); });
+    assert.ok(pop(m), "a blur whose focus came back leaves it open");
+    await act(async () => { window.dispatchEvent(new Event("resize")); await sleep(10); });
+    assert.ok(!pop(m), "a resize (the chip moves) closed it");
+    // Share (modal) gives way to it
+    await m.cmd("carton-share");
+    assert.ok(m.container.querySelector("[role=dialog]"));
+    await m.cmd(chipClick(), 60);
+    assert.ok(!m.container.querySelector("[role=dialog].carton-share-dialog"), "Share closed");
+    assert.ok(pop(m));
+  } finally { document.hasFocus = keep; await m.done(); }
+});
+
+test("PLAN 2.2 v2: the menu hangs from the chip at any width and zoom, inside the window", opt, () => {
+  const { placeChipMenu } = require(path.join(OUT, "carton-ui.cjs")).__forTests;
+  const view = (width, dpr = 1, height = 800) => ({ width, height, dpr });
+  assert.deepEqual(placeChipMenu({ left: 700, dpr: 1 }, view(1522)), { left: 700, top: 4, width: 300, maxHeight: 788 });
+  // the title bar at 125 % and the editor zoomed in (Ctrl+=, 150 %): the chip's px times 1.25 / 1.5
+  assert.equal(placeChipMenu({ left: 720, dpr: 1.25 }, view(1268, 1.5)).left, 600);
+  // near the right edge (a narrow window, the chip's mark-only state): kept 8 px inside
+  assert.equal(placeChipMenu({ left: 900, dpr: 1 }, view(960)).left, 960 - 300 - 8);
+  assert.equal(placeChipMenu({ left: -20, dpr: 1 }, view(960)).left, 8);
+  // narrower than the menu: it fits the window
+  assert.deepEqual(placeChipMenu({ left: 100, dpr: 1 }, view(280)), { left: 8, top: 4, width: 264, maxHeight: 788 });
+  assert.equal(placeChipMenu(null, view(1000)).left, 350, "no box: the middle");
+  assert.equal(placeChipMenu({ left: 700, dpr: 1 }, view(1522, 1, 100)).maxHeight, 160, "a short window: it scrolls");
 });
 
 // Review of feat/ux-2-8 #2: Share is modal; the editor's History shortcut doesn't open History behind it.

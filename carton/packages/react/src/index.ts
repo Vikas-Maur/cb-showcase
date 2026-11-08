@@ -45,7 +45,7 @@ export { HistoryPanel, VERSION_ROW_HEIGHT, CHILD_ROW_HEIGHT, WORKING_ROW_HEIGHT,
 export { VersionCard, CARD_ROWS, CARD_ROWS_MAX, type VersionCardProps, type PlayRequest, type PlayState, type CardMode } from "./components/VersionCard.ts";
 export { ChangeRow, ChangeList, setChangeProgress, CLIP_ICON, type ChangeRowProps, type ChangeListProps } from "./components/ChangeRow.ts";
 export { ChangeMap, moveMapPlayhead, mapLength, type ChangeMapProps } from "./components/ChangeMap.ts";
-export { CutsMenu, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";
+export { CutsMenu, CutsMenuPop, CutDot, TeammateCutActions, useTeammateCut, type CutsMenuProps, type CutsMenuPopProps, type TeammateCutActionsProps } from "./components/CutsMenu.ts";
 // The cuts' shared parts (PLAN 6.1, 2.2): colours, names in sentences, the queued switch, and opening the menu from the chip
 export {
   CUT_COLORS,

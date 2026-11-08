@@ -310,10 +310,28 @@ module.exports = String.raw`var __cartonMain = (() => {
         viewing: view ? (t.viewing.loading === true ? { label: view, loading: true } : { label: view }) : null,
         // Compare in the editor (UX v2, N1): the chip's "⇆ Comparing … ✕" (only while comparing)
         ...(comparing ? { comparing: { label: comparing } } : {}),
+        // the chip's cuts menu is open in the page (PLAN 2.2 v2): the chip's aria-expanded (only while it is)
+        ...(t.cutsMenu === true ? { cutsMenu: true } : {}),
       };
     },
+    // A strip command as the page hears it (carton:command): its action, and for the cut chip's click (PLAN 2.2 v2: the
+    // page draws the cuts menu under the chip) where the chip is, "at" ({left, right, bottom} in the title bar's CSS px
+    // and its devicePixelRatio "dpr", numbers only, or nothing), whether the menu is to open or close ("open": what the
+    // chip showed when it was pressed) and whether a pointer clicked it ("pointer"). Nothing else from the strip passes.
+    command(t) {
+      const out = { action: t.action };
+      if (t.action !== "carton-cuts") return out;
+      const num = (v, lo, hi) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
+      const a = t.at;
+      if (a && typeof a === "object" && num(a.left, -1e5, 1e5) && num(a.right, -1e5, 1e5) && num(a.bottom, -1e5, 1e5) && num(a.dpr, 0.05, 20))
+        out.at = { left: a.left, right: a.right, bottom: a.bottom, dpr: a.dpr };
+      if (typeof t.open === "boolean") out.open = t.open;
+      if (t.pointer === true) out.pointer = true;
+      return out;
+    },
     // Strip commands that open something taking keys in the editor's page (the cuts menu, the Share dialog): main
-    // focuses that page before it sends them, as a click there would. History's icon and the chip's ✕ leave focus be.
+    // focuses that page before it sends them, as a click there would (the chip's click that closes its menu too: focus
+    // goes back to the page). History's icon and the chip's ✕ leave focus be.
     takesKeys: (action) => action === "carton-cuts" || action === "carton-share",
     // An agent Cardboard spawns (deps.spawn: in 1.4.0, Codex).
     agentEnv(env, provider, chatId) {

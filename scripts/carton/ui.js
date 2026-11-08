@@ -16,7 +16,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, Glyph, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, openCutsMenu, cutRef, pickUndoneText, commentWords } from "@carton/react";
+import { Button, CartonProvider, Dialog, Glyph, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, ViewingFrame, injectCommentsSkin, keptText, remoteComments, remoteUi, useCartonUi, useCuts, versionLabel, words, TeammateCutActions, CutsMenuPop, cutRef, pickUndoneText, commentWords } from "@carton/react";
 import { injectCardboardSkin, injectStyles } from "@carton/react/skin/cardboard";
 // Compare in the editor (Carton UX v2, N1): the comparison on the page's view model, the stage, the change list
 import { attachCompare, CompareStage, CompareSide, comparingLabel, useComparing } from "./compare.js";
@@ -662,7 +662,7 @@ function useFit(ref, preferred) {
  * the versions, and the Changes view in their place (docs/carton-ux DESIGN §5.4: "Compare with your edit", Shift+click),
  * with Play and Before (§5.3). It replaced the old Compare card and shot strips (PLAN 4.4): this page mounts neither.
  */
-function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
+function HistorySide({ projectId, bridge, foldAsk = null, onFoldAsked }) {
   const cuts = useCuts();
   const [fold, setFold] = useState(null);
   // what the person chose in Fold in before See them side by side, given back by Back to Fold in… (fix/ux2-open); a
@@ -671,20 +671,16 @@ function HistorySide({ projectId, bridge, cutsAsk = 0, onCutsAsked }) {
   const openFold = useCallback((from, into) => ((foldTicks.current = null), setFold({ from: from.id, into: into.id })), []);
   const current = cuts.find((c) => c.current)?.head;
   const box = useRef(null);
-  // The title bar's cut chip (PLAN 2.2, version 1): History opens with its cuts menu open, focus in it, from the list.
-  // The menu is History's own (in its cut bar), opened through Workstream 6's openCutsMenu (the newest mounted
-  // CutsMenu opens, or the next to mount within 2 s), so the chip's menu and History's are one menu. The request is the
-  // side panel's (CartonSide's), consumed there once the menu opened or that wait ran out (review of feat/ux-2-8 #3:
-  // kept here, it outlived History closing, and reopening History opened the menu again). The Changes view, open in
-  // place of the list and its cut bar, goes back to the list first (its ← History): the cut bar's menu mounts again.
+  // "Fold in changes from a cut…" picked in the title bar chip's menu (PLAN 2.2 v2: CartonSide draws that menu): History
+  // opens with Fold in open on that pair, as its own menu's item opens it here (the dialog, and Compare's Back to Fold
+  // in…, live in History). The request is the side panel's, spent here once taken.
   const ui = useCartonUi();
   useEffect(() => {
-    if (!cutsAsk) return undefined;
-    box.current?.querySelector(".carton-history[data-changes] .carton-changes-nav button")?.click();
-    let live = true;
-    openCutsMenu(ui, { within: 2000 }).then(() => { if (live) onCutsAsked?.(); });
-    return () => { live = false; };
-  }, [cutsAsk, onCutsAsked, ui]);
+    if (!foldAsk) return;
+    foldTicks.current = null;
+    setFold({ from: foldAsk.from, into: foldAsk.into });
+    onFoldAsked?.();
+  }, [foldAsk, onFoldAsked]);
   // Play runs on your edit (the newest version) or on the version it views, in the editor's own player: each stretch
   // plays through Cardboard's own playback, with its sound and at full frame rate, and Play follows its clock (item 5,
   // laptop 2026-11-05: Play moved the playhead from a clock of its own and nothing was heard). The seeker below is for
@@ -805,6 +801,8 @@ export class CartonBoundary extends Component {
   componentDidCatch(error) { window.__cbLog?.("error", { msg: String(error?.message ?? error).slice(0, 300), src: "carton-ui.js", panel: this.props.panel }); }
   render() {
     if (!this.state.error) return this.props.children;
+    // a menu that hit a snag just isn't there (the title bar chip's: its next click tries again)
+    if (this.props.silent) return null;
     const again = h(Button, { onClick: () => this.setState({ error: null }) }, "Try again");
     if (this.props.panel === "stage")
       return h("div", { className: "carton-stage-snag", role: "alert" }, h("span", null, "Conflict cards and the preview banner hit a snag."), again);
@@ -817,7 +815,7 @@ export class CartonBoundary extends Component {
   }
 }
 
-function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsAsked }) {
+function Sidebar({ panel, setPanel, projectId, bridge, onShare, foldAsk, onFoldAsked }) {
   const ref = useRef(null);
   const [preferred, onResize] = useWidth();
   const fit = useFit(ref, preferred);
@@ -878,7 +876,7 @@ function Sidebar({ panel, setPanel, projectId, bridge, onShare, cutsAsk, onCutsA
         h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null), className: headButton },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { projectId, bridge, cutsAsk, onCutsAsked })))));
+        h(CartonBoundary, { key: panel, panel }, panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { projectId, bridge, foldAsk, onFoldAsked })))));
 }
 
 /** The Share dialog over the editor (PLAN 8.1), inside its own boundary: a throw keeps the dialog's frame. */
@@ -890,11 +888,78 @@ function ShareHost({ projectId, bridge, onClose }) {
     h(CartonBoundary, { panel: "share", onClose, title: (name ? words.shareTitle(name) : words.shareThisProject) }, h(Share, { projectId, bridge, name, onClose })));
 }
 
+// The title bar chip's cuts menu (Carton UX redesign PLAN 2.2 version 2, DESIGN §4.1, after/titlebar-cuts-menu.png).
+// The title bar is a page of its own (Cardboard's tab strip), above this one: a menu can't hang out of it into the
+// editor, so this page draws it, at the chip's place, under the title bar. The chip sends its box with its click
+// (carton-cuts, through main: main-bridge.js command), and focus, Esc and click-outside are all this page's, where the
+// menu is. Version 1 opened History with History's own menu; History no longer opens for it.
+const CHIP_MENU = { width: 300, gap: 4, margin: 8 };
 /**
- * The side panel, beside the chat, and the Share dialog: opened and closed from the title bar's icons, which show the
- * one open; the cut chip's click opens History with its cuts menu (PLAN 2.2, version 1), its ✕ goes back to your edit.
+ * Where the chip's menu hangs on this page: its top 4 px under the title bar (this page starts where the title bar
+ * ends, so 4 px from its own top: about 8 px under the chip, the mockup's gap), its left edge at the chip's, its width
+ * 300 px (the mockup's), kept 8 px inside the window at any width (below 1180 px, and the chip's mark-only state
+ * included), as tall as the window allows (it scrolls past that). `at` is the chip's box as the title bar measured it,
+ * in its own CSS px, with its devicePixelRatio: both pages are on one screen, so its px times its ratio over this page's
+ * is this page's px, whatever either page's zoom (Cardboard's Ctrl+= zooms the editor's page alone). No `at`: the
+ * window's middle.
  */
-export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
+function placeChipMenu(at, view = { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1 }) {
+  const width = Math.max(0, Math.min(CHIP_MENU.width, view.width - 2 * CHIP_MENU.margin));
+  const k = at && at.dpr > 0 && view.dpr > 0 ? at.dpr / view.dpr : 1;
+  const want = at ? at.left * k : (view.width - width) / 2;
+  const left = Math.round(Math.max(CHIP_MENU.margin, Math.min(want, view.width - width - CHIP_MENU.margin)));
+  return { left, top: CHIP_MENU.gap, width, maxHeight: Math.max(160, Math.floor(view.height - CHIP_MENU.gap - CHIP_MENU.margin)) };
+}
+/**
+ * The chip's menu (@carton/react's CutsMenuPop, the same body as History's cut bar menu, with Open History), in
+ * Carton's skin, into the editor's <body> through its own createPortal (above the editor's layout, as Cardboard's own
+ * menus are). It closes on Esc (in it, or anywhere on this page), a pointer down elsewhere on this page, the chip again
+ * (CartonSide's command), this page losing the focus (a click elsewhere in the title bar or in another window: closed
+ * once the focus hasn't come back within 150 ms, since main gives this page the focus before it hands it the chip's
+ * click), and a resize (the chip moves). A switch that fails once it has closed is said in the stage's warning toast.
+ */
+// (the chip, where it shares this page: the capture page and the tests draw the title bar and the editor in one; in the
+// app it is never on this page. Its own click toggles the menu, so its press isn't a click outside)
+const chipItself = () => [...document.querySelectorAll("[data-carton-cut-chip]")];
+function ChipCutsMenu({ at, keyboard, onClose, onOpenHistory, onFoldIn, portal }) {
+  const box = useRef(null);
+  const place = useMemo(() => placeChipMenu(at), [at]);
+  useEffect(() => {
+    let timer = 0;
+    const blur = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (typeof document.hasFocus === "function" && !document.hasFocus()) onClose("outside"); }, 150);
+    };
+    const resize = () => onClose("outside");
+    // (inside the menu MenuList takes Esc, and the new cut's name field its own: back to the list)
+    const key = (e) => {
+      if (e.key !== "Escape" || e.defaultPrevented || box.current?.contains(document.activeElement)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose("escape");
+    };
+    window.addEventListener("blur", blur);
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("blur", blur);
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [onClose]);
+  const menu = h("div", { ref: box, "data-carton-skin": "cardboard", "data-carton-chip-menu": "" },
+    h(CartonBoundary, { panel: "cuts-menu", silent: true },
+      h(CutsMenuPop, { ...place, focusFirst: keyboard, onClose, onOpenHistory, onFoldIn, onError: tellFailure, ignore: chipItself })));
+  return typeof portal === "function" && document.body ? portal(menu, document.body) : menu;
+}
+
+/**
+ * The side panel, beside the chat, the Share dialog, and the title bar chip's cuts menu: opened and closed from the
+ * title bar's icons, which show the one open; the cut chip's click drops its cuts menu down under it (PLAN 2.2 version
+ * 2), its ✕ goes back to your edit. `portal`: the editor's createPortal (editor-panel.js), for the chip's menu.
+ */
+export const CartonSide = memo(function CartonSide({ projectId, bridge, portal = null }) {
   const [conn, ready] = useConn(projectId, bridge);
   const [panel, setPanelState] = useState(null);
   // Closing the panel, or switching its tab, brings your edit back from what the panel showed you (PLAN 1.3, DESIGN
@@ -909,10 +974,30 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     if (leavesWithPanel(conn.ui, panel)) void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
   }, [panel, ready, conn]);
   const [share, setShare] = useState(false);
-  // the chip asked for the cuts menu: a count, so each click asks again; History sets it back to 0 once the menu opens
-  const [cutsAsk, setCutsAsk] = useState(0);
-  const cutsAsked = useCallback(() => setCutsAsk(0), []);
   const setPanel = useCallback((p) => setPanelState(p), []);
+  // The chip's cuts menu (PLAN 2.2 v2): {at, keyboard} while open (the chip's box, and whether it was opened from the
+  // keyboard: focus on its first cut then), else null. chipOpen mirrors it for the commands; `before` is what had the
+  // focus on this page when it opened, which has it back when it closes (Esc, a pick, the chip again), or the page
+  // itself if that is gone. After a click elsewhere the click's target keeps it.
+  const [chipMenu, setChipMenu] = useState(null);
+  const chipOpen = useRef(false);
+  const before = useRef(null);
+  const closeChipMenu = useCallback((why) => {
+    if (!chipOpen.current) return;
+    chipOpen.current = false;
+    const was = before.current;
+    before.current = null;
+    if (why !== "outside") {
+      if (was?.isConnected && was !== document.body && typeof was.focus === "function") was.focus({ preventScroll: true });
+      else document.activeElement?.blur?.();
+    }
+    setChipMenu(null);
+  }, []);
+  // its Open History, and its Fold in… (History opens with Fold in on that pair: HistorySide's foldAsk)
+  const [foldAsk, setFoldAsk] = useState(null);
+  const foldAsked = useCallback(() => setFoldAsk(null), []);
+  const chipHistory = useCallback(() => { setShare(false); setPanelState("history"); }, []);
+  const chipFold = useCallback((from, into) => { setShare(false); setFoldAsk({ from: from.id, into: into.id }); setPanelState("history"); }, []);
   // Share is a modal dialog: while it is open the editor's shortcut for History is its, not the page's behind it
   // (review of feat/ux-2-8 #2: History opened behind it and took the focus, and Esc then closed History, not Share).
   const shareOpen = useRef(false);
@@ -937,9 +1022,19 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     // the title bar is outside the Share dialog: its History icon closes Share and opens History
     if (a === "carton-history") { setShare(false); setPanelState((p) => (p === "history" ? null : "history")); }
     else if (a === "carton-share") setShare((o) => !o);
-    else if (a === "carton-cuts") { setShare(false); setPanelState("history"); setCutsAsk((n) => n + 1); }
+    // the chip's click: its menu, under it; or closed, when it was open as the chip was pressed (`open`, the strip's:
+    // the press took the focus from this page, which may have closed the menu before the click came). Main has given
+    // this page the focus first (takesKeys), so the menu takes arrows and Esc at once. Share (modal) gives way to it.
+    else if (a === "carton-cuts") {
+      const open = typeof ev.open === "boolean" ? ev.open : !chipOpen.current;
+      if (!open) { closeChipMenu("chip"); return; }
+      if (!chipOpen.current) before.current = document.activeElement;
+      chipOpen.current = true;
+      setShare(false);
+      setChipMenu({ at: ev.at ?? null, keyboard: ev.pointer !== true });
+    }
     else if (a === "carton-back") void Promise.resolve(backToEdit(conn.ui)).catch(() => {});
-  }), [bridge, conn]);
+  }), [bridge, conn, closeChipMenu]);
   useEffect(() => {
     // (`only`: only while that panel is the one open: Compare closes the History it opened, never a tab switched to since)
     const f = (p, only) => (p === "share" ? setShare(true) : setPanelState((was) => (only && was !== only ? was : p)));
@@ -954,14 +1049,16 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   // switch (the cuts menu's, or cb cut switch from a terminal) reaches the title bar within the frame it lands in.
   const summary = liveSummary(useLiveStatus(projectId, bridge));
   const summaryKey = summary ? JSON.stringify(summary) : "";
-  const report = useRef({ panel: null, live: null, share: false, chip: null, sent: null });
+  // (cutsMenu: the chip's menu is open, the chip's aria-expanded and pressed look; sent only while it is)
+  const report = useRef({ panel: null, live: null, share: false, chip: null, cutsMenu: false, sent: null });
   const send = useCallback(() => {
     const r = report.current;
-    const key = JSON.stringify([r.panel, r.live, r.share, r.chip]);
+    const key = JSON.stringify([r.panel, r.live, r.share, r.chip, r.cutsMenu]);
     if (key === r.sent) return;
     r.sent = key;
-    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null, ...(r.chip?.comparing ? { comparing: r.chip.comparing } : {}) });
+    bridge.reportPanel?.(r.panel, r.live ?? undefined, { share: r.share, cut: r.chip?.cut ?? null, viewing: r.chip?.viewing ?? null, ...(r.chip?.comparing ? { comparing: r.chip.comparing } : {}), ...(r.cutsMenu ? { cutsMenu: true } : {}) });
   }, [bridge]);
+  useEffect(() => { report.current.cutsMenu = !!chipMenu; send(); }, [chipMenu, send]);
   useEffect(() => {
     Object.assign(report.current, { panel, live: summaryKey ? JSON.parse(summaryKey) : null, share });
     send();
@@ -980,13 +1077,16 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     return () => { for (const off of offs) off(); };
   }, [conn, ready, send]);
   useEffect(() => () => sidePanel.set(null), []);
-  // History closed before the menu opened: the request goes with it
-  useEffect(() => { if (!panel) setCutsAsk(0); }, [panel]);
+  // History closed before it took the chip's Fold in…: the request goes with it
+  useEffect(() => { if (!panel) setFoldAsk(null); }, [panel]);
   const closeShare = useCallback(() => setShare(false), []);
-  if (!panel && !share) return null;
+  // (once the view model is ready: before that it has no cuts to list)
+  const pop = chipMenu && ready ? h(ChipCutsMenu, { at: chipMenu.at, keyboard: chipMenu.keyboard, onClose: closeChipMenu, onOpenHistory: chipHistory, onFoldIn: chipFold, portal }) : null;
+  if (!panel && !share && !pop) return null;
   return h(CartonProvider, { ui: conn.ui },
-    panel ? h(Sidebar, { panel, setPanel, projectId, bridge, onShare: () => setShare(true), cutsAsk, onCutsAsked: cutsAsked }) : null,
-    share ? h(ShareHost, { projectId, bridge, onClose: closeShare }) : null);
+    panel ? h(Sidebar, { panel, setPanel, projectId, bridge, onShare: () => setShare(true), foldAsk, onFoldAsked: foldAsked }) : null,
+    share ? h(ShareHost, { projectId, bridge, onClose: closeShare }) : null,
+    pop);
 });
 
 /**
@@ -1228,4 +1328,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge, player
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { stagePicture, confirmations, toasts, tellFailure, tellStep, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, stageViewingOf, StageViewing, sidePanel, conns };
+export const __forTests = { placeChipMenu, stagePicture, confirmations, toasts, tellFailure, tellStep, Toast, LiveChipView, MediaNotice, Sidebar, CartonProvider, chipOf, viewingOf, backToEdit, cutColor, viewAndSwap, listMarks, timelineMarkOf, stageViewingOf, StageViewing, sidePanel, conns };

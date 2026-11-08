@@ -651,8 +651,14 @@ What changes with it on:
 - **The cut you're on, in the title bar**: on every project tab, before Cardboard's own "16:9 ⌄", a chip names the cut
   the editor shows: "✂ Main cut ⌄", or a colour dot and the name for any other cut ("● 30s Instagram cut ⌄"; a long
   name is cut off at 220 px, 150 px in a window under 1180 px wide, and shown whole in its tooltip). It follows every
-  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click opens History
-  with its cuts menu open, the keyboard in it (arrows, Enter, Esc). While the editor shows something other than your
+  switch, the cuts menu's or a `cb cut switch` from a terminal, as soon as the editor hears of it. A click drops the
+  cuts menu down under the chip, History staying closed: every cut with who changed it last and when (a click switches;
+  while an agent works on your cut, the cut opens in place with "Switch when it finishes" and "Switch now"), New cut
+  from your edit, Fold in changes from a cut…, Rename, Open History, and "Agents work on the cut you're on." The chip
+  shows it open. The title bar is a page of its own above the editor's, so the chip sends where it is with its click
+  and the editor's page draws the menu under the title bar at the chip's left edge (at any window width or zoom, kept
+  inside the window). The keyboard is in it at once (arrows, Enter, Esc). Esc, a click anywhere else (the title bar
+  included) or the chip again closes it, and focus goes back to the editor. While the editor shows something other than your
   own edit (an earlier version opened, a teammate's cut), the chip grows a second part saying what ("👁 The version
   from 2:14 PM (Codex) ✕"), and its ✕ brings your edit back. In a narrow window the chip is what gives way, never the
   window's own buttons: the editor controls beside the tabs may shrink now (they kept their full width and could push
