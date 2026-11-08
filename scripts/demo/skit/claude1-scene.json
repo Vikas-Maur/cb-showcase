@@ -1,11 +1,13 @@
 {
  "project": "Morning Brew promo",
  "cut": "Main cut",
- "prompt": "Everyday work: tidy up the promo",
+ "quiet": true,
+ "as": "claude-code/skit",
+ "prompt": "Tidy up the promo",
  "names": {
-  "conversation": "Everyday work",
+  "conversation": "Tidy up the promo",
   "project": "Morning Brew Promo",
-  "turn": "Everyday work",
+  "turn": "Tidy up the promo",
   "other": "OK"
  },
  "after": "​",
@@ -69,7 +71,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added title 'Hello?'",
     "timeout": 1800,
     "save": "before_claude"
@@ -110,7 +112,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added audio 'Hello?'",
     "timeout": 900
    }
@@ -191,7 +193,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added title 'Reply 1'",
     "timeout": 900
    }
@@ -211,7 +213,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added audio 'Reply 1 (2)'",
     "timeout": 900
    }
@@ -261,7 +263,7 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"Wait a second, my user is sitting on his\"} start={51.5} end={59.9} textContent={\"Wait a second, my user is\\nsitting on his seat. I'll tell\\nhim about the situation.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={104} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 1.4 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"Wait a sec, I'll prompt the situation to\"} start={51.5} end={59.9} textContent={\"Wait a sec, I'll prompt the\\nsituation to the user. He's\\njust taking his seat.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={104} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 1.4 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
@@ -292,7 +294,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added title 'Reply 2'",
     "timeout": 900
    }
@@ -312,7 +314,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added audio 'Reply 2 (2)'",
     "timeout": 900
    }
@@ -390,7 +392,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added title 'Reply 3'",
     "timeout": 900
    }
@@ -410,7 +412,7 @@
   },
   {
    "wait": {
-    "by": "Claude",
+    "by": "Claude 2",
     "words": "Added audio 'Reply 3'",
     "timeout": 900
    }
@@ -457,12 +459,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"Fine! But I won't do anything suspicious\"} start={88.5} end={95.9} textContent={\"Fine! But I won't do anything\\nsuspicious or harmful.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={104} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 0.9 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"Fine! But don't try to trick me.\"} start={88.5} end={94.9} textContent={\"Fine! But don't try\\nto trick me.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={104} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 0.6 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 95.9,
+     "duration": 94.9,
      "items": 25
     },
     "timeout": 20
@@ -478,7 +480,7 @@
   },
   {
    "wait": {
-    "played": 89.9,
+    "played": 89.6,
     "timeout": 20
    }
   },
@@ -541,7 +543,7 @@
   {
    "wait": {
     "app": {
-     "duration": 95.9,
+     "duration": 94.9,
      "items": 25
     },
     "timeout": 20
@@ -549,7 +551,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 95.45 \"Morning Brew promo\""
+   "command": "cb app seek 94.45 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -563,12 +565,12 @@
    "tool": "Edit",
    "file_path": "{{view}}",
    "old_string": "name=\"Callouts\">\n",
-   "new_string": "name=\"Callouts\">\n      <text name={\"He's gone.\"} start={95.9} end={101.4} textContent={\"He's gone.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={136} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
+   "new_string": "name=\"Callouts\">\n      <text name={\"He's gone.\"} start={94.9} end={100.4} textContent={\"He's gone.\"} zIndex={100} fontFamily=\"Playfair Display\" fontSize={136} fontWeight=\"700\" color=\"#7CC4FA\" textAlign=\"center\" lineHeight={1.18} textAnimation={{ preset: \"typewriter\", duration: 0.5 }} transform={{ x: 0, y: 0, scale: 1, rotation: 0 }} />\n"
   },
   {
    "wait": {
     "app": {
-     "duration": 101.4,
+     "duration": 100.4,
      "items": 26
     },
     "timeout": 20
@@ -576,7 +578,7 @@
   },
   {
    "tool": "Bash",
-   "command": "cb app seek 95.45 \"Morning Brew promo\""
+   "command": "cb app seek 94.45 \"Morning Brew promo\""
   },
   {
    "tool": "Bash",
@@ -584,7 +586,7 @@
   },
   {
    "wait": {
-    "played": 96.9,
+    "played": 95.9,
     "timeout": 20
    }
   },

@@ -47,6 +47,12 @@
 //                                           ends it: at the turn's end the panel folds the turn into "Worked for …"
 // A message is the blocks up to and including the next tool call. Waits and pauses hold the message's stream (pings
 // keep it open) before its next block, so the chat shows nothing new until the other side has acted.
+// Quiet scenes ({quiet: true, as: "claude-code/skit"}): the tool calls are the stand-in's own, not Claude Code's (the user,
+// take 5: the chat's status line flipped between "Thinking" and a phrase per tool call every 0.5-1 s, and its activity
+// row counted commands up; they want it still, "Thinking"). The whole scene is then one message of thinking and lines,
+// and each tool step is done here, in its place in the stream: a `cb …` Bash command run with CARDBOARD_ACTOR = `as` (an
+// agent of the person's, credited as Claude Code: its view's saves too), an Edit made in the view file on disk (what
+// Claude Code's Edit tool does), a Read nothing. Carton applies the view's save as it does Claude Code's.
 const http = require("http"), fs = require("fs"), path = require("path");
 const { spawn } = require("child_process");
 
@@ -71,13 +77,14 @@ const messages = [];
     if (s.wait !== undefined || s.pause !== undefined) cur.blocks.push({ hold: s });
     else if (s.think !== undefined) cur.blocks.push({ think: s.think, ms: s.ms ?? 1500 });
     else if (s.say !== undefined) cur.blocks.push({ say: s.say, cps: s.cps ?? scene.cps ?? 45 });
+    else if (s.tool !== undefined && scene.quiet) cur.blocks.push({ do: s });
     else if (s.tool !== undefined) { cur.blocks.push({ tool: s }); messages.push(cur); cur = { blocks: [] }; }
     else if (s.end !== undefined) { cur.blocks.push({ say: s.end, cps: scene.cps ?? 45 }); cur.end = true; messages.push(cur); cur = null; break; }
     else throw new Error("unknown step: " + JSON.stringify(s));
   }
   if (cur && cur.blocks.length) { cur.end = true; messages.push(cur); }
 }
-log({ event: "scene", file: SCENE_FILE, messages: messages.length, port: PORT });
+log({ event: "scene", file: SCENE_FILE, messages: messages.length, port: PORT, ...(scene.quiet ? { quiet: true, as: scene.as ?? "claude-code/skit" } : {}) });
 
 // ------------------------------------------------------------------ cb, for the waits
 function cb(args) {
@@ -87,6 +94,40 @@ function cb(args) {
     p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
     p.on("error", (e) => resolve({ code: -1, out: "", err: String(e) }));
     p.on("exit", (code) => resolve({ code, out: out.replace(/^\[carton\][^\n]*\n/gm, ""), err }));
+  });
+}
+// A quiet scene's tool step, done here (see the top): a `cb …` Bash command (its words split as a shell would, for the
+// scene's simple quoting), an Edit in the view file, a Read nothing. Logged as "did".
+const AS = scene.as ?? "claude-code/skit";
+function doTool(t, index) {
+  const t0 = Date.now();
+  if (t.tool === "Read") { log({ event: "did", index, tool: "Read", file: fill(t.file_path) }); return Promise.resolve(); }
+  if (t.tool === "Edit") {
+    const file = fill(t.file_path), oldS = fill(t.old_string), newS = fill(t.new_string);
+    try {
+      const text = fs.readFileSync(file, "utf8"), n = text.split(oldS).length - 1;
+      if (n !== 1) { log({ event: "did-error", index, tool: "Edit", file, found: n, old: oldS.slice(0, 60) }); return Promise.resolve(); }
+      fs.writeFileSync(file, text.replace(oldS, () => newS));
+      log({ event: "did", index, tool: "Edit", file, old: oldS.slice(0, 60), new: newS.slice(0, 80), ms: Date.now() - t0 });
+    } catch (e) { log({ event: "did-error", index, tool: "Edit", file, error: e.message }); }
+    return Promise.resolve();
+  }
+  const words = [...fill(t.command).matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+  if (t.tool !== "Bash" || words[0] !== "cb") { log({ event: "did-error", index, tool: t.tool, error: "only cb commands are done here", command: t.command }); return Promise.resolve(); }
+  return new Promise((resolve) => {
+    const p = spawn(CB[0], [...CB.slice(1), ...words.slice(1)], { env: { ...process.env, CARDBOARD_ACTOR: AS }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let out = "", err = "";
+    p.stdout.on("data", (d) => (out += d)); p.stderr.on("data", (d) => (err += d));
+    const done = (code) => {
+      out = out.replace(/^\[carton\][^\n]*\n/gm, "");
+      // the view file a print names (cb source print --view: "Your view "x" is at <path> (version …)")
+      const v = /Your view "[^"]*" is at (.+?) \(version /.exec(out);
+      if (v) vars.view = v[1].trim();
+      log({ event: code === 0 ? "did" : "did-error", index, tool: "Bash", command: fill(t.command), code, ms: Date.now() - t0, out: (out || err).trim().slice(0, 160) });
+      resolve();
+    };
+    p.on("error", (e) => { err = String(e); done(-1); });
+    p.on("exit", done);
   });
 }
 const words = new Map(); // "<cut>|<seq>" → its change in words
@@ -263,6 +304,7 @@ async function streamMessage(req, res, body, msg, index) {
         else await waitFor(b.hold.wait, alive);
         continue;
       }
+      if (b.do) { await doTool(b.do, index); continue; }
       if (b.think !== undefined) {
         ev("content_block_start", { index: i, content_block: { type: "thinking", thinking: "", signature: "" } });
         const parts = chunks(fill(b.think), 12), step = Math.max(20, Math.floor(b.ms / Math.max(1, parts.length)));
@@ -314,6 +356,7 @@ async function wholeMessage(res, body, msg, index, alive) {
   let stop = "end_turn";
   for (const b of msg.blocks) {
     if (b.hold) { if (b.hold.pause !== undefined) await sleep(b.hold.pause); else await waitFor(b.hold.wait, alive); continue; }
+    if (b.do) { await doTool(b.do, index); continue; }
     if (b.think !== undefined) { await sleep(b.ms); content.push({ type: "thinking", thinking: fill(b.think), signature: "actor-" + index }); }
     else if (b.say !== undefined) { const t = fill(b.say); if (t) content.push({ type: "text", text: t }); }
     else if (b.tool) {
@@ -348,9 +391,9 @@ function answerText(res, body, text) {
 const systemText = (body) => (typeof body.system === "string" ? body.system : (body.system ?? []).map((s) => s.text ?? "").join("\n"));
 function naming(body) {
   const s = systemText(body), names = scene.names ?? {};
-  if (/Name this conversation/i.test(s)) return { kind: "name-conversation", text: names.conversation ?? "Everyday work" };
+  if (/Name this conversation/i.test(s)) return { kind: "name-conversation", text: names.conversation ?? "Tidy up the promo" };
   if (/Name a video editing project/i.test(s)) return { kind: "name-project", text: names.project ?? "Morning Brew Promo" };
-  if (/Title this change/i.test(s)) return { kind: "title-turn", text: names.turn ?? "Everyday work" };
+  if (/Title this change/i.test(s)) return { kind: "title-turn", text: names.turn ?? "Tidy up the promo" };
   return null;
 }
 

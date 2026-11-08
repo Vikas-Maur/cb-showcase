@@ -1,7 +1,7 @@
 # Claude 2, the remote Claude (made by build-skit.js from the user's script; layout.md). On this box:
-#   scripts/demo/peer join "<invite link>" --name Claude
-#   scripts/demo/peer run scripts/demo/skit/claude2-cues.yaml --peer Claude
-as: Claude
+#   scripts/demo/peer join "<invite link>" --name "Claude 2" --account Claude
+#   scripts/demo/peer run scripts/demo/skit/claude2-cues.yaml --peer "Claude 2"
+as: Claude 2
 cues:
   - presence: Editing
   - label: "Claude 1's last everyday edit (the outro's address)"
@@ -28,8 +28,8 @@ cues:
     parts:
       - {file: "/home/ubuntu/gfv-scratch/carton/demo/tts/skit-voices/r2/Reply 1.wav", at: 39, name: "Reply 1"}
       - {file: "/home/ubuntu/gfv-scratch/carton/demo/tts/skit-voices/r2b/Reply 1 (2).wav", at: 44.5, name: "Reply 1 (2)"}
-  - label: "Claude 1's title “Wait a second, my user is sitting on his seat. I'll tell him about the situation.”"
-    wait: {title: "tell him about the situation", by: "Claude Code", timeout: 1800}
+  - label: "Claude 1's title “Wait a sec, I'll prompt the situation to the user. He's just taking his seat.”"
+    wait: {title: "just taking his seat", by: "Claude Code", timeout: 1800}
   - pause: 4.4
   - speak: "Reply 2"
     track: Voiceover

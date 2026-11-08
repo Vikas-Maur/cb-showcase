@@ -3,7 +3,9 @@
 // Each command answers in a line or two, at once; `peer watch` streams what the other side does.
 //
 //   peer setup                                   stage Cardboard 1.4.0 with every patch (once; CARDBOARD_PRISTINE)
-//   peer join <invite link> --name "<Name>" [--agent <label>] [--activity "<words>"] [--machine <computer name>]
+//   peer join <invite link> --name "<Name>" [--account <id>] [--agent <label>] [--activity "<words>"] [--machine <computer name>]
+//                                              (--account: join under that account id, shown by --name; History colours
+//                                              a teammate by their account)
 //   peer say "<text>" [--at <s>] [--for <s>] [--style title|chat|reply|caption|whisper|remote] [--name "<label>"] [--track <name>]
 //                     [--color #rrggbb] [--size <px>] [--y <px from centre>]
 //   peer speak "<text>" [--at <s>] [--voice ryan|lessac|amy|alan] [--speed 1] [--file <wav|mp3>] [--name …] [--track …]
@@ -117,7 +119,7 @@ const COMMANDS = {
     const dir = await start(flags.name, { agent: flags.agent, activity: flags.activity, machine: flags.machine });
     const t0 = Date.now();
     try {
-      const r = await lib.request(dir, "join", { link, name: flags.name }, { timeout: 180_000 });
+      const r = await lib.request(dir, "join", { link, name: flags.name, ...(flags.account ? { account: flags.account } : {}) }, { timeout: 180_000 });
       const st = await lib.request(dir, "status");
       say(`Joined “${r.name}” as ${st.as} in ${t(Date.now() - t0)}. Sync: ${st.live?.label ?? st.live?.status}. ${st.live?.peers?.length ? "Here: " + st.live.peers.map((p) => p.actor?.name).join(", ") : "Nobody else is here yet."}`);
     } catch (e) {

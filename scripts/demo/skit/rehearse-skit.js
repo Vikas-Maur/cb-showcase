@@ -42,7 +42,9 @@ const peer = (...args) => {
 
 (async () => {
   // 1. the project, shared, and Claude 2 in it (this folder's own participants only)
-  for (const n of ["Claude", "Vikas"]) { try { peer("--peer", n, "leave"); } catch {} }
+  // Claude 2's name, from its cue sheet (as: …), joined on account "Claude" (its History colour; the laptop's take does the same)
+  const C2NAME = /^as: (.+)$/m.exec(fs.readFileSync(path.join(HERE, "claude2-cues.yaml"), "utf8"))[1].trim();
+  for (const n of ["Claude", C2NAME, "Vikas"]) { try { peer("--peer", n, "leave"); } catch {} }
   try { peer("host", "stop"); } catch {} // before its folder moves (host stop reads its pid there)
   await new Promise((r) => setTimeout(r, 600));
   const old = path.join(DEMO, "old", new Date().toISOString().replace(/[:.]/g, "-"));
@@ -52,7 +54,7 @@ const peer = (...args) => {
   note(peer("app", "--name", "Vikas"));
   note(peer("--peer", "Vikas", "create", scene.project, "--tsx", path.join(HERE, "promo.tsx")));
   note(peer("--peer", "Vikas", "share", "--host", `http://127.0.0.1:${HOST_PORT}`));
-  note(peer("join", peer("--peer", "Vikas", "invite"), "--name", "Claude"));
+  note(peer("join", peer("--peer", "Vikas", "invite"), "--name", C2NAME, "--account", "Claude"));
   const vik = lib.peerDir("Vikas"), cfg = lib.readJson(path.join(vik, "peer.json")), b = lib.build(), env0 = lib.peerEnv(vik, b);
   const bundle = path.join(cfg.root, `${scene.project}.cardboard`);
 
@@ -82,7 +84,7 @@ const peer = (...args) => {
 
   // 5. Claude 2's cue sheet, beside it
   const c2log = fs.openSync(path.join(RUN, "claude2.log"), "a");
-  const c2 = spawn(process.execPath, [path.join(DEMO_SCRIPTS, "peer"), "run", path.join(HERE, "claude2-cues.yaml"), "--peer", "Claude"], { env: process.env, stdio: ["ignore", c2log, c2log] });
+  const c2 = spawn(process.execPath, [path.join(DEMO_SCRIPTS, "peer"), "run", path.join(HERE, "claude2-cues.yaml"), "--peer", C2NAME], { env: process.env, stdio: ["ignore", c2log, c2log] });
   note(`Claude 2's cue sheet running (pid ${c2.pid})`);
 
   // 6. Claude 1: the real Claude Code, its own config folder, the stand-in as its API, nothing else reachable

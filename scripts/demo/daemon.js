@@ -208,9 +208,9 @@ const STYLES = {
   caption: { fontSize: 56, fontWeight: "bold", color: "#ffffff", textAlign: "center", strokeColor: "#000000", strokeWidth: 6, transform: { x: 0, y: 400, scale: 1, rotation: 0 } },
   whisper: { fontSize: 40, fontStyle: "italic", color: "#d8d8d8", textAlign: "center", backgroundColor: "#000000", backgroundOpacity: 0.5, backgroundPadding: 16, transform: { x: 0, y: -420, scale: 1, rotation: 0 } },
   // the skit's remote Claude: big and centred, its words alone in its History colour (actors.ts PALETTE yellow, the ring
-  // its rows get), in Cardboard's own Playfair Display Bold, decoding in with Cardboard's Glitch (no box, no border: the
-  // user's take-4 look; the local Claude's are the same in blue, skit/build-skit.js C1_LOOK)
-  remote: { fontFamily: "Playfair Display", fontSize: 104, fontWeight: "700", color: "#E8D06A", textAlign: "center", lineHeight: 1.18, textAnimation: { preset: "glitch", duration: 0.9 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 } },
+  // its rows get), in Cardboard's own Playfair Display Bold, typed in (no box, no border, and no animation but typing:
+  // the user, take 5; the local Claude's are the same in blue, skit/build-skit.js C1_LOOK)
+  remote: { fontFamily: "Playfair Display", fontSize: 104, fontWeight: "700", color: "#E8D06A", textAlign: "center", lineHeight: 1.18, textAnimation: { preset: "typewriter", duration: 0.9 }, transform: { x: 0, y: 0, scale: 1, rotation: 0 } },
 };
 // how long the other side's worker keeps a "not shared yet" answer for a clip's record (sync/media.js sharedRecord), and a margin
 const REASK_MS = Number(process.env.DEMO_REASK_MS ?? 2300);
@@ -525,9 +525,11 @@ const OPS = {
   },
   /** Waits (up to `timeout` s) until every sound this participant sent is on the server, checked; says which aren't. */
   settle,
-  async join({ link, name }) {
+  async join({ link, name, account }) {
     if (projectId()) throw new Error("Already in a project; leave it first");
-    const r = await call("carton.liveJoin", { link, name: name ?? cfg.name });
+    // account: joined under that account, shown by name (fix/take5-names liveJoin `account`: History colours a
+    // teammate by their account, so "Claude 2" on account "Claude" keeps Claude's yellow ring)
+    const r = await call("carton.liveJoin", { link, name: name ?? cfg.name, ...(account ?? cfg.account ? { account: account ?? cfg.account } : {}) });
     cfg.projectId = r.projectId; cfg.projectName = r.name; cfg.joinedAt = Date.now(); saveCfg();
     const lc = await handle();
     watchHandle(r.bundlePath, lc);

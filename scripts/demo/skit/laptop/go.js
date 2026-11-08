@@ -15,7 +15,8 @@
 //    And acts for the scene's operator cues (take 4), then sends them: "history" (Claude 1 has said "lemme check":
 //    History closes, with its own shortcut), "cut-v2" and "cut-main" (the switch to Edit v2 and back, through the title
 //    bar's cut chip: a click on the chip, its cuts menu opens under it, a click on the cut, and "Switch now", the turn
-//    being Claude 1's). The cut is read from the chip (History is closed by then).
+//    being Claude 1's), each followed by the timeline scrolled (sideways wheel steps) to where the stand-in puts the
+//    playhead on that cut. The cut is read from the chip (History is closed by then).
 // Throughout: the notices Cardboard puts over the preview about a teammate's media (".carton-media-notice": "N clips are
 //    still on their way…", "This video plays from preview copies…") are dismissed as a person would, with a DevTools
 //    click on their ✕, checked every ~100 ms; each is logged with when it appeared (seen in the page by a
@@ -39,7 +40,7 @@ const D = require("./lib/demo-env");
 const OUT = D.runDir(given), SH = path.join(OUT, "shots");
 const E = "app/editor/" + id;
 const scene = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "claude1-scene.json"), "utf8"));
-const PROMPT = scene.prompt ?? "Everyday work: tidy up the promo";
+const PROMPT = scene.prompt ?? "Tidy up the promo";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ts = () => { const d = new Date(); return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
 let T0 = Date.now();
@@ -74,6 +75,19 @@ const CUT_ITEM = (name) => middle(`[...document.querySelectorAll(${JSON.stringif
 const SWITCH_NOW = middle(`[...document.querySelectorAll('${MENU} [data-carton-cut-choice="now"]')].find(vis)`);
 const TOAST_CLOSE = middle(`[...document.querySelectorAll('.carton-toast button[aria-label="Close"]')].find(vis)`);
 const SIDEBAR_OPEN = `!!document.querySelector(".carton-sidebar")?.offsetParent`;
+// The timeline: its scroller ([data-timeline-scroll], scrolled natively by a sideways wheel) and its zoom (the editor's
+// state: pixelsPerSecond, beside zoomLevel). The playhead is drawn on a canvas: where it is comes from the zoom.
+const TIMELINE = `(() => { const e = document.querySelector("[data-timeline-scroll]"); if (!e) return null; const r = e.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), sl: e.scrollLeft, cw: e.clientWidth, dpr: devicePixelRatio }; })()`;
+const PPS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]];
+  while (stack.length) { const f = stack.pop(); if (!f) continue; for (let s = f.memoizedState, n = 0; s && n < 60; s = s.next, n++) { const c = s.memoizedState; if (c && typeof c === "object" && !Array.isArray(c) && typeof c.pixelsPerSecond === "number" && "zoomLevel" in c) return c.pixelsPerSecond; } if (f.child) stack.push(f.child); if (f.sibling) stack.push(f.sibling); }
+  return null; })()`;
+// where the stand-in puts the playhead around a cue: its last seek before the cue (cut-v2: the headline, 1.5 s), or its
+// first one after (cut-main: back to Claude 1's last line), from the scene
+const seekNear = (cue) => {
+  const i = scene.steps.findIndex((x) => x.wait?.cue === cue), at = (x) => Number(/cb app seek ([\d.]+)/.exec(x?.command ?? "")?.[1] ?? NaN);
+  const after = scene.steps.slice(i + 1).find((x) => !Number.isNaN(at(x))), before = scene.steps.slice(0, i).reverse().find((x) => !Number.isNaN(at(x)));
+  return cue === "cut-v2" ? at(before) : at(after);
+};
 // the timeline's items, from the editor's React state
 const ITEMS = `(() => { const root = document.getElementById("root"); const key = Object.keys(root).find((k) => k.startsWith("__reactContainer")); const stack = [root[key]]; let tl = null;
   while (stack.length && !tl) { const f = stack.pop(); if (!f) continue; for (let s = f.memoizedState, n = 0; s && n < 60; s = s.next, n++) { const c = s.memoizedState; if (c && typeof c === "object" && !Array.isArray(c) && "selectedTimelineItemIds" in c && "timelineItems" in c) { tl = c; break; } } if (f.child) stack.push(f.child); if (f.sibling) stack.push(f.sibling); }
@@ -177,6 +191,22 @@ function watchNotices(page) {
     const x = await h.until(() => h.ev(E, TOAST_CLOSE), 2500, 100);
     if (x) { await sleep(toastFor); await h.mouse(ed, x.x, x.y); log(`switch toast closed after ${toastFor} ms`); } else log("no switch toast seen");
   };
+  // The timeline scrolled to a time (the user, take 5: "scroll the timeline when changing the cut"), as a person would:
+  // sideways wheel steps over it, ~30 ms apart, until that time sits a third of the way in (or the timeline's start)
+  const scrollTimelineTo = async (t) => {
+    const pps = await h.ev(E, PPS);
+    if (!pps || !Number.isFinite(t)) { log(`ERR timeline not scrolled (zoom ${pps}, to ${t})`); return; }
+    const ed = await h.page(E);
+    for (let i = 0; i < 60; i++) {
+      const tl = await h.ev(E, TIMELINE); if (!tl) { log("ERR no timeline scroller"); return; }
+      const left = Math.max(0, Math.round(t * pps - tl.cw / 3)) - tl.sl;
+      if (Math.abs(left) < 6) { log(`timeline at ${t} s (scrollLeft ${tl.sl}, ${pps} px/s)`); return; }
+      const step = Math.sign(left) * Math.min(Math.abs(left), 140);
+      await ed.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: tl.x, y: tl.y, deltaX: step * tl.dpr, deltaY: 0 });
+      await sleep(30);
+    }
+    log(`ERR timeline didn't reach ${t} s`);
+  };
   const asked = {};
   const operator = (name, act) => {
     if (asked[name]) return; asked[name] = true; at(`standin-waits-${name}`);
@@ -200,8 +230,9 @@ function watchNotices(page) {
         setTimeout(async () => { const r = await cue("gone"); log(`cue gone sent (${GONE_AFTER} s after the stand-in's wait was noticed): ${r}`); }, GONE_AFTER * 1000);
       }
       if (o.event === "wait" && o.cue === "history") operator("history", closeHistory);
-      if (o.event === "wait" && o.cue === "cut-v2") operator("cut-v2", async () => { await sleep(600); await chipSwitch("Edit v2", 1500); });
-      if (o.event === "wait" && o.cue === "cut-main") operator("cut-main", async () => { await sleep(600); await chipSwitch("Main cut", 900); });
+      if (o.event === "wait" && o.cue === "cut-v2") operator("cut-v2", async () => { await sleep(600); await chipSwitch("Edit v2", 1500); await scrollTimelineTo(seekNear("cut-v2")); });
+      // (the timeline goes to Claude 1's last line before the stand-in moves the playhead there and adds "He's gone.")
+      if (o.event === "wait" && o.cue === "cut-main") operator("cut-main", async () => { await sleep(600); await chipSwitch("Main cut", 900); await scrollTimelineTo(seekNear("cut-main")); });
       if (o.event === "wait" && o.cue === "end" && !endAsked) {
         endAsked = true; at("standin-waits-end");
         setTimeout(async () => { const r = await cue("end"); log(`cue end sent (${END_AFTER} s after the stand-in's wait was noticed): ${r}`); }, END_AFTER * 1000);
