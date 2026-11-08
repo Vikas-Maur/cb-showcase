@@ -213,6 +213,9 @@ function productOf(a: CoreActor): string | undefined {
     return a.provider && PRODUCTS[a.provider] ? a.provider : Object.keys(PRODUCTS).find((k) => PRODUCTS[k] === viewAgent(a));
   }
   const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
+  // (Cardboard names an agent it starts by its provider, "claude/<chat>" for its Claude Code: the working turn's actor;
+  // take 5's History said "Working · Claude Code" with the switch on)
+  if (head === "claude") return "claude-code";
   return PRODUCTS[head] ? head : a.provider && head.startsWith(a.provider) && PRODUCTS[a.provider] ? a.provider : undefined;
 }
 function productName(a: CoreActor): string {
