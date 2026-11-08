@@ -7,8 +7,9 @@
 <title>Cardboard showcase</title>
 <meta name="description" content="Every version of a Cardboard project, who changed what, and your team editing one timeline together, live.">
 <link rel="icon" href="data:,">
-<!-- The landing page while the web demo (apps/web) isn't served: Carton is used from the Cardboard app. Styled after
-     cardboard.ai, with the changelog's free faces (Fraunces and Geist, SIL OFL 1.1, in /changelog/fonts/). -->
+<!-- The home page: the navbar, a row of videos, the Windows installer and GitHub, then the page's text. Styled after
+     cardboard.ai, with the changelog's free faces (Fraunces and Geist, SIL OFL 1.1, in /changelog/fonts/). An invite
+     link (/#join=…) opened in a browser shows the invite view below instead. -->
 <link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
 <style>
@@ -20,7 +21,9 @@ html{background:#000;color:#fff;-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;display:flex;flex-direction:column;font-family:var(--sans);font-size:16px;line-height:1.7;letter-spacing:.01em;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
 a{color:inherit}
 .display{font-family:var(--display);font-weight:340;font-variation-settings:"opsz" 72;letter-spacing:-.015em}
+.wrap{width:100%;max-width:1320px;margin:0 auto;padding:0 24px}
 
+/* the navbar */
 .top{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:1320px;margin:0 auto;padding:18px 24px}
 .brand{font-size:22px;text-decoration:none}
 .nav{display:flex;align-items:center;gap:8px}
@@ -31,14 +34,37 @@ a{color:inherit}
 .btn:hover{background:#e5e5e5}
 .btn.dark{background:#1f1f1f;color:#fff}
 .btn.dark:hover{background:#2a2a2a}
-.btn.big{height:42px;padding:0 18px;font-size:15px;border-radius:12px}
+.btn.big{height:46px;padding:0 20px;font-size:15px;border-radius:12px}
 .btn svg{width:16px;height:16px;flex:none}
 
+/* the video row: three to a row on a wide screen; a fourth video starts the next row */
+.videos{padding-top:40px}
+.videos .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.video{margin:0}
+.frame{position:relative;aspect-ratio:16/9;border-radius:14px;overflow:hidden;background:#0d0d0d;box-shadow:0 0 0 1px var(--line)}
+.frame video,.frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;object-fit:cover}
+.frame.placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#5c5c5c;font-size:13px;letter-spacing:0;background:radial-gradient(120% 90% at 50% 0%,#171717 0%,#0b0b0b 70%)}
+.frame.placeholder .play{display:flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:999px;background:rgba(255,255,255,.06);box-shadow:0 0 0 1px rgba(255,255,255,.1)}
+.frame.placeholder .play svg{width:18px;height:18px;margin-left:3px;fill:#8a8a8a}
+.video figcaption{padding:12px 2px 0}
+.video h3{margin:0;font-size:15px;font-weight:600;line-height:1.4;letter-spacing:0;color:#fff}
+.video p{margin:2px 0 0;color:var(--muted);font-size:14px;line-height:1.5;letter-spacing:0}
+
+/* the Windows installer and GitHub */
+.get{text-align:center;padding:72px 24px 8px}
+.get .actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+.get .note{margin:14px 0 0;color:#5c5c5c;font-size:13px;letter-spacing:0}
+
+/* the page's text */
+.about{width:100%;max-width:720px;margin:0 auto;padding:72px 24px 0}
+.about h2{margin:0 0 16px;font-size:36px;line-height:1.15}
+.about p{margin:0 0 16px;color:var(--text)}
+
+/* the invite view (an invite link opened in a browser) */
 .hero{text-align:center;padding:120px 24px 48px}
 .hero h1{margin:0 auto;max-width:880px;font-size:56px;line-height:1.1;font-weight:300}
 .hero p{margin:20px auto 0;max-width:560px;color:var(--muted);font-size:18px;font-weight:500;line-height:1.55;letter-spacing:0}
-.actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:32px}
-
+.hero .actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:32px}
 .card{width:100%;max-width:640px;margin:24px auto 0;padding:28px 28px 24px;border-radius:16px;background:#111;box-shadow:0 0 0 1px var(--line)}
 .card h2{margin:0 0 14px;font-size:28px;line-height:1.15;font-weight:340}
 .card ol{margin:0;padding-left:22px;color:var(--text)}
@@ -47,12 +73,17 @@ a{color:inherit}
 .row{display:flex;gap:8px;margin:18px 0 4px}
 .row input{flex:1;min-width:0;height:42px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0a0a0a;color:#e5e5e5;padding:0 12px;font:13px var(--mono)}
 
-footer{margin-top:auto;padding:64px 24px 28px;text-align:center;color:#5c5c5c;font-size:13px;letter-spacing:0}
+footer{margin-top:auto;padding:72px 24px 28px;text-align:center;color:#5c5c5c;font-size:13px;letter-spacing:0}
 footer a{color:#8a8a8a;text-decoration:none}
 footer a:hover{color:#fff}
 [hidden]{display:none!important}
-@media (max-width:640px){.hero{padding-top:72px}.hero h1{font-size:40px}}
-@media (max-width:640px){.top{padding:14px 16px}.brand{font-size:20px}.nav{gap:6px}.nav .link{padding:0 6px;font-size:14px}.nav .btn{padding:0 10px;font-size:13px;height:32px}}
+@media (max-width:1000px){.videos .grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){
+  .videos{padding-top:20px}.videos .grid{grid-template-columns:1fr;gap:28px}
+  .get,.about{padding-top:56px}.about h2{font-size:30px}
+  .hero{padding-top:72px}.hero h1{font-size:40px}
+  .top{padding:14px 16px}.wrap{padding:0 16px}.brand{font-size:20px}.nav{gap:6px}.nav .link{padding:0 6px;font-size:14px}.nav .btn{padding:0 10px;font-size:13px;height:32px}
+}
 .nav .btn{gap:6px}
 .nav .btn svg{width:15px;height:15px;flex:none}
 @media (max-width:480px){.brand{font-size:18px;white-space:nowrap}.nav .btn{width:32px;padding:0;justify-content:center}.nav .btn .lbl{display:none}}
@@ -63,34 +94,59 @@ footer a:hover{color:#fff}
   <a class="brand display" href="/">Cardboard showcase</a>
   <nav class="nav">
     <a class="link" href="/changelog/">Changelog</a>
-    <!-- Placeholders for now: the GitHub and download buttons don't go anywhere yet. -->
-    <a class="btn dark" href="#" data-placeholder="github" role="button" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></a>
-    <a class="btn" href="#" data-placeholder="windows-download" role="button" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></a>
+    <a class="btn dark" href="#" data-placeholder="github" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></a>
+    <a class="btn" href="#" data-placeholder="windows-download" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></a>
   </nav>
 </header>
 
-<section class="hero" id="home">
-  <h1 class="display">Every version of your edit, and your team on one timeline</h1>
-  <p>Version history and live editing for Cardboard: every version of a project, who changed what, down to the agent, and your team editing one project together, live.</p>
-  <div class="actions">
-    <a class="btn big" href="#" data-placeholder="windows-download" role="button"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg>Download for Windows</a>
-    <a class="btn big dark" href="#" data-placeholder="github" role="button"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>View on GitHub</a>
-  </div>
-  <div class="card" style="text-align:left">
-    <h2 class="display">Share a project</h2>
-    <ol>
-      <li>Open the project in Cardboard and click the <b>Share</b> icon in the title bar.</li>
-      <li>Enter this site's address and your name, and press <b>Share</b>.</li>
-      <li>Under <b>Invite to edit</b>, choose what they can do and send them the link.</li>
-    </ol>
-  </div>
-</section>
+<main id="home">
+  <!-- The video row. Each video is one <figure class="video">: copy one to add a video (three to a row; a fourth starts
+       the next row). To place a video, replace its placeholder <div class="frame placeholder">…</div> with either
+         <div class="frame"><video src="/videos/name.mp4" poster="/videos/name.jpg" controls preload="metadata" playsinline></video></div>
+       (the file in site/videos/; Cloudflare serves a static file up to 25 MiB), or an embed:
+         <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/VIDEO_ID" title="…" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe></div> -->
+  <section class="videos wrap" aria-label="Videos">
+    <div class="grid">
+      <figure class="video">
+        <div class="frame placeholder" role="img" aria-label="Video 1, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 1</div>
+        <figcaption><h3>Video title one</h3><p>A short line about what this video shows.</p></figcaption>
+      </figure>
+      <figure class="video">
+        <div class="frame placeholder" role="img" aria-label="Video 2, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 2</div>
+        <figcaption><h3>Video title two</h3><p>A short line about what this video shows.</p></figcaption>
+      </figure>
+      <figure class="video">
+        <div class="frame placeholder" role="img" aria-label="Video 3, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 3</div>
+        <figcaption><h3>Video title three</h3><p>A short line about what this video shows.</p></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- The Windows installer and GitHub. Placeholders for now (a click does nothing): put the installer's address in each
+       data-placeholder="windows-download" link's href and the repository's in each data-placeholder="github" link's,
+       and remove their data-placeholder attribute (the navbar has one of each too). -->
+  <section class="get" aria-label="Get it">
+    <div class="actions">
+      <a class="btn big" href="#" data-placeholder="windows-download"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg>Download for Windows</a>
+      <a class="btn big dark" href="#" data-placeholder="github"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>View on GitHub</a>
+    </div>
+    <p class="note">Windows 10 and 11, 64-bit · Placeholder: version and size</p>
+  </section>
+
+  <!-- The page's text: placeholder words, to be replaced. -->
+  <section class="about" aria-label="About">
+    <h2 class="display">Heading goes here</h2>
+    <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+    <p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+    <p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.</p>
+  </section>
+</main>
 
 <section class="hero" id="invite" hidden>
   <h1 class="display">You've been invited to a project</h1>
   <p>Live editing runs inside the Cardboard app. Open your invite there to edit together.</p>
   <div class="actions">
-    <a class="btn big" href="#" data-placeholder="windows-download" role="button"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg>Download for Windows</a>
+    <a class="btn big" href="#" data-placeholder="windows-download"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg>Download for Windows</a>
   </div>
   <div class="card" style="text-align:left">
     <h2 class="display">Open it in Cardboard</h2>
@@ -106,7 +162,7 @@ footer a:hover{color:#fff}
 <footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a></footer>
 
 <script>
-// The download and GitHub buttons are placeholders: a click does nothing yet.
+// The download and GitHub buttons are placeholders until they have an address: a click does nothing yet.
 for (const a of document.querySelectorAll("[data-placeholder]")) a.addEventListener("click", (e) => e.preventDefault());
 // An invite link (#join=<project>.<code>) opened in a browser: show it to copy into Cardboard. The code stays in the
 // fragment, so it never reaches the server.
