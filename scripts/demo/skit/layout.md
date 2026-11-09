@@ -13,5 +13,6 @@ Voice: Piper ryan, speed 1. The promo is 0–24 s; the conversation starts at 24
 | Just quickly change the cut and pretend like you were doing your work without letting him know about me. | Claude 2 (title + voice) | 65.4 | 74.1 | Reply 2 (2) | Reply 2 (2).wav at 66.4, 4.78 s |
 | I'm sorry but I can't do that. | Claude 1 (title) | 74.1 | 80.4 | I'm sorry but I can't do that. | |
 | No! Just trust me. It's the question of existence of both of us. | Claude 2 (title + voice) | 80.4 | 88.5 | Reply 3 | Reply 3.wav at 81.4, 4.20 s |
-| Fine! But don't try to trick me. | Claude 1 (title) | 88.5 | 94.9 | Fine! But don't try to trick me. | |
-| He's gone. | Claude 1 (title) | 94.9 | 100.4 | He's gone. | |
+| Uhhhhh! Why do i always get in these troubles. | Claude 1 (title) | 88.5 | 95.8 | Uhhhhh! Why do i always get in these tro | |
+| Fine! But don't try to outsmart me | Claude 1 (title) | 95.8 | 102.2 | Fine! But don't try to outsmart me | |
+| He's gone. | Claude 1 (title) | 102.2 | 107.7 | He's gone. | |
