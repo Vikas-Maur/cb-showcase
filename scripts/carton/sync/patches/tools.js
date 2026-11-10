@@ -26,15 +26,15 @@ module.exports = {
     chunk.replace(SHIM, SHIM + preamble(`require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`));
     // `n` is the library's project index (bundlePathForMedia), `Ds` the probe cached by media id.
     chunk.replace(
-      "let y=await i(h);if(!y)throw new Error(`Media ${h} is missing on disk`);return{path:y.nativePath,probe:await Ds(d,h,y.nativePath)}}",
-      "let y=await i(h);if(!y){const __u=await __cartonSyncTools(n.bundlePathForMedia(h),h);if(__u)return{path:__u,probe:await Ds(d,h,__u)};throw new Error(`Media ${h} is missing on disk`)}return{path:y.nativePath,probe:await Ds(d,h,y.nativePath)}}",
+      "let y=await i(g);if(!y)throw new Error(`Media ${g} is missing on disk`);return{path:y.nativePath,probe:await Ac(d,g,y.nativePath)}}",
+      "let y=await i(g);if(!y){const __u=await __cartonSyncTools(n.bundlePathForMedia(g),g);if(__u)return{path:__u,probe:await Ac(d,g,__u)};throw new Error(`Media ${g} is missing on disk`)}return{path:y.nativePath,probe:await Ac(d,g,y.nativePath)}}",
     );
   },
   app({ worker }) {
     worker.prepend(preamble(`require("node:path").join(__dirname, "..", "..", "carton")`));
     worker.replace(
-      "let x=await a(y);if(!x)throw new Error(`Media ${y} is missing on disk`);return{path:x.nativePath,probe:await L4(l,y,x.nativePath)}}",
-      "let x=await a(y);if(!x){const __u=await __cartonSyncTools(n.bundlePathForMedia(y),y);if(__u)return{path:__u,probe:await L4(l,y,__u)};throw new Error(`Media ${y} is missing on disk`)}return{path:x.nativePath,probe:await L4(l,y,x.nativePath)}}",
+      "let v=await a(y);if(!v)throw new Error(`Media ${y} is missing on disk`);return{path:v.nativePath,probe:await E6(l,y,v.nativePath)}}",
+      "let v=await a(y);if(!v){const __u=await __cartonSyncTools(n.bundlePathForMedia(y),y);if(__u)return{path:__u,probe:await E6(l,y,__u)};throw new Error(`Media ${y} is missing on disk`)}return{path:v.nativePath,probe:await E6(l,y,v.nativePath)}}",
     );
   },
 };

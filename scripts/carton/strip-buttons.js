@@ -1,6 +1,6 @@
 // The title bar's Carton parts, prepended to Cardboard's tab strip bundle (tabs-*.js) by patch-carton.js. They run in
 // that bundle's scope: `n` is the JSX runtime, `c` is React, `w` joins class names, `I` sends a strip command to main,
-// `C` is the strip's button class, `G` formats a shortcut.
+// `S` is the strip's button class, `G` formats a shortcut.
 // - The cut chip (__cbCartonCutChip, Carton UX redesign PLAN 2.1-2.3), placed before Cardboard's own "16:9 ⌄" in the
 //   same chip look: "✂ Main cut ⌄", or a colour dot for any other cut. The person always knows which cut they're on,
 //   on every project tab, without opening History. While they're looking at something other than their own edit
@@ -61,7 +61,7 @@ function __cbCartonStripButton({ id, label, pressed, live }) {
     "data-carton-strip": id,
     style: { gap: 5 },
     onClick: () => I({ action: "carton-" + id }),
-    className: w(C, "relative px-[6px]", pressed ? "bg-white/[0.12] text-white hover:bg-white/[0.14]" : "text-white/45 hover:bg-white/[0.06] hover:text-white/80"),
+    className: w(S, "relative px-[6px]", pressed ? "bg-white/[0.12] text-white hover:bg-white/[0.14]" : "text-white/45 hover:bg-white/[0.06] hover:text-white/80"),
     children: [
       __cbCartonSvg(id, "size-4 shrink-0"),
       // sizes inline: the strip's stylesheet has only the classes Cardboard itself uses
@@ -149,7 +149,7 @@ function __cbCartonCutChip({ panel }) {
       "aria-expanded": expanded,
       onPointerDown: () => { down.current = { open: expanded }; },
       onClick: ask,
-      className: w(C, "min-w-0 gap-1.5 px-2 text-white/85 hover:bg-white/[0.06] hover:text-white"),
+      className: w(S, "min-w-0 gap-1.5 px-2 text-white/85 hover:bg-white/[0.06] hover:text-white"),
       // pressed while its menu is open (inline: this page's stylesheet has only the classes Cardboard itself uses)
       style: part || expanded ? { ...(part ? { borderRadius: 0 } : {}), ...(expanded ? { background: "rgba(255,255,255,0.08)", color: "#fff" } : {}) } : void 0,
       children: [
@@ -166,7 +166,7 @@ function __cbCartonCutChip({ panel }) {
       tight && part.short && !part.loading
         ? n.jsx("span", { className: "text-ui-sm font-medium", style: clip(100), children: [n.jsx("span", { "aria-hidden": !0, children: part.short }, "w"), n.jsx("span", { className: "sr-only", children: part.label }, "s")] }, "label")
         : n.jsx("span", { className: "text-ui-sm font-medium", style: clip(narrow ? 100 : 240), children: [part.loading ? null : n.jsx("span", { className: "sr-only", children: part.said }, "s"), part.label] }, "label"),
-      n.jsx("button", { type: "button", "aria-label": part.back, title: part.back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: part.action }), className: w(C, "size-[22px] shrink-0 justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
+      n.jsx("button", { type: "button", "aria-label": part.back, title: part.back, "aria-keyshortcuts": "Escape", "data-carton-back": "", onClick: () => I({ action: part.action }), className: w(S, "size-[22px] shrink-0 justify-center text-white/60 hover:bg-white/[0.08] hover:text-white"), children: __cbCartonSvg("x", "size-3 shrink-0", 2) }, "x"),
     ] }, part.field) : null,
   ] });
 }

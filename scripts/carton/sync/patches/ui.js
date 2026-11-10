@@ -133,15 +133,15 @@ module.exports = {
     editor.prepend(PREAMBLE);
     // The grid's cells (a memo inside its component's const list): the Join cell once Carton says it is on.
     index.replace("x=r.useMemo(()=>{const k=[null,...e],E=[];for(let T=0;T<k.length;T+=y)E.push(k.slice(T,T+y));return E},[e,y])", "__cbJ=__cbCartonUseOn(),x=r.useMemo(()=>{const k=[null,...(__cbJ?[__cbCartonJoinCell]:[]),...e],E=[];for(let T=0;T<k.length;T+=y)E.push(k.slice(T,T+y));return E},[e,y,__cbJ])");
-    index.replace("children:x[k.index]?.map((E,T)=>E?i.jsx(r9,{", 'children:x[k.index]?.map((E,T)=>E===__cbCartonJoinCell?i.jsx("div",{role:"listitem",className:"min-w-0",children:i.jsx(__cbCartonJoinTile,{})},"carton-join"):E?i.jsx(r9,{');
+    index.replace("children:x[k.index]?.map((E,T)=>E?i.jsx(c9,{", 'children:x[k.index]?.map((E,T)=>E===__cbCartonJoinCell?i.jsx("div",{role:"listitem",className:"min-w-0",children:i.jsx(__cbCartonJoinTile,{})},"carton-join"):E?i.jsx(c9,{');
     // The empty library's buttons (E$, "Make your first video"): Join first, so "Start a blank project" stays last.
     index.replace(
       'i.jsxs("div",{className:"flex flex-wrap gap-[8px]",children:[a&&i.jsxs("button",{type:"button",onClick:a.onBrowse,"data-analytics":"projects-empty-browse-recipes"',
-      'i.jsxs("div",{className:"flex flex-wrap gap-[8px]",children:[i.jsx(__cbCartonJoinButton,{className:v(q4,"bg-white/[0.06] text-white/85 hover:bg-white/[0.10] hover:text-white")}),a&&i.jsxs("button",{type:"button",onClick:a.onBrowse,"data-analytics":"projects-empty-browse-recipes"',
+      'i.jsxs("div",{className:"flex flex-wrap gap-[8px]",children:[i.jsx(__cbCartonJoinButton,{className:v(K4,"bg-white/[0.06] text-white/85 hover:bg-white/[0.10] hover:text-white")}),a&&i.jsxs("button",{type:"button",onClick:a.onBrowse,"data-analytics":"projects-empty-browse-recipes"',
     );
     // The Join dialog's host, in Home's root beside Cardboard's own dialogs (recipe, reference): it outlives the empty
     // view and the grid both, which Home swaps once the library holds a project (final re-check N1).
-    index.replace("i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog})", "i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})");
+    index.replace("i.jsx(pG,{...I.dialog}),i.jsx(PG,{...I.referenceDialog})", "i.jsx(pG,{...I.dialog}),i.jsx(PG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})");
     index.prepend(DASHBOARD);
   },
 };

@@ -51,7 +51,10 @@ const build = async (resources, assets, { prelude } = {}) => {
     if (fs.existsSync(path.join(lib, entry + ".ts")))
       await esbuild.build({ ...node, format: "esm", banner: { js: "import { createRequire as __cartonRequire } from \"node:module\"; const require = __cartonRequire(import.meta.url);" }, define: {}, entryPoints: [path.join(lib, entry + ".ts")], outfile: path.join(out, entry + ".js") });
   // The GUI save projection the worker diffs a GUI save through: Cardboard's own, from the editor store's bundle.
-  fs.writeFileSync(path.join(out, "fmsv.cjs"), require("./fmsv").source(fs.readFileSync(path.join(assets, "installErrorTelemetry-DxKId8tA.js"), "utf8")));
+  // (the store's bundle by its name, whatever hash this Cardboard gave it)
+  const storeBundle = fs.readdirSync(assets).filter((f) => /^installErrorTelemetry-[\w-]+\.js$/.test(f));
+  if (storeBundle.length !== 1) throw new Error(`carton build: expected one installErrorTelemetry-*.js in ${assets}, found ${storeBundle.length}`);
+  fs.writeFileSync(path.join(out, "fmsv.cjs"), require("./fmsv").source(fs.readFileSync(path.join(assets, storeBundle[0]), "utf8")));
   // The pages: React is the editor's own (window.__cartonReact, set before the import).
   await esbuild.build({
     bundle: true,

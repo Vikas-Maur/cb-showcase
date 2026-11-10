@@ -53,18 +53,18 @@ function __cbCartonStageHost({ className, children }) {
   // data-carton-stage-host: the side panel measures the preview's room by it (scripts/carton/ui.js, fitPanel).
   return c.jsxs("div", { className: className + " relative", "data-carton-stage-host": "", "data-carton-compare": mode?.mode || void 0, style, children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton, player: __cbCartonPlayerOk ? __cbCartonPlayer : null, portal: __cbCartonPortal }, projectId) : null] });
 }
-// The editor's own createPortal (its ReactDOM, Na here): Compare's marks go into Cardboard's timeline, inside its scroll
+// The editor's own createPortal (its ReactDOM, ja here): Compare's marks go into Cardboard's timeline, inside its scroll
 // areas, so they scroll with the clips with no work of ours. Null outside the editor's bundle.
-const __cbCartonPortal = typeof Na === "object" && Na && typeof Na.createPortal === "function" ? Na.createPortal : null;
-// Compare's second player (UX v2, N1): another version on Cardboard's own preview engine (YD, the stage's
+const __cbCartonPortal = typeof ja === "object" && ja && typeof ja.createPortal === "function" ? ja.createPortal : null;
+// Compare's second player (UX v2, N1): another version on Cardboard's own preview engine (sF, the stage's
 // "webcodecs-renderer-hook"), on a canvas of its own, for Side by side and Wipe. Mounted only while one of those shows;
 // unmounted (Flip, Compare closed) its engine is destroyed: WebGL context, video sources, audio graph. Silent: its clips
 // are muted and audio-only items left out, so its audio graph decodes nothing (the editor's own player is heard). Its
-// time follows the editor's: the playhead while paused (one frame per seek), the playback clock (hn) while playing,
+// time follows the editor's: the playhead while paused (one frame per seek), the playback clock (dn) while playing,
 // mapped onto the other version by follow(t) (in step by shot, @carton/react followTime). doc: the bridge's
 // compareDoc. onReady(true) once its engine runs. The names are Cardboard 1.4.0's; patch-carton.js checks each.
 // (typeof only: run outside the editor's bundle, as the capture page and the tests run this file, none of them exist)
-const __cbCartonPlayerOk = typeof YD === "function" && typeof L2 === "function" && typeof U === "function" && typeof hn === "object" && !!hn && typeof hn.get === "function" && typeof hn.subscribe === "function";
+const __cbCartonPlayerOk = typeof sF === "function" && typeof D2 === "function" && typeof U === "function" && typeof dn === "object" && !!dn && typeof dn.get === "function" && typeof dn.subscribe === "function";
 // clock: Compare's story while Play both runs (in step by shot, either side may wait: DESIGN-V2 §1.4): {active, get,
 // playing, subscribe}; otherwise the editor's own playhead and playback clock, mapped by follow(t).
 function __cbCartonPlayer({ doc, follow, onReady, clock }) {
@@ -73,14 +73,14 @@ function __cbCartonPlayer({ doc, follow, onReady, clock }) {
   const [, tick] = o.useState(0);
   const both = !!clock && clock.active();
   o.useEffect(() => (clock ? clock.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [clock]);
-  o.useEffect(() => (!both && storePlaying ? hn.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [both, storePlaying]);
+  o.useEffect(() => (!both && storePlaying ? dn.subscribe(() => tick((n) => (n + 1) | 0)) : undefined), [both, storePlaying]);
   const playing = both ? clock.playing() : storePlaying;
-  const at = both ? clock.get() : typeof follow === "function" ? follow(storePlaying ? hn.get() : paused) : (storePlaying ? hn.get() : paused);
-  const size = o.useMemo(() => L2(doc.aspectRatio), [doc.aspectRatio]);
+  const at = both ? clock.get() : typeof follow === "function" ? follow(storePlaying ? dn.get() : paused) : (storePlaying ? dn.get() : paused);
+  const size = o.useMemo(() => D2(doc.aspectRatio), [doc.aspectRatio]);
   const items = o.useMemo(() => doc.timelineItems.filter((i) => i.type !== "audio").map((i) => (i.muted ? i : { ...i, muted: true })), [doc.timelineItems]);
-  const r = YD({ width: size.width, height: size.height, timelineItems: items, tracks: doc.tracks, mediaItems: doc.media, currentTime: Number.isFinite(at) ? Math.max(0, at) : 0, isPlaying: playing, masterVolume: 0, enabled: true, drivenByExternalClock: false });
+  const r = sF({ width: size.width, height: size.height, timelineItems: items, tracks: doc.tracks, mediaItems: doc.media, currentTime: Number.isFinite(at) ? Math.max(0, at) : 0, isPlaying: playing, masterVolume: 0, enabled: true, drivenByExternalClock: false });
   // ready: the engine runs and has sized its canvas (initializeRenderer: a WebGL or 2D context made). Not proof of a
-  // painted frame: YD logs a failed frame itself and goes on (a check for the laptop, FEASIBILITY §5).
+  // painted frame: sF logs a failed frame itself and goes on (a check for the laptop, FEASIBILITY §5).
   o.useEffect(() => {
     if (!r.isReady) return undefined;
     let n = 0, id = 0;

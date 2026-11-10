@@ -25,7 +25,7 @@ const PREAMBLE = String.raw`var __cartonSyncCli = (() => {
 module.exports = {
   cli({ cb }) {
     cb.replace("C!==null&&await v.pull(C)", "C!==null&&!(await __cartonSyncCli.pull(s,C))&&await v.pull(C)");
-    cb.replace("let N=await v.push(B);", "let N=await __cartonSyncCli.push(s,B)?null:await v.push(B);");
+    cb.replace("let F=await v.push(U);", "let F=await __cartonSyncCli.push(s,U)?null:await v.push(U);");
     cb.prepend(PREAMBLE);
   },
 };

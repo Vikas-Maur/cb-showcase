@@ -89,7 +89,7 @@ module.exports = {
   app({ main, editor }) {
     main.replace('if(!n)return new Response("Source file missing",{status:404});', 'if(!n){const __r=__cartonMain.on?await __cartonSyncMain.media(t):null;if(__r)return __r;return new Response("Source file missing",{status:404})}');
     main.prepend(PREAMBLE);
-    editor.replace("inspections:await kr.inspect(e.id,e.media)", "inspections:await __cbCartonInspect(e.id,e.media,await kr.inspect(e.id,e.media))");
+    editor.replace("inspections:await Ar.inspect(e.id,e.media)", "inspections:await __cbCartonInspect(e.id,e.media,await Ar.inspect(e.id,e.media))");
     editor.replace("return t.missingItems.length>0&&zn.getState().addOfflineMediaBatch(t.missingItems),t}", "return t.missingItems=__cbCartonSplit(e.id,t.missingItems,__w=>zn.getState().addOfflineMediaBatch(__w)),t.missingItems.length>0&&zn.getState().addOfflineMediaBatch(t.missingItems),t}");
     editor.prepend(EDITOR);
   },

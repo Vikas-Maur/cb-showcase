@@ -32,53 +32,53 @@ const STORE = {
     who: "cli",
     // resources/cli/chunks → resources/carton
     dir: `require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`,
-    slice: "Cr",
-    updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
-    readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
-    // the bundle loader's parse of project.json (`ti` in the worker): the reader, named
-    recover: ["let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map(", "qe"],
-    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,a)===!1?null:await Qo(c):await Bx(l,c)}"],
+    slice: "en",
+    updateScoped: ["n=>rI(n,xu(n,t,r))", "n=>(__carton.on&&__carton.scope(r),rI(n,xu(n,t,r)))"],
+    readBundle: ['try{t=await Wp(Me(e,ae),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Me(e,ae)):Wp(Me(e,ae),"utf8"))}catch{return null}'],
+    // the bundle loader's parse of project.json (`ui` in the worker): the reader, named
+    recover: ["let r=nt(t);if(!r)return null;let n=await Promise.all(r.media.map(", "nt"],
+    install: ["d=await Ni(l),await YP(l,c)}", "d=await Ni(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,a)===!1?null:await Ni(c):await YP(l,c)}"],
     // the envelope writeNow writes ({format, version, project, media}): the name it stringifies
-    envelope: ["u=JSON.stringify(a);this.lastWritten", "a"],
+    envelope: ["m=JSON.stringify(a);this.lastWritten", "a"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
-    attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
+    attach: ["n.onWritten((g,y)=>f.afterWrite(g,y));", "n,f,t"],
     revFiles: [
-      ["let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);", "let[m]=await this.__cartonListRevisions(r),p=m===void 0?null:await this.__cartonReadRevision(r,m);"],
-      ["let d=await this.listRevisions(r);for(let m of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let m of d.slice(20))"],
+      ["let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);", "let[u]=await this.__cartonListRevisions(r),p=u===void 0?null:await this.__cartonReadRevision(r,u);"],
+      ["let d=await this.listRevisions(r);for(let u of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let u of d.slice(20))"],
     ],
     // the mirror's print (cb source print, MCP's print_timeline, timeline.tsx): Carton's exact header with Carton on
-    print: ["async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Cr(__p.project),__p.rev,r):this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"],
+    print: ["async print(t,r=[]){return this.printTimeline(t,en(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,en(__p.project),__p.rev,r):this.printTimeline(t,en(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(o,c.doc,c.added),a.rev}", "return await this.writeTimeline(o,c.doc,c.added,{source:\"undo\",rev:a.rev}),a.rev}"],
-    headerRev: ["g=Nh(r)?rt(r):r", "g=Nh(r)?(__carton.on?__carton.headerRev(rt(r),r):rt(r)):r"],
-    base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=(__carton.on&&typeof g.rev==\"string\"?await __carton.cartonBase(g.rev,o):await this.revisionAtOrBefore(o,g.rev))??(__carton.on?await __carton.missingRev(g.rev,j,o):j),"],
-    merge: ["Z=rn(B,j,J.doc,{prefer:n.prefer})", "Z=__carton.on?await __carton.merge3(B,j,J.doc,{prefer:n.prefer},rn):rn(B,j,J.doc,{prefer:n.prefer})"],
+    headerRev: ["h=J0(r)?bt(r):r", "h=J0(r)?(__carton.on?__carton.headerRev(bt(r),r):bt(r)):r"],
+    base: ["B=await this.revisionAtOrBefore(o,h.rev)??_,", "B=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,o):await this.revisionAtOrBefore(o,h.rev))??(__carton.on?await __carton.missingRev(h.rev,_,o):_),"],
+    merge: ["X=On(B,_,Y.doc,{prefer:n.prefer})", "X=__carton.on?await __carton.merge3(B,_,Y.doc,{prefer:n.prefer},On):On(B,_,Y.doc,{prefer:n.prefer})"],
     applyWrite: [
-      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})",
-      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
+      "let g=await this.writeTimeline(i,X.doc,[...w,...Y.added]);return p({applied:!0,ops:Q,conflicts:M,diagnostics:k,rev:g?.stateUpdatedAt??i.stateUpdatedAt})",
+      "let g=await this.writeTimeline(i,X.doc,[...w,...Y.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:Q,conflicts:M,diagnostics:k,rev:g?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
-      ["writeTimeline(t,r,n){let o={...Aa(t,r)", "writeTimeline(t,r,n,__cm){let o={...Aa(t,r)"],
-      ["return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],", "return this.options.bundles.updateScoped(Lm(o),{carton:__cm,ownedFields:[..._a],"],
+      ["writeTimeline(t,r,n){let o={...Fn(t,r)", "writeTimeline(t,r,n,__cm){let o={...Fn(t,r)"],
+      ["return this.options.bundles.updateScoped(Vp(o),{ownedFields:[...Ss],", "return this.options.bundles.updateScoped(Vp(o),{carton:__cm,ownedFields:[...Ss],"],
     ],
-    mirror: ["await Uh(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):Uh(this.mirrorPath(t),r,\"utf8\")))}"],
+    mirror: ["await rb(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):rb(this.mirrorPath(t),r,\"utf8\")))}"],
     mirrorSync: ["async sync(t,r,n=[]){await this.recordRevision(t,r);let o=await this.print(t,n);await this.writeMirror(r,o),await this.scaffold(r)}", "async sync(t,r,n=[]){await this.recordRevision(t,r);if(!(__carton.on&&await __carton.mirrorOwned(r))){let o=await this.print(t,n);await this.writeMirror(r,o)}await this.scaffold(r)}"],
-    archive: ["if(a&&(nS.has(i.name)||i.name===re)||", "if(__carton.skipInArchive(o,i.name,n)||a&&(nS.has(i.name)||i.name===re)||"],
-    agents: [['Nh=e=>typeof e=="string",jh="# This is a Cardboard project', 'Nh=e=>typeof e=="string",jh=__carton.agentsMd("# This is a Cardboard project'], ['",n2=async e=>{let t=await On(', '"),n2=async e=>{let t=await On(']],
+    archive: ["if(a&&(pI.has(i.name)||i.name===ae)||", "if(__carton.skipInArchive(o,i.name,n)||a&&(pI.has(i.name)||i.name===ae)||"],
+    agents: [['J0=e=>typeof e=="string",Q0="# This is a Cardboard project', 'J0=e=>typeof e=="string",Q0=__carton.agentsMd("# This is a Cardboard project'], ['",EA=async e=>{let t=await ho(', '"),EA=async e=>{let t=await ho(']],
     // The timeline codec's names in this copy (the store bridge's parse), each proved where Cardboard calls it
     // (proveCodec, below).
     codec: {
-      names: { parse: "rt", isPath: "$h", resolvePath: "Dn", luts: "Lh", templates: "a2", toDoc: "Ta", stored: "wa", reframe: "dh", mediaInfo: "Xn", keepIds: "km", synth: "hs", merge: "rn", withSlice: "Aa", orphans: "mn", dropOrphans: "Lm", owned: "_a", scoped: "pd", keepDone: "qx", codeToMedia: "Jo" },
+      names: { parse: "bt", isPath: "eb", resolvePath: "fo", luts: "K0", templates: "AA", toDoc: "bs", stored: "ms", reframe: "T0", mediaInfo: "Oo", keepIds: "Up", synth: "cc", merge: "On", withSlice: "Fn", orphans: "qn", dropOrphans: "Vp", owned: "Ss", scoped: "xu", keepDone: "rI", codeToMedia: "Oi" },
       proofs: [
-        "g=Nh(r)?rt(r):r",
-        "pathOf:y=>$h(y)?Dn(y,o):null",
-        "F=D?await Lh(D,g,k):null",
-        "let $=await a2(g,o)",
-        "q=Ta(g,{resolveMedia:I,readTemplate:y=>$.get(y)??null,storedItem:wa(Cr(i)),newId:this.options.newId})",
-        "z=await dh(B,j,R,y=>{let x=S.get(y);return(x&&Xn(x))??void 0},n.prefer),J=hs(km(z,j),i,this.options.newId),Z=rn(B,j,J.doc,{prefer:n.prefer})",
-        "writeTimeline(t,r,n){let o={...Aa(t,r),",
-        "i=mn(o);return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],",
-        "n=>qx(n,pd(n,t,r))",
-        "this.applyMutation(t,c=>Jo(r(c)),n)",
+        "h=J0(r)?bt(r):r",
+        "pathOf:y=>eb(y)?fo(y,o):null",
+        "F=L?await K0(L,h,O):null",
+        "let P=await AA(h,o)",
+        "j=bs(h,{resolveMedia:R,readTemplate:y=>P.get(y)??null,storedItem:ms(en(i)),newId:this.options.newId})",
+        "V=await T0(B,_,T,y=>{let S=x.get(y);return(S&&Oo(S))??void 0},n.prefer),Y=cc(Up(V,_),i,this.options.newId),X=On(B,_,Y.doc,{prefer:n.prefer})",
+        "writeTimeline(t,r,n){let o={...Fn(t,r),",
+        "i=qn(o);return this.options.bundles.updateScoped(Vp(o),{ownedFields:[...Ss],",
+        "n=>rI(n,xu(n,t,r))",
+        "this.applyMutation(t,c=>Oi(r(c)),n)",
       ],
     },
   },
@@ -86,48 +86,48 @@ const STORE = {
     who: "app",
     // resources/app.asar/dist → resources/carton
     dir: `require("node:path").join(__dirname, "..", "..", "carton")`,
-    slice: "Zs",
-    updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
-    readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
-    recover: ["let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map(", "ti"],
-    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,o)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
+    slice: "yc",
+    updateScoped: ["n=>fJ(n,gI(n,t,r))", "n=>(__carton.on&&__carton.scope(r),fJ(n,gI(n,t,r)))"],
+    readBundle: ['try{t=await(0,Wt.readFile)((0,at.join)(e,Lt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,at.join)(e,Lt)):(0,Wt.readFile)((0,at.join)(e,Lt),"utf8"))}catch{return null}'],
+    recover: ["let r=ui(t);if(!r)return null;let n=await Promise.all(r.media.map(", "ui"],
+    install: ["l=await Cp(c),await(0,Wt.rename)(c,s)}", "l=await Cp(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,o)===!1?null:await Cp(s):await(0,Wt.rename)(c,s)}"],
     envelope: ["d=JSON.stringify(o);this.lastWritten", "o"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
-    attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
+    attach: ["n.onWritten((y,v)=>m.afterWrite(y,v));", "n,m,t"],
     revFiles: [
       ["let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);", "let[u]=await this.__cartonListRevisions(r),p=u===void 0?null:await this.__cartonReadRevision(r,u);"],
       ["let l=await this.listRevisions(r);for(let u of l.slice(20))", "let l=await this.__cartonListRevisions(r);for(let u of l.slice(20))"],
     ],
-    print: ["async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Zs(__p.project),__p.rev,r):this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"],
+    print: ["async print(t,r=[]){return this.printTimeline(t,yc(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,yc(__p.project),__p.rev,r):this.printTimeline(t,yc(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(i,s.doc,s.added),o.rev}", "return await this.writeTimeline(i,s.doc,s.added,{source:\"undo\",rev:o.rev}),o.rev}"],
-    headerRev: ["h=OC(r)?li(r):r", "h=OC(r)?(__carton.on?__carton.headerRev(li(r),r):li(r)):r"],
-    base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,i):await this.revisionAtOrBefore(i,h.rev))??(__carton.on?await __carton.missingRev(h.rev,de,i):de),"],
-    merge: ["ee=$f(be,de,qe.doc,{prefer:n.prefer})", "ee=__carton.on?await __carton.merge3(be,de,qe.doc,{prefer:n.prefer},$f):$f(be,de,qe.doc,{prefer:n.prefer})"],
+    headerRev: ["h=XE(r)?Si(r):r", "h=XE(r)?(__carton.on?__carton.headerRev(Si(r),r):Si(r)):r"],
+    base: ["fe=await this.revisionAtOrBefore(i,h.rev)??re,", "fe=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,i):await this.revisionAtOrBefore(i,h.rev))??(__carton.on?await __carton.missingRev(h.rev,re,i):re),"],
+    merge: ["G=ld(fe,re,Ee.doc,{prefer:n.prefer})", "G=__carton.on?await __carton.merge3(fe,re,Ee.doc,{prefer:n.prefer},ld):ld(fe,re,Ee.doc,{prefer:n.prefer})"],
     applyWrite: [
-      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
-      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
+      "let y=await this.writeTimeline(a,G.doc,[...b,...Ee.added]);return p({applied:!0,ops:W,conflicts:I,diagnostics:V,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
+      "let y=await this.writeTimeline(a,G.doc,[...b,...Ee.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:W,conflicts:I,diagnostics:V,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&await __carton.status(t)})",
     ],
     writeTimeline: [
-      ["writeTimeline(t,r,n){let i={...Ay(t,r)", "writeTimeline(t,r,n,__cm){let i={...Ay(t,r)"],
-      ["return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],", "return this.options.bundles.updateScoped(vI(i),{carton:__cm,ownedFields:[...My],"],
+      ["writeTimeline(t,r,n){let i={...ud(t,r)", "writeTimeline(t,r,n,__cm){let i={...ud(t,r)"],
+      ["return this.options.bundles.updateScoped(CS(i),{ownedFields:[...x4],", "return this.options.bundles.updateScoped(CS(i),{carton:__cm,ownedFields:[...x4],"],
     ],
-    mirror: ["await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\")))}"],
+    mirror: ["await(0,rn.writeFile)(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):(0,rn.writeFile)(this.mirrorPath(t),r,\"utf8\")))}"],
     mirrorSync: ["async sync(t,r,n=[]){await this.recordRevision(t,r);let i=await this.print(t,n);await this.writeMirror(r,i),await this.scaffold(r)}", "async sync(t,r,n=[]){await this.recordRevision(t,r);if(!(__carton.on&&await __carton.mirrorOwned(r))){let i=await this.print(t,n);await this.writeMirror(r,i)}await this.scaffold(r)}"],
-    archive: ["if(o&&(rH.has(a.name)||a.name===Mt)||", "if(__carton.skipInArchive(i,a.name,n)||o&&(rH.has(a.name)||a.name===Mt)||"],
-    agents: [['OC=e=>typeof e=="string",$C="# This is a Cardboard project', 'OC=e=>typeof e=="string",$C=__carton.agentsMd("# This is a Cardboard project'], ['",HQ=async e=>{', '"),HQ=async e=>{']],
+    archive: ["if(o&&(pJ.has(a.name)||a.name===Lt)||", "if(__carton.skipInArchive(i,a.name,n)||o&&(pJ.has(a.name)||a.name===Lt)||"],
+    agents: [['XE=e=>typeof e=="string",JE="# This is a Cardboard project', 'XE=e=>typeof e=="string",JE=__carton.agentsMd("# This is a Cardboard project'], ['",hre=async e=>{', '"),hre=async e=>{']],
     codec: {
-      names: { parse: "li", isPath: "LC", resolvePath: "kd", luts: "RC", templates: "YQ", toDoc: "Iy", stored: "xy", reframe: "iC", mediaInfo: "cw", keepIds: "xI", synth: "S4", merge: "$f", withSlice: "Ay", orphans: "rd", dropOrphans: "vI", owned: "My", scoped: "dw", keepDone: "YZ", codeToMedia: "K1" },
+      names: { parse: "Si", isPath: "YE", resolvePath: "Yd", luts: "WE", templates: "yre", toDoc: "h4", stored: "d4", reframe: "TE", mediaInfo: "hI", keepIds: "_S", synth: "h6", merge: "ld", withSlice: "ud", orphans: "Rd", dropOrphans: "CS", owned: "x4", scoped: "gI", keepDone: "fJ", codeToMedia: "_p" },
       proofs: [
-        "h=OC(r)?li(r):r",
-        "pathOf:x=>LC(x)?kd(x,i):null",
-        "Q=F?await RC(F,h,K):null",
-        "let fe=await YQ(h,i)",
-        "Ee=Iy(h,{resolveMedia:S,readTemplate:x=>fe.get(x)??null,storedItem:xy(Zs(a)),newId:this.options.newId})",
-        "we=await iC(be,de,B,x=>{let _=I.get(x);return(_&&cw(_))??void 0},n.prefer),qe=S4(xI(we,de),a,this.options.newId),ee=$f(be,de,qe.doc,{prefer:n.prefer})",
-        "writeTimeline(t,r,n){let i={...Ay(t,r),",
-        "a=rd(i);return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],",
-        "n=>YZ(n,dw(n,t,r))",
-        "this.applyMutation(t,s=>K1(r(s)),n)",
+        "h=XE(r)?Si(r):r",
+        "pathOf:v=>YE(v)?Yd(v,i):null",
+        "J=L?await WE(L,h,K):null",
+        "let E=await yre(h,i)",
+        "ae=h4(h,{resolveMedia:w,readTemplate:v=>E.get(v)??null,storedItem:d4(yc(a)),newId:this.options.newId})",
+        "he=await TE(fe,re,O,v=>{let _=x.get(v);return(_&&hI(_))??void 0},n.prefer),Ee=h6(_S(he,re),a,this.options.newId),G=ld(fe,re,Ee.doc,{prefer:n.prefer})",
+        "writeTimeline(t,r,n){let i={...ud(t,r),",
+        "a=Rd(i);return this.options.bundles.updateScoped(CS(i),{ownedFields:[...x4],",
+        "n=>fJ(n,gI(n,t,r))",
+        "this.applyMutation(t,s=>_p(r(s)),n)",
       ],
     },
   },
@@ -196,6 +196,15 @@ const patchStore = (replace, k) => {
   // what was printed and `cb source check` of an unchanged print finds nothing.
   around(replace, "revisionAtOrBefore", "t,r", () => "__carton.revisionAtOrBefore(this,t,r)");
   replace(...s.print);
+  // Cardboard 1.5.0's edit API (applyEdits: MCP apply_timeline/check_timeline with `edits`, oldText → newText) applies
+  // the edits to the print they were copied from (printedAt: the version a numeric `rev` names, through the
+  // revisionAtOrBefore above, else the current print, Carton's above) and hands the result to apply, so its writes take
+  // every hook here. With Carton on, a print's header rev is Carton's ref ("<cut>@<seq>~<hash8> b:…"), which 1.5.0's
+  // printedAt took for no rev (a string is never < stateUpdatedAt): edits copied from an older print were matched against
+  // the current one. A Carton ref is printed as the version it names (cartonBase, as the apply's base is), under that
+  // header, so the apply merges against exactly what the agent read; one Carton can't rebuild is the apply's "print it
+  // again" error (missingRev). A numeric rev, no rev, or Carton off: 1.5.0's printedAt, unchanged.
+  replace("async printedAt(t,r,n){if(n!==void 0&&n<(t.stateUpdatedAt??0)){", "async printedAt(t,r,n){if(__carton.on&&typeof n==\"string\"){let __b=await __carton.cartonBase(n,r);if(__b)return this.printTimeline(t,__b,n);await __carton.missingRev(n,null,r)}if(n!==void 0&&n<(t.stateUpdatedAt??0)){");
   replace("async history(t){", "history(t){return __carton.on?this.__cartonHistory(t).then(r=>__carton.history(this,t,r)):this.__cartonHistory(t)}async __cartonHistory(t){");
   // undo <rev> restores through writeTimeline, whose scope says so.
   replace(...s.undoWrite);
@@ -236,11 +245,11 @@ if (mode === "--cli") {
     replace(shim, shim + require("./carton/cli-bridge"));
     // @carton/cli-mcp's commands (cut, fold, credits, restore, compare, conflicts, resolve, publish, the git words),
     // registered once every Cardboard command is: Carton's history and undo take over Cardboard's when on.
-    replace("var FN=ak(Ie);", "__cartonCli.commands(Ie,{options:De,open:()=>H(De()),resolve:I,out:He});var FN=ak(Ie);");
+    replace("var JN=uk(Ie);", "__cartonCli.commands(Ie,{options:De,open:()=>z(De()),resolve:P,out:He});var JN=uk(Ie);");
     // cb undo --turn <id> is Carton's; with Carton off it says so instead of undoing something else.
     replace(
-      ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);",
-      ".option(\"--turn <id>\",\"undo every change one agent turn made (Carton)\").action(async(a,s,__o)=>{if(__o?.turn!==void 0)await __cartonCli.undoTurn();let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);",
+      ".action(async(a,s)=>{let o=await z(r()),i=await P(o,a),c=await o.timeline.undo(i.id,s);",
+      ".option(\"--turn <id>\",\"undo every change one agent turn made (Carton)\").action(async(a,s,__o)=>{if(__o?.turn!==void 0)await __cartonCli.undoTurn();let o=await z(r()),i=await P(o,a),c=await o.timeline.undo(i.id,s);",
     );
     // MCP: Carton serves timeline_history and undo_timeline (with cuts, stats and turns) in place of Cardboard's own,
     // and adds its tools before list_media.
@@ -249,7 +258,11 @@ if (mode === "--cli") {
     // (`lib` as a getter, Carton UX v2 N0: the server's library `s` is set after its tools are registered, so a value
     // taken here was undefined and every Carton tool failed with "reading 'projects'"; Cardboard's own tools read it
     // when called, as this does now)
-    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:()=>s,result:Y}),p("list_media",');
+    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:pe,resolve:x=>P(s,x),lib:()=>s,result:X}),p("list_media",');
+    // Cardboard 1.5.0's apply_timeline/check_timeline take `edits` with the `rev` of the print they were copied from, a
+    // whole number. With Carton on that header is Carton's ref (a string), which the schema refused; it is taken too,
+    // and printedAt (patchStore) prints the version it names. With Carton off the schema is Cardboard's.
+    replace('rev:f.number().int().optional().describe("With edits:', 'rev:(__cartonCli.on?f.union([f.number().int(),f.string().min(1)]):f.number().int()).optional().describe("With edits:');
     // apply-ryw: the apply's text (cb source apply, MCP's apply_timeline and check_timeline) ends with Carton's note when
     // the app's timeline.tsx doesn't show the write yet ("will show this in a moment", or held for an agent's turn), so
     // an agent that reads the file next knows why, never guessing. Nothing is added when it shows it, or with Carton off.
@@ -264,28 +277,29 @@ if (mode === "--cli") {
   patch(workerFile, (replace, prepend) => {
     patchStore(replace, "worker");
     // H8: a `carton` namespace in the worker's RPC table, for main's carton:call; its events go to main as changes.
-    replace('var IA=["projects","media","cache","transcripts","voiceovers","mattes","inspect","timeline","luts","downloads"];', 'var IA=["projects","media","cache","transcripts","voiceovers","mattes","inspect","timeline","luts","downloads","carton"];');
-    replace('kte=e=>{let t="",r=()=>{', 'kte=e=>{e.carton=__carton.on?__carton.worker(e,c=>rc({kind:"change",change:c})):{};let t="",r=()=>{');
+    // (1.5.0's table has its new "audioProcessing" namespace, the audio clean-up; Carton's goes last)
+    replace('var SR=["projects","media","cache","transcripts","voiceovers","mattes","audioProcessing","inspect","timeline","luts","downloads"];', 'var SR=["projects","media","cache","transcripts","voiceovers","mattes","audioProcessing","inspect","timeline","luts","downloads","carton"];');
+    replace('Lie=e=>{let t="",r=()=>{', 'Lie=e=>{e.carton=__carton.on?__carton.worker(e,c=>Rc({kind:"change",change:c})):{};let t="",r=()=>{');
     // H8: where the worker's Materializer runs for the bundle (sync/views.js), timeline.tsx is its own: a change of it
     // goes to the Materializer (a foreign save is applied there, with its freeze and credit), not to Cardboard's apply.
     replace("c=async g=>{let T=t.idForBundlePath(g);if(!T)return;", "c=async g=>{let T=t.idForBundlePath(g);if(!T)return;if(__carton.on&&__carton.timelineOwned(g))return void __carton.timelineEvent(g);");
     // A timeline.tsx the watcher applies was saved outside the app: an agent without Cardboard's hooks or an editor.
-    replace("await t.read(T);let I=await r.apply(T,k);", "await t.read(T);let I=await r.apply(T,k,{cartonActor:\"external:timeline.tsx\"});");
+    replace("await t.read(T);let x=await r.apply(T,k);", "await t.read(T);let x=await r.apply(T,k,{cartonActor:\"external:timeline.tsx\"});");
     // The watcher reads project.json 150 ms after a change and tells the pages the project was removed if it's
     // missing; an apply from the file reads timeline.tsx. Both wait out an install's gap (the bridge's readFile).
-    replace('k=await(0,_d.readFile)((0,Vn.join)(g,Mt),"utf8")}catch{k=null}', 'k=await(__carton.on?__carton.readFile((0,Vn.join)(g,Mt)):(0,_d.readFile)((0,Vn.join)(g,Mt),"utf8"))}catch{k=null}');
-    replace('let $=await(0,Ar.readFile)(m.mirrorPath(N),"utf8");return m.apply(y,$,{..._,writeBack:!0})', 'let $=await(__carton.on?__carton.readFile(m.mirrorPath(N)):(0,Ar.readFile)(m.mirrorPath(N),"utf8"));return m.apply(y,$,{..._,writeBack:!0})');
+    replace('k=await(0,cl.readFile)((0,ri.join)(g,Lt),"utf8")}catch{k=null}', 'k=await(__carton.on?__carton.readFile((0,ri.join)(g,Lt)):(0,cl.readFile)((0,ri.join)(g,Lt),"utf8"))}catch{k=null}');
+    replace('let $=await(0,Ur.readFile)(m.mirrorPath(D),"utf8");return m.apply(y,$,{..._,writeBack:!0})', 'let $=await(__carton.on?__carton.readFile(m.mirrorPath(D)):(0,Ur.readFile)(m.mirrorPath(D),"utf8"));return m.apply(y,$,{..._,writeBack:!0})');
     // The bundle has no banner line; the bridge goes first.
     prepend(require("./carton/store-bridge")(STORE.worker));
   });
   patch(mainFile, (replace) => {
-    replace("var cxe=Object.create;", require("./carton/main-bridge") + "var cxe=Object.create;");
+    replace("var rCe=Object.create;", require("./carton/main-bridge") + "var rCe=Object.create;");
     // H1: the GUI save's Carton fields (base, after, actor, intents) reach the worker in the scope.
     replace(
       '_e.handle("project:patch",async({document:t,scope:r})=>{',
       '__cartonMain.library(St),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
     );
-    replace('St.call("projects.updateScoped",t,r)', '__cartonMain.time(St.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r))');
+    replace('wt.call("projects.updateScoped",t,r)', '__cartonMain.time(wt.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r))');
     // H5: a project change while Carton is on takes the pages' Carton path (adopt without an undo entry).
     replace('e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})', 'e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s,...__cartonMain.on&&{carton:!0}})');
     // H8: the worker's Carton events go to every tab.
@@ -303,10 +317,10 @@ if (mode === "--cli") {
     // main-bridge.js command passes only those fields on, checked.
     replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",__cartonMain.command(t));return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
-    replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
-    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))}),');
+    replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&nZt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&nZt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
+    replace('_e.handle("window:set-editor-state",(t,r)=>fe.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>fe.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&fe.__cartonPanel(r.sender,__cartonMain.panel(t))}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
-    replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
+    replace("env:YGt(e,t,c),", "env:__cartonMain.directorEnv(YGt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop
     // return late conflicts. oH runs two agents in 1.4.0: the Director (RVt) and the person's own Claude Code (v_e,
     // provider "claude"; deps.spawn never starts it). Laptop #8: main-bridge's hookActor names the Director's turn
@@ -315,7 +329,7 @@ if (mode === "--cli") {
     // H8: and its Read/Write/Edit calls reach the worker's Materializer (the shared timeline.tsx's freeze, credit).
     // Regress prod4 (director-hold): fileHooks also hooks Claude Code's PowerShell tool, which 1.4.0's transport hooked
     // nowhere (a turn's cb calls and long pings there held nothing); main keeps a running turn's hold alive itself.
-    replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
+    replace("permissionDecisionReason:k.reason}}}],timeout:WBt}]}", "permissionDecisionReason:k.reason}}})],timeout:WBt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
     // H9: each in-app agent's turn (the Director's, the person's own Claude Code's, Codex's) ends here (closeTurn: the
     // stream's result, an interrupt, an error): its hold on timeline.tsx ends, and its last version is named from the
     // turn's prompt (as the chat's checkpoints are); the label stays in the project's history. The transport, and so its
@@ -330,10 +344,10 @@ if (mode === "--cli") {
     // read-only; the answer's first line, at most 6 words and 40 characters, else null). Handed to main-bridge's namer()
     // where UKt is defined; UKt itself is unchanged. hke gets NEe's own arguments and a longer timeout than its 3 s, as
     // nothing waits for a title and a cold start of the agent's binary on Windows can take that long.
-    replace('UKt=async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null}', 'UKt=(__cartonMain.namer((e,r,o)=>LEe().then(t=>t?hke({binary:t,prompt:e,instruction:r,env:lV(t),cwd:oe.app.getPath("temp"),spawn:(n,i,s)=>(0,aV.spawn)(n,i,{...s,stdio:["pipe","pipe","pipe"],windowsHide:!0}),timeoutMs:o,warn:n=>console.warn(`[naming] ${n}`)}):null)),async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null})');
+    replace('fJt=async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null}', 'fJt=(__cartonMain.namer((e,r,o)=>Axe().then(t=>t?hke({binary:t,prompt:e,instruction:r,env:lV(t),cwd:oe.app.getPath("temp"),spawn:(n,i,s)=>(0,aV.spawn)(n,i,{...s,stdio:["pipe","pipe","pipe"],windowsHide:!0}),timeoutMs:o,warn:n=>console.warn(`[naming] ${n}`)}):null)),async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null})');
     // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude
     // Code through the Agent SDK transport instead (the hooks above), so this reaches it only if a build spawns it.
-    replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
+    replace('"--append-system-prompt",Bu(e),', '"--append-system-prompt",Bu(e),...__cartonMain.hostSettings(),');
     // H8 (item 4): every agent's appended system prompt (ju: the Director, host Claude Code, Codex, the others) gains
     // Carton's view flow with Carton on; with Carton off the list is Cardboard's.
     replace('Never write `project.json` directly.",', 'Never write `project.json` directly.",...__cartonMain.viewPrompt(e),');
@@ -343,31 +357,31 @@ if (mode === "--cli") {
   patch(storeFile, (replace, prepend) => {
     // `refuse` is Cardboard's own guard of its edits (me(): true and its "read-only" note over the timeline when a write
     // is blocked, as in a preview): the bridge's refuse() uses it for the stage's text editor (baseline P3-9).
-    // `subscribe` (the store's, zustand's (state, prev)) and `clock` (its playback clock, qx, exported as aI: the
+    // `subscribe` (the store's, zustand's (state, prev)) and `clock` (its playback clock, $x, exported as aK: the
     // playhead while playing) let a preview tell the person's moves of the playhead from its own (final re-check N5).
-    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});");
+    replace("ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});", "ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});window.__carton.store({state:ne.getState,raw:Tm,adopt:Mde,armed:Nde,inflight:()=>Xy.size>0,flush:()=>lN().work,invoke:On,on:CI,deserialize:sv,projects:De,refuse:me,subscribe:ne.subscribe,clock:$x.get});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
     // H4 (one action, one save): and a media entry an editor action owns goes with that action's timeline save (send answers its own save
     // with that one), so one action is one version and one undo step (laptop, merge/prod-2 N-1).
-    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),window.__carton.send(t,e,()=>On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)})))');
+    replace('updateScoped:(t,e)=>Qp(t.id,lK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Qp(t.id,lK(e),window.__carton.send(t,e,()=>On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)})))');
     // H4 (one action, one save): deleting a title or code graphic drops the media entry it owns (Kx, after removeTimelineItem(s) armed the
     // timeline save): noted as that action's, so the timeline save carries it. Both of the timeline save's call sites
     // (the 300 ms debounce, de(), and its flush, cN()) board what their action noted.
-    replace("(nN.set(o.id,o),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))", "(nN.set(o.id,o),window.__carton.ride(i.id,{removedMediaIds:[o.id]}),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))");
-    replace('c=oN(Jt(o,{ownedFields:["tracks","timelineItems"]}),r,"Failed to save timeline to IndexedDB:")', 'c=oN(Jt(o,window.__carton.board(r,{ownedFields:["tracks","timelineItems"]})),r,"Failed to save timeline to IndexedDB:")');
-    replace('s=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},{ownedFields:["tracks","timelineItems"]}),t,"Failed to flush timeline to IndexedDB:")', 's=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},window.__carton.board(t,{ownedFields:["tracks","timelineItems"]})),t,"Failed to flush timeline to IndexedDB:")');
+    replace("(rN.set(o.id,o),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))", "(rN.set(o.id,o),window.__carton.ride(i.id,{removedMediaIds:[o.id]}),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))");
+    replace('c=cN(Jt(o,{ownedFields:["tracks","timelineItems"]}),r,"Failed to save timeline to IndexedDB:")', 'c=cN(Jt(o,window.__carton.board(r,{ownedFields:["tracks","timelineItems"]})),r,"Failed to save timeline to IndexedDB:")');
+    replace('s=cN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},{ownedFields:["tracks","timelineItems"]}),t,"Failed to flush timeline to IndexedDB:")', 's=cN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},window.__carton.board(t,{ownedFields:["tracks","timelineItems"]})),t,"Failed to flush timeline to IndexedDB:")');
     // H6: the editor's session starts here (Ctrl+Z never goes back past it), with nothing to undo or redo yet.
-    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,cartonSince:Date.now(),cartonCanUndo:!1,cartonCanRedo:!1,projectId:n,projectName:r,activeLeftTab:"media",');
+    replace('Tm({projectId:n,projectName:r,activeLeftTab:"media",', 'Tm({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,cartonSince:Date.now(),cartonCanUndo:!1,cartonCanRedo:!1,projectId:n,projectName:r,activeLeftTab:"media",');
     // H4: a preview of an earlier version is read-only, says so, and is never saved.
-    replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
-    replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
-    replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
+    replace('km=t=>sh()||t.timelineLockState!=="unlocked"', 'km=t=>!!t.cartonPreview||sh()||t.timelineLockState!=="unlocked"');
+    replace("fre=t=>sh()?oN:", "fre=t=>t.cartonPreview?window.__carton.previewMessage:sh()?oN:");
+    replace("(n===sN||n===aN||n===oN)&&", "(n===sN||n===aN||n===oN||n===window.__carton.previewMessage)&&");
     // Carton UX redesign PLAN 1.4: an edit tried while viewing gets Carton's one line ("You're looking at …" with Back to
     // my edit, and a pulse of the stage's frame) in place of Cardboard's note over the timeline. xv is where Cardboard
     // raises that note for every edit its guard refuses (me(), and the store's own rejected writes), so every path it
     // guards keeps its guard: this changes only what is said, and only in a Carton preview (cartonPreview is never set
     // with Carton off). With no Carton part of the page to say it, Cardboard's note says it, in Carton's words above.
-    replace("function xv(){const t=ne.getState(),e=ure(t);", "function xv(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=ure(t);");
+    replace("function _v(){const t=ne.getState(),e=fre(t);", "function _v(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=fre(t);");
     replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
     // Laptop, final candidate P1-1: a save that fails in the page (its project couldn't be written out: there, media
     // entries with no dates) was only logged, and every edit was lost unseen. The bridge tells the person (a toast over
@@ -384,69 +398,69 @@ if (mode === "--cli") {
     // Carton UX v2 (N0, DESIGN-V2 §2.1): an export that finished is an Exported landmark. Rx is where the editor hands
     // every telemetry event to main (export_completed: the Export dialog's, with its resolution); the bridge only notes
     // it (one worker call, not awaited), and Cardboard's own capture runs as before.
-    replace("Rx=(t,e)=>{const n=ree(t,e)??nee(t,e)", 'Rx=(t,e)=>{t==="export_completed"&&window.__carton?.exported?.(e);const n=ree(t,e)??nee(t,e)');
+    replace("Ex=(t,e)=>{const n=iee(t,e)??ree(t,e)", 'Ex=(t,e)=>{t==="export_completed"&&window.__carton?.exported?.(e);const n=iee(t,e)??ree(t,e)');
     prepend(require("./carton/renderer-bridge"));
   });
   // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.
   patch(indexFile, (replace) => {
-    replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
+    replace("pO=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "pO=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
     // Carton UX redesign PLAN 1.6 (DESIGN §9): an agent's scripted export (export.start, which opens Export on the
     // editor's timeline) never exports a version the person is viewing: back to their edit first (the bridge's
     // beforeExport, null when nothing is viewed or Carton is off), then the export as before.
-    replace('"export.start":async e=>{const t=ks();if(t.isExporting)', '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=ks();if(t.isExporting)');
+    replace('"export.start":async e=>{const t=Es();if(t.isExporting)', '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=Es();if(t.isExporting)');
   });
   // Carton in the editor (EditorRoute-*.js, editor-panel.js, scripts/carton/ui.js): the History or Share panel, a
   // full-height column beside the agent's chat sidebar; and a layer over the stage (the preview's column) with the
   // conflict cards' floating stack and viewing's frame (UX redesign PLAN 1.1, in place of the preview banner). With
   // Carton off the editor's row and stage are Cardboard's.
   patch(editorFile, (replace, prepend) => {
-    replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
+    replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:Ye,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:Ye,');
     // Carton UX redesign PLAN 1.5: the timeline's wrapper (EditorRoute's "editor-timeline" region, a display:contents
     // div round aZ, the timeline) is editor-panel.js's __cbCartonTimeline, which renders the same div and, with Carton
     // on, data-carton-viewing while viewing (the timeline's frame, its clips muted: ui.js TIMELINE_CSS) and
     // data-carton-cut on a cut other than Main (its name and dot in the timeline's toolbar). With Carton off it renders
     // Cardboard's div as it is. Always this component, whether Carton is on or not yet known, so the timeline is never
     // mounted again when main's answer comes.
-    replace('c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})', 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})');
+    replace('c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(xZ,{})})', 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(xZ,{})})');
     // Compare in the editor (UX v2, N1), unchanged text only: what editor-panel.js's second player and Compare's stage
     // and timeline layers rely on, so a Cardboard that renamed or reshaped one fails here, not in the app. The preview
-    // engine's hook (YD) with its props and its own clock when not driven by the playback clock (Ee); its answer's canvas;
-    // the playback clock (hn), the aspect ratio's size (L2) and the editor store (U) in this bundle's imports; the stage's
+    // engine's hook (sF) with its props and its own clock when not driven by the playback clock (Ce); its answer's canvas;
+    // the playback clock (dn), the aspect ratio's size (D2) and the editor store (U) in this bundle's imports; the stage's
     // picture wrapper (Side by side moves it to the right half); the timeline's scroll area, tracks surface and track rows
     // (the marks sit on the surface, at each clip's start × pixelsPerSecond on its track's row).
     for (const anchor of [
-      "function YD(e){const{width:t,height:n,timelineItems:a,tracks:r,mediaItems:s,currentTime:i,isPlaying:l,masterVolume:d,enabled:u,",
-      "drivenByExternalClock:S=!1,", "Ee=l&&!S,", "return{diagnostics:A,getDecoderDiagnostics:pt,frameScheduler:O,canvasRef:M,isReady:Ke,",
-      "aI as hn,", "fW as L2,", "aD as U,", "du as Na,",
-      'children:[c.jsx("div",{className:"absolute inset-0 flex items-center justify-center",style:{transform:`translate(${w.x}px, ${w.y}px) scale(${w.scale})`,',
+      "function sF(e){const{width:t,height:n,timelineItems:a,tracks:r,mediaItems:s,currentTime:i,isPlaying:l,masterVolume:d,enabled:u,",
+      "drivenByExternalClock:T=!1,", "Ce=l&&!T,", "return{diagnostics:A,getDecoderDiagnostics:yt,frameScheduler:F,canvasRef:M,isReady:Ne,",
+      "aK as dn,", "fX as D2,", "aF as U,", "dv as ja,",
+      'children:[c.jsx("div",{className:"absolute inset-0 flex items-center justify-center",style:{transform:`translate(${C.x}px, ${C.y}px) scale(${C.scale})`,',
       'className:"timeline-horizontal-scrollbar relative flex flex-1 flex-col overflow-x-auto overflow-y-hidden","data-timeline-scroll":!0',
-      '"data-timeline-canvas-surface":!0', '"data-track-id":r.id,', "pixelsPerSecond:L.pixelsPerSecond",
+      '"data-timeline-canvas-surface":!0', '"data-track-id":r.id,', "pixelsPerSecond:N.pixelsPerSecond",
     ]) replace(anchor, anchor);
     // Carton UX redesign PLAN 1.6 (DESIGN §9): Export (sZ: Ctrl+E, the title bar's Export, the menu) never exports a
     // version the person is viewing. While viewing, the bridge's beforeExport goes back to their edit first (the toast
     // "Back to your edit to export it.") and Export opens once the editor shows it, asked once (__again); if going back
     // fails, Export doesn't open. Nothing viewed, or Carton off: null, and Export opens at once, as before.
-    replace("sZ=e=>{U.getState().setIsPlaying(!1),", "sZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>sZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),");
+    replace("vZ=e=>{U.getState().setIsPlaying(!1),", "vZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>vZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),");
     // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
     // the editor's own snapshot stacks, which Carton's undo never pops. During a read-only preview neither applies
     // (Ctrl+Z already does nothing there), so both look unavailable (UI audit P3-12).
     replace("y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)", "y=U(_=>window.__carton?.on?!!_.cartonCanUndo&&!_.cartonPreview:_.historyPast.length>0),g=U(_=>window.__carton?.on?!!_.cartonCanRedo&&!_.cartonPreview:_.historyFuture.length>0)");
-    replace('b&&c.jsx(X_,{variant:"project"})]}),c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",', 'b&&c.jsx(X_,{variant:"project"})]}),...window.__carton?.on?[c.jsx(__cbCartonSide,{},"carton-side")]:[],c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",');
+    replace('b&&c.jsx(eP,{variant:"project"})]}),c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",', 'b&&c.jsx(eP,{variant:"project"})]}),...window.__carton?.on?[c.jsx(__cbCartonSide,{},"carton-side")]:[],c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",');
     // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened, from Enter on a selected
     // title and from a double-click on a title or caption, and dropped what was typed (opening it is no write, so
     // Cardboard's guard of its edits never saw it). Both ask the bridge first, which refuses only in a Carton preview,
     // through Cardboard's own refusal (its guard, then xv: the edit-attempt toast, PLAN 1.4). Crop mode, the
     // double-click's other branch, is refused by Cardboard's guard already.
-    replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
-    replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
+    replace('ue=o.useCallback(()=>{B&&B.type==="text"&&!pe&&(', 'ue=o.useCallback(()=>{B&&B.type==="text"&&!pe&&!window.__carton?.refuse?.()&&(');
+    replace('const Pe=Fs(Te,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Fs(Te,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
     // Regress prod3 (baseline P3-9 family): in a read-only preview a selected title or caption still showed the stage's
     // text toolbar (font, size, bold, alignment…), which Cardboard's guard then refused. It isn't shown there: nothing
     // in a preview looks editable. The preview's opening and its Return both replace the timeline (the bridge's adopt),
     // so the stage renders again then and reads the store's state as it is.
-    replace("vn=B&&pe&&!p&&ct&&!ue&&!M&&!x?{item:B", "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B");
+    replace("vn=B&&fe&&!p&&dt&&!pe&&!M&&!x?{item:B", "vn=B&&fe&&!p&&dt&&!pe&&!M&&!x&&!U.getState().cartonPreview?{item:B");
     // H4 (one action, one save): adding a title (iu) adds its "Text: …" media entry and the timeline item (addTimelineItem armed the timeline
     // save), then saves the entry on its own: noted as that action's, so the title and its entry are one version.
-    replace("const g=je.getState().getProjectById(a)??f;return vt(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return vt(async()=>{const{updateProjectScoped:b}");
+    replace("const g=je.getState().getProjectById(a)??f;return St(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return St(async()=>{const{updateProjectScoped:b}");
     prepend(require("./carton/editor-panel"));
   });
   // The title bar's Carton parts (tabs-*.js, the tab strip; strip-buttons.js), only on a tab whose editor reports
@@ -476,7 +490,7 @@ if (mode === "--cli") {
     replace('n.jsx(nt,{as:"div",axis:"x",values:b,onReorder:x,className:"flex min-w-0 items-center gap-[2px]",', 'n.jsx(nt,{as:"div",axis:"x",values:b,onReorder:x,className:"flex min-w-0 items-center gap-[2px]",style:{minWidth:y.length?`calc(${y.length} * 8rem + ${(y.length-1)*2}px)`:void 0},');
     // - "+" is the 28 px button its class asks for: the strip's stylesheet puts W's w-full after w-[28px], so it was as
     //   wide as the tab list, its glyph in the middle of that, and a click anywhere there started a new project
-    replace('className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),children:n.jsx(We,', 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),style:{width:28},children:n.jsx(We,');
+    replace('className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",K),children:n.jsx(We,', 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",K),style:{width:28},children:n.jsx(We,');
     prepend(require("./carton/strip-buttons"));
   });
 } else {

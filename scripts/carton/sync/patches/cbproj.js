@@ -105,26 +105,26 @@ module.exports = {
   cli({ chunk }) {
     chunk.replace(SHIM, SHIM + preamble(`require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`));
     // Save As (`cb project save-as`, rp): the entries after the walk and the media copied in from outside the bundle.
-    chunk.replace("l=[...await iS(t),...a];await cS(t,l);", "l=[...await iS(t),...a];__carton.on&&(l=await __cartonCbprojExport(t,l));await cS(t,l);");
+    chunk.replace("l=[...await hI(t),...a];await yI(t,l);", "l=[...await hI(t),...a];__carton.on&&(l=await __cartonCbprojExport(t,l));await yI(t,l);");
     // The history copy goes once the zip is written or failed (`l` is the entry list; the zip's write is the try).
-    chunk.replace("catch(v){throw await eS(w,{force:!0}),v}return{path:r,size:f,missing:c}}", "catch(v){throw await eS(w,{force:!0}),v}finally{__carton.on&&__cartonCbprojSaved(l)}return{path:r,size:f,missing:c}}");
+    chunk.replace("catch(v){throw await dI(w,{force:!0}),v}return{path:r,size:f,missing:c}}", "catch(v){throw await dI(w,{force:!0}),v}finally{__carton.on&&__cartonCbprojSaved(l)}return{path:r,size:f,missing:c}}");
     // Open Project (a .cbproj or a folder): the staged bundle's prepare, so Carton lets go of it when prepare ends.
-    chunk.replace("prepare:async y=>{let x=await Nn({root:QM(y),", "prepare:__cartonCbprojStage(async y=>{let x=await Nn({root:QM(y),");
-    chunk.replace('throw new Error("Project timeline did not apply")}}),b=(h,y)=>', 'throw new Error("Project timeline did not apply")})}),b=(h,y)=>');
+    chunk.replace("prepare:async y=>{let S=await So({root:g_(y),", "prepare:__cartonCbprojStage(async y=>{let S=await So({root:g_(y),");
+    chunk.replace('throw new Error("Project timeline did not apply")}}),b=(g,y)=>', 'throw new Error("Project timeline did not apply")})}),b=(g,y)=>');
     // Open Project for a .cbproj (openArchive; `cb project open <file.cbproj>`): a project already here is brought up to
     // date in place. `n` is the library's project store.
-    chunk.replace("S=async(h,y)=>{let x=await sb(h);return b(x,T=>Zf(", "S=async(h,y)=>{let x=await sb(h);if(__carton.on){let __r=await __cartonCbprojBringIn(x,n);if(__r)return __r}return b(x,T=>Zf(");
+    chunk.replace("x=async(g,y)=>{let S=await tv(g);return b(S,E=>pg(", "x=async(g,y)=>{let S=await tv(g);if(__carton.on){let __r=await __cartonCbprojBringIn(S,n);if(__r)return __r}return b(S,E=>pg(");
     // Open Project of a .cbproj only (not a folder): the scrub and the seed, before the staged bundle is first read.
-    chunk.replace("Zf({archivePath:x,onProgress:y,...T})", "Zf({archivePath:x,onProgress:y,...T,prepare:__cartonCbprojArchive(T.prepare)})");
+    chunk.replace("pg({archivePath:S,onProgress:y,...E})", "pg({archivePath:S,onProgress:y,...E,prepare:__cartonCbprojArchive(E.prepare)})");
   },
   app({ worker }) {
     worker.prepend(preamble(`require("node:path").join(__dirname, "..", "..", "carton")`));
     // The same three in the worker's copy (the app's File > Save As… and Open Project…).
-    worker.replace("c=[...await iH(t),...o];await sH(t,c);", "c=[...await iH(t),...o];__carton.on&&(c=await __cartonCbprojExport(t,c));await sH(t,c);");
-    worker.replace("catch(g){throw await(0,Kr.rm)(b,{force:!0}),g}return{path:r,size:m,missing:s}}", "catch(g){throw await(0,Kr.rm)(b,{force:!0}),g}finally{__carton.on&&__cartonCbprojSaved(c)}return{path:r,size:m,missing:s}}");
-    worker.replace("prepare:async x=>{let _=await Op({root:(0,tc.dirname)(x),", "prepare:__cartonCbprojStage(async x=>{let _=await Op({root:(0,tc.dirname)(x),");
-    worker.replace('throw new Error("Project timeline did not apply")}}),T=(y,x)=>', 'throw new Error("Project timeline did not apply")})}),T=(y,x)=>');
-    worker.replace("I=async(y,x)=>{let _=await(0,Ar.realpath)(y);return T(_,N=>qP(", "I=async(y,x)=>{let _=await(0,Ar.realpath)(y);if(__carton.on){let __r=await __cartonCbprojBringIn(_,n);if(__r)return __r}return T(_,N=>qP(");
-    worker.replace("qP({archivePath:_,onProgress:x,...N})", "qP({archivePath:_,onProgress:x,...N,prepare:__cartonCbprojArchive(N.prepare)})");
+    worker.replace("c=[...await hJ(t),...o];await yJ(t,c);", "c=[...await hJ(t),...o];__carton.on&&(c=await __cartonCbprojExport(t,c));await yJ(t,c);");
+    worker.replace("catch(g){throw await(0,tn.rm)(b,{force:!0}),g}return{path:r,size:m,missing:s}}", "catch(g){throw await(0,tn.rm)(b,{force:!0}),g}finally{__carton.on&&__cartonCbprojSaved(c)}return{path:r,size:m,missing:s}}");
+    worker.replace("prepare:async v=>{let _=await km({root:(0,Mc.dirname)(v),", "prepare:__cartonCbprojStage(async v=>{let _=await km({root:(0,Mc.dirname)(v),");
+    worker.replace('throw new Error("Project timeline did not apply")}}),T=(y,v)=>', 'throw new Error("Project timeline did not apply")})}),T=(y,v)=>');
+    worker.replace("x=async(y,v)=>{let _=await(0,Ur.realpath)(y);return T(_,D=>aC(", "x=async(y,v)=>{let _=await(0,Ur.realpath)(y);if(__carton.on){let __r=await __cartonCbprojBringIn(_,n);if(__r)return __r}return T(_,D=>aC(");
+    worker.replace("aC({archivePath:_,onProgress:v,...D})", "aC({archivePath:_,onProgress:v,...D,prepare:__cartonCbprojArchive(D.prepare)})");
   },
 };
