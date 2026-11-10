@@ -35,13 +35,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0",
-    "@carton/store-sqlite": "0.1.0",
-    "@carton/cardboard": "0.1.0"
+    "@carton/core": "workspace:*",
+    "@carton/store-sqlite": "workspace:*",
+    "@carton/cardboard": "workspace:*"
   },
   "devDependencies": {
-    "@carton/store-memory": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/server-node": "0.1.0"
+    "@carton/store-memory": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/server-node": "workspace:*",
+    "@carton/blob-memory": "workspace:*"
   }
 }

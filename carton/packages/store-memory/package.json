@@ -25,6 +25,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@carton/blob-memory": "workspace:*",
+    "@carton/server": "workspace:*"
   }
 }

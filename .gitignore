@@ -20,10 +20,10 @@
 /bench-media/
 /bench-results/
 
-# Build tools (reinstall with `npm ci` in tools/).
+# Build tools (reinstall with `pnpm install --frozen-lockfile` in tools/).
 /tools/*
 !/tools/package.json
-!/tools/package-lock.json
+!/tools/pnpm-lock.yaml
 
 # Screenshots taken by scripts/shot.ps1.
 /shot.png

@@ -25,9 +25,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "workspace:*"
   },
   "devDependencies": {
-    "@carton/conformance": "0.1.0"
+    "@carton/conformance": "workspace:*"
   }
 }

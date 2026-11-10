@@ -28,10 +28,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0",
-    "@carton/local": "0.1.0",
-    "@carton/cardboard": "0.1.0",
-    "@carton/store-sqlite": "0.1.0"
+    "@carton/core": "workspace:*",
+    "@carton/local": "workspace:*",
+    "@carton/cardboard": "workspace:*",
+    "@carton/store-sqlite": "workspace:*"
   },
   "bin": {
     "carton": "./src/bin.ts"
