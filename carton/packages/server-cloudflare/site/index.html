@@ -55,8 +55,22 @@ a{color:inherit}
 .frame:hover{box-shadow:0 0 0 1px rgba(255,255,255,.2)}
 .frame:hover .play{transform:scale(1.06)}
 .frame.previewing .play{opacity:.85}
-.video figcaption{padding:12px 2px 0}
+.video figcaption{position:relative;display:flex;align-items:center;gap:8px;padding:12px 2px 0}
 .video h3{margin:0;font-size:15px;font-weight:500;line-height:1.4;letter-spacing:0;color:#fff}
+
+/* a video's note: an "i" after its title. Hovering it or focusing it shows the note; a click or a tap keeps it open
+   until a click elsewhere or Esc. On a tile the note is a card over the bottom of the video, as wide as the tile; in
+   the player it opens under the title. */
+.info{display:inline-flex}
+.info-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 1.25px rgba(255,255,255,.4);color:#d4d4d4;cursor:pointer;transition:background .15s,color .15s}
+.info-btn svg{width:14px;height:14px;fill:currentColor;stroke:currentColor;stroke-width:2.2;stroke-linecap:round}
+.info-btn svg circle{stroke:none}
+.info:hover .info-btn,.info.open .info-btn{background:rgba(255,255,255,.18);color:#fff}
+.info-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.info-tip{position:absolute;left:0;right:0;bottom:calc(100% + 10px);z-index:5;padding:12px 14px;border-radius:10px;background:rgba(18,18,18,.88);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);box-shadow:0 0 0 1px rgba(255,255,255,.14),0 12px 30px rgba(0,0,0,.45);color:#e5e5e5;font-size:14px;font-weight:400;line-height:1.5;letter-spacing:0;text-align:left;opacity:0;visibility:hidden;transform:translateY(4px);pointer-events:none;transition:opacity .15s,transform .15s,visibility 0s .15s}
+.info:hover .info-tip,.info-btn:focus-visible+.info-tip,.info.open .info-tip{opacity:1;visibility:visible;transform:none;transition:opacity .15s,transform .15s}
+/* Esc hides a note even while the pointer or focus is still on its "i", until they leave it */
+.info.hush .info-tip{opacity:0;visibility:hidden;transition:none}
 
 /* the video player (a lightbox, after cardboard.ai's): a click on a tile opens it over the page, blurred behind. One
    video at a time with its own controls (a seek bar, play, time, speed, sound, full screen) that hide while it plays and
@@ -92,7 +106,8 @@ body.lb-open{overflow:hidden}
 .lb-btn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .lb-pp{box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.85)}
 .lb-pp svg{width:16px;height:16px;fill:currentColor;stroke:none}
-.lb-cap{margin:0;color:#d4d4d4;font-size:15px;font-weight:500;letter-spacing:0}
+.lb-cap{position:relative;display:flex;align-items:center;gap:8px;margin:0;color:#d4d4d4;font-size:15px;font-weight:500;letter-spacing:0}
+.lb-cap .info-tip{top:calc(100% + 10px);bottom:auto;right:auto;width:min(480px,100%);transform:translateY(-4px)}
 .lb-x,.lb-nav{position:absolute;display:flex;align-items:center;justify-content:center;width:46px;height:46px;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.1);box-shadow:0 0 0 1px rgba(255,255,255,.12);color:#fff;cursor:pointer;transition:background .15s}
 .lb-x:hover,.lb-nav:hover{background:rgba(255,255,255,.18)}
 .lb-x svg,.lb-nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -175,16 +190,16 @@ footer a:hover{color:#fff}
     <h2 class="head display" id="videos-title">Made in Cardboard on Windows</h2>
     <div class="grid">
       <figure class="video">
-        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/cardboard-windows-motion-graphics.jpg" aria-label="Cardboard Windows Motion Graphics"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/cardboard-windows-motion-graphics.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Cardboard Windows Motion Graphics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
-        <figcaption><h3>Cardboard Windows Motion Graphics</h3></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/cardboard-windows-motion-graphics.jpg" aria-label="Cardboard is now on Windows"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/cardboard-windows-motion-graphics.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Cardboard is now on Windows"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Cardboard is now on Windows</h3></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/spiderman-edit.jpg" aria-label="Spiderman Edit"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/spiderman-edit.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Spiderman Edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
-        <figcaption><h3>Spiderman Edit</h3></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/spiderman-edit.jpg" aria-label="Spiderman Spiderman"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/spiderman-edit.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Spiderman Spiderman"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Spiderman Spiderman</h3><span class="info"><button class="info-btn" type="button" aria-label="About this video" aria-describedby="note-spiderman"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.2" r="1.5"/><path d="M12 11v6.5"/></svg></button><span class="info-tip" role="tooltip" id="note-spiderman">In this edit the poster on the wall, the spider and the webs were created using Opus 5.5 on Cardboard.</span></span></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/gone-rogue.jpg" aria-label="Gone Rogue"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/gone-rogue.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Gone Rogue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
-        <figcaption><h3>Gone Rogue</h3></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/gone-rogue.jpg" aria-label="Gone rogue"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/gone-rogue.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Gone rogue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Gone rogue</h3><span class="info"><button class="info-btn" type="button" aria-label="About this video" aria-describedby="note-gone-rogue"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.2" r="1.5"/><path d="M12 11v6.5"/></svg></button><span class="info-tip" role="tooltip" id="note-gone-rogue">This is a real screen recording of an edit in which I made a script join the running Cardboard instance from an EC2 and then communicate with the local agent via the titles and voices.</span></span></figcaption>
       </figure>
     </div>
   </section>
@@ -279,7 +294,7 @@ const ICON = {
   sound: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
   muted: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
 };
-const items = tiles.map((f) => ({ src: f.querySelector("source").src, poster: f.querySelector("video").poster, title: f.closest("figure").querySelector("h3").textContent }));
+const items = tiles.map((f) => ({ src: f.querySelector("source").src, poster: f.querySelector("video").poster, title: f.closest("figure").querySelector("h3").textContent, info: f.closest("figure").querySelector(".info") }));
 const RATES = [1, 1.5, 2, 0.5];
 let cur = 0, opener = null, idleTimer = 0;
 const thumbs = items.map((it, n) => {
@@ -316,7 +331,15 @@ function show(n, play) {
   cur = (n + items.length) % items.length;
   const it = items[cur];
   lv.pause(); lv.poster = it.poster; lv.src = it.src; lv.playbackRate = Number(rateBtn.dataset.rate || 1);
-  cap.textContent = it.title; lb.setAttribute("aria-label", it.title);
+  cap.replaceChildren(Object.assign(document.createElement("span"), { textContent: it.title }));
+  if (it.info) {
+    const note = it.info.cloneNode(true);
+    note.classList.remove("open");
+    note.querySelector(".info-tip").id = "lb-note";
+    note.querySelector(".info-btn").setAttribute("aria-describedby", "lb-note");
+    cap.append(note);
+  }
+  lb.setAttribute("aria-label", it.title);
   thumbs.forEach((b, k) => b.setAttribute("aria-selected", String(k === cur)));
   paint(); state(); wake();
   // focus on the player, so Space plays and pauses (not the button that was used to get here)
@@ -383,6 +406,22 @@ lb.addEventListener("keydown", (e) => {
   else if (e.key === "m") { lv.muted = !lv.muted; state(); }
   else if (e.key === "f") $(".lb-fs").click();
 });
+// A video's note ("i"): a click or a tap keeps it open (touch screens have no hover); a click anywhere else, or Esc,
+// closes it.
+const closeNotes = (keep) => { for (const w of document.querySelectorAll(".info.open")) if (w !== keep) w.classList.remove("open"); };
+document.addEventListener("click", (e) => {
+  const w = e.target.closest(".info-btn")?.parentElement || null;
+  closeNotes(w);
+  if (w) { w.classList.remove("hush"); w.classList.toggle("open"); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  closeNotes(null);
+  for (const w of document.querySelectorAll(".info")) if (w.matches(":hover, :focus-within")) w.classList.add("hush");
+});
+const unhush = (e) => { const w = e.target.closest?.(".info.hush"); if (w && !w.contains(e.relatedTarget)) w.classList.remove("hush"); };
+document.addEventListener("pointerout", unhush);
+document.addEventListener("focusout", unhush);
 // An invite link (#join=<project>.<code>) opened in a browser: show it to copy into Cardboard. The code stays in the
 // fragment, so it never reaches the server.
 if (location.hash.startsWith("#join=")) {
