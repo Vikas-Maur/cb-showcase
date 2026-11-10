@@ -13,8 +13,10 @@
 <link rel="preload" href="/changelog/fonts/fraunces-latin-opsz.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/changelog/fonts/geist-variable.woff2" as="font" type="font/woff2" crossorigin>
 <style>
-@font-face{font-family:"Fraunces";src:url(/changelog/fonts/fraunces-latin-opsz.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
-@font-face{font-family:"Geist";src:url(/changelog/fonts/geist-variable.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+/* font-display:block: both faces are small and preloaded, so the text waits the moment they take and is drawn once
+   in them, instead of in a fallback face that is then swapped (a visible flash on load). */
+@font-face{font-family:"Fraunces";src:url(/changelog/fonts/fraunces-latin-opsz.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:block}
+@font-face{font-family:"Geist";src:url(/changelog/fonts/geist-variable.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:block}
 :root{--display:"Fraunces",Georgia,"Times New Roman",serif;--sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--text:#d4d4d4;--muted:#8a8a8a;--line:rgba(255,255,255,.08)}
 *{box-sizing:border-box}
 html{background:#000;color:#fff;-webkit-text-size-adjust:100%}
