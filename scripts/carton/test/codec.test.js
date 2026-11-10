@@ -2,7 +2,7 @@
 // for the apply of a file whose rev line is Carton's (H3: headerRev and cartonBase in the store bridge, the facade's
 // rev resolution), run under Node against Cardboard 1.4.0's own bundles, staged and patched by stage.js. They are not
 // in git: CARDBOARD_PRISTINE names a folder with app-asar/ and cli/; without it the tests skip. The real-facade tests
-// also need `npm ci` in carton/. Media import needs ffmpeg and ffprobe (CARDBOARD_FFMPEG / CARDBOARD_FFPROBE, or PATH).
+// also need `pnpm install` in carton/. Media import needs ffmpeg and ffprobe (CARDBOARD_FFMPEG / CARDBOARD_FFPROBE, or PATH).
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/codec.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -13,7 +13,7 @@ const PRISTINE = process.env.CARDBOARD_PRISTINE;
 const skip = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app and cli" : false;
 const TMP = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.tmpdir(), "carton-patch-tests"), "codec");
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
-const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
+const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `pnpm install` in carton/ to build the facade");
 
 let win, carton, clip;
 const env = (extra = {}) => ({ ...process.env, HOME: path.join(TMP, "home"), USERPROFILE: path.join(TMP, "home"), ...extra });

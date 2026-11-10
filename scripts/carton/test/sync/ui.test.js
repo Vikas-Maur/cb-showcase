@@ -8,6 +8,8 @@ const fs = require("fs"), path = require("path");
 
 const ROOT = path.resolve(__dirname, "../../../..");
 const CARTON = path.join(ROOT, "carton");
+// React, react-dom and happy-dom are @carton/react's (its devDependencies), so they resolve from that package.
+const fromReact = require("module").createRequire(path.join(CARTON, "packages", "react", "package.json"));
 // Never /tmp (a small shared tmpfs on the build box).
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(require("os").homedir(), "gfv-scratch", "carton", "windows-sync"), "ui-test");
 
@@ -23,8 +25,8 @@ test.before(async () => {
     // As the build does: `react` is the editor's own, handed over as window.__cartonReact.
     alias: { react: path.join(ROOT, "scripts/carton/react-shim.js") },
   });
-  React = require(path.join(CARTON, "node_modules", "react"));
-  render = require(path.join(CARTON, "node_modules", "react-dom", "server")).renderToStaticMarkup;
+  React = fromReact("react");
+  render = fromReact("react-dom/server").renderToStaticMarkup;
   globalThis.window = { __cartonReact: React };
   require(outfile);
   ui = globalThis.window.__cartonSyncUi;

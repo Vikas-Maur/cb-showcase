@@ -291,7 +291,7 @@ test("PLAN 1.4–1.6: the refusal asks Carton first only in a preview, the timel
 
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
-const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
+const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `pnpm install` in carton/ to build the facade");
 test("Carton on, for real: history with authors, credits, cuts, fold, undo --turn, no lost update", { skip: noBuild }, async () => {
   const out = path.join(TMP, "bundle");
   fs.rmSync(out, { recursive: true, force: true });

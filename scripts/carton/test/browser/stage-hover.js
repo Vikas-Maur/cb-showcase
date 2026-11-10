@@ -19,7 +19,7 @@
 //
 // Usage: CARDBOARD_PRISTINE=<_inspect/cardboard-1.4.0> [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>]
 //        node scripts/carton/test/browser/stage-hover.js [out dir]
-// Needs the carton workspace installed (cd carton && npm ci) for carton-ui.js. Takes a few minutes.
+// Needs the carton workspace installed (cd carton && pnpm install) for carton-ui.js. Takes a few minutes.
 const fs = require("fs"), os = require("os"), path = require("path"), zlib = require("zlib");
 const { stage } = require("../stage");
 

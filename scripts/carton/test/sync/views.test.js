@@ -13,7 +13,7 @@ const S = require("./support.js");
 const load = (file) => import(require("url").pathToFileURL(file).href);
 
 const CARDBOARD = path.join(__dirname, "..", "..", "..", "..", "carton", "packages", "cardboard");
-const skip = !fs.existsSync(path.join(CARDBOARD, "..", "..", "node_modules", "@carton", "core")) && "run `npm ci` in carton/ for Carton's materializer";
+const skip = !fs.existsSync(path.join(CARDBOARD, "node_modules", "@carton", "core")) && "run `pnpm install` in carton/ for Carton's materializer";
 const ROOT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "views-" + process.pid);
 test.after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
 

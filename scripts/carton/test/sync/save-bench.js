@@ -66,7 +66,7 @@ async function round(b, mode, items, r) {
 }
 
 (async () => {
-  if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s npm ci: " + (S.skip || S.noBuild));
+  if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s pnpm install: " + (S.skip || S.noBuild));
   const b = await S.build();
   const all = [];
   for (const items of SIZES) {

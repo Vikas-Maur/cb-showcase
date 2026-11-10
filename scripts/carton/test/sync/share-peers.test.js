@@ -11,7 +11,9 @@ const fs = require("fs"), os = require("os"), path = require("path");
 
 const ROOT = path.resolve(__dirname, "../../../..");
 const CARTON = path.join(ROOT, "carton");
-const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `npm ci` in carton/";
+// React, react-dom and happy-dom are @carton/react's (its devDependencies), so they resolve from that package.
+const fromReact = require("module").createRequire(path.join(CARTON, "packages", "react", "package.json"));
+const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `pnpm install` in carton/";
 // Never /tmp (a small shared tmpfs on the build box).
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "share-peers");
 const opt = { skip, timeout: 60_000 };
@@ -39,13 +41,13 @@ test.before(async () => {
   });
   ({ Live } = require(path.join(OUT, "live.cjs")));
 
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   win = new Window({ url: "http://localhost/", width: 1280, height: 800 });
   for (const k of ["window", "document", "navigator", "localStorage", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLButtonElement", "HTMLDivElement", "SVGElement", "Text", "Event", "KeyboardEvent", "MouseEvent", "PointerEvent", "FocusEvent", "InputEvent", "CustomEvent", "MutationObserver", "ResizeObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame", "DocumentFragment"])
     Object.defineProperty(globalThis, k, { value: win[k], configurable: true, writable: true });
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  React = require(path.join(CARTON, "node_modules", "react"));
-  client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  React = fromReact("react");
+  client = fromReact("react-dom/client");
   act = React.act;
   window.__cartonReact = React;
   window.__cbLog = (ev, f) => logged.push({ ev, ...f });

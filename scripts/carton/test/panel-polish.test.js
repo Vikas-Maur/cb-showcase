@@ -7,7 +7,9 @@ const fs = require("fs"), os = require("os"), path = require("path");
 
 const ROOT = path.resolve(__dirname, "../../..");
 const CARTON = path.join(ROOT, "carton");
-const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `npm ci` in carton/";
+// React, react-dom and happy-dom are @carton/react's (its devDependencies), so they resolve from that package.
+const fromReact = require("module").createRequire(path.join(CARTON, "packages", "react", "package.json"));
+const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `pnpm install` in carton/";
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "panel-polish");
 const opt = { skip, timeout: 60_000 };
 
@@ -22,11 +24,11 @@ test.before(async () => {
     stdin: { contents: 'export * from "./ui.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
-  globalThis.window = { __cartonReact: require(path.join(CARTON, "node_modules", "react")) };
+  globalThis.window = { __cartonReact: fromReact("react") };
   U = require(path.join(OUT, "carton-ui.cjs"));
   T = U.__forTests;
   React = globalThis.window.__cartonReact;
-  render = require(path.join(CARTON, "node_modules", "react-dom", "server")).renderToStaticMarkup;
+  render = fromReact("react-dom/server").renderToStaticMarkup;
 }, { timeout: 300_000 });
 
 const you = { key: "human/me", kind: "human", name: "Vikas", isYou: true };
@@ -278,12 +280,12 @@ test("PLAN 5.3: Ctrl+Z of a restore or a fold (the bridge's onStep): \"Restore u
 });
 
 test("PLAN 5.3: a hovered toast stays; it goes once the pointer leaves; an action shows it is running", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = globalThis.document;
   globalThis.document = w.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const client = fromReact("react-dom/client");
   const el = w.document.createElement("div");
   w.document.body.appendChild(el);
   const root = client.createRoot(el);
@@ -413,7 +415,7 @@ function strip({ narrow = false, width = narrow ? 1100 : 1522 } = {}) {
   const sent = [];
   // the window's width, as each of the strip's queries asks it ("(max-width: 1180px)", "(max-width: 1000px)")
   const matchMedia = (q) => ({ matches: width <= Number(/max-width:\s*(\d+)px/.exec(q)?.[1] ?? Infinity), addEventListener() {}, removeEventListener() {} });
-  const [Strip, Chip] = new Function("n", "c", "w", "I", "S", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
+  const [Strip, Chip] = new Function("n", "c", "w", "I", "S", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(fromReact("react/jsx-runtime"), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
   return { html: (panel) => render(React.createElement(Strip, { panel })), chip: (panel) => render(React.createElement(Chip, { panel })), Chip, sent };
 }
 
@@ -516,11 +518,11 @@ test("laptop P2-3: comparing at 960 px, the chip's second part is “⇆ Compari
 });
 
 test("PLAN 2.1, 2.2 v2: the chip's click asks for its cuts menu with its box (open or close, as it was when pressed), its ✕ for your edit", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = globalThis.document;
   globalThis.document = w.document;
-  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const client = fromReact("react-dom/client");
   const el = w.document.createElement("div");
   w.document.body.appendChild(el);
   const root = client.createRoot(el);
@@ -628,7 +630,7 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
   assert.deepEqual(U.fitPanel({ room: 1100, preferred: 384, viewport: 1920, chat: 400 }), { mode: "inline", width: 384 });
   assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 960 }), { mode: "overlay", width: 384 });
   // in the page: the drawer's box, from the stage's and the row's (Cardboard's layout at 960 px, as the laptop measured)
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/", width: 960, height: 770 });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
   globalThis.document = w.document;
@@ -639,7 +641,7 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
   let root = null;
   try {
     const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
     // the editor's row (the aside's parent: the mount here), with the stage in it
     const row = w.document.createElement("div"), stage = w.document.createElement("div");
@@ -681,7 +683,7 @@ test("prod3 P3-A: the drawer ends above the timeline toolbar wherever the toolba
   assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1100, chat: 340, tools: 700 }), { mode: "overlay", width: 340, over: false });
   assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520, tools: undefined }), { mode: "overlay", width: 384, over: false });
   // in the page: Cardboard's layout at 960 px with the chat open, as the laptop measured it
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/", width: 960, height: 826 });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
   globalThis.document = w.document;
@@ -692,7 +694,7 @@ test("prod3 P3-A: the drawer ends above the timeline toolbar wherever the toolba
   let root = null;
   try {
     const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
     const row = w.document.createElement("div"), stage = w.document.createElement("div"), hide = w.document.createElement("button");
     stage.setAttribute("data-carton-stage-host", "");
@@ -756,7 +758,7 @@ function dashboard(ready, on = false, { win = {}, portal = (x) => x, doc = {} } 
   part.app({ editor: file("editor"), index: file("index") });
   if (ready !== undefined) win.__carton = { ...win.__carton, on, ready };
   const src = pre.join("\n").split('import("./carton-ui.js")').join("window.__testUi()");
-  const api = new Function("r", "i", "Au", "window", "document", src + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn, Host: typeof __cbCartonJoinHost === 'function' ? __cbCartonJoinHost : null };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: portal }, win, doc);
+  const api = new Function("r", "i", "Au", "window", "document", src + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn, Host: typeof __cbCartonJoinHost === 'function' ? __cbCartonJoinHost : null };")(React, fromReact("react/jsx-runtime"), { createPortal: portal }, win, doc);
   return { edits, ...api };
 }
 
@@ -772,10 +774,10 @@ test("P2-9: the Dashboard gets a Join tile beside New project, only once Carton 
   assert.match(tile, />From an invite link</);
   // the hook: off at first, on once the bridge's ready says so (rendered through React's client renderer)
   const seen = [];
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window();
   globalThis.document = w.document;
-  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const client = fromReact("react-dom/client");
   const el = w.document.createElement("div");
   const root = client.createRoot(el);
   const Probe = () => { seen.push(d.useOn()); return null; };
@@ -824,7 +826,7 @@ test("regress #3: an empty library offers Join beside Start a blank project, onl
 // button now, so the dialog must live through the swap until the project is open; then it closes.
 for (const when of ["before", "after"])
   test(`final N1, PLAN 8.2: Join and open from an empty library opens the project (it arrives in the library ${when} the answer)`, opt, async () => {
-    const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+    const { Window } = fromReact("happy-dom");
     const w = new Window({ url: "http://localhost/" });
     const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
     globalThis.document = w.document;
@@ -833,8 +835,8 @@ for (const when of ["before", "after"])
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     let root = null;
     try {
-      const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
-      const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
+      const client = fromReact("react-dom/client");
+      const { createPortal } = fromReact("react-dom");
       let addToLibrary = null;
       const opened = [];
       const bridge = {
@@ -901,7 +903,7 @@ for (const when of ["before", "after"])
 // PLAN 8.2: a project that joined but couldn't open (its tab couldn't be made) isn't lost: the dialog says it is in the
 // library, with Open to try again.
 test("PLAN 8.2: joined but not opened: the dialog says it's in the library, and Open tries again", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage };
   globalThis.document = w.document;
@@ -909,7 +911,7 @@ test("PLAN 8.2: joined but not opened: the dialog says it's in the library, and 
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   let root = null;
   try {
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     let fail = true;
     const opened = [], closed = [];
     const bridge = { onEvent: () => () => {}, call: async () => ({ projectId: "p-fx", name: "FX ui" }), openProject: async (id) => { if (fail) throw new Error("Error invoking remote method 'tabs:open': Error: no window"); opened.push(id); } };
@@ -943,7 +945,7 @@ test("PLAN 8.2: joined but not opened: the dialog says it's in the library, and 
 // Review of feat/ux-2-8 #4, #5: Enter again while Join and open is busy starts no second join; Cancel while it is
 // answered leaves the project in the library and opens nothing.
 test("PLAN 8.2: one join at a time from every way in, and a Join cancelled meanwhile opens nothing", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage };
   globalThis.document = w.document;
@@ -951,7 +953,7 @@ test("PLAN 8.2: one join at a time from every way in, and a Join cancelled meanw
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   let root = null;
   try {
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     let answer = null;
     const joins = [], opened = [], closed = [];
     const bridge = { onEvent: () => () => {}, call: (m, a) => { joins.push(a[0].link); return new Promise((r) => { answer = r; }); }, openProject: async (id) => { opened.push(id); } };
@@ -993,7 +995,7 @@ test("PLAN 8.2: one join at a time from every way in, and a Join cancelled meanw
 // outside the scroller: review of P3-E), keeps their own place. A click in the dialog (Done) isn't going elsewhere.
 for (const moves of [null, "scrolls", "sidebar"])
   test(`prod3 P3-E: joining from an empty library keeps the page where it was${moves ? `, unless the person ${moves === "scrolls" ? "scrolls" : "goes to the Dashboard"}` : ", and shows the new tile"}`, opt, async () => {
-    const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+    const { Window } = fromReact("happy-dom");
     const w = new Window({ url: "http://localhost/" });
     const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
     globalThis.document = w.document;
@@ -1002,8 +1004,8 @@ for (const moves of [null, "scrolls", "sidebar"])
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     let root = null;
     try {
-      const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
-      const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
+      const client = fromReact("react-dom/client");
+      const { createPortal } = fromReact("react-dom");
       let addToLibrary = null;
       const bridge = { on: true, ready: Promise.resolve(true), onEvent: () => () => {}, call: async () => { setTimeout(addToLibrary, 0); return { projectId: "p-fx", name: "FX ui" }; }, openProject: () => new Promise((r) => setTimeout(r, 30)) };
       const d = dashboard(bridge.ready, true, { win: { __carton: bridge, __testUi: async () => ({ JoinDialog: U.JoinDialog }) }, portal: createPortal, doc: w.document });
@@ -1080,7 +1082,7 @@ for (const moves of [null, "scrolls", "sidebar"])
 // as the banner's button does; the next Esc closes the panel. (Esc with focus on the page: @carton/react's
 // PreviewBanner, test/regress.dom.test.ts.)
 test("regress #4: in the side panel, Esc returns from a preview first; the next Esc closes the panel", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
   globalThis.document = w.document;
@@ -1091,7 +1093,7 @@ test("regress #4: in the side panel, Esc returns from a preview first; the next 
   try {
     const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
     const ui = createMockUi({ versions: 20 });
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     const el = w.document.createElement("div");
     w.document.body.appendChild(el);
     root = client.createRoot(el);
@@ -1127,7 +1129,7 @@ test("regress #4: in the side panel, Esc returns from a preview first; the next 
 // Regress 2026-11-02 P3-3: at the panel's 300 px minimum the three tabs' labels ran under the close ✕ ("Share✕"). Share
 // is a dialog now (PLAN 8.1): two tabs, both labelled at every width, as the mockups show them.
 test("regress P3-3, PLAN 8.1: the panel's tabs are History and Comments, labelled at 300 px too", opt, async () => {
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   const w = new Window({ url: "http://localhost/" });
   const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
   globalThis.document = w.document;
@@ -1137,7 +1139,7 @@ test("regress P3-3, PLAN 8.1: the panel's tabs are History and Comments, labelle
   try {
     const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
     const ui = createMockUi({ versions: 5 });
-    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const client = fromReact("react-dom/client");
     const bridge = { call: async () => ({}), onEvent: () => () => {} };
     const tabs = async (width) => {
       globalThis.localStorage = { getItem: (k) => (k === "carton.sidePanelWidth" ? String(width) : null), setItem() {} };
