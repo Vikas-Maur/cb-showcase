@@ -5,11 +5,13 @@
 // state: every Durable Object is rebuilt from storage, as after an eviction or a deploy.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 
-// wrangler's own entry script, run with this node: no `.cmd` shim, so no shell on Windows
-const WRANGLER = join(import.meta.dirname, "..", "..", "..", "node_modules", "wrangler", "bin", "wrangler.js");
+// wrangler's own entry script, run with this node: no `.cmd` shim, so no shell on Windows. It is this package's
+// devDependency, resolved from here.
+const WRANGLER = join(dirname(createRequire(import.meta.url).resolve("wrangler/package.json")), "bin", "wrangler.js");
 
 async function freePort(): Promise<number> {
   return new Promise((ok, fail) => {

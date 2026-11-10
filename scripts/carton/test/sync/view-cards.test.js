@@ -13,7 +13,7 @@ const fs = require("fs"), os = require("os"), path = require("path"), { spawnSyn
 const ROOT = path.join(__dirname, "..", "..", "..", "..");
 const CARTON = path.join(ROOT, "carton");
 const FIXTURE = path.join(CARTON, "packages", "conformance", "src", "cardboard", "fixtures", "sample", "project.json");
-const noBuild = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade";
+const noBuild = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `pnpm install` in carton/ to build the facade";
 
 const RUN = String.raw`
 const fs = require("fs"), path = require("path");

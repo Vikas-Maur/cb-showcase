@@ -11,7 +11,9 @@ const fs = require("fs"), os = require("os"), path = require("path"), { pathToFi
 
 const ROOT = path.resolve(__dirname, "../../..");
 const CARTON = path.join(ROOT, "carton");
-const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `npm ci` in carton/";
+// React, react-dom and happy-dom are @carton/react's (its devDependencies), so they resolve from that package.
+const fromReact = require("module").createRequire(path.join(CARTON, "packages", "react", "package.json"));
+const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `pnpm install` in carton/";
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "compare");
 const opt = { skip, timeout: 60_000 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,15 +29,15 @@ test.before(async () => {
     stdin: { contents: 'export * from "./ui.js";\nexport { endOf, elsewhereRefs, comparingLabel, roomFix, readyCountdown } from "./compare.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
-  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const { Window } = fromReact("happy-dom");
   win = new Window({ url: "http://localhost/", width: 1522, height: 810 });
   for (const k of ["window", "document", "navigator", "localStorage", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLButtonElement", "HTMLDivElement", "SVGElement", "Text", "Event", "KeyboardEvent", "MouseEvent", "PointerEvent", "FocusEvent", "InputEvent", "CustomEvent", "MutationObserver", "ResizeObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame", "DocumentFragment"])
     Object.defineProperty(globalThis, k, { value: win[k], configurable: true, writable: true });
   globalThis.matchMedia = win.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  React = require(path.join(CARTON, "node_modules", "react"));
-  client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
-  ({ createPortal } = require(path.join(CARTON, "node_modules", "react-dom")));
+  React = fromReact("react");
+  client = fromReact("react-dom/client");
+  ({ createPortal } = fromReact("react-dom"));
   act = React.act;
   window.__cartonReact = React;
   U = require(path.join(OUT, "carton-ui.cjs"));

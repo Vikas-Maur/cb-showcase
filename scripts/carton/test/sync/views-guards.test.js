@@ -17,7 +17,7 @@ const fs = require("fs"), os = require("os"), path = require("path");
 const ROOT = path.join(__dirname, "..", "..", "..", "..");
 const CARTON = path.join(ROOT, "carton");
 const FIXTURE = path.join(CARTON, "packages", "conformance", "src", "cardboard", "fixtures", "sample", "project.json");
-const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `npm ci` in carton/";
+const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "run `pnpm install` in carton/";
 const DIR = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "views-guards");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(f, ms = 20_000, what = "condition") {

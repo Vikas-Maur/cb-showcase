@@ -7,7 +7,8 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
 import { createHmacAuth } from "@carton/server";
@@ -17,7 +18,8 @@ import { mediaHash, webCryptoHasher, type StreamAppendPart } from "@carton/media
 const { values: a } = parseArgs({ options: { parts: { type: "string", default: "4" }, appends: { type: "string", default: "12" }, "part-kb": { type: "string", default: "650" }, top: { type: "string", default: "25" }, label: { type: "string", default: "" } } });
 const PARTS = Number(a.parts), APPENDS = Number(a.appends), PART = Number(a["part-kb"]) * 1024;
 const SECRET = "bench-only-secret-bench-only-secret-0123";
-const WRANGLER = join(import.meta.dirname, "..", "..", "..", "node_modules", "wrangler", "bin", "wrangler.js");
+// this package's own wrangler (a devDependency)
+const WRANGLER = join(dirname(createRequire(import.meta.url).resolve("wrangler/package.json")), "bin", "wrangler.js");
 const freePort = () => new Promise<number>((ok) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => ok(p)); }); });
 
 const state = mkdtempSync(join(process.env.CARTON_SCRATCH ?? tmpdir(), "append-profile-"));

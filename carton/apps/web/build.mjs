@@ -28,6 +28,9 @@ const common = {
   legalComments: "none",
   define: { "process.env.NODE_ENV": dev ? '"development"' : '"production"' },
   alias,
+  // esbuild resolves an alias's target from the working directory, and this runs from carton/ too (deploy:cloudflare:web,
+  // the web e2e): preact is this package's dependency, so it is also looked up here
+  nodePaths: [join(here, "node_modules")],
   metafile: true,
 };
 // The editor and the watch page in one build with code splitting (ESM): shared code (Preact, core, the skin) is one

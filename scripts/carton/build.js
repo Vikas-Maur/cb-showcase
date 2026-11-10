@@ -9,7 +9,7 @@
 //                                          but its tests. Its worker.js and ui.js, when present, are bundled into
 //                                          carton-node.cjs and carton-ui.js instead, so they share this one copy of
 //                                          @carton/* (worker.js registers with the facade's extend()).
-// esbuild comes from the carton workspace (cd carton && npm ci). The Node side is CommonJS for Electron's Node 24;
+// esbuild comes from the carton workspace (cd carton && pnpm install). The Node side is CommonJS for Electron's Node 24;
 // `import.meta.url` is the file's own URL there, so @carton/local finds its sibling scripts.
 // Usage: node scripts/carton/build.js <resources> <renderer-assets>
 const fs = require("fs"), path = require("path");

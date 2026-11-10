@@ -45,7 +45,8 @@ const common = {
   target: "chrome140",
   logLevel: "warning",
   absWorkingDir: carton,
-  nodePaths: [join(carton, "node_modules")],
+  // the preact alias resolves from the working directory (carton/): preact is this package's devDependency
+  nodePaths: [join(here, "..", "..", "node_modules"), join(carton, "node_modules")],
   define: { "process.env.NODE_ENV": '"production"', __STRIP_BUTTON_CLASS__: JSON.stringify(stripClass) },
 };
 // The fixed clock runs first, ahead of every module (a banner: the package's sideEffects:false would drop an import).

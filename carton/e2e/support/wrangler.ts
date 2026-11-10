@@ -6,12 +6,21 @@
 //     port and state (every Durable Object rebuilt from storage, as after an eviction or a deploy).
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pkg } from "./env.ts";
 
-// wrangler's own JS entry, run with this Node (no .cmd shim, no shell: paths with spaces or `&` pass as they are)
-export const WRANGLER = pkg("..", "node_modules", "wrangler", "bin", "wrangler.js");
+// wrangler's own JS entry, run with this Node (no .cmd shim, no shell: paths with spaces or `&` pass as they are).
+// It is server-cloudflare's (its devDependency): resolved from that package. Not installed: the path it would have, which
+// hostMissing reports.
+export const WRANGLER = ((): string => {
+  try {
+    return join(dirname(createRequire(pkg("server-cloudflare", "package.json")).resolve("wrangler/package.json")), "bin", "wrangler.js");
+  } catch {
+    return pkg("server-cloudflare", "node_modules", "wrangler", "bin", "wrangler.js");
+  }
+})();
 
 function freePort(): Promise<number> {
   return new Promise((ok, fail) => {
