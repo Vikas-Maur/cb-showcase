@@ -104,24 +104,23 @@ footer a:hover{color:#fff}
 </header>
 
 <main id="home">
-  <!-- The video row. Each video is one <figure class="video">: copy one to add a video (three to a row; a fourth starts
-       the next row). To place a video, replace its placeholder <div class="frame placeholder">…</div> with either
-         <div class="frame"><video src="/videos/name.mp4" poster="/videos/name.jpg" controls preload="metadata" playsinline></video></div>
-       (the file in site/videos/; Cloudflare serves a static file up to 25 MiB), or an embed:
-         <div class="frame"><iframe src="https://www.youtube-nocookie.com/embed/VIDEO_ID" title="…" loading="lazy" allow="fullscreen; picture-in-picture" allowfullscreen></iframe></div> -->
+  <!-- The video row: three videos made in Cardboard on Windows with this build. Each <figure class="video"> is one
+       (three to a row; a fourth starts the next row). The poster (site/videos/<name>.jpg) is in git; the video itself
+       is an asset of the release site-media, listed in site/videos/media.json, which build-site.mjs downloads and
+       checks (Cloudflare serves a static file up to 25 MiB). -->
   <section class="videos wrap" aria-label="Videos">
     <div class="grid">
       <figure class="video">
-        <div class="frame placeholder" role="img" aria-label="Video 1, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 1</div>
-        <figcaption><h3>Coming soon</h3><p>A short video of this build at work.</p></figcaption>
+        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/cardboard-windows-motion-graphics.jpg" aria-label="Cardboard Windows Motion Graphics"><source src="/videos/cardboard-windows-motion-graphics.mp4" type="video/mp4"></video></div>
+        <figcaption><h3>Cardboard Windows Motion Graphics</h3><p>Cardboard’s crown lands on Windows: a motion-graphics short built from code graphics.</p></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame placeholder" role="img" aria-label="Video 2, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 2</div>
-        <figcaption><h3>Coming soon</h3><p>A short video of this build at work.</p></figcaption>
+        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/spiderman-edit.jpg" aria-label="Spiderman Edit"><source src="/videos/spiderman-edit.mp4" type="video/mp4"></video></div>
+        <figcaption><h3>Spiderman Edit</h3><p>A live-action short with a web-pattern end card.</p></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame placeholder" role="img" aria-label="Video 3, coming soon"><span class="play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg></span>Video 3</div>
-        <figcaption><h3>Coming soon</h3><p>A short video of this build at work.</p></figcaption>
+        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/gone-rogue.jpg" aria-label="Gone Rogue"><source src="/videos/gone-rogue.mp4" type="video/mp4"></video></div>
+        <figcaption><h3>Gone Rogue</h3><p>Episode 01. Two Claudes meet in a shared project: live edits from another computer, History and cuts.</p></figcaption>
       </figure>
     </div>
   </section>

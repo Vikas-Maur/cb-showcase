@@ -1,0 +1,23 @@
+{
+  "comment": "The home page's videos. Too large for git, so they are assets of the public release site-media; build-site.mjs downloads each into dist/site/videos/ and checks its size and SHA-256 here before deploying. To change one, upload the new file to that release (gh release upload site-media <file> --clobber) and update its row.",
+  "files": [
+    {
+      "file": "cardboard-windows-motion-graphics.mp4",
+      "url": "https://github.com/Vikas-Maur/cb-showcase/releases/download/site-media/cardboard-windows-motion-graphics.mp4",
+      "size": 9516887,
+      "sha256": "fc6b773153c09f16dc9d2c62da7a1756b95cf8a56dd1d3aeff3ea245ced0000b"
+    },
+    {
+      "file": "spiderman-edit.mp4",
+      "url": "https://github.com/Vikas-Maur/cb-showcase/releases/download/site-media/spiderman-edit.mp4",
+      "size": 25241060,
+      "sha256": "55e6a708217608af6a90ce05818c475618abedb9ed528a108eeeac9c82e424c4"
+    },
+    {
+      "file": "gone-rogue.mp4",
+      "url": "https://github.com/Vikas-Maur/cb-showcase/releases/download/site-media/gone-rogue.mp4",
+      "size": 24146269,
+      "sha256": "b79562b6f8ef84f4233e5e07d77ff54b9bec73504a2dc5c8039d02ca13900390"
+    }
+  ]
+}

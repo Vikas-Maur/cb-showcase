@@ -30,3 +30,6 @@
 
 # Local inspection copies of Cardboard internals: proprietary, never commit.
 _inspect/
+
+# The home page's videos: assets of the release site-media, which build-site.mjs downloads and checks.
+carton/packages/server-cloudflare/site/videos/*.mp4
