@@ -37,18 +37,25 @@ a{color:inherit}
 .btn.big{height:46px;padding:0 20px;font-size:15px;border-radius:12px}
 .btn svg{width:16px;height:16px;flex:none}
 
-/* the video row: three to a row on a wide screen; a fourth video starts the next row */
-.videos{padding-top:40px}
-.videos .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+/* the video row, after cardboard.ai's "Made with Cardboard": a centred serif heading, then tiles with no browser
+   controls. A tile shows its poster and a small round play button in its corner (off the picture's subject); on a desktop, hovering plays it muted as a preview; a click
+   or tap plays it from the start with sound and its controls. One video plays at a time. Three to a row on a wide
+   screen; a fourth starts the next row. */
+.videos{padding-top:56px}
+.videos .head{margin:0 0 28px;text-align:center;font-size:40px;line-height:1.15}
+.videos .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .video{margin:0}
-.frame{position:relative;aspect-ratio:16/9;border-radius:14px;overflow:hidden;background:#0d0d0d;box-shadow:0 0 0 1px var(--line)}
-.frame video,.frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;object-fit:cover}
-.frame.placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#5c5c5c;font-size:13px;letter-spacing:0;background:radial-gradient(120% 90% at 50% 0%,#171717 0%,#0b0b0b 70%)}
-.frame.placeholder .play{display:flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:999px;background:rgba(255,255,255,.06);box-shadow:0 0 0 1px rgba(255,255,255,.1)}
-.frame.placeholder .play svg{width:18px;height:18px;margin-left:3px;fill:#8a8a8a}
+.frame{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#0d0d0d;box-shadow:0 0 0 1px rgba(255,255,255,.08);transition:box-shadow .2s}
+.frame video{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;object-fit:cover}
+.frame .play{position:absolute;left:12px;bottom:12px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.14);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 0 0 1px rgba(255,255,255,.2),0 8px 24px rgba(0,0,0,.35);color:#fff;cursor:pointer;transition:opacity .2s,transform .2s}
+.frame .play svg{width:17px;height:17px;margin-left:2px;fill:currentColor}
+.frame .play:focus-visible{outline:2px solid #fff;outline-offset:3px}
+.frame:hover{box-shadow:0 0 0 1px rgba(255,255,255,.2)}
+.frame:hover .play{transform:scale(1.06)}
+.frame.previewing .play{opacity:.85}
+.frame.playing .play{opacity:0;pointer-events:none}
 .video figcaption{padding:12px 2px 0}
-.video h3{margin:0;font-size:15px;font-weight:600;line-height:1.4;letter-spacing:0;color:#fff}
-.video p{margin:2px 0 0;color:var(--muted);font-size:14px;line-height:1.5;letter-spacing:0}
+.video h3{margin:0;font-size:15px;font-weight:500;line-height:1.4;letter-spacing:0;color:#fff}
 
 /* the Windows installer and GitHub */
 .get{text-align:center;padding:72px 24px 8px}
@@ -79,7 +86,7 @@ footer a:hover{color:#fff}
 [hidden]{display:none!important}
 @media (max-width:1000px){.videos .grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:640px){
-  .videos{padding-top:20px}.videos .grid{grid-template-columns:1fr;gap:28px}
+  .videos{padding-top:28px}.videos .head{font-size:30px;margin-bottom:20px}.videos .grid{grid-template-columns:1fr;gap:24px}
   .get,.about{padding-top:56px}.about h2{font-size:30px}
   .hero{padding-top:72px}.hero h1{font-size:40px}
   .top{padding:14px 16px}.wrap{padding:0 16px}.brand{font-size:20px}.nav{gap:6px}.nav .link{padding:0 6px;font-size:14px}.nav .btn{padding:0 10px;font-size:13px;height:32px}
@@ -104,23 +111,24 @@ footer a:hover{color:#fff}
 </header>
 
 <main id="home">
-  <!-- The video row: three videos made in Cardboard on Windows with this build. Each <figure class="video"> is one
-       (three to a row; a fourth starts the next row). The poster (site/videos/<name>.jpg) is here; the video itself is
-       in the repo Vikas-Maur/cb-showcase-media, served by GitHub Pages: unlike this site's static files, it answers
-       the byte-range requests browsers need to stream and seek a video (Safari won't play one without them). -->
-  <section class="videos wrap" aria-label="Videos">
+  <!-- The video row: three videos made in Cardboard on Windows with this build (the script at the end plays them).
+       The posters (site/videos/<name>.jpg) are here; the videos are in the repo Vikas-Maur/cb-showcase-media, served
+       by GitHub Pages: unlike this site's static files, it answers the byte-range requests browsers need to stream
+       and seek a video (Safari won't play one without them). -->
+  <section class="videos wrap" aria-labelledby="videos-title">
+    <h2 class="head display" id="videos-title">Made in Cardboard on Windows</h2>
     <div class="grid">
       <figure class="video">
-        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/cardboard-windows-motion-graphics.jpg" aria-label="Cardboard Windows Motion Graphics"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/cardboard-windows-motion-graphics.mp4" type="video/mp4"></video></div>
-        <figcaption><h3>Cardboard Windows Motion Graphics</h3><p>Cardboard’s crown lands on Windows: a motion-graphics short built from code graphics.</p></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/cardboard-windows-motion-graphics.jpg" aria-label="Cardboard Windows Motion Graphics"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/cardboard-windows-motion-graphics.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Cardboard Windows Motion Graphics"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Cardboard Windows Motion Graphics</h3></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/spiderman-edit.jpg" aria-label="Spiderman Edit"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/spiderman-edit.mp4" type="video/mp4"></video></div>
-        <figcaption><h3>Spiderman Edit</h3><p>A live-action short with a web-pattern end card.</p></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/spiderman-edit.jpg" aria-label="Spiderman Edit"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/spiderman-edit.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Spiderman Edit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Spiderman Edit</h3></figcaption>
       </figure>
       <figure class="video">
-        <div class="frame"><video controls preload="metadata" playsinline poster="/videos/gone-rogue.jpg" aria-label="Gone Rogue"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/gone-rogue.mp4" type="video/mp4"></video></div>
-        <figcaption><h3>Gone Rogue</h3><p>Episode 01. Two Claudes meet in a shared project: live edits from another computer, History and cuts.</p></figcaption>
+        <div class="frame" data-video><video muted loop playsinline preload="none" poster="/videos/gone-rogue.jpg" aria-label="Gone Rogue"><source src="https://vikas-maur.github.io/cb-showcase-media/videos/gone-rogue.mp4" type="video/mp4"></video><button class="play" type="button" aria-label="Play Gone Rogue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button></div>
+        <figcaption><h3>Gone Rogue</h3></figcaption>
       </figure>
     </div>
   </section>
@@ -165,6 +173,26 @@ footer a:hover{color:#fff}
 <footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a></footer>
 
 <script>
+// The video row: on a desktop, hovering a tile plays it muted as a preview, from where it was; a click or tap plays it
+// from the start with sound and its controls. One video plays at a time; when it ends, or another starts, it goes back
+// to its poster.
+const tiles = [...document.querySelectorAll("[data-video]")];
+const rest = (f) => { const v = f.querySelector("video"); f.classList.remove("playing", "previewing"); v.controls = false; v.muted = true; v.loop = true; v.load(); };
+const canHover = matchMedia("(hover: hover) and (pointer: fine)").matches;
+for (const f of tiles) {
+  const v = f.querySelector("video");
+  f.querySelector(".play").addEventListener("click", () => {
+    for (const o of tiles) if (o !== f && (o.classList.contains("playing") || !o.querySelector("video").paused)) rest(o);
+    f.classList.remove("previewing"); f.classList.add("playing");
+    v.loop = false; v.muted = false; v.controls = true; v.currentTime = 0;
+    v.play().catch(() => {});
+  });
+  v.addEventListener("ended", () => { if (f.classList.contains("playing")) rest(f); });
+  if (canHover) {
+    f.addEventListener("mouseenter", () => { if (!f.classList.contains("playing")) { f.classList.add("previewing"); v.play().catch(() => {}); } });
+    f.addEventListener("mouseleave", () => { if (!f.classList.contains("playing")) { f.classList.remove("previewing"); v.pause(); } });
+  }
+}
 // An invite link (#join=<project>.<code>) opened in a browser: show it to copy into Cardboard. The code stays in the
 // fragment, so it never reaches the server.
 if (location.hash.startsWith("#join=")) {
