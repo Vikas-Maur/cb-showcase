@@ -15,7 +15,8 @@ Run it from the `Cardboard` shortcut (Desktop or Start Menu), or `Cardboard-win\
 If you launch it from a terminal that has `ELECTRON_RUN_AS_NODE=1` set (some Electron-based IDEs
 set this), unset that variable first.
 
-Only `scripts\`, `tools\package*.json`, `README.md` and `assets\` are tracked by git. The app,
+Git tracks only our own work: `scripts\`, `carton\`, `docs\`, `examples\`, `assets\`, `.github\`, `tools\`' package files
+and the READMEs and AGENTS.md. The app,
 the downloads and Cardboard's unpacked code are ignored (see `.gitignore`): they are large, and
 they are Cardboard's software, not ours to redistribute.
 
