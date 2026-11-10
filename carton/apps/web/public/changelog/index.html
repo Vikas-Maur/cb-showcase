@@ -247,6 +247,24 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   <p class="how">Found by reading Cardboard’s code, 1.4.0 and 1.4.1, and checked again in today’s 1.5.0 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
 </section>
 
+<article id="8">
+  <aside>
+    <time datetime="2026-11-10">November 10, 2026</time>
+    <div class="tags"><a class="tag" href="#8" aria-label="Link to update 8">#8</a></div>
+  </aside>
+  <div>
+    <h2 class="display">Cardboard 1.5 on Windows</h2>
+    <p class="lead">This build moves from Cardboard 1.4.0 to 1.5.0, the Mac release of November 5, and brings what’s new in it to Windows: Premiere Pro projects, one-click audio cleanup, a Director that looks things up, the Mask Glitch transition, and Cardboard’s own smoother playback and faster graphics.</p>
+
+    <h3>Premiere projects find their media on Windows</h3>
+    <p>Open a <code>.prproj</code> and it becomes a Cardboard project. Cardboard looks for each clip’s file where Premiere saved it, but it took only Mac-style paths, so on Windows every <code>C:\…</code> path was skipped and only media sitting next to the project file came in. Now Windows paths count on Windows, in the app and in <code>cb project import-premiere</code>.</p>
+
+    <h3>Everything from #1 to #7 came along</h3>
+    <p>Every change in the updates below was carried over to 1.5.0, except one: <a href="#2">smoother graphics</a>. Cardboard 1.5.0 rebuilt how a graphic gets its video frames, and our change doesn’t fit the new way, so this build now uses Cardboard’s. The bugs marked “Also in Cardboard” are all still in 1.5.0: we read each one’s code again.</p>
+    <!-- TODO-8: the "how" line from the laptop's checks of the 1.5.0 build -->
+  </div>
+</article>
+
 <article id="7">
   <aside>
     <time datetime="2026-11-05">November 5, 2026</time>
@@ -432,10 +450,11 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
       <div class="stat"><b><s>26–37 →</s> 78–88</b><span>frames per second for a graphic with a video inside, while playing, with both changes below</span></div>
       <div class="stat"><b><s>17–20 →</s> 4–6</b><span>editor stutters over 50&nbsp;ms in 19&nbsp;s of that playback, from using the NVIDIA GPU</span></div>
     </div>
-    <p class="how stats-how">Measured on a Windows laptop with two GPUs, plugged in: the build before against the build after, 3 alternating runs each, each in its own fresh instance.</p>
+    <p class="how stats-how">Measured on a Windows laptop with two GPUs, plugged in, on Cardboard&nbsp;1.4.0: the build before against the build after, 3 alternating runs each, each in its own fresh instance.</p>
 
     <h3>Graphics play smoothly</h3>
     <p>A graphic with a video inside waited for each exact video frame before drawing the next, even with the video off screen, and froze for seconds when a decode was slow. While playing, it now draws with the newest frame that’s ready: on the same GPU, that alone took it from about 40 to about 73 frames per second. Paused or scrubbing, you still see the exact frame.</p>
+    <p class="note">Retired in <a href="#8">#8</a>: Cardboard&nbsp;1.5.0 rebuilt how a graphic gets its video frames, so from 1.5.0 on this build uses Cardboard’s own way. The numbers above were measured on 1.4.0.</p>
 
     <h3>The fast GPU on laptops</h3>
     <p>On a laptop with two GPUs, Cardboard drew everything on the power-saving one, which borrows system memory, while the NVIDIA card sat idle. Plugged in, Cardboard now uses the NVIDIA card. On battery it stays on the power-saving one, and Windows’ own per-app setting still wins.</p>
