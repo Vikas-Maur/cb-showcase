@@ -21,9 +21,9 @@ replace(
     String.raw`const __cbPipe = (p) => process.platform === "win32" && !p.startsWith("\\\\") ? "\\\\.\\pipe\\cardboard-" + require("node:crypto").createHash("sha256").update(p.toLowerCase()).digest("hex").slice(0, 16) : p;` +
     `\n`,
 );
-replace(`Ik=t=>new Promise((e,r)=>{let n=kk(t);`, `Ik=t=>new Promise((e,r)=>{let n=kk(__cbPipe(t));`);
+replace(`Dk=t=>new Promise((e,r)=>{let n=Ok(t);`, `Dk=t=>new Promise((e,r)=>{let n=Ok(__cbPipe(t));`);
 // No socket file exists on Windows; the token file beside it marks a running app.
-replace(`Fh);return xk(n)?n:null}`, `Fh);return xk(process.platform==="win32"?fn(Ck(n),qh):n)?n:null}`);
+replace(`Uh);return Pk(n)?n:null}`, `Uh);return Pk(process.platform==="win32"?fn(Ak(n),Gh):n)?n:null}`);
 
 fs.writeFileSync(file, src);
 console.log("patched cardboard.mjs");
