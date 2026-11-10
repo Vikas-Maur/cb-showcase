@@ -407,13 +407,13 @@ test("P2-11 (title bar): the strip's summary of a shared project: its state, its
 });
 
 // The title bar's strip (scripts/carton/strip-buttons.js), in its own bundle's scope: `n` the JSX runtime, `c` React,
-// `w` joins class names, `I` sends a strip command, `C` the strip's button class.
+// `w` joins class names, `I` sends a strip command, `S` the strip's button class.
 function strip({ narrow = false, width = narrow ? 1100 : 1522 } = {}) {
   const src = require(path.join(ROOT, "scripts", "carton", "strip-buttons.js"));
   const sent = [];
   // the window's width, as each of the strip's queries asks it ("(max-width: 1180px)", "(max-width: 1000px)")
   const matchMedia = (q) => ({ matches: width <= Number(/max-width:\s*(\d+)px/.exec(q)?.[1] ?? Infinity), addEventListener() {}, removeEventListener() {} });
-  const [Strip, Chip] = new Function("n", "c", "w", "I", "C", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
+  const [Strip, Chip] = new Function("n", "c", "w", "I", "S", "matchMedia", src + "\nreturn [__cbCartonStrip, __cbCartonCutChip];")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
   return { html: (panel) => render(React.createElement(Strip, { panel })), chip: (panel) => render(React.createElement(Chip, { panel })), Chip, sent };
 }
 
@@ -802,7 +802,7 @@ test("regress #3: an empty library offers Join beside Start a blank project, onl
   const row = d.edits.find(([from]) => from.includes('"data-analytics":"projects-empty-browse-recipes"'));
   assert.ok(row, "the empty library's button row is patched: " + d.edits.map(([f]) => f.slice(0, 60)).join(" | "));
   assert.equal(row[2], 1, "its anchor once");
-  assert.match(row[1], /children:\[i\.jsx\(__cbCartonJoinButton,\{className:v\(q4,"bg-white\/\[0\.06\] text-white\/85 hover:bg-white\/\[0\.10\] hover:text-white"\)\}\),a&&i\.jsxs\("button"/, "first in the row, in Browse recipes' look");
+  assert.match(row[1], /children:\[i\.jsx\(__cbCartonJoinButton,\{className:v\(K4,"bg-white\/\[0\.06\] text-white\/85 hover:bg-white\/\[0\.10\] hover:text-white"\)\}\),a&&i\.jsxs\("button"/, "first in the row, in Browse recipes' look");
   // the anchor is the empty state's, in Cardboard 1.4.0 as shipped (when its bundles are here)
   const pristine = process.env.CARDBOARD_PRISTINE && path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "renderer", "assets");
   if (pristine && fs.existsSync(pristine)) {
@@ -852,7 +852,7 @@ for (const when of ["before", "after"])
       const d = dashboard(bridge.ready, true, { win, portal: createPortal, doc: w.document });
       // the host sits in Home's root, beside Cardboard's own dialogs: one anchor, in Cardboard 1.4.0 as shipped
       const host = d.edits.find(([, to]) => to.includes("__cbCartonJoinHost"));
-      assert.deepEqual(host, ["i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog})", "i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})", 1]);
+      assert.deepEqual(host, ["i.jsx(pG,{...I.dialog}),i.jsx(PG,{...I.referenceDialog})", "i.jsx(pG,{...I.dialog}),i.jsx(PG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})", 1]);
       const pristine = process.env.CARDBOARD_PRISTINE && path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "renderer", "assets");
       if (pristine && fs.existsSync(pristine)) {
         const hits = fs.readdirSync(pristine).filter((f) => /^index-.*\.js$/.test(f)).map((f) => fs.readFileSync(path.join(pristine, f), "utf8").split(host[0]).length - 1);

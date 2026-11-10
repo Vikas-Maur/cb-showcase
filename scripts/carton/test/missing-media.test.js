@@ -31,7 +31,7 @@ const missingItem = (id) => ({ mediaId: id, fileName: id, status: "not_found", r
 test("the loader's two anchors are the media check and the hand-off to the offline list, once each", () => {
   const { edits } = load({ on: true });
   assert.deepEqual(edits.map(([from, , n]) => [from, n]), [
-    ["inspections:await kr.inspect(e.id,e.media)", 1],
+    ["inspections:await Ar.inspect(e.id,e.media)", 1],
     ["return t.missingItems.length>0&&zn.getState().addOfflineMediaBatch(t.missingItems),t}", 1],
   ]);
 });

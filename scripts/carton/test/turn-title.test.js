@@ -18,22 +18,23 @@ test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 // the staged, patched main.js (staged once)
 let staged = null;
 const stagedMain = () => (staged ??= fs.readFileSync(stage(PRISTINE, path.join(TMP, "stage"), { carton: true }).main, "utf8"));
-// 1.4.0's naming code as the build ships it, whole, from its declaration list (OWt=6 … hke=…)
+// Cardboard's naming code as the build ships it, whole, from its declaration list (1.5.0: rKt=6 … lSe=…; 1.4.0's
+// OWt … hke; the object below keeps 1.4.0's names for them)
 const namingSource = () => {
   const src = stagedMain();
-  const a = src.indexOf("OWt=6,RWt=40"), b = src.indexOf("});var VWt,QA,bke");
+  const a = src.indexOf("rKt=6,nKt=40"), b = src.indexOf("});var gKt,l3,uSe");
   assert.ok(a > 0 && b > a, "1.4.0's naming code where 1.4.0 has it");
-  return "var OWt,RWt,lke,DWt,MWt,dke,LWt,NWt,$Wt,jWt,UWt,uke,fke,FWt,pke,mke,zWt,BWt,HWt,qWt,hke;" + src.slice(a, b);
+  return "var rKt,nKt,nSe,iKt,sKt,iSe,oKt,aKt,cKt,lKt,dKt,sSe,oSe,uKt,aSe,cSe,fKt,pKt,mKt,hKt,lSe;" + src.slice(a, b);
 };
 // (its codex stream parser stubbed)
-const naming = () => new Function("Dg", namingSource() + ";return {hke,HWt,zWt,$Wt,uke};")(class { parse() { return []; } });
+const naming = () => new Function("$1", namingSource() + ";return {hke:lSe,HWt:mKt,zWt:fKt,$Wt:cKt,uke:sSe};")(class { parse() { return []; } });
 // the namer our patch hands to main-bridge, as the staged build has it
 const patchedNamer = (n, LEe) => {
   const main = stagedMain();
-  const from = main.indexOf("UKt=(__cartonMain.namer(") + "UKt=(__cartonMain.namer(".length, to = main.indexOf("),async e=>{let t=await LEe();return t?NEe(t,pke(e),uke):null})", from);
+  const from = main.indexOf("fJt=(__cartonMain.namer(") + "fJt=(__cartonMain.namer(".length, to = main.indexOf("),async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null})", from);
   assert.ok(from > 30 && to > from, "the namer handed over where 1.4.0 defines its chat namer");
   const oe = { app: { getPath: () => TMP } };
-  return new Function("LEe", "hke", "lV", "oe", "aV", "return " + main.slice(from, to))(LEe, n.hke, () => ({ ...process.env, FAKE_ARGS: path.join(TMP, "args.txt") }), oe, cp);
+  return new Function("Axe", "lSe", "kq", "oe", "_q", "return " + main.slice(from, to))(LEe, n.hke, () => ({ ...process.env, FAKE_ARGS: path.join(TMP, "args.txt") }), oe, cp);
 };
 const fake = (name, body) => {
   const file = path.join(TMP, name);
@@ -81,7 +82,7 @@ test("a binary the locator found but that has since gone: null, nothing thrown i
   const gone = path.join(TMP, "claude-gone");
   const code = namingSource() + `;
     const cp = require("node:child_process");
-    hke({ binary: { path: ${JSON.stringify(gone)}, provider: "claude" }, prompt: "SECRET-REQUEST", instruction: "x", env: process.env, cwd: process.cwd(), spawn: cp.spawn, timeoutMs: 20000, warn: (m) => console.error("warn:" + m) })
+    lSe({ binary: { path: ${JSON.stringify(gone)}, provider: "claude" }, prompt: "SECRET-REQUEST", instruction: "x", env: process.env, cwd: process.cwd(), spawn: cp.spawn, timeoutMs: 20000, warn: (m) => console.error("warn:" + m) })
       .then((r) => { console.log(JSON.stringify({ r, ms: Math.round(performance.now()) })); }, (e) => console.log(JSON.stringify({ rejected: String(e && e.code) })));`;
   const r = cp.spawnSync(process.execPath, ["-e", code], { encoding: "utf8", timeout: 60_000 });
   assert.equal(r.status, 0, "no uncaught error: " + r.stderr.slice(0, 400));

@@ -993,13 +993,13 @@ test("Play in History: Cardboard's own playback from a place, never the hover sc
 // staged build; the load stands in for the editor's (its finish is 12's).
 const PRISTINE = process.env.CARDBOARD_PRISTINE;
 const fs = require("fs"), os = require("os"), path = require("path");
-const noStage = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app" : false;
+const noStage = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard's unpacked app (1.5.0)" : false;
 let stagedToggle = null;
 const toggleSource = () => {
   if (stagedToggle) return stagedToggle;
-  const { stage } = require("./stage.js");
+  const { stage, bundle } = require("./stage.js");
   const out = stage(PRISTINE, fs.mkdtempSync(path.join(process.env.CARTON_TEST_DIR ?? os.tmpdir(), "rb-stage-")), { carton: true });
-  const src = fs.readFileSync(path.join(out.assets, "installErrorTelemetry-DxKId8tA.js"), "utf8");
+  const src = fs.readFileSync(bundle(out.assets, "installErrorTelemetry"), "utf8");
   const a = src.indexOf("toggleTimelinePlayback:()=>") + "toggleTimelinePlayback:".length, b = src.indexOf(",setIsAudioPreloading:", a);
   return (stagedToggle = src.slice(a, b));
 };
@@ -1017,7 +1017,8 @@ const loadingRig = async () => {
       load = () => { if (g !== window.__cbPreloadGen) return; st.isAudioPreloading = false; if (st.pendingPlayback) { st.pendingPlayback = false; st.isPlaying = true; } };
     },
   };
-  st.toggleTimelinePlayback = new Function("e", "t", "hg", "window", "return " + toggleSource())(() => st, (p) => Object.assign(st, p), (items) => Math.max(...items.map((i) => i.endTime)), window);
+  // (fg: the store's timeline end, `hg` in 1.4.0)
+  st.toggleTimelinePlayback = new Function("e", "t", "fg", "window", "return " + toggleSource())(() => st, (p) => Object.assign(st, p), (items) => Math.max(...items.map((i) => i.endTime)), window);
   window.__carton.store({ state: () => st, invoke: async () => true, on: () => () => {} });
   await window.__carton.ready;
   const b = window.__carton;

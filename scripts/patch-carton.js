@@ -297,7 +297,7 @@ if (mode === "--cli") {
     // H1: the GUI save's Carton fields (base, after, actor, intents) reach the worker in the scope.
     replace(
       '_e.handle("project:patch",async({document:t,scope:r})=>{',
-      '__cartonMain.library(St),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
+      '__cartonMain.library(wt),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
     );
     replace('wt.call("projects.updateScoped",t,r)', '__cartonMain.time(wt.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r))');
     // H5: a project change while Carton is on takes the pages' Carton path (adopt without an undo entry).
@@ -339,12 +339,12 @@ if (mode === "--cli") {
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
     // Item 4 (laptop, 2026-11-05): an agent turn's version is titled in a few words once it ends, the way 1.4.0 names its
-    // chats (UKt, its chat namer): the person's signed-in Claude Code, else Codex (LEe), through its own naming call
-    // (hke: haiku with a system prompt, no tools, no hooks, no MCP, no slash commands, no session kept; codex exec
+    // chats (fJt, its chat namer): the person's signed-in Claude Code, else Codex (Axe), through its own naming call
+    // (lSe: haiku with a system prompt, no tools, no hooks, no MCP, no slash commands, no session kept; codex exec
     // read-only; the answer's first line, at most 6 words and 40 characters, else null). Handed to main-bridge's namer()
-    // where UKt is defined; UKt itself is unchanged. hke gets NEe's own arguments and a longer timeout than its 3 s, as
+    // where fJt is defined; fJt itself is unchanged. lSe gets Pxe's own arguments and a longer timeout than its 3 s, as
     // nothing waits for a title and a cold start of the agent's binary on Windows can take that long.
-    replace('fJt=async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null}', 'fJt=(__cartonMain.namer((e,r,o)=>Axe().then(t=>t?hke({binary:t,prompt:e,instruction:r,env:lV(t),cwd:oe.app.getPath("temp"),spawn:(n,i,s)=>(0,aV.spawn)(n,i,{...s,stdio:["pipe","pipe","pipe"],windowsHide:!0}),timeoutMs:o,warn:n=>console.warn(`[naming] ${n}`)}):null)),async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null})');
+    replace('fJt=async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null}', 'fJt=(__cartonMain.namer((e,r,o)=>Axe().then(t=>t?lSe({binary:t,prompt:e,instruction:r,env:kq(t),cwd:oe.app.getPath("temp"),spawn:(n,i,s)=>(0,_q.spawn)(n,i,{...s,stdio:["pipe","pipe","pipe"],windowsHide:!0}),timeoutMs:o,warn:n=>console.warn(`[naming] ${n}`)}):null)),async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null})');
     // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude
     // Code through the Agent SDK transport instead (the hooks above), so this reaches it only if a build spawns it.
     replace('"--append-system-prompt",Bu(e),', '"--append-system-prompt",Bu(e),...__cartonMain.hostSettings(),');

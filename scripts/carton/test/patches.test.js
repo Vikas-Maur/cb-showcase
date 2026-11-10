@@ -11,7 +11,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path"), { spawnSync, execFileSync } = require("child_process");
-const { stage } = require("./stage.js");
+const { stage, bundle } = require("./stage.js");
 const S = require("./sync/support.js");
 
 const PRISTINE = process.env.CARDBOARD_PRISTINE;
@@ -155,26 +155,26 @@ test("the library worker: Windows build, Carton off, Carton on", { skip }, () =>
 // Baseline P3-9 (final re-check N3): the stage's text editor opened inside a read-only preview and dropped what was
 // typed. Both ways into it ask the bridge first (renderer-bridge.test.js: refused only in a Carton preview, with
 // Cardboard's own note), and the store hands the bridge Cardboard's own guard of its edits, `me`: declared with the
-// `Rde` the hook already passes (`const Ede=me,…,Rde=…;` right before it), so the same binding. Each once, on the
+// adopt the hook already passes (1.5.0: `const Ade=me,…,Mde=…;` right before it; 1.4.0's Ede, Rde), so the same binding. Each once, on the
 // bundles as the build patches them (the Windows patches, then Carton's).
 test("Carton on: the stage's text editor asks the bridge before it opens; the store hands over Cardboard's guard", { skip }, () => {
   const read = (re) => { const f = fs.readdirSync(carton.assets).find((n) => re.test(n)); return fs.readFileSync(path.join(carton.assets, f), "utf8"); };
   const editor = read(/^EditorRoute-.*\.js$/), store = read(/^installErrorTelemetry-.*\.js$/);
   const count = (s, t) => s.split(t).length - 1;
-  assert.equal(count(editor, 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(E(!1),S({kind:"edit-text"'), 1, "Enter on a selected title");
-  assert.equal(count(editor, 'if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;const{selectTimelineItem:ze,setEditingTextItemId:It}'), 1, "a double-click on a title or caption");
+  assert.equal(count(editor, 'ue=o.useCallback(()=>{B&&B.type==="text"&&!pe&&!window.__carton?.refuse?.()&&(E(!1),T({kind:"edit-text"'), 1, "Enter on a selected title");
+  assert.equal(count(editor, 'if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;const{selectTimelineItem:$e,setEditingTextItemId:kt}'), 1, "a double-click on a title or caption");
   assert.equal(count(editor, "__carton?.refuse"), 2, "and nowhere else");
   // regress prod3: in a preview the stage's text and caption toolbars aren't shown (vn: what both are given); U is the
   // editor's store, whose state the bridge's adopt sets (cartonPreview), as the text toolbar itself reads it
-  assert.equal(count(editor, "vn=B&&pe&&!p&&ct&&!ue&&!M&&!x&&!U.getState().cartonPreview?{item:B,bounds:pe,canvasRect:et,scale:b.scale}:null"), 1, "the toolbars' props, none in a preview");
-  assert.equal(count(editor, 'vn?.item.type==="caption"&&c.jsx(TB,{...vn}),vn?.item.type==="text"&&c.jsx(BB,{...vn})'), 1, "both toolbars render from it");
-  const guard = store.indexOf("function me(){return _v()?(xv(),!0):!1}const Ede=me,"), hook = store.indexOf("ne.setState=tN(");
+  assert.equal(count(editor, "vn=B&&fe&&!p&&dt&&!pe&&!M&&!x&&!U.getState().cartonPreview?{item:B,bounds:fe,canvasRect:nt,scale:b.scale}:null"), 1, "the toolbars' props, none in a preview");
+  assert.equal(count(editor, 'vn?.item.type==="caption"&&c.jsx(PB,{...vn}),vn?.item.type==="text"&&c.jsx(XB,{...vn})'), 1, "both toolbars render from it");
+  const guard = store.indexOf("function me(){return Tv()?(_v(),!0):!1}const Ade=me,"), hook = store.indexOf("ne.setState=nN(");
   const between = store.slice(guard, hook);
-  assert.ok(guard > 0 && hook > guard && between.includes(",Rde=t=>{") && between.endsWith(";") && between.length < 2000, "me and Rde in one statement list, right before the hook");
-  assert.equal(count(store, "deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});"), 1, "the hook passes it, and the store's subscribe and playback clock (final re-check N5)");
-  // qx: the playback clock, a binding of the module itself (exported), declared before the hook runs
-  assert.ok(/[,;]qx=\{get:\(\)=>mg,set:/.test(store) && store.search(/[,;]qx=\{get:/) < hook && /\bqx as aI\b/.test(store), "qx is the module's own playback clock");
-  assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
+  assert.ok(guard > 0 && hook > guard && between.includes(",Mde=t=>{") && between.endsWith(";") && between.length < 2000, "me and adopt (Mde) in one statement list, right before the hook");
+  assert.equal(count(store, "deserialize:sv,projects:De,refuse:me,subscribe:ne.subscribe,clock:$x.get});"), 1, "the hook passes it, and the store's subscribe and playback clock (final re-check N5)");
+  // $x (1.4.0's qx): the playback clock, a binding of the module itself (exported), declared before the hook runs
+  assert.ok(/[,;]\$x=\{get:\(\)=>hg,set:/.test(store) && store.search(/[,;]\$x=\{get:/) < hook && /[{,]\$x as aK\b/.test(store), "$x is the module's own playback clock");
+  assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&$x.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
 });
 
 // Carton UX redesign PLAN 2.1: the title bar's cut chip goes before Cardboard's own "16:9 ⌄" (Bt) and the History and
@@ -202,48 +202,48 @@ test("Carton on: the cut chip sits before the aspect ratio, the icons before Rep
   assert.equal(count(plain, 'n.jsx(fn,{})'), 1, "\"+\" is fn, after the tabs in that list");
   assert.ok(plain.includes('fn=()=>n.jsx("button",{type:"button","aria-label":"New project"'), "fn is New project");
   assert.ok(plain.includes('className:"flex max-w-56 min-w-32 flex-1 basis-52 items-center"'), "a tab is 8rem at least (min-w-32)");
-  assert.equal(count(tabs, 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",Y),style:{width:28},children:n.jsx(We,'), 1, "\"+\" 28 px wide, as its class means");
+  assert.equal(count(tabs, 'className:w(W,"ml-[2px] w-[28px] shrink-0 justify-center",K),style:{width:28},children:n.jsx(We,'), 1, "\"+\" 28 px wide, as its class means");
   // Bt is the aspect ratio chip and Ut Report an issue, as the strip names them
   assert.ok(/Bt=\(\{value:e\}\)=>\{[\s\S]{0,1600}"aria-label":"Aspect ratio"/.test(plain) || plain.includes('"data-analytics":"strip-aspect-ratio"'), "Bt is the aspect ratio's");
   assert.ok(plain.includes('Ut=()=>n.jsxs("button",{type:"button","aria-label":"Report an issue"'), "Ut is Report an issue");
   const main = fs.readFileSync(carton.main, "utf8");
-  assert.equal(count(main, '_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,__cartonMain.panel(t))})'), 1);
+  assert.equal(count(main, '_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&fe.__cartonPanel(r.sender,__cartonMain.panel(t))})'), 1);
   assert.equal(count(main, "if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){__cartonMain.takesKeys(t.action)&&r.focus();_e.emit(r,\"carton:command\",__cartonMain.command(t));return}"), 1);
   // main's own command handler, where it sends the active tab's webContents (r) the strip's commands
   assert.ok(main.includes("activeContents(){return this.model.activeView()?.webContents??null}"), "r is the active tab's webContents");
 });
 
 // Carton UX redesign Workstream 1 (PLAN 1.4–1.6), on the bundles as the build patches them: each new anchor once, and
-// Cardboard's own refusal code (Tm, ure, _v, xv, me, as the patched store has them) run against the real renderer
+// Cardboard's own refusal code (1.5.0's km, fre, Tv, _v, me; 1.4.0's Tm, ure, _v, xv, me, as the patched store has them) run against the real renderer
 // bridge. In a Carton preview every edit its guard refuses (Delete, a drag or trim, Ctrl+Z, Enter on a title) is still
 // refused, with the page's edit-attempt toast in place of its note; with no Carton part listening, its note, in Carton's
 // words; with Carton off, or outside a preview (an agent's lock), Cardboard's own note, unchanged.
 test("PLAN 1.4–1.6: the refusal asks Carton first only in a preview, the timeline's wrapper and Export's two opens, each once", { skip }, () => {
   const read = (dir, re) => fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((n) => re.test(n))), "utf8");
-  const editor = read(carton.assets, /^EditorRoute-.*\.js$/), store = read(carton.assets, /^installErrorTelemetry-.*\.js$/), index = fs.readFileSync(path.join(carton.assets, "index-DufLJgUU.js"), "utf8");
-  const plain = { editor: read(win.assets, /^EditorRoute-.*\.js$/), store: read(win.assets, /^installErrorTelemetry-.*\.js$/), index: fs.readFileSync(path.join(win.assets, "index-DufLJgUU.js"), "utf8") };
+  const editor = read(carton.assets, /^EditorRoute-.*\.js$/), store = read(carton.assets, /^installErrorTelemetry-.*\.js$/), index = fs.readFileSync(bundle(carton.assets, "index"), "utf8");
+  const plain = { editor: read(win.assets, /^EditorRoute-.*\.js$/), store: read(win.assets, /^installErrorTelemetry-.*\.js$/), index: fs.readFileSync(bundle(win.assets, "index"), "utf8") };
   const count = (s, t) => s.split(t).length - 1;
   // the anchors, once each in the bundles as the Windows patches leave them
-  assert.equal(count(plain.store, "function xv(){const t=ne.getState(),e=ure(t);"), 1);
-  assert.equal(count(plain.editor, 'c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})'), 1);
-  assert.equal(count(plain.editor, "sZ=e=>{U.getState().setIsPlaying(!1),"), 1);
-  assert.equal(count(plain.index, '"export.start":async e=>{const t=ks();if(t.isExporting)'), 1);
+  assert.equal(count(plain.store, "function _v(){const t=ne.getState(),e=fre(t);"), 1);
+  assert.equal(count(plain.editor, 'c.jsx("div",{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(xZ,{})})'), 1);
+  assert.equal(count(plain.editor, "vZ=e=>{U.getState().setIsPlaying(!1),"), 1);
+  assert.equal(count(plain.index, '"export.start":async e=>{const t=Es();if(t.isExporting)'), 1);
   // and patched, once each
-  assert.equal(count(store, "function xv(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=ure(t);"), 1);
-  assert.equal(count(editor, 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(aZ,{})})'), 1);
+  assert.equal(count(store, "function _v(){const t=ne.getState();if(t.cartonPreview&&window.__carton.blocked())return;const e=fre(t);"), 1);
+  assert.equal(count(editor, 'c.jsx(__cbCartonTimeline,{className:"contents","data-analytics-region":"editor-timeline",children:c.jsx(xZ,{})})'), 1);
   assert.equal(count(editor, '"data-analytics-region":"editor-timeline"'), 1, "the timeline's region is that one");
   assert.ok(editor.includes("function __cbCartonTimeline(props)"), "with its code");
-  assert.equal(count(editor, "sZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>sZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),"), 1);
-  // sZ is Export's: the EXPORT command calls it, and it opens the Export dialog's store
-  assert.ok(editor.includes("tn(Vt.EXPORT,o.useCallback(()=>sZ(e),[e]))") && /sZ=\(e,__again\)=>\{[^]{0,420}Ro\.getState\(\)\.open\(\)\}/.test(editor), "sZ opens Export");
-  assert.equal(count(index, '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=ks();if(t.isExporting)'), 1);
+  assert.equal(count(editor, "vZ=(e,__again)=>{const __b=!__again&&window.__carton?.beforeExport?.();if(__b){__b.then(()=>vZ(e,!0),()=>{});return}U.getState().setIsPlaying(!1),"), 1);
+  // vZ (1.4.0's sZ) is Export's: the EXPORT command calls it, and it opens the Export dialog's store
+  assert.ok(editor.includes("tn(Vt.EXPORT,o.useCallback(()=>vZ(e),[e]))") && /vZ=\(e,__again\)=>\{[^]{0,420}Ao\.getState\(\)\.open\(\)\}/.test(editor), "vZ opens Export");
+  assert.equal(count(index, '"export.start":async e=>{const __b=window.__carton?.beforeExport?.();__b&&await __b;const t=Es();if(t.isExporting)'), 1);
   // every edit path named in the plan goes through Cardboard's guard me() before it writes
   for (const a of ["removeTimelineItems:(n,r)=>{if(me()", "updateTimelineItems:(n,r)=>{if(me()", "updateTimelineItem:(n,r,i)=>{if(me()", "commitReorder:()=>{if(me()", "undo:()=>{if(window.__carton.undo())return;if(me())return;"])
     assert.equal(count(store, a), 1, a);
-  assert.ok(store.includes("isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv"), "the gated setter's refusals go through xv too");
+  assert.ok(store.includes("isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v"), "the gated setter's refusals go through xv too");
   // Cardboard's refusal code, as patched, against the real bridge (renderer-bridge.js)
-  const tm = store.match(/[,;]Tm=(t=>!!t\.cartonPreview\|\|ah\(\)\|\|t\.timelineLockState!=="unlocked"\|\|!!t\.projectId&&mv\(t\.projectId\)),rN=/)[1];
-  const from = store.indexOf("const lre=1800,"), to = store.indexOf("function me(){return _v()?(xv(),!0):!1}") + "function me(){return _v()?(xv(),!0):!1}".length;
+  const tm = store.match(/[,;]km=(t=>!!t\.cartonPreview\|\|sh\(\)\|\|t\.timelineLockState!=="unlocked"\|\|!!t\.projectId&&hv\(t\.projectId\)),iN=/)[1];
+  const from = store.indexOf("const dre=1800,"), to = store.indexOf("function me(){return Tv()?(_v(),!0):!1}") + "function me(){return Tv()?(_v(),!0):!1}".length;
   assert.ok(from > 0 && to > from && to - from < 1500, "the refusal's code, in one piece");
   const run = (enabled, start) => {
     const w = {};
@@ -251,7 +251,8 @@ test("PLAN 1.4–1.6: the refusal asks Carton first only in a preview, the timel
     let state = { projectId: "p1", cartonPreview: null, timelineLockState: "unlocked", tracks: [], timelineItems: [], ...start };
     const ne = { getState: () => state, setState: (p) => { state = { ...state, ...p }; } };
     w.__carton.store({ state: () => state, raw: (p) => ne.setState(p), adopt: (p) => ne.setState(p), armed: () => false, flush: async () => {}, invoke: async (_c, { method }) => (method === "enabled" ? enabled : method === "checkout" || method === "head" ? { id: "p1", tracks: [], timelineItems: [], aspectRatio: "16:9" } : null), on: () => () => {}, deserialize: (d) => d, projects: { getState: () => ({ projects: [] }), setState() {} } });
-    const g = new Function("ne", "ah", "mv", "window", `const Tm=${tm};let kd=null;${store.slice(from, to)};return {me,xv};`)(ne, () => false, () => false, w);
+    // (1.5.0's names: km, sh, hv, Sd, _v; 1.4.0's Tm, ah, mv, kd, xv)
+    const g = new Function("ne", "sh", "hv", "window", `const km=${tm};let Sd=null;${store.slice(from, to)};return {me,xv:_v};`)(ne, () => false, () => false, w);
     return { w, g, state: () => state, set: (p) => ne.setState(p) };
   };
   return (async () => {

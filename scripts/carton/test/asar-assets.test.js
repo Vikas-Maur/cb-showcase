@@ -14,7 +14,7 @@ const PRISTINE = process.env.CARDBOARD_PRISTINE;
 const skip = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app and cli" : false;
 const TMP = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.tmpdir(), "carton-patch-tests"), "asar-assets");
 const HELPERS = require("../../asar-assets.js");
-const STOCK = "let s=Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})";
+const STOCK = "let s=jSe.Readable.toWeb((0,$Se.createReadStream)(e));return new Response(s,{status:200,headers:i})";
 
 let pristine, patched;
 test.before(() => {
@@ -24,27 +24,27 @@ test.before(() => {
   patched = fs.readFileSync(stage(PRISTINE, path.join(TMP, "stage")).main, "utf8");
 });
 
-// The app:// module (Pq) of a main.js, run with a stand-in electron; returns the request handler Gke registers.
+// The app:// module (Pq) of a main.js, run with a stand-in electron; returns the request handler BSe registers.
 const appHandler = (bundle, win) => {
-  const a = bundle.indexOf('hw=require("electron"),Bke='), end = "for(let s of t)s.handle(Iq,i)}", b = bundle.indexOf(end, a);
+  const a = bundle.indexOf('kw=require("electron"),$Se='), end = "for(let s of t)s.handle(BV,i)}", b = bundle.indexOf(end, a);
   assert.ok(a > 0 && b > a, "the app:// module");
   const electron = { net: { fetch: () => new Response("passed on") }, protocol: { registerSchemesAsPrivileged() {} } };
-  const fn = new Function("require", "__cbWin", HELPERS + "\nvar hw,Bke,Aq,_a,Hke,Iq,qke,Vke,uGt,fGt,Wke,pGt,mGt,hGt,zke,nI,Gke;var Df=()=>{},Vs=\"cardboard-media\";\n" +
-    bundle.slice(a, b + end.length) + ";\nreturn Gke;");
-  const Gke = fn((m) => (m === "electron" ? electron : require(m)), win);
+  const fn = new Function("require", "__cbWin", HELPERS + "\nvar kw,$Se,zV,Ea,jSe,BV,USe,FSe,NKt,$Kt,zSe,jKt,UKt,FKt,NSe,p3,BSe;var Ff=()=>{},Js=\"cardboard-media\";\n" +
+    bundle.slice(a, b + end.length) + ";\nreturn BSe;");
+  const BSe = fn((m) => (m === "electron" ? electron : require(m)), win);
   let handler;
-  return (root) => (Gke(root, [{ handle: (scheme, h) => { assert.equal(scheme, "app"); handler = h; } }]), handler);
+  return (root) => (BSe(root, [{ handle: (scheme, h) => { assert.equal(scheme, "app"); handler = h; } }]), handler);
 };
 
 test("patch 16: on Windows a file in app.asar is read, not streamed; elsewhere, and outside an archive, as before", { skip }, () => {
   const count = (s, t) => s.split(t).length - 1;
   assert.equal(count(pristine, STOCK), 1);
   assert.equal(count(patched, STOCK), 0);
-  assert.equal(count(patched, "let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})"), 1);
-  assert.equal(count(patched, "he.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(he.window);let a="), 1);
+  assert.equal(count(patched, "let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):jSe.Readable.toWeb((0,$Se.createReadStream)(e));return new Response(s,{status:200,headers:i})"), 1);
+  assert.equal(count(patched, "fe.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(fe.window);let a="), 1);
   assert.ok(patched.includes(HELPERS), "the helpers are in the preamble");
   // The media handler (cardboard-media, ranges) serves the library, never app.asar: untouched.
-  assert.equal(count(patched, "let f=kke.Readable.toWeb((0,wke.createReadStream)(n.path,{start:c,end:d}));"), 1);
+  assert.equal(count(patched, "let f=bSe.Readable.toWeb((0,hSe.createReadStream)(n.path,{start:c,end:d}));"), 1);
   const H = new Function(HELPERS + "\nreturn { __cbInAsar };")();
   for (const p of ["C:\\Program Files\\Cardboard\\resources\\app.asar\\dist\\renderer\\index.html", "/x/app.asar/a.js", "C:\\x\\App.ASAR"]) assert.ok(H.__cbInAsar(p), p);
   for (const p of ["C:\\x\\app.asar.unpacked\\a.node", "C:\\Users\\me\\Videos\\clip.mp4", "/x/notasar/a.js", "C:\\x\\my.asarfile\\a"]) assert.ok(!H.__cbInAsar(p), p);
