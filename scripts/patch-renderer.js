@@ -546,7 +546,8 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
       `__cbSlow(kind,ms){const now=Date.now();now-(this.__cbSlowAt??0)<1e4||(this.__cbSlowAt=now,window.__cbLog?.("preview.slow",{kind,ms:Math.round(ms)}))}updateScales(t){`,
   );
   // 14 (speed), dropped for 1.5.0. On 1.4.0, while playing, a graphic drew with the newest video frames already
-  // fetched instead of waiting for this moment's. Cardboard 1.5.0's pump fetches only the videos the graphic drew
+  // fetched instead of waiting for this moment's. Cardboard reworked its pump after 1.4.0 (in 1.4.1; 1.5.0 adds a seek
+  // reset and retryable start errors): it fetches only the videos the graphic drew
   // last time, and the page answers "needsFrames" with the ones it was missing; reusing held frames would answer that
   // with the same frames again, a loop, and the held set could be the wrong videos or size. Doing it safely means
   // keying held frames on 1.5.0's draw set, sizes and bitmaps, and measuring again on Windows first. So the pump is

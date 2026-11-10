@@ -35,7 +35,7 @@ Porting it took:
 - **Proxies.** 1.5.0 asks the hardware encoder for 1.5 times the source's bitrate, kept between a third of 12 Mb/s
   and 12 Mb/s (6 Mb/s for cloud proxies), instead of a fixed 12 Mb/s. NVENC's constant quality keeps that as its
   cap, and its buffer follows the new rate's unit.
-- **Graphics.** 1.5.0 reworked the frame pump that feeds a graphic its video frames. The fix that waits for a slow
+- **Graphics.** Cardboard reworked the frame pump that feeds a graphic its video frames after 1.4.0 (in 1.4.1, refined in 1.5.0). The fix that waits for a slow
   frame instead of rebuilding the graphic (patch-renderer 13) is ported. The speed change that drew with the newest
   ready frame while playing (14) is left out: it doesn't fit 1.5.0's pump (see patch-renderer.js), so graphics play
   through Cardboard's own pump in both builds.
