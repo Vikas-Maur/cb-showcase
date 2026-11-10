@@ -59,24 +59,24 @@ patch(indexFile, "index.orig.js", (replace) => {
   // media filter (VH) throws away, so a folder imported nothing. The entries that can be walked ($H)
   // are only readable while the drop event is dispatching, and Cardboard read them after an await.
   replace(
-    `async function PH(e){const t=[];return await Promise.all(e.map(a=>O5(a,t))),t}`,
-    `async function PH(e){const t=[];return await Promise.all(e.map(a=>O5(a,t))),t}` +
+    `async function qH(e){const t=[];return await Promise.all(e.map(a=>U5(a,t))),t}`,
+    `async function qH(e){const t=[];return await Promise.all(e.map(a=>U5(a,t))),t}` +
       // The drop's entries, if any of them is a folder. Call while the drop event is dispatching.
-      `const __cbDroppedFolders=e=>{const t=$H(e);return t.some(a=>a.isDirectory)?t:null},` +
+      `const __cbDroppedFolders=e=>{const t=JH(e);return t.some(a=>a.isDirectory)?t:null},` +
       `__cbPath=e=>window.desktop?.getPathForFile(e)||e.name,` +
       // Every file in the dropped folders and their subfolders (and any files dropped with them), in path order.
-      `__cbWalk=async e=>(await PH(e)).sort((t,a)=>__cbPath(t).localeCompare(__cbPath(a),void 0,{numeric:!0,sensitivity:"base"})),` +
+      `__cbWalk=async e=>(await qH(e)).sort((t,a)=>__cbPath(t).localeCompare(__cbPath(a),void 0,{numeric:!0,sensitivity:"base"})),` +
       // For drop targets that opt in: the media in dropped folders. When there is none, the files as
       // dropped, so the target still says what it could not add; with media set, only media, for targets
       // that take any file without a type (a folder of code would attach every LICENSE and Makefile).
-      `__cbDropFiles=async(e,m)=>{const t=Array.from(e.files),a=__cbDroppedFolders(e);if(!a)return t;const n=await __cbWalk(a),s=n.filter(VH);return m||s.length>0?s:n.length>0?n:t};`,
+      `__cbDropFiles=async(e,m)=>{const t=Array.from(e.files),a=__cbDroppedFolders(e);if(!a)return t;const n=await __cbWalk(a),s=n.filter(YH);return m||s.length>0?s:n.length>0?n:t};`,
   );
 
   // 1. The editor (its media panel, and anywhere else in the editor): a dropped folder's media files go
   // through the usual filter, which also skips files the project already has.
   replace(
-    `gQ=async(e,t)=>{const a=Array.from(e.files);try{const n=await Fg(e);`,
-    `gQ=async(e,t)=>{const a=Array.from(e.files),__cbDirs=__cbDroppedFolders(e);try{if(__cbDirs)return z1((await __cbWalk(__cbDirs)).map(c=>({file:c})),t);const n=await Fg(e);`,
+    `CJ=async(e,t)=>{const a=Array.from(e.files);try{const n=await Vg(e);`,
+    `CJ=async(e,t)=>{const a=Array.from(e.files),__cbDirs=__cbDroppedFolders(e);try{if(__cbDirs)return W1((await __cbWalk(__cbDirs)).map(c=>({file:c})),t);const n=await Vg(e);`,
   );
 
   // 2. The Dashboard: a dropped folder's media go where dropped files go (the prompt's attachments). The
@@ -87,11 +87,11 @@ patch(indexFile, "index.orig.js", (replace) => {
     `s.current=0,n(!1),e(Array.from(l.dataTransfer.files)))},[t,e])`,
     `s.current=0,n(!1),__cbF?__cbDropFiles(l.dataTransfer,__cbF==="media").then(e,a=>console.error("[desktop] could not read the dropped folder:",a)):e(Array.from(l.dataTransfer.files)))},[t,e,__cbF])`,
   );
-  replace(`R=Pn({onFiles:I})`, `R=Pn({onFiles:I,folders:!0})`);
+  replace(`N=Pn({onFiles:I})`, `N=Pn({onFiles:I,folders:!0})`);
   // The Dashboard's prompt box ("drop footage") has its own drop target, which keeps the drop from the
   // page's: a folder dropped there became one attachment named after the folder. Now it attaches the
   // folder's media, and nothing else (its filter lets files without a type through).
-  replace(`_=Pn({onFiles:L=>C(L),contain:!0})`, `_=Pn({onFiles:L=>C(L),contain:!0,folders:"media"})`);
+  replace(`j=Pn({onFiles:D=>C(D),contain:!0})`, `j=Pn({onFiles:D=>C(D),contain:!0,folders:"media"})`);
 
   // ── Keyboard and activity log ──
   // Helpers, at the top level (and before the shortcut keyboard, z9, is built).
@@ -115,7 +115,7 @@ default:return[k]}}));
 const __cbLayer=e=>[(e.ctrl||e.meta)&&"Ctrl",e.alt&&"Alt",e.shift&&"Shift"].filter(Boolean).map(m=>m+"+").join("");
 // Windows' redo is Ctrl+Y. Redo takes it too while Redo has its default Ctrl+Shift+Z and no shortcut
 // is set to Ctrl+Y.
-const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="z"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!Oi.some(o=>{const x=get(o.id);return x&&IH(e,x)});
+const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="z"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!$i.some(o=>{const x=get(o.id);return x&&IH(e,x)});
 
 // Activity log. Main writes it; this page reports shortcuts, keys nothing handled, how an agent
 // question was answered, errors and error toasts. Never text typed into a field.
@@ -154,7 +154,7 @@ addEventListener("error",e=>{__cbLog("error",{msg:String(e.message).slice(0,500)
 addEventListener("unhandledrejection",e=>{const r=e.reason;__cbLog("error",{msg:String(r?.stack??r?.message??r).slice(0,800),rejection:!0})});
 for(const k of["error","warning"]){const f=ue[k];typeof f=="function"&&(ue[k]=(m,o)=>(__cbLog("toast",{kind:k,...typeof m=="string"&&{msg:m.slice(0,300)},...typeof o?.description=="string"&&{detail:o.description.slice(0,300)}}),f(m,o)))}
 `;
-  replace(`async function O5(e,t){`, helpers + `async function O5(e,t){`);
+  replace(`async function U5(e,t){`, helpers + `async function U5(e,t){`);
 
   // 3. Recording a shortcut on Windows stores Ctrl as meta (see __cbPrimary). It stored ctrl, which the
   // conflict check told apart from the built-in meta ones, so Ctrl+D for Split was saved without a
@@ -164,34 +164,34 @@ for(const k of["error","warning"]){const f=ue[k];typeof f=="function"&&(ue[k]=(m
     `const m={key:u.key};__cbWinKeys?(u.ctrlKey||u.metaKey)&&(m.meta=!0):(u.ctrlKey&&(m.ctrl=!0),u.metaKey&&(m.meta=!0))`,
   );
   // Shortcuts recorded before this fix still have ctrl: compare them as meta too.
-  replace(`N4=e=>{`, `N4=e=>{__cbWinKeys&&(e=__cbPrimary(e));`);
-  replace(`P5=(e,t)=>`, `P5=(e,t)=>(__cbWinKeys&&(e=__cbPrimary(e),t=__cbPrimary(t)),0)||`);
+  replace(`R4=e=>{`, `R4=e=>{__cbWinKeys&&(e=__cbPrimary(e));`);
+  replace(`O5=(e,t)=>`, `O5=(e,t)=>(__cbWinKeys&&(e=__cbPrimary(e),t=__cbPrimary(t)),0)||`);
 
   // 4. The Shortcuts page's keyboard and its layers, the Windows way (see __cbBoard).
-  replace(`z9=[[`, `z9=__cbBoard([[`);
-  replace(`,CK=new Map(`, `),CK=new Map(`);
-  replace("bd=e=>`", "bd=e=>__cbWinKeys?__cbLayer(e):`");
-  replace(`IK=e=>e===""?"No modifier":e`, `IK=e=>e===""?"No modifier":__cbWinKeys?e.slice(0,-1):e`);
+  replace(`G9=[[`, `G9=__cbBoard([[`);
+  replace(`,PK=new Map(`, `),PK=new Map(`);
+  replace("xd=e=>`", "xd=e=>__cbWinKeys?__cbLayer(e):`");
+  replace(`ZK=e=>e===""?"No modifier":e`, `ZK=e=>e===""?"No modifier":__cbWinKeys?e.slice(0,-1):e`);
   replace("\" on their own\":` with ${d}`", "\" on their own\":` with ${__cbWinKeys?d.slice(0,-1):d}`");
 
   // 5. Ctrl+Y redoes on Windows (see __cbRedoY), and every shortcut that runs goes in the activity log.
   replace(
-    `if(h&&IH(l,h)){if(V5()&&(h.meta||h.ctrl)){const u=h.key.toLowerCase();if(u==="c"||u==="x")return}s&&l.preventDefault(),t()}`,
-    `if(h&&(IH(l,h)||__cbRedoY(e,h,l,c))){if(V5()&&(h.meta||h.ctrl)){const u=h.key.toLowerCase();if(u==="c"||u==="x")return}s&&l.preventDefault(),__cbShortcut(e,l),t()}`,
+    `if(h&&UH(l,h)){if(B5()&&(h.meta||h.ctrl)){const u=h.key.toLowerCase();if(u==="c"||u==="x")return}s&&l.preventDefault(),t()}`,
+    `if(h&&(UH(l,h)||__cbRedoY(e,h,l,c))){if(B5()&&(h.meta||h.ctrl)){const u=h.key.toLowerCase();if(u==="c"||u==="x")return}s&&l.preventDefault(),__cbShortcut(e,l),t()}`,
   );
 
   // 6. An answer to an agent question says how it was given (a key, or a click); main logs it with how
   // long the question waited.
-  replace(`zY=(e,t,a={})=>z("local-agent:answer",{id:e,answers:t,`, `zY=(e,t,a={})=>z("local-agent:answer",{via:__cbVia(),id:e,answers:t,`);
+  replace(`eX=(e,t,a={})=>q("local-agent:answer",{id:e,answers:t,`, `eX=(e,t,a={})=>q("local-agent:answer",{via:__cbVia(),id:e,answers:t,`);
 
   // 7. Windows wording (see onWin): Settings → Library and Agents, the plans note, the project menu.
   macWords(replace, [
     [`x.startup?%:x.name`, "this Mac", "this PC"],
     [`children:%`, "Show in Finder", "Show in File Explorer"],
-    [`Ze(%)`, "Could not show the project in Finder", "Could not show the project in File Explorer"],
+    [`ze(%)`, "Could not show the project in Finder", "Could not show the project in File Explorer"],
     [`lead:%`, "Let Claude Code and Codex on this Mac edit your projects. They sign in with your own Claude and ChatGPT accounts.",
       "Let Claude Code and Codex on this PC edit your projects. They sign in with your own Claude and ChatGPT accounts."],
-    [`Ce,{title:%`, "On this Mac", "On this PC"],
+    [`Me,{title:%`, "On this Mac", "On this PC"],
     [`detail:%`, "Choose a drive connected to this Mac.", "Choose a drive connected to this PC."],
     [`%`, "Editing with your own agents on this Mac is free. Cloud, captions and generation need a plan.",
       "Editing with your own agents on this PC is free. Cloud, captions and generation need a plan."],
@@ -271,7 +271,7 @@ if(!c){if(m.button===0){const fix=()=>document.activeElement===t&&__cbSnap(t,p);
 m.preventDefault();
 if(m.button!==0||m.detail>1)return;
 const x=m.clientX,y=m.clientY,n=c.dataset.chip;
-addEventListener("mouseup",u=>{if(Math.abs(u.clientX-x)>4||Math.abs(u.clientY-y)>4||__cbChipAt(t,u.clientX,u.clientY)?.dataset.chip!==n)return;const k=kr(t.value,p)[Number(n)];k&&__cbOpen(t,k.pick??p.find(q=>q.token===k.token),skills)},{once:!0,capture:!0})};
+addEventListener("mouseup",u=>{if(Math.abs(u.clientX-x)>4||Math.abs(u.clientY-y)>4||__cbChipAt(t,u.clientX,u.clientY)?.dataset.chip!==n)return;const k=Er(t.value,p)[Number(n)];k&&__cbOpen(t,k.pick??p.find(q=>q.token===k.token),skills)},{once:!0,capture:!0})};
 // The word keys (Ctrl+Backspace/Delete/←/→, Option on a Mac).
 const __cbMac=window.desktop?.platform==="darwin",__cbWordKey=k=>__cbMac?k.altKey&&!k.ctrlKey&&!k.metaKey:k.ctrlKey&&!k.altKey&&!k.metaKey;
 // Where the caret at q is drawn ({left, top, bottom}): the chips' overlay beside the textarea holds the same
@@ -329,7 +329,7 @@ if(!r)return!1;
 fwd?t.setSelectionRange(s,r[1]):t.setSelectionRange(r[0],s);
 return!0}
 if(k.metaKey||k.ctrlKey||s===e&&!__cbNear(v,p,s))return!1;
-const r=TD(v,p,s,e,fwd?"forward":"backward");
+const r=HD(v,p,s,e,fwd?"forward":"backward");
 if(r===null)return!1;
 t.setSelectionRange(r.start,r.end);
 return!0};
@@ -339,24 +339,24 @@ return!0};
 // (its text editing) keep their ways.
 addEventListener("pointerdown",e=>{const a=document.activeElement,t=e.target;if(!e.isTrusted||!(a instanceof HTMLElement)||a===document.body||!(t instanceof Element)||a.contains(t))return;const r=t.closest('[data-analytics-region="editor-timeline"],[data-analytics-region="editor-preview"]');r&&(!r.contains(a)||t.closest("[data-timeline-scroll],[data-vertical-scroll-region]"))&&a.blur()},{capture:!0,passive:!0});
 `;
-  replace(`function J0(e){`, badges + `function J0(e){`);
+  replace(`function ei(e){`, badges + `function ei(e){`);
   // The agent's prompt box: its keys, its selection and its mouse presses.
   replace(
-    `if((W.key==="Backspace"||W.key==="Delete")&&!W.metaKey&&!W.ctrlKey&&!Me.busy){`,
-    `if(__cbChipKey(W,rn))return;if((W.key==="Backspace"||W.key==="Delete")&&!W.metaKey&&!W.ctrlKey&&!Me.busy){`,
+    `if((G.key==="Backspace"||G.key==="Delete")&&!G.metaKey&&!G.ctrlKey&&!Ne.busy){`,
+    `if(__cbChipKey(G,sn))return;if((G.key==="Backspace"||G.key==="Delete")&&!G.metaKey&&!G.ctrlKey&&!Ne.busy){`,
   );
   replace(
-    `onClick:()=>t1(),onSelect:()=>t1(),`,
-    `onClick:()=>t1(),onSelect:W=>{__cbSnap(W.currentTarget,rn),t1()},onMouseDown:W=>__cbChipDown(W,rn,Z),onMouseMove:__cbChipCursor,`,
+    `onClick:()=>a1(),onSelect:()=>a1(),`,
+    `onClick:()=>a1(),onSelect:W=>{__cbSnap(W.currentTarget,sn),a1()},onMouseDown:W=>__cbChipDown(W,sn,Z),onMouseMove:__cbChipCursor,`,
   );
   // The Report an Issue box, whose badges are pasted links.
   replace(
     `E=S=>{S.key!=="Enter"||!(S.metaKey||S.ctrlKey)||(S.preventDefault(),!d&&e.send())}`,
-    `E=S=>{if(__cbChipKey(S,e.links.map($f)))return;S.key!=="Enter"||!(S.metaKey||S.ctrlKey)||(S.preventDefault(),!d&&e.send())}`,
+    `E=S=>{if(__cbChipKey(S,e.links.map(Bf)))return;S.key!=="Enter"||!(S.metaKey||S.ctrlKey)||(S.preventDefault(),!d&&e.send())}`,
   );
   replace(
     `onKeyDown:E,onPaste:p,onScroll:x,placeholder:"What happened?"`,
-    `onKeyDown:E,onSelect:S=>__cbSnap(S.currentTarget,e.links.map($f)),onMouseDown:S=>__cbChipDown(S,e.links.map($f)),onMouseMove:__cbChipCursor,onPaste:p,onScroll:x,placeholder:"What happened?"`,
+    `onKeyDown:E,onSelect:S=>__cbSnap(S.currentTarget,e.links.map(Bf)),onMouseDown:S=>__cbChipDown(S,e.links.map(Bf)),onMouseMove:__cbChipCursor,onPaste:p,onScroll:x,placeholder:"What happened?"`,
   );
 });
 
@@ -370,15 +370,15 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
     `c.jsx("button",{type:"button","aria-pressed":a,onClick:()=>e.pick(n.label),"data-analytics":"director-question-option"`,
     `c.jsx("button",{type:"button","aria-pressed":a,onClick:()=>e.pick(n.label),${confirmKey("a", `e.confirm("")`)},"data-analytics":"director-question-option"`,
   );
-  replace(`gA=({option:e,voice:t,selected:n,preview:a,onPick:r})=>`, `gA=({option:e,voice:t,selected:n,preview:a,onPick:r,onConfirm:__cbConfirm})=>`);
+  replace(`SA=({option:e,voice:t,selected:n,preview:a,onPick:r})=>`, `SA=({option:e,voice:t,selected:n,preview:a,onPick:r,onConfirm:__cbConfirm})=>`);
   replace(`c.jsx("button",{type:"button","aria-pressed":n,onClick:r`, `c.jsx("button",{type:"button","aria-pressed":n,onClick:r,${confirmKey("n", "__cbConfirm?.()")}`);
   replace(
-    `c.jsx(gA,{option:n,voice:n.voice,selected:a,preview:t,onPick:()=>e.pick(n.label)}`,
-    `c.jsx(gA,{option:n,voice:n.voice,selected:a,preview:t,onPick:()=>e.pick(n.label),onConfirm:()=>e.confirm("")}`,
+    `c.jsx(SA,{option:n,voice:n.voice,selected:a,preview:t,onPick:()=>e.pick(n.label)}`,
+    `c.jsx(SA,{option:n,voice:n.voice,selected:a,preview:t,onPick:()=>e.pick(n.label),onConfirm:()=>e.confirm("")}`,
   );
 
   // 8. Windows wording (see onWin): the project's reveal button and the agent's reveal step.
-  replace('"aria-label":`Show ${R0(s)} in Finder`', '"aria-label":`Show ${R0(s)} in ${window.desktop?.platform==="win32"?"File Explorer":"Finder"}`');
+  replace('"aria-label":`Show ${L0(s)} in Finder`', '"aria-label":`Show ${L0(s)} in ${window.desktop?.platform==="win32"?"File Explorer":"Finder"}`');
   macWords(replace, [
     [`reveal:{running:%,`, "Revealing the project in Finder", "Revealing the project in File Explorer"],
     [`done:%}`, "Revealed the project in Finder", "Revealed the project in File Explorer"],
@@ -387,12 +387,12 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // 9. Previous/next frame (← →) keep the playhead in view. Jump to start/end scroll the timeline to it (H1),
   // the frame steps did not: holding ← walked the playhead off the edge of the timeline, out of sight.
   replace(
-    `U.getState().setPlaybackPosition(_),d("timeline"),it("playback_prev_frame",{})`,
-    `U.getState().setPlaybackPosition(_),H1({playheadTime:_,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),it("playback_prev_frame",{})`,
+    `U.getState().setPlaybackPosition(_),d("timeline"),lt("playback_prev_frame",{})`,
+    `U.getState().setPlaybackPosition(_),G1({playheadTime:_,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),lt("playback_prev_frame",{})`,
   );
   replace(
-    `U.getState().setPlaybackPosition(H),d("timeline"),it("playback_next_frame",{})`,
-    `U.getState().setPlaybackPosition(H),H1({playheadTime:H,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),it("playback_next_frame",{})`,
+    `U.getState().setPlaybackPosition(V),d("timeline"),lt("playback_next_frame",{})`,
+    `U.getState().setPlaybackPosition(V),G1({playheadTime:V,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),lt("playback_next_frame",{})`,
   );
 
   // 10. Dragging the playhead (or scrubbing the ruler) past the edge of the timeline scrolls it. Zv, the
@@ -402,9 +402,9 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // further out (up to 48 px a frame), and the time follows the pointer as it does. Rightward it stops
   // once the project's end is in view: the playhead stops at the end, and the timeline runs on far past it.
   replace(
-    `const I=M=>x(M.clientX),w=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",w),f.current=()=>{window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",w)},E&&x(S)}`,
-    `let __cbX=S,__cbMoved=!1,__cbRaf=0;const __cbEdge=()=>{__cbRaf=requestAnimationFrame(__cbEdge);if(!__cbMoved)return;const q=document.querySelector("[data-timeline-scroll]");if(!q)return;const r=q.getBoundingClientRect(),over=__cbX<r.left+12?__cbX-(r.left+12):__cbX>r.right-12?__cbX-(r.right-12):0;if(over===0)return;const st=U.getState(),was=q.scrollLeft,end=Math.max(0,st.duration*st.pixelsPerSecond-q.clientWidth+24);let to=was+Math.sign(over)*Math.min(48,2+Math.abs(over)*.5);over>0&&(to=Math.min(to,Math.max(was,end)));if(to===was)return;q.scrollLeft=to;q.scrollLeft!==was&&x(__cbX)};__cbRaf=requestAnimationFrame(__cbEdge);` +
-      `const I=M=>(__cbX=M.clientX,__cbMoved=!0,x(M.clientX)),w=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",w),f.current=()=>{cancelAnimationFrame(__cbRaf),window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",w)},E&&x(S)}`,
+    `const I=M=>x(M.clientX),C=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",C),f.current=()=>{window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",C)},E&&x(T)}`,
+    `let __cbX=T,__cbMoved=!1,__cbRaf=0;const __cbEdge=()=>{__cbRaf=requestAnimationFrame(__cbEdge);if(!__cbMoved)return;const q=document.querySelector("[data-timeline-scroll]");if(!q)return;const r=q.getBoundingClientRect(),over=__cbX<r.left+12?__cbX-(r.left+12):__cbX>r.right-12?__cbX-(r.right-12):0;if(over===0)return;const st=U.getState(),was=q.scrollLeft,end=Math.max(0,st.duration*st.pixelsPerSecond-q.clientWidth+24);let to=was+Math.sign(over)*Math.min(48,2+Math.abs(over)*.5);over>0&&(to=Math.min(to,Math.max(was,end)));if(to===was)return;q.scrollLeft=to;q.scrollLeft!==was&&x(__cbX)};__cbRaf=requestAnimationFrame(__cbEdge);` +
+      `const I=M=>(__cbX=M.clientX,__cbMoved=!0,x(M.clientX)),C=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",C),f.current=()=>{cancelAnimationFrame(__cbRaf),window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",C)},E&&x(T)}`,
   );
 
   // 11. The timeline redraws when the GPU gives its canvases back. Its ruler and tracks are opaque 2D
@@ -412,13 +412,13 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // restores them blank, black, and fires contextrestored, which nothing listened to. They stayed black
   // until something else made them redraw (measured: still 99% black 10 s after the GPU process restarted).
   replace(
-    `const b=o.useCallback(T=>{if(!s.current)return null;const S=s.current.getBoundingClientRect();return(T-S.left+u.current.offsetX)/p.current},[])`,
+    `const b=o.useCallback(S=>{if(!s.current)return null;const T=s.current.getBoundingClientRect();return(S-T.left+u.current.offsetX)/p.current},[])`,
     `o.useEffect(()=>{const c=s.current;if(!c)return;const f=()=>{window.__cbLog?.("canvas.restored",{what:"ruler"}),g()};c.addEventListener("contextrestored",f);return()=>c.removeEventListener("contextrestored",f)},[g]);` +
-      `const b=o.useCallback(T=>{if(!s.current)return null;const S=s.current.getBoundingClientRect();return(T-S.left+u.current.offsetX)/p.current},[])`,
+      `const b=o.useCallback(S=>{if(!s.current)return null;const T=s.current.getBoundingClientRect();return(S-T.left+u.current.offsetX)/p.current},[])`,
   );
   replace(
-    `o.useEffect(()=>{ee.current=we},[we]);`,
-    `o.useEffect(()=>{ee.current=we},[we]);o.useEffect(()=>{const cs=[I.current,M.current].filter(Boolean),f=e=>{e.target===I.current&&window.__cbLog?.("canvas.restored",{what:"tracks"}),we()};for(const c of cs)c.addEventListener("contextrestored",f);return()=>{for(const c of cs)c.removeEventListener("contextrestored",f)}},[we]);`,
+    `o.useEffect(()=>{te.current=we},[we]);`,
+    `o.useEffect(()=>{te.current=we},[we]);o.useEffect(()=>{const cs=[I.current,M.current].filter(Boolean),f=e=>{e.target===I.current&&window.__cbLog?.("canvas.restored",{what:"tracks"}),we()};for(const c of cs)c.addEventListener("contextrestored",f);return()=>{for(const c of cs)c.removeEventListener("contextrestored",f)}},[we]);`,
   );
 
   // 22. A clip's name is drawn once on the timeline. Cardboard draws the names on two canvases (D$): the tracks'
@@ -454,35 +454,35 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // unchanged-window branch), so the names are drawn as many times as before, a frame sooner on a notch. Scrolling
   // the timeline's scrollbar or with the keyboard still updates a frame late, as in Cardboard.
   // Same code on a Mac and on Windows: it isn't a Windows difference.
-  const labels = String.raw`__cbNameEnd=(g,n,cache)=>{g.save(),g.font=fm;let r=n.x;if(n.kind){const d=PU(g,n.kind);if(d-Eu<=n.maxWidth){const u=d-Eu+MU,m=n.maxWidth-u;let h="";g.measureText(n.label).width<=m?h=n.label:m>=_U&&(h=x1(g,n.label,m,cache)),r=Math.max(n.x-Eu+d,h?n.x+u+g.measureText(h).actualBoundingBoxRight:0)}}else{const l=x1(g,n.label,n.maxWidth,cache);l&&(r=n.x+g.measureText(l).actualBoundingBoxRight)}return g.restore(),r},
+  const labels = String.raw`__cbNameEnd=(g,n,cache)=>{g.save(),g.font=ym;let r=n.x;if(n.kind){const d=zU(g,n.kind);if(d-ku<=n.maxWidth){const u=d-ku+BU,m=n.maxWidth-u;let h="";g.measureText(n.label).width<=m?h=n.label:m>=UU&&(h=E1(g,n.label,m,cache)),r=Math.max(n.x-ku+d,h?n.x+u+g.measureText(h).actualBoundingBoxRight:0)}}else{const l=E1(g,n.label,n.maxWidth,cache);l&&(r=n.x+g.measureText(l).actualBoundingBoxRight)}return g.restore(),r},
 __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.length)return list;const by=nat.by??=new Map(nat.map(n=>[n.itemId,n])),on=e=>{const n=by.get(e.itemId);return!!n&&(n.end??=__cbNameEnd(g,n,cache))>sl+2};return list.some(on)?list.filter(e=>!on(e)):list},`;
   // The helpers, beside the names' own functions (v1 lays them out, b1 draws them).
-  replace(`,NU=8,jU=28,DU=(`, `,${labels}NU=8,jU=28,DU=(`);
+  replace(`,WU=8,ZU=28,GU=(`, `,${labels}WU=8,ZU=28,GU=(`);
   // The base canvas's names (We), as drawn, kept on the canvas for the fixed canvas to look up.
   replace(
-    `b1({ctx:Q,entries:me?ie.filter(_e=>!me.has(_e.itemId)):ie,`,
-    `b1({ctx:Q,entries:Q.canvas.__cbNat=me?ie.filter(_e=>!me.has(_e.itemId)):ie,`,
+    `I1({ctx:J,entries:ue?ie.filter(Re=>!ue.has(Re.itemId)):ie,`,
+    `I1({ctx:J,entries:J.canvas.__cbNat=ue?ie.filter(Re=>!ue.has(Re.itemId)):ie,`,
   );
   // The fixed canvas's names (Ie, on every scroll): not those still shown on the base canvas.
   replace(
-    `const Qe=v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"});b1({ctx:me,entries:Qe,`,
-    `const Qe=__cbEdgeNames(I.current,v1({clips:Q.clips,viewportLeft:_e,viewportRight:_e+ie,mode:"sticky"}),_e,me,z.current);b1({ctx:me,entries:Qe,`,
+    `const et=k1({clips:J.clips,viewportLeft:Re,viewportRight:Re+ie,mode:"sticky"});I1({ctx:ue,entries:et,`,
+    `const et=__cbEdgeNames(I.current,k1({clips:J.clips,viewportLeft:Re,viewportRight:Re+ie,mode:"sticky"}),Re,ue,$.current);I1({ctx:ue,entries:et,`,
   );
   // The timeline's scroll update, callable from the wheel's frame (X, leaving a scroll event's pending frame as it was).
   replace(
-    `j.current=Q,D.current=j3(e.current);const ne=()=>ae.current(),`,
-    `j.current=Q,D.current=j3(e.current),Q.__cbSync=()=>{const f=F.current;ae.current(),F.current=f};const ne=()=>ae.current(),`,
+    `j.current=J,D.current=U3(e.current);const ne=()=>ae.current(),`,
+    `j.current=J,D.current=U3(e.current),J.__cbSync=()=>{const f=O.current;ae.current(),O.current=f};const ne=()=>ae.current(),`,
   );
   // The scroll event's update at the place the wheel's frame already drew: skipped, once. Whatever update comes next
   // uses the skip up, so it can't hold back a later one (after a resize, say).
   replace(
-    `const K=o.useCallback(Q=>{if(ci(Se.current,Q)){Ie(R.current);return}`,
-    `const K=o.useCallback(Q=>{const __s=j.current,__k=!!__s&&__s.__cbSkip===__s.scrollLeft;__s&&(__s.__cbSkip=null);if(ci(Se.current,Q)){__k||Ie(R.current);return}`,
+    `const K=o.useCallback(J=>{if(di(ve.current,J)){Ee(R.current);return}`,
+    `const K=o.useCallback(J=>{const __s=j.current,__k=!!__s&&__s.__cbSkip===__s.scrollLeft;__s&&(__s.__cbSkip=null);if(di(ve.current,J)){__k||Ee(R.current);return}`,
   );
   // Cardboard's wheel frame (horizontal wheel and touchpad scrolling): the update at once when the view moved.
   replace(
-    `(Je.scrollLeft+=st,Ae.current=Je.scrollLeft)`,
-    `(Je.__cbWas=Je.scrollLeft,Je.scrollLeft+=st,Ae.current=Je.scrollLeft,Je.__cbSync&&Je.scrollLeft!==Je.__cbWas&&(Je.__cbSkip=null,Je.__cbSync(),Je.__cbSkip=Je.scrollLeft))`,
+    `(tt.scrollLeft+=ot,Me.current=tt.scrollLeft)`,
+    `(tt.__cbWas=tt.scrollLeft,tt.scrollLeft+=ot,Me.current=tt.scrollLeft,tt.__cbSync&&tt.scrollLeft!==tt.__cbWas&&(tt.__cbSkip=null,tt.__cbSync(),tt.__cbSkip=tt.scrollLeft))`,
   );
 
   // 12. Starting playback waits only for audio that will be heard. After a seek, Play waits (up to 8 s,
@@ -490,25 +490,25 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
   // clips on muted tracks and muted, hidden or reversed clips, which the audio graph (syncAudioGraph) never
   // plays. __cbAudible keeps what syncAudioGraph keeps. A wait over half a second goes in the activity log.
   replace(
-    `hasBuffersReadyForClipsAtTime(ge.current.timelineItems,ge.current.mediaItems,K,we)`,
-    `hasBuffersReadyForClipsAtTime(__cbAudible(ge.current),ge.current.mediaItems,K,we)`,
+    `hasBuffersReadyForClipsAtTime(Ye.current.timelineItems,Ye.current.mediaItems,K,we)`,
+    `hasBuffersReadyForClipsAtTime(__cbAudible(Ye.current),Ye.current.mediaItems,K,we)`,
   );
   replace(
-    `ne.preloadAudioForClipsAtTime(ge.current.timelineItems,ge.current.mediaItems,me,de)`,
-    `ne.preloadAudioForClipsAtTime(__cbAudible(ge.current),ge.current.mediaItems,me,de)`,
+    `ne.preloadAudioForClipsAtTime(Ye.current.timelineItems,Ye.current.mediaItems,ue,de)`,
+    `ne.preloadAudioForClipsAtTime(__cbAudible(Ye.current),Ye.current.mediaItems,ue,de)`,
   );
   // Each load is numbered (window.__cbPreloadGen, shared with the store, see 15): only the newest one may
   // clear the loading flag and start playback when it ends. Once 15 lets Play start during a load, a
   // pause, a seek and Play again start a second load while the first still runs, and the first one's end
   // started playback before the second load's audio was in.
-  replace(`we(!0);let Q=!1;try{`, `const __cbG=window.__cbPreloadGen=(window.__cbPreloadGen||0)+1;we(!0);let Q=!1;const __cbT=performance.now();try{`);
+  replace(`we(!0);let J=!1;try{`, `const __cbG=window.__cbPreloadGen=(window.__cbPreloadGen||0)+1;we(!0);let J=!1;const __cbT=performance.now();try{`);
   replace(
-    `finally{we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),Q&&Et.info("Still loading audio, playback may start silent")}`,
-    `finally{if(__cbG===window.__cbPreloadGen){we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),Q&&Et.info("Still loading audio, playback may start silent");const __cbMs=performance.now()-__cbT;__cbMs>500&&window.__cbLog?.("playback.wait",{ms:Math.round(__cbMs),timedOut:Q,started:ne})}}`,
+    `finally{we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),J&&wt.info("Still loading audio, playback may start silent")}`,
+    `finally{if(__cbG===window.__cbPreloadGen){we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),J&&wt.info("Still loading audio, playback may start silent");const __cbMs=performance.now()-__cbT;__cbMs>500&&window.__cbLog?.("playback.wait",{ms:Math.round(__cbMs),timedOut:J,started:ne})}}`,
   );
   replace(
-    `class sH{`,
-    `const __cbAudible=c=>{const m=new Map(c.tracks.map(t=>[t.id,t]));return c.timelineItems.filter(u=>{if(u.type!=="audio"&&u.type!=="video")return!0;const k=m.get(u.trackId);return!(!k||k.muted||cn(u)||u.muted||u.audioDisabled||u.playbackDirection==="reverse")})};class sH{`,
+    `class gH{`,
+    `const __cbAudible=c=>{const m=new Map(c.tracks.map(t=>[t.id,t]));return c.timelineItems.filter(u=>{if(u.type!=="audio"&&u.type!=="video")return!0;const k=m.get(u.trackId);return!(!k||k.muted||cn(u)||u.muted||u.audioDisabled||u.playbackDirection==="reverse")})};class gH{`,
   );
 
   // 13. A graphic is rebuilt only when its page stops answering. sH, the preview's frame pump, started its
@@ -518,8 +518,8 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
   // slow fetch is waited for, and only one that hasn't answered in 30 s gets Cardboard's rebuild (see
   // below). Rebuilds and slow fetches go in the activity log.
   replace(
-    `if(n&&a.rebuilds<rH){a.rebuilds++,this.options.onRebuild();return}`,
-    `if(n&&a.rebuilds<rH){a.rebuilds++,window.__cbLog?.("preview.rebuild",{reason:t}),this.options.onRebuild();return}`,
+    `if(n&&a.rebuilds<hH){a.rebuilds++,this.options.onRebuild();return}`,
+    `if(n&&a.rebuilds<hH){a.rebuilds++,window.__cbLog?.("preview.rebuild",{reason:t}),this.options.onRebuild();return}`,
   );
   // 14 (speed). While playing, a graphic draws with the newest video frame that is ready instead of waiting
   // for the frame of this exact moment. Every frame of a graphic waited for its video assets' frames, even
@@ -568,12 +568,12 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
   // and with a dialog or menu open over the preview (its delete confirmation, a tile's menu), Escape is left
   // as it was, so it closes that first.
   replace(
-    `return tn(Vt.IMPORT_MEDIA,J),{media:F,filteredMedia:ae,`,
-    `o.useEffect(()=>{const f=v=>{const d=v.detail;if(!d||d.seen)return;d.seen=!0;const m=F.find(x=>x.id===d.id);if(m){d.found=!0,z(m.id),$(null),P(null),j(d.top);return}const o=(V?.media??[]).find(x=>x.id===d.id);o&&(d.elsewhere=o.data?.type??"other")};addEventListener("cb:preview-media",f);return()=>removeEventListener("cb:preview-media",f)},[F,V]);` +
-      `return tn(Vt.IMPORT_MEDIA,J),{media:F,filteredMedia:ae,`,
+    `return tn(Vt.IMPORT_MEDIA,q),{media:O,filteredMedia:ae,`,
+    `o.useEffect(()=>{const f=v=>{const d=v.detail;if(!d||d.seen)return;d.seen=!0;const m=O.find(x=>x.id===d.id);if(m){d.found=!0,$(m.id),z(null),P(null),j(d.top);return}const o=(H?.media??[]).find(x=>x.id===d.id);o&&(d.elsewhere=o.data?.type??"other")};addEventListener("cb:preview-media",f);return()=>removeEventListener("cb:preview-media",f)},[O,H]);` +
+      `return tn(Vt.IMPORT_MEDIA,q),{media:O,filteredMedia:ae,`,
   );
   const openBadge = String.raw`
-const __cbOpenClip=it=>{const st=U.getState();st.isPlaying&&st.setIsPlaying(!1);st.previewMode!=="timeline"&&st.setPreviewMode("timeline");st.selectTimelineItem(it.id);st.setPlaybackPosition(it.startTime);H1({playheadTime:it.startTime,pixelsPerSecond:st.pixelsPerSecond,behavior:"smooth"})};
+const __cbOpenClip=it=>{const st=U.getState();st.isPlaying&&st.setIsPlaying(!1);st.previewMode!=="timeline"&&st.setPreviewMode("timeline");st.selectTimelineItem(it.id);st.setPlaybackPosition(it.startTime);G1({playheadTime:it.startTime,pixelsPerSecond:st.pixelsPerSecond,behavior:"smooth"})};
 addEventListener("keydown",e=>{if(e.key!=="Escape"||e.defaultPrevented||e.target instanceof HTMLElement&&(e.target.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)))return;const b=document.querySelector('[role="dialog"][aria-label="Media preview"] button[aria-label="Close preview"]');b&&!document.querySelector('[role="alertdialog"],[role="menu"],[role="dialog"]:not([aria-label="Media preview"])')&&(e.preventDefault(),e.stopImmediatePropagation(),b.click())},!0);
 addEventListener("cb:open-badge",e=>{const{kind:k,id:i,label:l}=e.detail??{},st=U.getState();
 if(k==="media"){
@@ -582,16 +582,16 @@ if(k==="media"){
 const ask=()=>{const p=document.querySelector("[data-editor-left-panel]")?.getBoundingClientRect(),d={id:i,top:(p?.top??0)+64};dispatchEvent(new CustomEvent("cb:preview-media",{detail:d}));return d};
 st.isLeftPanelCollapsed&&st.setLeftPanelCollapsed(!1);
 let n=0;const go=()=>{const d=ask();if(d.found)return;
-if(d.elsewhere){const c=U.getState().timelineItems.find(x=>x.mediaItemId===i);c?__cbOpenClip(c):d.elsewhere==="audio"?(U.getState().setActiveLeftTab("music"),Et.info(l+" is in Audio, with the music and sound effects.")):Et.info(l+" isn't in the Library anymore.");return}
-if(d.seen){Et.info(l+" isn't in the Library anymore.");return}
+if(d.elsewhere){const c=U.getState().timelineItems.find(x=>x.mediaItemId===i);c?__cbOpenClip(c):d.elsewhere==="audio"?(U.getState().setActiveLeftTab("music"),wt.info(l+" is in Audio, with the music and sound effects.")):wt.info(l+" isn't in the Library anymore.");return}
+if(d.seen){wt.info(l+" isn't in the Library anymore.");return}
 // No Library mounted: show it by the panel's state, then ask again.
-n++===0&&U.getState().setActiveLeftTab("media");n<90?requestAnimationFrame(go):Et.info("Couldn't open the Library to preview "+l+".")};
+n++===0&&U.getState().setActiveLeftTab("media");n<90?requestAnimationFrame(go):wt.info("Couldn't open the Library to preview "+l+".")};
 requestAnimationFrame(go);return}
 if(k!=="item")return;
 const it=st.timelineItems.find(x=>x.id===i);
-it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
+it?__cbOpenClip(it):wt.info("That clip isn't on the timeline anymore.")});
 `;
-  replace(`class sH{`, openBadge + `class sH{`);
+  replace(`class gH{`, openBadge + `class gH{`);
 
   // 19. The editor's left rail (Library, Layout, Audio, Captions, Text, Transitions, Effects) shows its
   // tooltips. Each icon is wrapped in Cardboard's tooltip, but the button inside (H_) kept only its own props
@@ -599,8 +599,8 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
   // so no tooltip ever opened: the rail was icons with no names. The button now takes them; its click runs
   // the trigger's (which closes the tooltip) and then switches the panel, as before.
   replace(
-    `H_=({tab:e,tile:t,className:n,label:a})=>{const r=e.icon;return c.jsxs("button",{"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:e.select,`,
-    `H_=({tab:e,tile:t,className:n,label:a,...__cbTip})=>{const r=e.icon;return c.jsxs("button",{...__cbTip,"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:v=>{__cbTip.onClick?.(v),e.select()},`,
+    `Z_=({tab:e,tile:t,className:n,label:a})=>{const r=e.icon;return c.jsxs("button",{"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:e.select,`,
+    `Z_=({tab:e,tile:t,className:n,label:a,...__cbTip})=>{const r=e.icon;return c.jsxs("button",{...__cbTip,"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:v=>{__cbTip.onClick?.(v),e.select()},`,
   );
 
   // 20 (speed). The preview's position loop rests while nothing moves. The overlays drawn over the preview
@@ -620,7 +620,7 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
   // (resize, scroll, its ResizeObserver) still measure at once, and measureNow still measures on demand.
   if (speed) {
     replace(
-      `function fF(e,t,n=.5){`,
+      `function TF(e,t,n=.5){`,
       `const __cbRectWatch=(el,measure)=>{let raf=0,last=null,since=0;const d=document,now=()=>performance.now(),` +
         `mine=t=>t===d||t instanceof Element&&t.contains(el),` +
         `moving=()=>d.getAnimations().some(x=>x.playState==="running"&&mine(x.effect?.target)&&isFinite(x.effect.getComputedTiming().endTime)),` +
@@ -636,7 +636,7 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
         `for(const[t,n,f]of on)t?.addEventListener(n,f,{capture:!0,passive:!0});` +
         `wake();` +
         `return()=>{raf&&cancelAnimationFrame(raf),raf=0,clearInterval(iv),off(),ro.disconnect(),mo.disconnect();for(const[t,n,f]of on)t?.removeEventListener(n,f,{capture:!0})}};` +
-        `function fF(e,t,n=.5){`,
+        `function TF(e,t,n=.5){`,
     );
     replace(
       `let r=null;const s=()=>{a(),r=window.requestAnimationFrame(s)};r=window.requestAnimationFrame(s);const i=new ResizeObserver(a);`,
@@ -658,8 +658,8 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
   // read when the canvas's box changes, as the zoom was; a canvas that isn't laid out keeps the store's zoom.
   replace(`t.rect=n,t.zoom=U.getState().canvasTransform.scale,t.version+=1;`, `t.rect=n,t.zoom=__cbDrawnScale(e,n),t.version+=1;`);
   replace(
-    `const Hc=new WeakMap,l8=(e,t)=>{`,
-    `const __cbDrawnScale=(e,r)=>{const w=parseFloat(getComputedStyle(e).width);return w>0&&r.width>0?r.width/w:U.getState().canvasTransform.scale};const Hc=new WeakMap,l8=(e,t)=>{`,
+    `const Hc=new WeakMap,h8=(e,t)=>{`,
+    `const __cbDrawnScale=(e,r)=>{const w=parseFloat(getComputedStyle(e).width);return w>0&&r.width>0?r.width/w:U.getState().canvasTransform.scale};const Hc=new WeakMap,h8=(e,t)=>{`,
   );
 });
 

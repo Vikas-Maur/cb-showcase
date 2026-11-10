@@ -16,7 +16,7 @@ const replace = (from, to, count = 1) => {
 };
 
 // 1. The menu button and its menus (see strip-titlebar.js), after the bundle's imports.
-replace(`from"./string-BideQp2G.js";`, `from"./string-BideQp2G.js";` + require("./strip-titlebar"));
+replace(`from"./string-BGP5miaZ.js";`, `from"./string-BGP5miaZ.js";` + require("./strip-titlebar"));
 
 // 2. Cardboard's logomark opens the app menu, at the strip's leading edge where macOS has its traffic
 // lights. A divider separates it from the tabs, as one separates Dashboard from the projects.

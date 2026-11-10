@@ -513,10 +513,10 @@ const firstNl = src.indexOf("\n");
 src = src.slice(0, firstNl + 1) + preamble + require("./asar-assets") + src.slice(firstNl + 1);
 
 // 1. Bundled ffmpeg/ffprobe/uv/claude are .exe on Windows.
-replace(`sd((0,li.join)(n,"ffmpeg"))`, `sd((0,li.join)(n,__cbExe("ffmpeg")))`);
-replace(`sd((0,li.join)(n,"ffprobe"))`, `sd((0,li.join)(n,__cbExe("ffprobe")))`);
-replace(`sd((0,li.join)(n,"uv"))`, `sd((0,li.join)(n,__cbExe("uv")))`);
-replace(`(0,Jg.join)(t,"director","claude")`, `(0,Jg.join)(t,"director",__cbExe("claude"))`);
+replace(`ld((0,ui.join)(n,"ffmpeg"))`, `ld((0,ui.join)(n,__cbExe("ffmpeg")))`);
+replace(`ld((0,ui.join)(n,"ffprobe"))`, `ld((0,ui.join)(n,__cbExe("ffprobe")))`);
+replace(`ld((0,ui.join)(n,"uv"))`, `ld((0,ui.join)(n,__cbExe("uv")))`);
+replace(`(0,e0.join)(t,"director","claude")`, `(0,e0.join)(t,"director",__cbExe("claude"))`);
 
 // 2. Desktop Director (local Claude Code agent) was gated to darwin-arm64.
 replace(
@@ -525,7 +525,7 @@ replace(
 );
 
 // 3. Director tool shims: symlinks and /bin/sh scripts do not work on Windows.
-replace(`jTe=(e,t,r)=>{`, `jTe=(e,t,r)=>{if(__cbWin)return __cbTools(e,t,r,{envName:tWt(),py:JA,pkgs:NTe});`);
+replace(`Rke=(e,t,r)=>{`, `Rke=(e,t,r)=>{if(__cbWin)return __cbTools(e,t,r,{envName:xWt(),py:o3,pkgs:Pke});`);
 // The folder of the real ffmpeg.exe and ffprobe.exe goes on the agent's PATH after the shims. Windows
 // starts a bare "ffmpeg" (Python's subprocess.run(["ffmpeg", …]), Node's execFile) only as an .exe, so
 // agent code that ran ffmpeg that way failed with "file not found". The shims still come first for
@@ -536,31 +536,31 @@ replace(`e.toolsDir&&(r.PATH=[e.toolsDir,r.PATH]`, `e.toolsDir&&(r.PATH=[e.tools
 // 4. Control socket (used by the cardboard CLI and the agent) listens on a named pipe on Windows.
 // CARDBOARD_SOCKET keeps the file path: the CLI reads the token next to it and maps it to the
 // same pipe when connecting (see patch-cli.js).
-replace(`(0,NH.join)(t,vb)`, `__cbSock((0,NH.join)(t,vb))`);
+replace(`(0,ZH.join)(t,Sb)`, `__cbSock((0,ZH.join)(t,Sb))`);
 
 // 5. "Install agent tools" (cardboard/cb CLI for external agents) was macOS-only (osascript + /usr/local/bin).
-replace(`O5="/usr/local/bin"`, `O5=__cbWin?(0,FE.join)(require("node:os").homedir(),".local","bin"):"/usr/local/bin"`);
-replace(`Jje=e=>{`, `Jje=e=>{if(__cbWin)return __cbLinkCli(O5,fie);`);
+replace(`VM="/usr/local/bin"`, `VM=__cbWin?(0,XE.join)(require("node:os").homedir(),".local","bin"):"/usr/local/bin"`);
+replace(`wFe=e=>{`, `wFe=e=>{if(__cbWin)return __cbLinkCli(VM,ose);`);
 replace(
-  `pie=()=>process.platform!=="darwin"?"Agent tools can only be installed on macOS."`,
-  `pie=()=>process.platform!=="darwin"&&!__cbWin?"Agent tools can only be installed on macOS."`,
+  `ase=()=>process.platform!=="darwin"?"Agent tools can only be installed on macOS."`,
+  `ase=()=>process.platform!=="darwin"&&!__cbWin?"Agent tools can only be installed on macOS."`,
 );
 // The cb/cardboard shims Cardboard writes for your own agents (Settings → Agents) in userData\agent-bin, at
 // the front of their PATH. On Windows it wrote only .cmd files, which Git Bash, Claude Code's shell, can't
 // run by name: `cb` was "command not found" unless agent tools were installed (~/.local/bin). Now the sh
 // shim too, as on macOS, and the .cmd with setlocal (see __cbCliShims).
 replace(
-  'if(process.platform==="win32"){(0,Dp.writeFileSync)((0,dw.join)(e,`${n}.cmd`),dqt(r,t));continue}',
-  'if(process.platform==="win32"){let s=__cbCliShims(r,t);(0,Dp.writeFileSync)((0,dw.join)(e,`${n}.cmd`),s[".cmd"]),(0,Dp.writeFileSync)((0,dw.join)(e,n),s[""]);continue}',
+  'if(process.platform==="win32"){(0,Fp.writeFileSync)((0,yw.join)(e,`${n}.cmd`),Lqt(r,t));continue}',
+  'if(process.platform==="win32"){let s=__cbCliShims(r,t);(0,Fp.writeFileSync)((0,yw.join)(e,`${n}.cmd`),s[".cmd"]),(0,Fp.writeFileSync)((0,yw.join)(e,n),s[""]);continue}',
 );
 replace(
-  `xh=()=>{let e=fie.map(`,
-  `xh=()=>{if(__cbWin){let r=fie.every(n=>__cbLinked((0,FE.join)(O5,n+".cmd")));return{linked:r,target:r?(0,FE.join)(O5,"cardboard.cmd"):null,unavailable:pie()}}let e=fie.map(`,
+  `Ph=()=>{let e=ose.map(`,
+  `Ph=()=>{if(__cbWin){let r=ose.every(n=>__cbLinked((0,XE.join)(VM,n+".cmd")));return{linked:r,target:r?(0,XE.join)(VM,"cardboard.cmd"):null,unavailable:ase()}}let e=ose.map(`,
 );
 
 // 6. Finding the user's own Claude Code and Codex (see __cbAgentPaths).
-replace(`bHt=(e,t)=>{`, `bHt=(e,t)=>{if(__cbWin)return __cbAgentPaths(e,t).filter(Sl);`);
-replace(`fHt=e=>[`, `fHt=e=>__cbWin?__cbAgentKnown(e):[`);
+replace(`BVt=(e,t)=>{`, `BVt=(e,t)=>{if(__cbWin)return __cbAgentPaths(e,t).filter(Il);`);
+replace(`$Vt=e=>[`, `$Vt=e=>__cbWin?__cbAgentKnown(e):[`);
 // The environment agents are found and started with. Copied as-is, it has Path but no PATH when
 // launched from Explorer, so the lookup searched nothing. Launching then added a PATH holding only
 // Cardboard's shim folder, which Windows children get instead of Path.
@@ -570,10 +570,10 @@ replace(`if(process.platform==="win32")return{...process.env};`, `if(process.pla
 // taskbar flash where macOS bounces the Dock icon (it stops when the window is focused). On start the
 // cardboard/cb shims an earlier build installed are updated too (__cbRelinkCli).
 replace(
-  `e=oe.app.whenReady().then(async()=>{let r=process.platform==="darwin"&&hSe();`,
-  `e=oe.app.whenReady().then(async()=>{__cbNotifySetup();__cbLogStart();__cbRelinkCli().catch(()=>{});let r=process.platform==="darwin"&&hSe();`,
+  `e=oe.app.whenReady().then(async()=>{let r=process.platform==="darwin"&&dEe();`,
+  `e=oe.app.whenReady().then(async()=>{__cbNotifySetup();__cbLogStart();__cbRelinkCli().catch(()=>{});let r=process.platform==="darwin"&&dEe();`,
 );
-replace(`oe.app.dock?.bounce("informational")`, `(oe.app.dock?.bounce("informational"),__cbWin&&he.window?.flashFrame(!0))`);
+replace(`oe.app.dock?.bounce("informational")`, `(oe.app.dock?.bounce("informational"),__cbWin&&fe.window?.flashFrame(!0))`);
 
 // 8. Fewer animations, in Cardboard only: report prefers-reduced-motion as if Windows' "Animation
 // effects" were off. Cardboard then drops its scale and slide animations and most fades.
@@ -585,22 +585,22 @@ replace(
 // 9. Windows title bar (see __cbTitleBar). hiddenInset is macOS-only, so Windows drew its own title bar
 // and menu bar above the strip. Now the window has no native title bar and the strip is the title bar.
 replace(
-  `titleBarStyle:"hiddenInset",trafficLightPosition:{x:16,y:14},backgroundColor:this.welcoming?_w:vw`,
-  `titleBarStyle:__cbWin?"hidden":"hiddenInset",...__cbWin&&{titleBarOverlay:__cbTitleBar},trafficLightPosition:{x:16,y:14},backgroundColor:this.welcoming?_w:vw`,
+  `titleBarStyle:"hiddenInset",trafficLightPosition:{x:16,y:14},backgroundColor:this.welcoming?Iw:Cw`,
+  `titleBarStyle:__cbWin?"hidden":"hiddenInset",...__cbWin&&{titleBarOverlay:__cbTitleBar},trafficLightPosition:{x:16,y:14},backgroundColor:this.welcoming?Iw:Cw`,
 );
 // The About window too: it showed a native title bar and the whole menu bar. Its page already has a
 // drag region and leaves room at the top for the macOS traffic lights.
 replace(
-  `titleBarStyle:Hne?"hidden":"default",trafficLightPosition:{x:14,y:14}`,
-  `titleBarStyle:Hne||__cbWin?"hidden":"default",...__cbWin&&{titleBarOverlay:__cbTitleBar},trafficLightPosition:{x:14,y:14}`,
+  `titleBarStyle:$ie?"hidden":"default",trafficLightPosition:{x:14,y:14}`,
+  `titleBarStyle:$ie||__cbWin?"hidden":"default",...__cbWin&&{titleBarOverlay:__cbTitleBar},trafficLightPosition:{x:14,y:14}`,
 );
 // The strip asks for the menu and runs items from it; closing it hands the keyboard back to the editor.
 replace(
-  `_e.handle("tabs:command",t=>{Bt(),he.command(t)}),`,
-  `_e.handle("tabs:command",t=>{Bt(),he.command(t)}),` +
+  `_e.handle("tabs:command",t=>{Ht(),fe.command(t)}),`,
+  `_e.handle("tabs:command",t=>{Ht(),fe.command(t)}),` +
     `_e.handle("window:menu",()=>__cbMenuJson(oe.Menu.getApplicationMenu()?.items??[])),` +
-    `_e.handle("window:menu-run",({path:t})=>{let r=he.activeContents();r?.focus(),__cbMenuRun(t,he.liveWindow(),r)}),` +
-    `_e.handle("window:menu-close",()=>{he.activeContents()?.focus()}),`,
+    `_e.handle("window:menu-run",({path:t})=>{let r=fe.activeContents();r?.focus(),__cbMenuRun(t,fe.liveWindow(),r)}),` +
+    `_e.handle("window:menu-close",()=>{fe.activeContents()?.focus()}),`,
 );
 // Alt or F10 in a tab opens the strip's menu with the keyboard in it.
 replace(
@@ -612,22 +612,22 @@ replace(
 // from a menu opening its picker every time (__cbImportMedia). Folders dropped on the editor or the
 // Dashboard are handled in the renderer (patch-renderer.js).
 replace(
-  String.raw`_i("Import Media\u2026","import-media","CmdOrCtrl+I",e),{type:"separator"}`,
-  String.raw`{..._i("Import Media\u2026","import-media","CmdOrCtrl+I",e),click:()=>{__cbImportMedia(e.getContents())}},{label:"Import Folder\u2026",accelerator:"CmdOrCtrl+Shift+I",click:()=>{__cbImportFolder(e.getWindow(),e.getContents(),e.tabs.model.activeProjectId())}},{type:"separator"}`,
+  String.raw`ki("Import Media\u2026","import-media","CmdOrCtrl+I",e),{type:"separator"}`,
+  String.raw`{...ki("Import Media\u2026","import-media","CmdOrCtrl+I",e),click:()=>{__cbImportMedia(e.getContents())}},{label:"Import Folder\u2026",accelerator:"CmdOrCtrl+Shift+I",click:()=>{__cbImportFolder(e.getWindow(),e.getContents(),e.tabs.model.activeProjectId())}},{type:"separator"}`,
 );
 
 // 11. The activity log (see __cbLog; it starts with patch 7's whenReady). Menu items say how they ran,
 // pages report through cb:log, agent answers say how long their question waited, Ctrl+Tab (which main
 // handles itself) is logged as a shortcut, and the library worker's output goes in too.
-replace(`dc.Menu.setApplicationMenu(dc.Menu.buildFromTemplate(s))`, `dc.Menu.setApplicationMenu(__cbLogMenu(dc.Menu.buildFromTemplate(s)))`);
+replace(`uc.Menu.setApplicationMenu(uc.Menu.buildFromTemplate(s))`, `uc.Menu.setApplicationMenu(__cbLogMenu(uc.Menu.buildFromTemplate(s)))`);
 replace(
   `_e.handle("local-agent:answer",({id:t,answers:r,choice:n,cloned:i})=>{`,
   `_e.handle("cb:log",(t,r)=>__cbLogFrom(t,r?.sender)),_e.handle("local-agent:answer",({id:t,answers:r,choice:n,cloned:i,via:__cbVia})=>{__cbLogAnswer(t,r,__cbVia);`,
 );
 replace(`onQuestion(t,r,n,i,s){`, `onQuestion(t,r,n,i,s){__cbAsked(t,i);`);
 replace(
-  `r.webContents.on("before-input-event",(i,s)=>{Dke(s)&&(i.preventDefault(),s.type==="keyDown"&&this.model.step(s.shift?-1:1))})`,
-  `r.webContents.on("before-input-event",(i,s)=>{Dke(s)&&(i.preventDefault(),s.type==="keyDown"&&(s.isAutoRepeat||__cbLog("shortcut",{id:s.shift?"previous-tab":"next-tab",combo:s.shift?"Ctrl+Shift+Tab":"Ctrl+Tab"}),this.model.step(s.shift?-1:1)))})`,
+  `r.webContents.on("before-input-event",(i,s)=>{CSe(s)&&(i.preventDefault(),s.type==="keyDown"&&this.model.step(s.shift?-1:1))})`,
+  `r.webContents.on("before-input-event",(i,s)=>{CSe(s)&&(i.preventDefault(),s.type==="keyDown"&&(s.isAutoRepeat||__cbLog("shortcut",{id:s.shift?"previous-tab":"next-tab",combo:s.shift?"Ctrl+Shift+Tab":"Ctrl+Tab"}),this.model.step(s.shift?-1:1)))})`,
 );
 replace(`stdio:"inherit"})}catch(o){this.stopped=!0`, `stdio:"pipe"}),__cbPipeWorker(s)}catch(o){this.stopped=!0`);
 
@@ -678,8 +678,8 @@ replace(
 // and position, so the size the user drags the window to is kept to within a few DIP on the next launch,
 // and exactly after that.
 replace(
-  `this.closingWindow=!1,this.persist=CSe(n,`,
-  `this.closingWindow=!1,__cbWin&&(n.__cbAskedBounds=r.bounds),this.persist=CSe(n,`,
+  `this.closingWindow=!1,this.persist=TEe(n,`,
+  `this.closingWindow=!1,__cbWin&&(n.__cbAskedBounds=r.bounds),this.persist=TEe(n,`,
 );
 replace(`i=e.getNormalBounds(),s=()=>{`, `i=e.getNormalBounds(),__cbGrow=__cbWindowGrowth(e,i),s=()=>{`);
 replace(
@@ -696,10 +696,10 @@ replace(
 // shows (__cbAsarSweepSoon): only <uuid>.tmp[.<ext>] files that are byte for byte a file in this app.asar and older
 // than Windows' last start, until none are left.
 replace(
-  `let s=Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
-  `let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
+  `let s=jSe.Readable.toWeb((0,$Se.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
+  `let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):jSe.Readable.toWeb((0,$Se.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
 );
-replace(`he.createWindow({quiet:r});let a=`, `he.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(he.window);let a=`);
+replace(`fe.createWindow({quiet:r});let a=`, `fe.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(fe.window);let a=`);
 
 // 17. A naming binary that is gone no longer throws in the main process. Cardboard names chats and projects (and
 // Carton titles agent turns) by running the person's Claude Code or Codex once (hke). The binary is looked up first,
@@ -710,8 +710,8 @@ replace(`he.createWindow({quiet:r});let a=`, `he.createWindow({quiet:r});__cbWin
 // nothing: the chat keeps its first words, the project its file names, the turn the person's message (review of
 // a2725f9c #1). Its exit, its output and its timeout are as they were.
 replace(
-  `d.stdout?.on("data",b=>g(String(b))),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(zWt(f))})`,
-  `d.stdout?.on("data",b=>g(String(b))),d.on("error",()=>{clearTimeout(h),c(null)}),d.stdin?.on("error",()=>{}),d.stdout?.on("error",()=>{}),d.stderr?.on("error",()=>{}),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(zWt(f))})`,
+  `d.stdout?.on("data",b=>g(String(b))),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(fKt(f))})`,
+  `d.stdout?.on("data",b=>g(String(b))),d.on("error",()=>{clearTimeout(h),c(null)}),d.stdin?.on("error",()=>{}),d.stdout?.on("error",()=>{}),d.stderr?.on("error",()=>{}),d.stdin?.end(),d.on("exit",()=>{clearTimeout(h),c(fKt(f))})`,
 );
 
 fs.writeFileSync(file, src);
