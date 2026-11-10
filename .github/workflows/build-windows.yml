@@ -1,4 +1,5 @@
-# Builds the Windows app when started by hand (Actions → Build Windows app → Run workflow), with
+# Builds the Windows app when started by hand (Actions → Build Windows app → Run workflow; with "publish" off it only
+# builds and packages, for checking a branch), with
 # scripts/build-windows.js, and publishes it as the release "windows-latest": one .exe that unpacks the app
 # into a folder, from which Cardboard\Cardboard.exe runs. Each run replaces the previous build. Beside it goes the
 # baseline the benchmarks compare against (build-windows.js --baseline, scripts/bench), which unpacks into
@@ -7,6 +8,12 @@ name: Build Windows app
 
 on:
   workflow_dispatch:
+    inputs:
+      # off: build and package only, to check a branch builds on Windows, without touching the public release
+      publish:
+        description: Publish the release windows-latest (replacing the current one)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -52,7 +59,12 @@ jobs:
           7z a -t7z -mx9 -mmt=on out/Cardboard-baseline.7z ./out-baseline/Cardboard-baseline
           cmd /c copy /b "C:\Program Files\7-Zip\7z.sfx" + out\Cardboard-baseline.7z out\Cardboard-1.5.0-windows-x64-baseline.exe
 
+      - name: Show the build (not published)
+        if: ${{ !inputs.publish }}
+        run: Get-Item out\*.exe | ForEach-Object { "{0}  {1} bytes  {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() }
+
       - name: Publish the release
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
