@@ -38,10 +38,9 @@ a{color:inherit}
 .btn svg{width:16px;height:16px;flex:none}
 
 /* the video row, after cardboard.ai's "Made with Cardboard": a centred serif heading, then tiles with no browser
-   controls. A tile shows its poster and a small round play button in its corner (off the picture's subject); on a desktop, hovering plays it muted as a preview; a click
-   or tap anywhere on it plays it from the start with sound and its controls; a click on the picture pauses or resumes it,
-   and paused for a moment it shows the play button again. One video plays at a time. Three to a row on a wide
-   screen; a fourth starts the next row. */
+   controls. A tile shows its poster and a small round play button in its corner (off the picture's subject); on a
+   desktop, hovering plays it muted as a preview; a click or tap anywhere on it opens it in the player (below). Three
+   to a row on a wide screen; a fourth starts the next row. */
 .videos{padding-top:56px}
 .videos .head{margin:0 0 28px;text-align:center;font-size:40px;line-height:1.15}
 .videos .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
@@ -54,9 +53,63 @@ a{color:inherit}
 .frame:hover{box-shadow:0 0 0 1px rgba(255,255,255,.2)}
 .frame:hover .play{transform:scale(1.06)}
 .frame.previewing .play{opacity:.85}
-.frame.playing .play{opacity:0;pointer-events:none}
 .video figcaption{padding:12px 2px 0}
 .video h3{margin:0;font-size:15px;font-weight:500;line-height:1.4;letter-spacing:0;color:#fff}
+
+/* the video player (a lightbox, after cardboard.ai's): a click on a tile opens it over the page, blurred behind. One
+   video at a time with its own controls (a seek bar, play, time, speed, sound, full screen) that hide while it plays and
+   come back on a move; a big play button when paused; the title; a strip of all the videos, and arrows, to switch; ✕ or
+   Esc or a click on the dark around it closes it. */
+body.lb-open{overflow:hidden}
+.lb{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;color:#fff;overflow:hidden}
+.lb[open]{display:flex;flex-direction:column;align-items:center;justify-content:center}
+.lb::backdrop{background:rgba(0,0,0,.74);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
+.lb-main{display:flex;flex-direction:column;gap:14px;width:min(1120px,86vw,calc((100vh - 240px) * 16 / 9))}
+.lb-player{position:relative;width:100%;aspect-ratio:16/9;border-radius:16px;overflow:hidden;background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.1),0 30px 80px rgba(0,0,0,.6)}
+.lb-player:focus{outline:none}
+.lb-player:fullscreen{width:100vw;height:100vh;aspect-ratio:auto;border-radius:0}
+.lb-player video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;cursor:pointer}
+.lb-big{position:absolute;left:50%;top:50%;width:84px;height:84px;margin:-42px 0 0 -42px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.16);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);box-shadow:0 0 0 1px rgba(255,255,255,.2),0 10px 30px rgba(0,0,0,.35);color:#fff;cursor:pointer;transition:opacity .2s,transform .2s}
+.lb-big svg{width:30px;height:30px;margin-left:4px;fill:currentColor}
+.lb-player.is-playing .lb-big{opacity:0;transform:scale(.9);pointer-events:none}
+.lb-bar{position:absolute;left:0;right:0;bottom:0;padding:34px 18px 14px;background:linear-gradient(transparent,rgba(0,0,0,.7));transition:opacity .25s}
+.lb-player.is-playing.idle .lb-bar{opacity:0;pointer-events:none}
+.lb-player.is-playing.idle,.lb-player.is-playing.idle video{cursor:none}
+.lb-track{position:relative;height:4px;margin:0 2px 12px;border-radius:999px;background:rgba(255,255,255,.25);cursor:pointer;touch-action:none}
+.lb-track::before{content:"";position:absolute;left:0;right:0;top:-9px;bottom:-9px}
+.lb-buf,.lb-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:inherit}
+.lb-buf{background:rgba(255,255,255,.3)}
+.lb-fill{background:#3b82f6}
+.lb-fill::after{content:"";position:absolute;right:-6px;top:50%;width:12px;height:12px;margin-top:-6px;border-radius:999px;background:#fff;opacity:0;transition:opacity .15s}
+.lb-track:hover .lb-fill::after,.lb-track.drag .lb-fill::after,.lb-track:focus-visible .lb-fill::after{opacity:1}
+.lb-track:focus-visible{outline:2px solid #fff;outline-offset:6px}
+.lb-row{display:flex;align-items:center;gap:12px;font:500 14px/1 var(--sans);letter-spacing:0;font-variant-numeric:tabular-nums}
+.lb-sp{flex:1}
+.lb-btn{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:34px;padding:0 6px;border:0;border-radius:8px;background:transparent;color:#fff;font:600 14px/1 var(--sans);letter-spacing:0;cursor:pointer}
+.lb-btn:hover{background:rgba(255,255,255,.12)}
+.lb-btn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.lb-pp{box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.85)}
+.lb-pp svg{width:16px;height:16px;fill:currentColor;stroke:none}
+.lb-cap{margin:0;color:#d4d4d4;font-size:15px;font-weight:500;letter-spacing:0}
+.lb-x,.lb-nav{position:absolute;display:flex;align-items:center;justify-content:center;width:46px;height:46px;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.1);box-shadow:0 0 0 1px rgba(255,255,255,.12);color:#fff;cursor:pointer;transition:background .15s}
+.lb-x:hover,.lb-nav:hover{background:rgba(255,255,255,.18)}
+.lb-x svg,.lb-nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.lb-x{top:20px;right:20px}
+.lb-nav{top:50%;margin-top:-23px}
+.lb-nav.prev{left:18px}.lb-nav.next{right:18px}
+.lb button:focus-visible{outline:2px solid #fff;outline-offset:3px}
+.lb-strip{display:flex;justify-content:center;gap:10px;margin-top:26px;padding:4px}
+.lb-thumb{width:128px;aspect-ratio:16/9;padding:0;border:0;border-radius:8px;background:#111 center/cover no-repeat;opacity:.5;box-shadow:0 0 0 1px rgba(255,255,255,.12);cursor:pointer;transition:opacity .2s,box-shadow .2s}
+.lb-thumb:hover{opacity:.85}
+.lb-thumb[aria-selected="true"]{opacity:1;box-shadow:0 0 0 2px #fff}
+@media (max-width:640px){
+  .lb-main{width:94vw}
+  .lb-nav{display:none}
+  .lb-x{top:12px;right:12px;width:40px;height:40px}
+  .lb-big{width:52px;height:52px;margin:-34px 0 0 -26px}.lb-big svg{width:20px;height:20px}
+  .lb-bar{padding:24px 10px 8px}.lb-row{gap:4px;font-size:13px}.lb-btn{min-width:30px;height:30px}
+  .lb-strip{margin-top:20px;gap:8px}.lb-thumb{width:88px}
+}
 
 /* the Windows installer and GitHub */
 .get{text-align:center;padding:72px 24px 8px}
@@ -171,56 +224,163 @@ footer a:hover{color:#fff}
   </div>
 </section>
 
+<!-- The video player (the lightbox): the script fills it from the video row's tiles. -->
+<dialog class="lb" id="lb" aria-label="Video">
+  <button class="lb-x" type="button" aria-label="Close" data-lb="close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  <button class="lb-nav prev" type="button" aria-label="Previous video" data-lb="prev"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+  <button class="lb-nav next" type="button" aria-label="Next video" data-lb="next"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
+  <div class="lb-main">
+    <div class="lb-player" tabindex="-1" autofocus>
+      <video playsinline preload="metadata"></video>
+      <button class="lb-big" type="button" aria-label="Play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button>
+      <div class="lb-bar">
+        <div class="lb-track" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><div class="lb-buf"></div><div class="lb-fill"></div></div>
+        <div class="lb-row">
+          <button class="lb-btn lb-pp" type="button" aria-label="Play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg></button>
+          <span class="lb-time">0:00 / 0:00</span>
+          <span class="lb-sp"></span>
+          <button class="lb-btn lb-rate" type="button" aria-label="Playback speed">1x</button>
+          <button class="lb-btn lb-mute" type="button" aria-label="Mute"></button>
+          <button class="lb-btn lb-fs" type="button" aria-label="Full screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <p class="lb-cap"></p>
+  </div>
+  <div class="lb-strip" role="tablist" aria-label="Videos"></div>
+</dialog>
+
 <footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a></footer>
 
 <script>
-// The video row. At rest a tile shows its poster and the corner play button; on a desktop, hovering plays it muted as
-// a preview. A click anywhere on a tile plays it from the start with sound and its own controls; a click on the picture
-// then pauses or resumes it (a click on the control bar is the controls'). Paused for a moment, a tile hides its
-// controls and shows the play button again, on the paused frame, and a click resumes it there. One video plays at a
-// time; at its end it goes back to its poster.
+// The video row: on a desktop, hovering a tile plays it muted as a preview; a click anywhere on a tile (or its play
+// button) opens it in the player below.
 const tiles = [...document.querySelectorAll("[data-video]")];
 const canHover = matchMedia("(hover: hover) and (pointer: fine)").matches;
-const BAR = 56; // px at the bottom of a playing video that belong to its control bar
-const IDLE = 2500; // ms paused, with the pointer still, before the play button comes back
-const is = (f, c) => f.classList.contains(c);
-const rest = (f) => {
+for (const [n, f] of tiles.entries()) {
   const v = f.querySelector("video");
-  clearTimeout(f.idle);
-  f.classList.remove("playing", "paused", "previewing");
-  v.controls = false; v.muted = true; v.loop = true; v.load();
-};
-const start = (f, fromStart) => {
-  const v = f.querySelector("video");
-  for (const o of tiles) if (o !== f && (is(o, "playing") || is(o, "paused"))) rest(o);
-  clearTimeout(f.idle);
-  f.classList.remove("previewing", "paused"); f.classList.add("playing");
-  v.loop = false; v.muted = false; v.controls = true;
-  if (fromStart) v.currentTime = 0;
-  v.play().catch(() => {});
-};
-for (const f of tiles) {
-  const v = f.querySelector("video");
-  const settle = () => {
-    clearTimeout(f.idle);
-    f.idle = setTimeout(() => { if (is(f, "playing") && v.paused && !v.ended) { f.classList.replace("playing", "paused"); v.controls = false; } }, IDLE);
-  };
-  f.addEventListener("click", (e) => {
-    if (is(f, "playing") && e.clientY > v.getBoundingClientRect().bottom - BAR) return;
-    e.preventDefault();
-    if (!is(f, "playing")) start(f, !is(f, "paused"));
-    else if (v.paused) v.play().catch(() => {});
-    else v.pause();
-  });
-  v.addEventListener("pause", () => { if (is(f, "playing") && !v.ended) settle(); });
-  v.addEventListener("play", () => clearTimeout(f.idle));
-  f.addEventListener("mousemove", () => { if (is(f, "playing") && v.paused) settle(); });
-  v.addEventListener("ended", () => { if (is(f, "playing")) rest(f); });
+  f.addEventListener("click", (e) => { e.preventDefault(); openPlayer(n); });
   if (canHover) {
-    f.addEventListener("mouseenter", () => { if (!is(f, "playing") && !is(f, "paused")) { f.classList.add("previewing"); v.play().catch(() => {}); } });
-    f.addEventListener("mouseleave", () => { if (is(f, "previewing")) { f.classList.remove("previewing"); v.pause(); } });
+    f.addEventListener("mouseenter", () => { if (!lb.open) { f.classList.add("previewing"); v.play().catch(() => {}); } });
+    f.addEventListener("mouseleave", () => { f.classList.remove("previewing"); v.pause(); });
   }
 }
+// The player (the lightbox): one <video> with its own controls, for every tile's video.
+const lb = document.getElementById("lb");
+const $ = (sel) => lb.querySelector(sel);
+const lv = $("video"), player = $(".lb-player"), big = $(".lb-big"), pp = $(".lb-pp"), track = $(".lb-track");
+const fill = $(".lb-fill"), buf = $(".lb-buf"), time = $(".lb-time"), rateBtn = $(".lb-rate"), muteBtn = $(".lb-mute");
+const strip = $(".lb-strip"), cap = $(".lb-cap");
+const ICON = {
+  play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
+  sound: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+};
+const items = tiles.map((f) => ({ src: f.querySelector("source").src, poster: f.querySelector("video").poster, title: f.closest("figure").querySelector("h3").textContent }));
+const RATES = [1, 1.5, 2, 0.5];
+let cur = 0, opener = null, idleTimer = 0;
+const thumbs = items.map((it, n) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "lb-thumb"; b.setAttribute("role", "tab"); b.setAttribute("aria-label", it.title);
+  b.style.backgroundImage = "url(" + JSON.stringify(it.poster) + ")";
+  b.addEventListener("click", () => show(n, true));
+  strip.append(b);
+  return b;
+});
+const clock = (s) => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+const paint = () => {
+  const d = lv.duration || 0, t = lv.currentTime || 0;
+  fill.style.width = d ? (t / d) * 100 + "%" : "0";
+  const b = lv.buffered.length ? lv.buffered.end(lv.buffered.length - 1) : 0;
+  buf.style.width = d ? Math.min(100, (b / d) * 100) + "%" : "0";
+  time.textContent = clock(t) + " / " + clock(d);
+  track.setAttribute("aria-valuemax", String(Math.floor(d))); track.setAttribute("aria-valuenow", String(Math.floor(t)));
+  track.setAttribute("aria-valuetext", clock(t) + " of " + clock(d));
+};
+const state = () => {
+  const on = !lv.paused && !lv.ended;
+  player.classList.toggle("is-playing", on);
+  pp.innerHTML = on ? ICON.pause : ICON.play; pp.setAttribute("aria-label", on ? "Pause" : "Play");
+  muteBtn.innerHTML = lv.muted ? ICON.muted : ICON.sound; muteBtn.setAttribute("aria-label", lv.muted ? "Unmute" : "Mute");
+  if (!on) { clearTimeout(idleTimer); player.classList.remove("idle"); }
+};
+const wake = () => {
+  player.classList.remove("idle"); clearTimeout(idleTimer);
+  if (!lv.paused) idleTimer = setTimeout(() => player.classList.add("idle"), 2500);
+};
+const toggle = () => { if (lv.paused || lv.ended) lv.play().catch(() => {}); else lv.pause(); };
+function show(n, play) {
+  cur = (n + items.length) % items.length;
+  const it = items[cur];
+  lv.pause(); lv.poster = it.poster; lv.src = it.src; lv.playbackRate = Number(rateBtn.dataset.rate || 1);
+  cap.textContent = it.title; lb.setAttribute("aria-label", it.title);
+  thumbs.forEach((b, k) => b.setAttribute("aria-selected", String(k === cur)));
+  paint(); state(); wake();
+  // focus on the player, so Space plays and pauses (not the button that was used to get here)
+  player.focus({ preventScroll: true });
+  if (play) lv.play().catch(() => {});
+}
+function openPlayer(n) {
+  opener = document.activeElement;
+  for (const f of tiles) { f.classList.remove("previewing"); f.querySelector("video").pause(); }
+  if (!lb.open) lb.showModal();
+  document.body.classList.add("lb-open");
+  show(n, true);
+}
+lb.addEventListener("close", () => {
+  lv.pause(); lv.removeAttribute("src"); lv.load();
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  document.body.classList.remove("lb-open");
+  if (opener && opener.focus) opener.focus();
+});
+lb.addEventListener("click", (e) => {
+  const act = e.target.closest("[data-lb]")?.dataset.lb;
+  if (act === "close" || e.target === lb) lb.close();
+  else if (act === "prev") show(cur - 1, true);
+  else if (act === "next") show(cur + 1, true);
+});
+big.addEventListener("click", toggle);
+pp.addEventListener("click", toggle);
+lv.addEventListener("click", toggle);
+rateBtn.addEventListener("click", () => {
+  const r = RATES[(RATES.indexOf(lv.playbackRate) + 1) % RATES.length] || 1;
+  lv.playbackRate = r; rateBtn.dataset.rate = String(r); rateBtn.textContent = r + "x";
+});
+muteBtn.addEventListener("click", () => { lv.muted = !lv.muted; state(); });
+$(".lb-fs").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (player.requestFullscreen) player.requestFullscreen().catch(() => {});
+  else if (lv.webkitEnterFullscreen) lv.webkitEnterFullscreen();
+});
+for (const ev of ["play", "pause", "ended", "volumechange"]) lv.addEventListener(ev, state);
+for (const ev of ["timeupdate", "durationchange", "progress", "loadedmetadata", "seeked"]) lv.addEventListener(ev, paint);
+lv.addEventListener("play", wake);
+player.addEventListener("pointermove", wake);
+// the seek bar: a click or a drag puts the playhead there; ← and → on it move it by 5 s
+const seekTo = (x) => {
+  const r = track.getBoundingClientRect();
+  if (lv.duration) { lv.currentTime = Math.min(1, Math.max(0, (x - r.left) / r.width)) * lv.duration; paint(); }
+};
+track.addEventListener("pointerdown", (e) => { track.setPointerCapture(e.pointerId); track.classList.add("drag"); seekTo(e.clientX); });
+track.addEventListener("pointermove", (e) => { if (track.classList.contains("drag")) seekTo(e.clientX); });
+track.addEventListener("pointerup", () => track.classList.remove("drag"));
+track.addEventListener("pointercancel", () => track.classList.remove("drag"));
+track.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault(); e.stopPropagation();
+  lv.currentTime = Math.min(lv.duration || 0, Math.max(0, lv.currentTime + (e.key === "ArrowRight" ? 5 : -5)));
+});
+// keys in the player: Space or K plays and pauses, ← and → switch videos, M mutes, F goes full screen (Esc closes)
+lb.addEventListener("keydown", (e) => {
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  const onButton = e.target instanceof HTMLButtonElement;
+  if ((e.key === " " && !onButton) || e.key === "k") { e.preventDefault(); toggle(); wake(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); show(cur - 1, true); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); show(cur + 1, true); }
+  else if (e.key === "m") { lv.muted = !lv.muted; state(); }
+  else if (e.key === "f") $(".lb-fs").click();
+});
 // An invite link (#join=<project>.<code>) opened in a browser: show it to copy into Cardboard. The code stays in the
 // fragment, so it never reaches the server.
 if (location.hash.startsWith("#join=")) {
