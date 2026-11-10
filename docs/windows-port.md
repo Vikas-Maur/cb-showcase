@@ -15,8 +15,8 @@ Run it from the `Cardboard` shortcut (Desktop or Start Menu), or `Cardboard-win\
 If you launch it from a terminal that has `ELECTRON_RUN_AS_NODE=1` set (some Electron-based IDEs
 set this), unset that variable first.
 
-Git tracks only our own work: `scripts\`, `carton\`, `docs\`, `examples\`, `assets\`, `.github\`, `tools\`' package files
-and the READMEs and AGENTS.md. The app,
+Git tracks only our own work: `scripts\`, `carton\`, `docs\`, `examples\`, `assets\`, `.github\`, the package
+files in `tools\`, the READMEs, `AGENTS.md`, `CLAUDE.md` and `.gitignore`. The app,
 the downloads and Cardboard's unpacked code are ignored (see `.gitignore`): they are large, and
 they are Cardboard's software, not ours to redistribute.
 
@@ -205,7 +205,7 @@ both, so a 4K HEVC clip took about as long as it runs, twice. Now:
   lanczos. Cardboard asks for a set bitrate, which VideoToolbox needs (1.4.0: a fixed 12 Mb/s; 1.5.0: 1.5 times
   the source's, up to 12 Mb/s), and `scale_cuda`'s default scaler is softer than the CPU's. With both, proxies were
   5 to 14 times the size of the CPU path's and looked worse. Scored against the 4K source (each proxy scaled back
-  up, VMAF 4K model; measured with 1.4.0's fixed 12 Mb/s):
+  up, VMAF 4K model; measured with 1.4.0's fixed 12 Mb/s; not independently verified):
 
   | Proxy of | CPU path, libx264 CRF 20 (stock) | NVENC 12 Mb/s (before) | NVENC CQ 30, lanczos (now) |
   | --- | --- | --- | --- |
@@ -220,7 +220,8 @@ both, so a 4K HEVC clip took about as long as it runs, twice. Now:
 
 Four clips from a 4K HEVC and phone footage folder (54 s and 9 s 4K, 20 s and 78 s 1080p) went from
 73.5 s to 11.9 s until every filmstrip, waveform and proxy was ready. The clips themselves show up in
-under a second either way.
+under a second either way. (Measured on 1.4.0 against stock libx264, before the baseline build; an independent
+check couldn't back it from the recorded runs, so treat it as unverified.)
 
 It also fixes Cardboard staying alive with no window. Main waits for every import to be done before it
 quits, and the worker said an import was done only if all of its background work succeeded. When one
@@ -464,7 +465,7 @@ apply whether Carton is on or off:
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
 proxies in software (libx264), since its hardware check only knew VideoToolbox. The same four clips
-took 57.7 s with `cb media add` before, 16.4 s after.
+took 57.7 s with `cb media add` before, 16.4 s after (unverified, as above).
 
 `scripts\mac-scan.js` lists the macOS-specific calls in a bundle, for checking a new Cardboard version.
 

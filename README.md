@@ -51,8 +51,9 @@ one in the last row. Where each number comes from: [docs/readme-sources.md](docs
 | **Serve the app's files without copies in `%TEMP%`.** Time to fetch 57 of Cardboard's files (9.1 MB) | 170 → 123 ms | Cardboard 1.4.0's own handler in a test app, Electron 43.7.0 for Linux, 20 alternated rounds, medians | [patch 16](docs/windows-port.md#patches) |
 | **Retired: draw a graphic with the newest ready video frame**, plus the GPU change. Frames per second of a graphic with a video inside, while playing | 26–37 → 78–88 | 1.4.0 only. Cardboard reworked how a graphic gets its frames (1.4.1, 1.5.0), so the 1.5.0 build uses Cardboard's way | [#2](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#2) |
 
-Import times are in the [patch notes](docs/windows-port.md#patches). They were measured before we had the baseline
-build and the independent re-check, so they aren't in this table.
+Import times are in the [patch notes](docs/windows-port.md#patches), but not in this table: they were measured
+before the baseline build existed, and an independent check (`07709a41`, 2026-11-01) couldn't back them from the
+recorded runs. They are being re-measured against the baseline.
 
 ## How it works
 
@@ -61,7 +62,7 @@ build and the independent re-check, so they aren't in this table.
 
 - **Anchors that must match exactly.** Each `scripts/patch-*.js` reads a pristine bundle and changes it with
   `replace(from, to, count)`. `from` is exact text in the minified code, and it must match exactly `count` times, or
-  the build stops. A new Cardboard version can't break a patch quietly.
+  the build stops. A changed anchor stops the build; names inside the inserted code need the check below.
 - **Helpers.** Larger code goes into helpers injected at the top of a bundle (`__cb…` names: `media-helpers.js`,
   `rename-retry.js`, `strip-titlebar.js`, `asar-assets.js`).
 - **The same code still runs on a Mac.** Windows-only behaviour sits behind `__cbWin` (in the pages,
@@ -75,15 +76,16 @@ build and the independent re-check, so they aren't in this table.
 
 1. **Anchor by anchor.** Every patch ran against 1.5.0's bundles. 1.5.0 renamed nearly every minified name. All
    but a handful of anchors matched once their short names were renamed. The rest were real changes in Cardboard,
-   redone by hand: the new proxy bitrate, and the graphics frame pump, where one speed change was dropped. 1.5.0's
+   redone by hand, among them the new proxy bitrate and the graphics frame pump, where one speed change was dropped;
+   Carton followed a few more ([INTEGRATION-1.5.0.md §7](carton/docs/INTEGRATION-1.5.0.md#7-cardboard-150-2026-11-10)). 1.5.0's
    new Premiere import needed a fix of its own on Windows ([1.5.0 notes](docs/windows-port.md#cardboard-150),
    [INTEGRATION-1.5.0.md §7](carton/docs/INTEGRATION-1.5.0.md#7-cardboard-150-2026-11-10)).
 2. **Name by name.** Matching anchors aren't enough: inserted code calls bundle names its anchor doesn't show.
-   Tests in the real app caught two mistakes the anchors passed: the title bar's helper still used two of 1.4.0's
-   names, and a rename also changed the string `"z"` that Ctrl+Y's patch needs. Then every `replace()` and every
-   injected helper was logged on 1.4.0 and on 1.5.0, paired by anchor, and each name in the inserted text was matched
-   to what 1.5.0 calls the same thing. That found three more: Carton's editor events, the Join dialog and Import
-   Folder (commit `56142f3f`).
+   Tests in the real app caught three mistakes the anchors passed: the title bar's helper still used two of 1.4.0's
+   names, a rename also changed the string `"z"` that Ctrl+Y's patch needs, and Carton's editor heard no events.
+   Then every `replace()` and every injected helper was logged on 1.4.0 and on 1.5.0, paired by anchor, and each name
+   in the inserted text was matched to what 1.5.0 calls the same thing. That confirmed the third and found two more:
+   the Join dialog and Import Folder (commit `56142f3f`).
 3. **In the real app.** The build was tested on the Windows laptop: shortcuts, the title bar and its menus, a
    graphic with a video inside, an export, the Director, History, undo and cuts, a project shared live with a
    teammate on another computer ([changelog #8](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#8)).
@@ -95,16 +97,18 @@ build and the independent re-check, so they aren't in this table.
 - **Two builds on one machine, never a Mac.** We have no Mac, so we never claim "faster than the Mac". A speed
   claim compares two builds on the same machine: the build before the change and the build after it, or, for the
   media pipeline, the baseline. The baseline (`build-windows.js --baseline`) is Cardboard's own pipeline with only
-  what Windows needs to run it. The release ships it beside the app, so anyone can re-run the comparison.
+  what Windows needs to run it (the bug fixes stay in; only the speed changes are left out). The release ships it beside the app, so anyone can re-run the comparison.
 - **Alternating runs, medians, every run listed.** [`scripts/bench/run.js`](docs/benchmarks.md) runs the real app
   with a fresh profile and library each run, drives it over the DevTools protocol, alternates the builds, and writes
   every run with the medians. Measurements are taken plugged in: on battery, Windows slows the CPU and GPU.
-- **An independent re-check.** No measured number is published until a separate agent has re-checked the method
-  and the numbers, or re-run them ([AGENTS.md](AGENTS.md), rule 6). The changelog says so for every number on it.
+- **An independent re-check.** Every number in this README and on the changelog was re-checked by a separate agent,
+  method and numbers, or re-run ([AGENTS.md](AGENTS.md), rule 6, since 2026-10-30). Older figures that only appear in
+  [docs/windows-port.md](docs/windows-port.md) are marked there as not independently verified.
 - **The real app, on Windows.** Features are tested in the real app on a Windows laptop with an NVIDIA GPU, with a
   throwaway profile and library. `scripts/test-shortcuts.js` presses the shortcuts and checks what each one did:
   25 page tests over DevTools, and 9 more with real keys.
-- **Cardboard's own code as the reference.** Carton's tests run against Cardboard's own unpacked bundles. With
+- **Cardboard's own code as the reference.** Carton's tests run against Cardboard's own unpacked bundles (1.5.0's
+  for this port; the Carton CI workflow still fetches 1.4.0's). With
   Carton off, `cb`'s output and files must equal the build without Carton. Where a bug can be shown, the changelog's
   "See what happens" dialog plays it in Cardboard's own editor pages, next to this build's.
 - **Bugs are Cardboard's only if its code says so.** Each one was found by reading Cardboard's code (1.4.0 and
@@ -189,17 +193,17 @@ Counted on 2026-11-10 at 08:45 UTC, when main was `56142f3f`. Each count says ho
 
 | What | Count | How it was counted |
 | --- | --- | --- |
-| Commits on main | 1,750 | `git rev-list --count 56142f3f` |
-| Commits on every branch | 1,914 | `git rev-list --count --remotes --before=2026-11-10T08:45Z` |
+| Commits on main | 1,750 (459 of them merges) | `git rev-list --count 56142f3f` |
+| Commits on every branch | 1,914 (498 of them merges) | `git rev-list --count --remotes --before=2026-11-10T08:45Z` |
 | Branches on GitHub | 119 | `git branch -r` at that time, without `origin/HEAD` |
 | Span | 2026-10-27 to 2026-11-10 | the first and the newest commit on main |
 | Patch scripts | 8, plus 5 Carton sync parts | `scripts/patch-*.js`, `scripts/carton/sync/patches/*.js` |
-| Anchors | 335 exact-text replacements (152 for Windows, 183 for Carton), plus 13 blocks of code added at the top of a bundle | every `replace()` and prepend logged as it ran, in a full build on pristine 1.5.0 |
+| Anchors | 335 exact-text replacements (152 for Windows, 183 for Carton), plus 13 blocks of code added at the top of a bundle | every `replace()` and prepend logged as it ran, in the build's patch steps (in build order) on pristine 1.5.0 |
 | Carton packages | 19, plus a web app | `carton/packages/*`, `carton/apps/*` |
 | Test files | 428 in `carton/`, 51 in `scripts/carton/test/` | `git ls-files` names ending in `.test.ts`, `.test.js`, `.test.mjs` or `.test.tsx` |
 | CI | 24 test jobs: 13 groups, 12 jobs on Linux, 11 on Windows, 1 on macOS | `node carton/ci/plan.mjs` (`.github/workflows/carton-ci.yml`) |
 | Measurements CI can re-run | 22 | defined in `carton/ci/measure.json`, run by `.github/workflows/carton-measure.yml` |
-| Tests at Carton's final integration | all 24 jobs passed: 6,844 tests, 0 failures | [changelog #4](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#4) |
+| Tests at Carton's final integration | all 24 jobs passed: 6,844 tests, 0 failures (2026-11-01, on Cardboard 1.4.0) | [changelog #4](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#4) |
 
 Two more workflows: `carton-agent.yml` runs one agent's test groups on its own branch, and `build-windows.yml` builds
 the app and the baseline on a Windows runner and publishes them as the release `windows-latest`.
