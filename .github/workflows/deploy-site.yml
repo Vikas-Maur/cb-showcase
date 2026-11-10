@@ -1,0 +1,76 @@
+# Deploys the website and its API (carton/packages/server-cloudflare: the home page, the changelog, the cost page and
+# the Worker) to Cloudflare as the Worker cardboard-showcase, on every push to deploy/carton that changes carton/, or by
+# hand. It replaced Cloudflare's Workers Builds, whose link to this repository broke when the repository was renamed.
+# The same steps as a deploy by hand: pnpm install, build-site.mjs, wrangler deploy with --name cardboard-showcase (the
+# toml's name is the old "carton"). Then it checks the live site and fails if /api/health isn't 200 or the home page is
+# missing. No pull_request trigger: the repository is public, and its Cloudflare token must never reach a fork's code.
+name: Deploy the website
+
+on:
+  push:
+    branches: [deploy/carton]
+    paths:
+      - "carton/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, in order; a deploy already running is never cancelled halfway.
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # only deploy/carton is the website (a run by hand on another branch would ship that branch's carton/)
+    if: github.ref == 'refs/heads/deploy/carton'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: carton
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # pnpm at the version carton/package.json pins, with its store cached by the lockfile
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: carton/package.json
+          cache: true
+          cache_dependency_path: carton/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the static files
+        run: node packages/server-cloudflare/build-site.mjs
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy -c packages/server-cloudflare/wrangler.production.toml --name cardboard-showcase
+
+      # A new version can take a few seconds to answer everywhere: up to a minute of tries.
+      - name: Check the live site
+        run: |
+          site=https://cardboard-showcase.vikasmaur10.workers.dev
+          for i in 1 2 3 4 5 6; do
+            health=$(curl -s -o /dev/null -w '%{http_code}' "$site/api/health" || true)
+            page=$(curl -sf "$site/" || true)
+            if [ "$health" = 200 ] && [[ "$page" == *"Made in Cardboard on Windows"* ]]; then
+              echo "the site is up: /api/health is 200 and / is the home page"
+              exit 0
+            fi
+            echo "try $i: /api/health answered $health, the home page text is $([[ "$page" == *"Made in Cardboard on Windows"* ]] && echo there || echo missing)"
+            sleep 10
+          done
+          echo "::error::the site failed its check after the deploy"
+          exit 1
