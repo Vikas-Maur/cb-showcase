@@ -359,7 +359,7 @@ if (mode === "--cli") {
     // is blocked, as in a preview): the bridge's refuse() uses it for the stage's text editor (baseline P3-9).
     // `subscribe` (the store's, zustand's (state, prev)) and `clock` (its playback clock, $x, exported as aK: the
     // playhead while playing) let a preview tell the person's moves of the playhead from its own (final re-check N5).
-    replace("ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});", "ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});window.__carton.store({state:ne.getState,raw:Tm,adopt:Mde,armed:Nde,inflight:()=>Xy.size>0,flush:()=>lN().work,invoke:On,on:CI,deserialize:sv,projects:De,refuse:me,subscribe:ne.subscribe,clock:$x.get});");
+    replace("ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});", "ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});window.__carton.store({state:ne.getState,raw:Tm,adopt:Mde,armed:Nde,inflight:()=>Xy.size>0,flush:()=>lN().work,invoke:On,on:PI,deserialize:sv,projects:De,refuse:me,subscribe:ne.subscribe,clock:$x.get});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
     // H4 (one action, one save): and a media entry an editor action owns goes with that action's timeline save (send answers its own save
     // with that one), so one action is one version and one undo step (laptop, merge/prod-2 N-1).

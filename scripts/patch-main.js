@@ -274,7 +274,7 @@ var __cbMenuKeys = (wc, open) => {
 // "editor:import-media" event, so the usual checks and progress apply. File pickers need a user
 // gesture, which a menu click does not give the page, so it runs with one.
 var __cbMediaExts = () => {
-  try { return GK(); } catch { return ["mp4", "webm", "mov", "avi", "mkv", "m4v", "mxf", "mts", "m2ts", "ts", "3gp", "wmv", "mp3", "wav", "ogg", "oga", "opus", "aac", "m4a", "flac", "aif", "aiff", "caf", "wma", "jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "tif", "tiff", "heic", "heif", "hif"]; }
+  try { return aZ(); } catch { return ["mp4", "webm", "mov", "avi", "mkv", "m4v", "mxf", "mts", "m2ts", "ts", "3gp", "wmv", "mp3", "wav", "ogg", "oga", "opus", "aac", "m4a", "flac", "aif", "aiff", "caf", "wma", "jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "tif", "tiff", "heic", "heif", "hif"]; }
 };
 var __cbPickFolder = (exts) => new Promise((done) => {
   const ok = new Set(exts), input = document.createElement("input");
