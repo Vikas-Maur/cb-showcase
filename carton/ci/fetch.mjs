@@ -122,8 +122,8 @@ const tools = {
   },
 
   async electron() {
-    // The release zip, as build-windows.js takes it (the npm package's postinstall download is an install script, which
-    // pnpm doesn't run).
+    // The release zip, as build-windows.js takes it (the electron package's postinstall download is an install script,
+    // which pnpm doesn't run).
     const plat = { linux: "linux", windows: "win32", macos: "darwin" }[OS];
     const name = `electron-v${VERSIONS.electron}-${plat}-${process.arch}.zip`;
     const dir = path.join(dirs.cache, "electron-" + VERSIONS.electron);
