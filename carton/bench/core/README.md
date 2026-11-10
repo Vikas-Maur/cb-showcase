@@ -107,11 +107,11 @@ the replay of their ops.
 
 ```sh
 git worktree add /tmp/a fd07cc8 && git worktree add /tmp/c <commit>     # before the freeze (a2d2f04); the commit under test
-(cd /tmp/a/carton && npm ci) && (cd /tmp/c/carton && npm ci)
+(cd /tmp/a/carton && npm ci) && (cd /tmp/c/carton && pnpm install --frozen-lockfile)   # fd07cc8 predates pnpm
 node --expose-gc /tmp/c/carton/bench/core/head.ts A=/tmp/a/carton C=/tmp/c/carton
 ```
 
-Each argument is `<name>=<the carton/ folder of a checkout with npm ci done>`; the builds load in one process, each its
+Each argument is `<name>=<the carton/ folder of a checkout with its dependencies installed>`; the builds load in one process, each its
 own module instance, interleaved with their order reversed every other run. N (default "1000,10000" items), RUNS (7),
 CALLS (200), OUT (the JSON, default `./head-bench-<ms>.json`). On the shared dev box wrap it in
 `flock /tmp/gfv-race/cpu.lock`. Per size: a local cut on `genDoc(N, 42)` with 20 commits; "repeat" times CALLS

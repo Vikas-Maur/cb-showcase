@@ -1,5 +1,5 @@
 {
-  // Typecheck only (node runs the .ts directly): npx tsc -p bench/race
+  // Typecheck only (node runs the .ts directly): pnpm exec tsc -p bench/race
   "extends": "../../tsconfig.node.json",
   "compilerOptions": { "noEmit": true },
   "include": ["*.ts"]

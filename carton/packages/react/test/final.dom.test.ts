@@ -1,5 +1,5 @@
 // The laptop's UI re-check of the final candidate (merge/prod-2 @ 0cc587f1, 2026-11-02, docs/regress/final/ui), in a
-// DOM: what it found in the real app. `npm test` runs this file on React 19 and on preact/compat.
+// DOM: what it found in the real app. `pnpm test` runs this file on React 19 and on preact/compat.
 import { $, $$, React, act, click, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

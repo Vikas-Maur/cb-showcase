@@ -66,7 +66,7 @@ whoever asked. Older peers on either side never see the new messages.
 - `server-cloudflare` `room.ts`: `stateKey` must include `cuts`. A field missing from it is lost at the next
   hibernation (the trap fix/ux2-open hit). Nothing else in the Durable Object changes: it runs the same sequencer.
 - Deploy: the conformance suite (`sequencerHostSuite` gains two tests: the list after an adopt, and the push to a
-  second connection) on server-node and in workerd, then `npm run deploy:cloudflare`. Until the deploy, clients see no
+  second connection) on server-node and in workerd, then `pnpm run deploy:cloudflare`. Until the deploy, clients see no
   `cuts` flag and behave exactly as today.
 
 ### Core (`@carton/core` `carton.ts`, `sync/client.ts`)

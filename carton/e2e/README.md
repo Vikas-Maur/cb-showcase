@@ -26,8 +26,8 @@ which puts its two projects in one team (team dedup is off by default). A bug's 
 ## Run
 
 ```sh
-cd carton && npm ci
-npm test -w @carton/e2e                      # every scenario, one file at a time
+cd carton && pnpm install --frozen-lockfile
+pnpm --filter @carton/e2e test             # every scenario, one file at a time
 node --test e2e/test/s4-live.test.ts         # one scenario
 ```
 
@@ -35,7 +35,7 @@ node --test e2e/test/s4-live.test.ts         # one scenario
 - Scratch: `CARTON_E2E_TMP` (default `~/gfv-scratch/carton/e2e-qa/run` when `~/gfv-scratch` exists, else the OS temp
   folder). Every process the suite starts gets a HOME, app-data folder and temp folder inside it; carton.db is never
   opened outside it.
-- `CARTON_E2E_CLOUDFLARE=0` skips the `wrangler dev` cases (they need the `wrangler` package installed in `carton/node_modules`, run with this Node, no shell).
+- `CARTON_E2E_CLOUDFLARE=0` skips the `wrangler dev` cases (they need `@carton/server-cloudflare`'s `wrangler` installed, run with this Node, no shell).
 - `VERSITYGW_BIN`: a VersityGW binary for the S3 cases (skipped without it).
 - `ffmpeg` and `ffprobe` on PATH (or `FFMPEG`, `FFPROBE`) for the media cases that segment and compare proxies (skipped without them).
-- The scenarios start many processes: run them one file at a time (`--test-concurrency=1`, as `npm test` does).
+- The scenarios start many processes: run them one file at a time (`--test-concurrency=1`, as `pnpm test` does).

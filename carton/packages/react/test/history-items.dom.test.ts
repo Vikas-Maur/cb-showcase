@@ -3,7 +3,7 @@
 // - P1-4: the Fold dialog offers what an earlier partial fold left out ("Left out earlier"); its changes fold in, or
 //   stay left out, together; "You can fold in the rest later" holds.
 // - P1-10: the filter is "Agent turns".
-// `npm test` runs it on React 19, then on preact/compat.
+// `pnpm test` runs it on React 19, then on preact/compat.
 import { $, $$, React, byText, cleanup, click, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

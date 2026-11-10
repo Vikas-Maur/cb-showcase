@@ -1,6 +1,6 @@
 // The History list and the version card, redesigned (docs/carton-ux PLAN workstream 3, DESIGN §5.2, §6.1, §7), on the
 // mock's story: Main cut today, Claude Code's turn on top at 12:48 pm, your six changes before it (one group row), the
-// Director's turn, Sent to client, a fold, a restore and a Codex trim. `npm test` runs it on React 19 and on preact/compat.
+// Director's turn, Sent to client, a fold, a restore and a Codex trim. `pnpm test` runs it on React 19 and on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

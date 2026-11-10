@@ -78,7 +78,7 @@ The rule a push is judged by is `@carton/core` `sequencer.evaluatePush`, shared 
 
 ## Tests and benchmarks
 
-- `npm test`: the server's own cases (K cap, span checks, per-branch existence with nested forks, H1/H3/H4, the
+- `pnpm test`: the server's own cases (K cap, span checks, per-branch existence with nested forks, H1/H3/H4, the
   bounded confirmed-id list live and archived, rid binding and the hello claim, rows written per change, keyframes,
   restart safety, large bodies, catch-up paging by rows and bytes, envelopes) plus the HMAC auth's; `review*.test.ts`
   are the regression tests for the review rounds' findings.

@@ -1,4 +1,4 @@
-# Carton on Cloudflare: LOCAL DEVELOPMENT ONLY (`npm run dev`, which is `wrangler dev`). Never `wrangler deploy`
+# Carton on Cloudflare: LOCAL DEVELOPMENT ONLY (`pnpm run dev`, which is `wrangler dev`). Never `wrangler deploy`
 # without the user's go-ahead (PLAN §17). Secrets go in `.dev.vars` locally (AUTH_SECRET, optional ADMIN_TOKEN);
 # never in this file.
 name = "carton-dev"

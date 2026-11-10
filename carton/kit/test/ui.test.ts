@@ -1,6 +1,6 @@
 // INTEGRATION.md's UI sample, run for real: the History panel's view model served from the worker side over messages
 // (`serveUi`) and used in the page (`remoteUi`), with structured clones delivered later, as IPC does.
-//   cd carton && node --test kit/test/ui.test.ts        (type-checked with `npx tsc -p kit/tsconfig.ui.json`)
+//   cd carton && node --test kit/test/ui.test.ts        (type-checked with `pnpm exec tsc -p kit/tsconfig.ui.json`)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

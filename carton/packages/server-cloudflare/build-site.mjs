@@ -1,7 +1,7 @@
 // Builds the static files the production Worker serves (dist/site): the plain landing page, the cost calculator
 // (site/cost/, served at /cost/) and service-worker retirer from ./site, and the changelog from
 // apps/web/public/changelog. The calculator's build script and type declarations stay out of dist. The web demo itself (apps/web) isn't served for now;
-// `npm run deploy:cloudflare:web` (carton/package.json) builds and deploys it in place of this when it's wanted again.
+// `pnpm run deploy:cloudflare:web` (carton/package.json) builds and deploys it in place of this when it's wanted again.
 //   node packages/server-cloudflare/build-site.mjs   (from carton/)
 import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";

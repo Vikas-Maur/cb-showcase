@@ -1,4 +1,4 @@
-// The Comments panel and timeline markers in a DOM, on React 19 and on preact/compat (npm test runs this file twice).
+// The Comments panel and timeline markers in a DOM, on React 19 and on preact/compat (pnpm test runs this file twice).
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, renders, runtime, type } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

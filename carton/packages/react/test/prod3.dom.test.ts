@@ -3,7 +3,7 @@
 //   and moves W1 onto it, and each row was described alone against Main, which hasn't that track yet.
 // - P3-C: a title's own media entry (Cardboard adds "Text: W1" per title) is the title's: one row with it, left out
 //   with it, and counted once, as History's row, its list and the fold's count tell it.
-// `npm test` runs it on React 19, then on preact/compat.
+// `pnpm test` runs it on React 19, then on preact/compat.
 import { $$, React, byText, cleanup, click, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

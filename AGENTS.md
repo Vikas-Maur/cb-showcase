@@ -37,9 +37,12 @@ to its minified bundles at build time.
 
 **Building.**
 
-- On Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads what the app is made
-  from into `dl/` (Cardboard 1.5.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv, Claude Code) and
-  builds `out/Cardboard-win`.
+- On Windows: `cd tools && pnpm install --frozen-lockfile`, then `node scripts/build-windows.js`. It downloads
+  what the app is made from into `dl/` (Cardboard 1.5.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv,
+  Claude Code) and builds `out/Cardboard-win`.
+- Package manager: pnpm, in `tools/` and `carton/` (two projects, each with its own `pnpm-lock.yaml`). Their
+  `packageManager` field pins the version; `corepack enable` once gets it. Each Carton package declares what it
+  imports (no hoisting).
 - Anywhere else (Ubuntu): the "Build Windows app" workflow runs the same build on a GitHub Windows runner.
   `gh workflow run build-windows.yml --ref <branch>`, then `gh run watch`. A patch that no longer matches
   fails the build. It publishes the app as the release `windows-latest`, replacing the previous build:

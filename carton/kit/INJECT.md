@@ -7,7 +7,7 @@ step, keeps everything behind a switch, and stops at each checkpoint to show you
 ```text
 You are adding Carton to Cardboard. Carton is git for video plus live editing together: versions with who made them
 (down to the subagent), cuts that fold back together, conflict cards instead of lost edits. It is a TypeScript
-module with no runtime dependencies, in <path to the carton folder> (an npm workspace of @carton/* packages).
+module with no runtime dependencies, in <path to the carton folder> (a pnpm workspace of @carton/* packages).
 
 Read first, in this order: carton/kit/README.md (the words and the architecture), carton/kit/INTEGRATION.md (every
 hook, what it changes, its invariants and its proof), carton/kit/LIMITS.md (what isn't built), and
@@ -26,9 +26,10 @@ Rules for the whole job:
 
 Step 0. Bring Carton in.
 - Add the @carton/* packages to the pnpm workspace (or vendor carton/ and list carton/packages/* in
-  pnpm-workspace.yaml). Set `linkWorkspacePackages: true` there: the packages depend on each other by version.
+  pnpm-workspace.yaml). The packages depend on each other with `workspace:*` and declare everything they import, so
+  pnpm's strict node_modules links them as they are.
 - Node 24 runs their .ts sources directly; your bundler (esbuild, Vite) compiles them for the app.
-- CHECKPOINT 0: in carton/, `npm install`, then `node --test kit/test/quickstart.test.ts` and
+- CHECKPOINT 0: in carton/, `pnpm install`, then `node --test kit/test/quickstart.test.ts` and
   `node --test kit/test/samples.test.ts` pass. Your existing test suite passes unchanged.
 
 Step 1. The adapter: Carton's view of a project.
