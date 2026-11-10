@@ -4,7 +4,7 @@
 
 Created in [T3 Code](https://t3.codes).
 
-## Cardboard 1.4.0 (macOS) on Windows
+## Cardboard 1.5.0 (macOS) on Windows
 
 Cardboard only ships an Apple Silicon Mac build. This folder repackages that build's app code
 (`app.asar`) onto the Windows build of the same Electron version (43.7.0), with Windows
@@ -19,6 +19,29 @@ set this), unset that variable first.
 Only `scripts\`, `tools\package*.json`, `README.md` and `assets\` are tracked by git. The app,
 the downloads and Cardboard's unpacked code are ignored (see `.gitignore`): they are large, and
 they are Cardboard's software, not ours to redistribute.
+
+### Cardboard 1.5.0
+
+The patches now target Cardboard 1.5.0, the newest Mac release (they were written for 1.4.0). What's new in 1.5.0
+(Cardboard's changelog, "Premiere Projects, Cleaner Audio, Smoother Playback"): Open Project takes a Premiere Pro
+`.prproj` (and `cb project import-premiere`), right-click audio cleanup (voice, music removal, vocal split, processed
+in Cardboard's cloud), web search and media from links for the Director, and lighter playback, scrubbing and graphics.
+Porting it took:
+- **Premiere paths on Windows.** The import tries the absolute paths Premiere saved for each media file, then paths
+  relative to the `.prproj`, but it skipped absolute Windows paths (`C:\…`), which a Mac can't open. On Windows those
+  are the paths Premiere saves, so only media next to the project (by a relative path) came in and the rest was "not
+  found". Now they're kept on Windows, in the app and in `cb` (patch-worker 7, patch-cli-media 7;
+  `scripts\test-premiere-paths.js` checks both on sample paths).
+- **Proxies.** 1.5.0 asks the hardware encoder for 1.5 times the source's bitrate, kept between a third of 12 Mb/s
+  and 12 Mb/s (6 Mb/s for cloud proxies), instead of a fixed 12 Mb/s. NVENC's constant quality keeps that as its
+  cap, and its buffer follows the new rate's unit.
+- **Graphics.** 1.5.0 reworked the frame pump that feeds a graphic its video frames. The fix that waits for a slow
+  frame instead of rebuilding the graphic (patch-renderer 13) is ported. The speed change that drew with the newest
+  ready frame while playing (14) is left out: it doesn't fit 1.5.0's pump (see patch-renderer.js), so graphics play
+  through Cardboard's own pump in both builds.
+- Everything else only needed the minified names it matches renamed to 1.5.0's.
+
+Measurements below were taken on 1.4.0-based builds unless they say otherwise.
 
 ### Layout
 
@@ -178,10 +201,11 @@ both, so a 4K HEVC clip took about as long as it runs, twice. Now:
 - Proxies decode on the GPU (NVDEC) and scale there (`scale_cuda`). Rotated sources (phone footage)
   decode on the GPU and scale on the CPU, since ffmpeg only applies the rotation to frames in system
   memory. If the GPU run fails, the NVENC run with CPU decoding follows, then libx264.
-- Proxies are encoded at constant quality (NVENC CQ 30, capped at Cardboard's 12 Mb/s) and scaled with
-  lanczos. Cardboard asks for a fixed 12 Mb/s, which VideoToolbox needs, and `scale_cuda`'s default
-  scaler is softer than the CPU's. With both, proxies were 5 to 14 times the size of the CPU path's and
-  looked worse. Scored against the 4K source (each proxy scaled back up, VMAF 4K model):
+- Proxies are encoded at constant quality (NVENC CQ 30, capped at Cardboard's bitrate) and scaled with
+  lanczos. Cardboard asks for a set bitrate, which VideoToolbox needs (1.4.0: a fixed 12 Mb/s; 1.5.0: 1.5 times
+  the source's, up to 12 Mb/s), and `scale_cuda`'s default scaler is softer than the CPU's. With both, proxies were
+  5 to 14 times the size of the CPU path's and looked worse. Scored against the 4K source (each proxy scaled back
+  up, VMAF 4K model; measured with 1.4.0's fixed 12 Mb/s):
 
   | Proxy of | CPU path, libx264 CRF 20 (stock) | NVENC 12 Mb/s (before) | NVENC CQ 30, lanczos (now) |
   | --- | --- | --- | --- |
@@ -206,6 +230,14 @@ was ended in Task Manager. Now a clip whose background work fails gets Cardboard
 for that clip, and the import counts as done either way. The CLI's copy has the same change; there the
 failure ended a recipe install with an unhandled rejection.
 
+It also makes Premiere Pro imports (new in 1.5.0) find their media on Windows. For each media file the import
+tries the absolute paths Premiere saved, then paths relative to the `.prproj`. It skipped absolute Windows paths
+(`C:\…`, `\\?\C:\…`), which can't be opened on a Mac, so on Windows only media found by a relative path came in
+and the rest was listed as "not found". On Windows they're kept now and tried first, as a Mac's own paths are there.
+The CLI's copy (`cb project import-premiere`) has the same change. `node scripts/test-premiere-paths.js <patched
+library-worker.js> <patched chunk-AEX5IIG7.mjs>` runs both resolvers on sample paths, patched and as Cardboard calls
+them.
+
 It also fixes clips left without a filmstrip when Cardboard quits during an import. Cardboard writes a
 clip's poster first and, on reopening a project, counted any thumbnail as a finished filmstrip. Now a
 video needs its filmstrip thumbnails to count as done.
@@ -214,7 +246,7 @@ The helpers both media patches add are in `scripts\media-helpers.js`. In the app
 also note in the activity log whether NVENC and CUDA work, and every fall back from the GPU to the CPU,
 which was silent before. The CLI's copy stays quiet, since the agent reads what it prints.
 
-`scripts\patch-strip.js` (applied to `asar-src\dist\renderer\assets\tabs-DV5oCzuF.js`, the tab strip)
+`scripts\patch-strip.js` (applied to `asar-src\dist\renderer\assets\tabs-DauD2kkX.js`, the tab strip)
 finishes the title bar from patch 9. Cardboard's logomark sits at the strip's leading edge, where macOS
 has its traffic lights, and opens the app menu: File, Edit, Playback, View, Window and Help, each with
 its items in a submenu. The menu is drawn the way Cardboard draws its own menus (the timeline's context
@@ -225,8 +257,8 @@ click outside it only closes it, and closing it returns the keyboard to the edit
 leaves room for the window controls on the right, except in full screen, where Windows hides them, as
 macOS's strip does for the traffic lights on the left. The menu's code is in `scripts\strip-titlebar.js`.
 
-`scripts\patch-renderer.js` (applied to `asar-src\dist\renderer\assets\index-DufLJgUU.js`, the renderer's
-main bundle, `EditorRoute-CuIqwZKP.js`, the editor's, and `installErrorTelemetry-DxKId8tA.js`, which holds
+`scripts\patch-renderer.js` (applied to `asar-src\dist\renderer\assets\index-CMWd3X51.js`, the renderer's
+main bundle, `EditorRoute-fdkrSHAw.js`, the editor's, and `installErrorTelemetry-B0RfASW6.js`, which holds
 the editor's state) does the rest of the renderer's changes.
 
 It imports the media in a dropped folder and its subfolders: dropped on the editor (the media panel or
@@ -308,11 +340,13 @@ The timeline and playback, found by playing real projects in a separate copy of 
   went black for as long as that took. The page's timer now starts when the frame is sent. A slow fetch
   is waited for and its frame used when it comes; only one that hasn't answered in 30 s gets the old
   rebuild, so a hung decode still ends in Cardboard's "couldn't render" note.
-- While playing, a graphic draws with the newest frame of its videos that is ready instead of waiting for
-  the frame of that exact moment. Every frame of a graphic waited for its videos' frames, even with the
-  video off screen, before the next could start, so a graphic with a video inside played at 26–41 frames/s
-  on the test laptop (4–14 while it was busy) and froze for seconds when a decode was slow. Paused, scrubbing, and the first frame after Play still
-  wait for the exact frame. Left out of `--baseline`.
+- On 1.4.0, while playing, a graphic drew with the newest frame of its videos that was ready instead of
+  waiting for the frame of that exact moment. Every frame of a graphic waited for its videos' frames, even with
+  the video off screen, before the next could start, so a graphic with a video inside played at 26–41 frames/s
+  on the test laptop (4–14 while it was busy) and froze for seconds when a decode was slow. Cardboard 1.5.0
+  rewrote that pump: it fetches only the videos the graphic draws, at the size drawn, and the graphic's page
+  asks for any it's missing. Reusing the last frames would answer that request with the same frames again, so
+  this change isn't in the 1.5.0 build; it would have to be redone for the new pump and measured again.
 - An open editor no longer wakes up on every screen refresh while nothing moves. Everything drawn over the
   preview (selection handles, a playing graphic, background removal, pending generations) is placed from where
   the preview's canvas is on screen, and Cardboard measured that on every refresh (up to 144 times a second on
@@ -426,7 +460,7 @@ apply whether Carton is on or off:
   paths, this device's pins) or Carton's view files. Everything else in `.scratch\views\` goes in, as in Cardboard
   1.4.0. (`scripts\carton\store-bridge.js`)
 
-`scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-LL26E55H.mjs`) makes the same
+`scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-AEX5IIG7.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
 proxies in software (libx264), since its hardware check only knew VideoToolbox. The same four clips
@@ -1270,11 +1304,11 @@ To show what this port's speed changes do, it compares two builds:
   out the speed changes in the media patches. `build-windows.js --baseline` builds it (`CB_BASELINE=1`). In it:
   - decoding happens on the CPU;
   - filmstrips decode every frame;
-  - proxies are made one at a time, by the hardware encoder at Cardboard's fixed 12 Mb/s, as VideoToolbox makes them
+  - proxies are made one at a time, by the hardware encoder at Cardboard's bitrate, as VideoToolbox makes them
     on a Mac.
 - **ours**: the normal build.
 
-The workflow publishes both: `Cardboard-1.4.0-windows-x64-baseline.exe` unpacks into `Cardboard-baseline\`. The
+The workflow publishes both: `Cardboard-1.5.0-windows-x64-baseline.exe` unpacks into `Cardboard-baseline\`. The
 bugs the patches fix stay fixed in both.
 
 ```sh
@@ -1306,8 +1340,8 @@ beforehand. Close Cardboard and plug the laptop in first: on battery, Windows sl
 
 #### Playback, the timeline and the GPU
 
-Measured on one laptop (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11, on mains), the build before these
-changes against the build after, each run in its own isolated instance, alternating builds, every run listed.
+Measured on one laptop (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11, on mains), on 1.4.0-based builds (the
+graphic's frame rate includes the 1.4.0-only speed change above), the build before these changes against the build after, each run in its own isolated instance, alternating builds, every run listed.
 The graphic is a 20 s `<code>` clip with a video inside it (a real project's), played from the start for 19 s.
 
 | | Before | After |
@@ -1384,7 +1418,7 @@ The patches match strings in minified code, so a new Cardboard version probably 
 updated. Each `replace()` fails loudly if its target is missing.
 
 From scratch, on Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads into
-`dl\` what the app is made from, from where each is published: Cardboard 1.4.0 for Mac
+`dl\` what the app is made from, from where each is published: Cardboard 1.5.0 for Mac
 (`assets.cardboard.ai`), Electron 43.7.0 for Windows, ffmpeg 8.1 (BtbN's win64 GPL build), uv 0.13.6 and
 Claude Code 2.1.309 for Windows (npm). It then builds `out\Cardboard-win` and checks the versions of what it
 bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step, plus a
@@ -1392,7 +1426,7 @@ bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-
 [Benchmarks](#benchmarks)).
 On GitHub, the same build runs by hand: Actions → Build Windows app → Run workflow
 (`.github/workflows/build-windows.yml`). It publishes the app as the release `windows-latest`, replacing the
-previous build: `Cardboard-1.4.0-windows-x64.exe` (with the baseline beside it), about 306 MB, which unpacks the app into a folder on
+previous build: `Cardboard-1.5.0-windows-x64.exe` (with the baseline beside it), about 306 MB (1.4.0's size), which unpacks the app into a folder on
 Windows 10 or 11 with nothing installed (7-Zip's LZMA2 behind its self-extractor; a zip would be about
 500 MB). It isn't code-signed, so Windows may warn before running it.
 
@@ -1401,9 +1435,9 @@ Step by step, into the `Cardboard-win\` that is already there:
 ```sh
 node scripts/patch-main.js asar-src/dist/main.js
 node scripts/patch-worker.js asar-src/dist/library-worker.js
-node scripts/patch-strip.js asar-src/dist/renderer/assets/tabs-DV5oCzuF.js
-node scripts/patch-renderer.js asar-src/dist/renderer/assets/index-DufLJgUU.js asar-src/dist/renderer/assets/EditorRoute-CuIqwZKP.js asar-src/dist/renderer/assets/installErrorTelemetry-DxKId8tA.js
+node scripts/patch-strip.js asar-src/dist/renderer/assets/tabs-DauD2kkX.js
+node scripts/patch-renderer.js asar-src/dist/renderer/assets/index-CMWd3X51.js asar-src/dist/renderer/assets/EditorRoute-fdkrSHAw.js asar-src/dist/renderer/assets/installErrorTelemetry-B0RfASW6.js
 node tools/node_modules/@electron/asar/bin/asar.mjs pack asar-src Cardboard-win/resources/app.asar
 node scripts/patch-cli.js Cardboard-win/resources/cli/cardboard.mjs cardboard.orig.mjs
-node scripts/patch-cli-media.js Cardboard-win/resources/cli/chunks/chunk-LL26E55H.mjs cli-media.orig.mjs
+node scripts/patch-cli-media.js Cardboard-win/resources/cli/chunks/chunk-AEX5IIG7.mjs cli-media.orig.mjs
 ```

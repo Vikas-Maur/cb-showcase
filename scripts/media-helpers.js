@@ -5,12 +5,14 @@ module.exports = String.raw`var __cbWin = process.platform === "win32";
 var __cbHwEnc = __cbWin ? { h264: "h264_nvenc", hevc: "hevc_nvenc" } : { h264: "h264_videotoolbox", hevc: "hevc_videotoolbox" };
 // -allow_sw is VideoToolbox-only. NVENC gets a balanced preset, and IDR keyframes so proxies seek cleanly.
 var __cbHwOpts = __cbWin ? ["-preset", "p4", "-forced-idr", "1"] : ["-allow_sw", "1"];
-// Proxies: Cardboard asks the hardware encoder for a fixed 12 Mb/s (6 Mb/s for cloud proxies), which is what
-// VideoToolbox needs. NVENC has a constant-quality mode, which spends bits where the picture needs them,
+// Proxies: Cardboard asks the hardware encoder for a set bitrate, which is what VideoToolbox needs: 1.4.0 asked
+// for a fixed 12 Mb/s (6 Mb/s for cloud proxies); 1.5.0 asks for 1.5 times the source's bitrate, between a third
+// of that and that ("8000k"). NVENC has a constant-quality mode, which spends bits where the picture needs them,
 // with that rate as the cap. At CQ 30, with lanczos scaling on the GPU, proxies of two 4K clips came out
 // smaller than the CPU path's (libx264 CRF 20) and scored higher (VMAF against the 4K source: 95.3 and 94.9
-// against 92.4 and 91.1), where 12 Mb/s made them 5 to 14 times the size.
-var __cbProxyRate = (rate) => __cbWin ? ["-rc", "vbr", "-cq", "30", "-b:v", "0", "-maxrate", rate, "-bufsize", Number.parseInt(rate) * 2 + "M"] : ["-b:v", rate];
+// against 92.4 and 91.1), where 12 Mb/s made them 5 to 14 times the size (measured on 1.4.0's fixed rate).
+// The buffer is two seconds at the cap, in the rate's own unit ("12M" → "24M", "8000k" → "16000k").
+var __cbProxyRate = (rate) => __cbWin ? ["-rc", "vbr", "-cq", "30", "-b:v", "0", "-maxrate", rate, "-bufsize", Number.parseFloat(rate) * 2 + String(rate).replace(/^[\d.]+/, "")] : ["-b:v", rate];
 // A clip's background work after an import (filmstrip, waveform, proxy, and the saves that record them)
 // reports a failure as that clip's background error, as Cardboard does for a failed proxy, and never
 // rejects. The import's completion waits on all of it, and only then does the worker tell main the import

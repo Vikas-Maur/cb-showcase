@@ -55,6 +55,9 @@ replace(
   `await oo(Ue(i,ig)).catch(()=>null)&&await(__cbWin&&globalThis.__cbRetryBusy||(f=>f()))(()=>sR(i,{recursive:!0,force:!0}),["EPERM","EBUSY","EACCES","ENOTEMPTY"])`,
 );
 
+// 7. Premiere Pro import keeps the absolute Windows paths Premiere saved (see patch-worker.js 7; Nl is XT here).
+replace(`let C=Nl(x,a),R;`, `let C=Nl(x,a,__cbWin?"win32":"posix"),R;`);
+
 // The helpers go after the module's require shim, which they use. Last, since they name the
 // VideoToolbox encoders.
 const shim = `const require = __createRequire(import.meta.url);\n`;

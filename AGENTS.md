@@ -26,7 +26,7 @@ to its minified bundles at build time.
   in the minified code, which must match exactly `count` times or the build stops. Larger code goes into
   helpers injected at the top of a bundle (`__cb…` names; `media-helpers.js`, `rename-retry.js`,
   `strip-titlebar.js`).
-- Minified names (`jTe`, `oJ`, `Dp`) are only valid for Cardboard 1.4.0, the version the patches target.
+- Minified names (`Rke`, `CY`, `Fp`) are only valid for Cardboard 1.5.0, the version the patches target.
   Find targets by searching the pristine bundles; `scripts/mac-scan.js` lists the macOS-only calls.
 - Keep Windows-only behaviour behind `__cbWin` (in the pages, `window.desktop?.platform === "win32"`), so
   the same code still runs on a Mac.
@@ -38,14 +38,14 @@ to its minified bundles at build time.
 **Building.**
 
 - On Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads what the app is made
-  from into `dl/` (Cardboard 1.4.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv, Claude Code) and
+  from into `dl/` (Cardboard 1.5.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv, Claude Code) and
   builds `out/Cardboard-win`.
 - Anywhere else (Ubuntu): the "Build Windows app" workflow runs the same build on a GitHub Windows runner.
   `gh workflow run build-windows.yml --ref <branch>`, then `gh run watch`. A patch that no longer matches
   fails the build. It publishes the app as the release `windows-latest`, replacing the previous build:
-  `gh release download windows-latest` gets `Cardboard-1.4.0-windows-x64.exe`, which unpacks the app.
+  `gh release download windows-latest` gets `Cardboard-1.5.0-windows-x64.exe`, which unpacks the app.
   Builds go to that release, never to workflow artifacts. The same release also holds
-  `Cardboard-1.4.0-windows-x64-baseline.exe` (`build-windows.js --baseline`): Cardboard's own pipeline without our
+  `Cardboard-1.5.0-windows-x64-baseline.exe` (`build-windows.js --baseline`): Cardboard's own pipeline without our
   speed changes, which the benchmarks compare against. A new speed change goes behind `speed` in its patch script.
 
 **Testing.** The app runs only on Windows, and its GPU paths need an NVIDIA card, so checks in the real
