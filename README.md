@@ -1,6 +1,6 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# cardboard-showcase
+# cb-showcase
 
 Created in [T3 Code](https://t3.codes).
 
@@ -530,7 +530,7 @@ accelerator tests.
 
 Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
 by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
-`carton\docs\INTEGRATION-1.4.0.md`. The build includes it, and it is **on** by default: the cut you're on, History and
+`carton\docs\INTEGRATION-1.5.0.md`. The build includes it, and it is **on** by default: the cut you're on, History and
 Share are in the title bar and every `cb` goes through it, with no setup. To turn it off, start Cardboard with `CARDBOARD_CARTON=0`
 (`false`, `off` and `no` work too; for every start, `setx CARDBOARD_CARTON 0` and restart Cardboard). With it off,
 every hook below runs Cardboard's own code, and the app and `cb` read the same variable, so they always agree.

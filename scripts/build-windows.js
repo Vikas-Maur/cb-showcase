@@ -5,7 +5,7 @@
 //   node scripts/build-windows.js [--out <dir>] [--baseline] [--no-carton]   (default out)
 // --baseline builds the baseline the benchmarks compare against (scripts/bench): the media patches leave out their
 // speed changes (CB_BASELINE=1, see patch-worker.js), so the app runs Cardboard's own pipeline as a Mac does.
-// Carton (version history, cuts, fold in, credits; carton/docs/INTEGRATION-1.4.0.md) is built in and on by default;
+// Carton (version history, cuts, fold in, credits; carton/docs/INTEGRATION-1.5.0.md) is built in and on by default;
 // starting the app with CARDBOARD_CARTON=0 turns it off. --no-carton leaves it out of the build entirely, and so does
 // --baseline.
 // Everything it starts from is downloaded into dl\ when missing, from where its makers publish it.
