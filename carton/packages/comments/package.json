@@ -31,13 +31,13 @@
     "bench": "node bench/reanchor.ts"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "workspace:*"
   },
   "devDependencies": {
-    "@carton/cardboard": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/server-node": "0.1.0",
-    "@carton/store-memory": "0.1.0",
-    "@carton/store-sqlite": "0.1.0"
+    "@carton/cardboard": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/server-node": "workspace:*",
+    "@carton/store-memory": "workspace:*",
+    "@carton/store-sqlite": "workspace:*"
   }
 }

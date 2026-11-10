@@ -61,11 +61,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: carton/package-lock.json
+
+      # pnpm at the version carton/package.json pins, with its store cached by the lockfile
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: carton/package.json
+          cache: true
+          cache_dependency_path: carton/pnpm-lock.yaml
 
       - name: Install
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Restore tools
         id: tools

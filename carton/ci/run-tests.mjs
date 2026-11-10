@@ -1,6 +1,6 @@
 // Runs one test group of groups.json on this machine and reports it.
 //   node ci/run-tests.mjs --group <name> [--timeout-min <per step, default 20>]
-// Each step is a package's `npm test` or a command (see groups.json). Every `node --test` is run with the TAP reporter,
+// Each step is a package's test script or a command (see groups.json). Every `node --test` is run with the TAP reporter,
 // which is read to count passes, failures and skips. Writes:
 // - the job summary ($GITHUB_STEP_SUMMARY): a row per step, every skip reason, every failure;
 // - an ::error:: annotation per failed test, so failures show on the run's page;
@@ -139,7 +139,7 @@ const TAP = "--test-reporter=tap";
 const tapArgs = (a) => (a.includes("--test") && !a.some((x) => x.startsWith("--test-reporter")) ? a.flatMap((x) => (x === "--test" ? [x, TAP] : [x])) : a);
 
 function runStep(step, index) {
-  const label = step.label ?? `${step.pkg}: npm test`;
+  const label = step.label ?? `${step.pkg}: pnpm test`;
   const cwd = path.resolve(CARTON, step.pkg ? path.join("packages", step.pkg) : (step.cwd ?? "."));
   // On one agent's branch (carton-agent.yml sets CARTON_CI_AGENT) a group may name a package or folder that branch
   // doesn't have: that step is reported as not run, not as a crash. On ci/carton every one must exist.
@@ -149,7 +149,7 @@ function runStep(step, index) {
     console.log(`::notice::${label}: ${why}`);
     return Promise.resolve({ label, cwd: path.relative(CARTON, cwd), command: "", exit: null, signal: null, timedOut: false, ms: 0, ok: true, notRun: why, problems: [] });
   }
-  // A package step runs its `test` script's commands as npm would (they are plain `node --test …` lines joined by
+  // A package step runs its `test` script's commands as pnpm would (they are plain `node --test …` lines joined by
   // &&), each with the TAP reporter added.
   const script = step.pkg && JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).scripts.test;
   const [cmd, ...cmdArgs] = step.pkg ? [script.replace(/(^|\s)--test(?=\s|$)/g, `$1--test ${TAP}`)] : tapArgs(step.run.map(fill));

@@ -39,7 +39,7 @@ FULL=1 node --test kit/conformance/system.test.ts   # FULL=1: every file and the
 
 Run them from inside `carton/` (or a project that depends on the `@carton/*` packages). Node 24 runs the `.ts` files
 directly, with no build. Pass Node's flags **before** the files: `node --test --test-name-pattern=B1 file.ts`.
-`npm test -- --test-name-pattern=B1` passes them after the glob, where Node silently ignores them.
+`pnpm test --test-name-pattern=B1` passes them after the glob, where Node silently ignores them.
 
 ## What each suite proves
 
@@ -186,9 +186,9 @@ at once) and the displace/install race on NTFS and APFS (`carton/bench/race/`).
 
 ## Carton's own runs
 
-- **Every suite on every shipped implementation:** `cd carton && npm test` runs each package's tests in turn. Cloudflare's
+- **Every suite on every shipped implementation:** `cd carton && pnpm test` runs each package's tests in turn. Cloudflare's
   run inside `wrangler dev` and fail, not skip, when wrangler can't start. store-idb's run in headless Chromium.
-- **The conformance package itself:** `cd carton/packages/conformance && npm test`: 351 tests on this machine, 348 pass,
+- **The conformance package itself:** `cd carton/packages/conformance && pnpm test`: 351 tests on this machine, 348 pass,
   2 skip (B8, B11), 1 marked todo that passes. It also runs Cardboard-specific scenarios on the real engine and
   materializer (`src/cardboard/system/`) and checks against Cardboard 1.4.0's real CLI. These need things only this
   machine has: the 1.4.0 CLI (`CARTON_CARDBOARD_CLI`), its renderer bundle, `python3` for a zip cross-check. Without

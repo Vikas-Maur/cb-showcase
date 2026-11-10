@@ -88,7 +88,7 @@ const summarize = (rows) => {
 
 async function single() {
   const S = require("./support.js");
-  if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s npm ci: " + (S.skip || S.noBuild));
+  if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s pnpm install: " + (S.skip || S.noBuild));
   const b = await S.build();
   const build = arg("name", "this"), only = arg("round", null);
   const all = [];

@@ -1,6 +1,6 @@
 // Viewing without banners (docs/carton-ux PLAN 1.1, DESIGN §4.2): ViewingFrame, the frame round the stage in place of
 // PreviewBanner. Its Esc is the banner's, the same hook (useEscapeBack): the banner's Esc tests (final N2, regress #4)
-// are ported here 1:1, step for step, on the frame (the banner's own still run on the banner, unchanged). `npm test`
+// are ported here 1:1, step for step, on the frame (the banner's own still run on the banner, unchanged). `pnpm test`
 // runs this file on React 19 and on preact/compat.
 import { $, $$, React, act, cleanup, click, closeDom, flush, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";

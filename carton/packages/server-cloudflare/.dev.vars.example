@@ -1,4 +1,4 @@
-# Copy to .dev.vars (git-ignored) for `npm run dev`. Generate a secret with:
+# Copy to .dev.vars (git-ignored) for `pnpm run dev`. Generate a secret with:
 #   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 AUTH_SECRET=replace-with-at-least-32-random-bytes
 ADMIN_TOKEN=replace-with-another-random-value

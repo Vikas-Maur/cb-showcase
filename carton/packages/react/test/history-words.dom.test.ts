@@ -1,7 +1,7 @@
 // History's card on the laptop (2026-11-05), rendered over the real engine: a code graphic's code change has its time
 // and ▶, and Play all plays it; a version with nothing to play has Play all off, saying why, and no ▶; a turn named from
 // Cardboard's composed prompt never shows it; a titled turn's card says what the person asked, in one quiet line.
-// `npm test` runs it on React 19, then on preact/compat.
+// `pnpm test` runs it on React 19, then on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

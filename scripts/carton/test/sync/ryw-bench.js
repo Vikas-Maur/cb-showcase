@@ -28,7 +28,7 @@ function serve() {
   const APPLIES = Number(arg("applies", 10));
   let b = null, n = 0;
   (async () => {
-    if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s npm ci: " + (S.skip || S.noBuild));
+    if (S.skip || S.noBuild) throw new Error("needs CARDBOARD_PRISTINE and carton/'s pnpm install: " + (S.skip || S.noBuild));
     b = await S.build();
     out({ ready: true });
     for await (const line of createInterface({ input: process.stdin })) {

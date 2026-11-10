@@ -1,5 +1,5 @@
 // The UI audit of 2026-11-02 (docs/ui-audit/REPORT.md on audit/ui-2026-11-02), in a DOM: keyboard, Esc and focus in
-// every layer, the words, and the states it found wrong. `npm test` runs this file on React 19 and on preact/compat.
+// every layer, the words, and the states it found wrong. `pnpm test` runs this file on React 19 and on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

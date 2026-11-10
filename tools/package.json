@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "packageManager": "pnpm@12.18.0",
   "dependencies": {
     "@electron/asar": "^4.3.1",
     "rcedit": "^5.0.2"

@@ -390,7 +390,7 @@ const host = await startNodeHost({
 blob-fs's object paths and server-node's room files are pre-release layouts: until Carton's first release they may
 change without a migration. After it, any change to them ships with one.
 
-**Cloudflare, local only:** run `npm run dev` in `packages/server-cloudflare`, which starts `wrangler dev`. Copy
+**Cloudflare, local only:** run `pnpm run dev` in `packages/server-cloudflare`, which starts `wrangler dev`. Copy
 `.dev.vars.example` to `.dev.vars` first. `wrangler.toml` binds R2. Remove the `[[r2_buckets]]` block to run on the
 DO-blob fallback (L11). Deploying needs the user's go-ahead; `wrangler deploy` is never part of the build.
 

@@ -534,10 +534,10 @@ out entirely, and `--baseline` does too.
 ## Testing Carton
 
 On any machine (Linux here), against Cardboard's own unpacked bundles: `CARDBOARD_PRISTINE` is a folder with
-`app-asar\` (`npx asar extract …\app.asar`) and `cli\` from the macOS installer.
+`app-asar\` (`pnpm dlx @electron/asar extract …\app.asar`) and `cli\` from the macOS installer.
 
 ```sh
-cd carton && npm ci && cd ..
+cd carton && pnpm install --frozen-lockfile && cd ..
 set CARDBOARD_PRISTINE=C:\cb-pristine
 node --test --test-concurrency=1 "scripts/carton/test/*.test.js"
 ```
@@ -559,7 +559,7 @@ Windows started, and is done once nothing it should delete is left.
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 
 ```sh
-cd tools && npm ci && cd ..\carton && npm ci && cd ..
+cd tools && pnpm install --frozen-lockfile && cd ..\carton && pnpm install --frozen-lockfile && cd ..
 node scripts/build-windows.js
 set CARDBOARD_USER_DATA=%TEMP%\cb-carton\userdata
 set CARDBOARD_HOME=%TEMP%\cb-carton\home

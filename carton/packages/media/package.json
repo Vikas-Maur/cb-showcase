@@ -35,12 +35,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p test/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "workspace:*"
   },
   "devDependencies": {
-    "@carton/blob-fs": "0.1.0",
-    "@carton/host-http": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/server-node": "0.1.0"
+    "@carton/blob-fs": "workspace:*",
+    "@carton/host-http": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/server-node": "workspace:*",
+    "@carton/conformance": "workspace:*"
   }
 }

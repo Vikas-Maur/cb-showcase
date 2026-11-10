@@ -38,20 +38,21 @@
     "bench": "node gallery/build.mjs && node bench/run.mjs"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18"
   },
   "devDependencies": {
-    "@carton/comments": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/store-memory": "0.1.0",
+    "@carton/comments": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/store-memory": "workspace:*",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.3.0",
     "happy-dom": "^21.0.4",
     "preact": "^10.29.8",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "esbuild": "^0.28.2"
   }
 }

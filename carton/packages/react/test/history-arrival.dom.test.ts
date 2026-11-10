@@ -2,7 +2,7 @@
 // ArrivalRing): a ring with a soft glow, settling after ARRIVAL_GLOW_MS into a faint edge that stays. On the mock's
 // project (Alice is you; the Director, Claude Code and Codex are your agents; Bob, Priya and Bob's Director are
 // teammates): rows there when History opens, yours and your agents' never wear it; a teammate's group or turn row wears
-// it by its newest version; without motion it shows with no animation; a screen reader hears who. `npm test` runs it on
+// it by its newest version; without motion it shows with no animation; a screen reader hears who. `pnpm test` runs it on
 // React 19 and on preact/compat. Over the real engine (two replicas synced through the in-process host): Leo's rows
 // are drawn as "Leo" and "Leo's Claude Code", in Leo's colour, from their first frame.
 import { $, $$, React, act, cleanup, closeDom, flush, render, runtime, waitFor } from "./dom.ts";

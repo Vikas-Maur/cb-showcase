@@ -1,0 +1,262 @@
+{
+  "started": "2026-11-10T10:37:18.096Z",
+  "machine": {
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12450HX",
+    "threads": 12,
+    "ramGB": 16,
+    "cores": 8,
+    "gpus": [
+      "Intel(R) UHD Graphics (driver 32.0.101.7026)",
+      "NVIDIA GeForce RTX 3050 6GB Laptop GPU (driver 32.0.15.8186)"
+    ],
+    "os": "Microsoft Windows 11 Home Single Language 10.0.26300",
+    "onBattery": false
+  },
+  "builds": [
+    {
+      "label": "baseline",
+      "dir": "D:\\cbwork\\bench150\\Cardboard-baseline",
+      "info": {
+        "variant": "baseline",
+        "carton": false,
+        "commit": "56142f3f1e884c88633fb41594b15d9cee930f7a",
+        "built": "2026-11-10T06:55:06.714Z"
+      }
+    },
+    {
+      "label": "ours",
+      "dir": "D:\\cbwork\\bench150\\Cardboard",
+      "info": {
+        "variant": "full",
+        "carton": true,
+        "commit": "56142f3f1e884c88633fb41594b15d9cee930f7a",
+        "built": "2026-11-10T06:54:45.150Z"
+      }
+    }
+  ],
+  "tests": [
+    "import"
+  ],
+  "runs": [
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:37:22.432Z",
+      "metrics": {
+        "clips listed (s)": 1.53541015625,
+        "first thumbnail (s)": 0.49796484375,
+        "everything ready (s)": 44.21104150390625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:38:29.633Z",
+      "metrics": {
+        "clips listed (s)": 1.855539794921875,
+        "first thumbnail (s)": 0.55431689453125,
+        "everything ready (s)": 26.9429697265625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:39:19.393Z",
+      "metrics": {
+        "clips listed (s)": 1.955400146484375,
+        "first thumbnail (s)": 0.622301025390625,
+        "everything ready (s)": 27.0842099609375
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:40:08.798Z",
+      "metrics": {
+        "clips listed (s)": 1.48422509765625,
+        "first thumbnail (s)": 0.52911279296875,
+        "everything ready (s)": 47.88886767578125
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:41:18.577Z",
+      "metrics": {
+        "clips listed (s)": 1.54196484375,
+        "first thumbnail (s)": 0.536276611328125,
+        "everything ready (s)": 48.62365234375
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:42:29.447Z",
+      "metrics": {
+        "clips listed (s)": 1.932675048828125,
+        "first thumbnail (s)": 0.637706298828125,
+        "everything ready (s)": 29.048681884765625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:43:21.141Z",
+      "metrics": {
+        "clips listed (s)": 1.916705078125,
+        "first thumbnail (s)": 0.606011962890625,
+        "everything ready (s)": 29.12232421875
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:44:12.666Z",
+      "metrics": {
+        "clips listed (s)": 1.6848701171875,
+        "first thumbnail (s)": 0.55585986328125,
+        "everything ready (s)": 50.069275634765624
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    }
+  ],
+  "media": {
+    "dir": "D:\\cbwork\\bench150\\repo\\bench-media",
+    "files": [
+      {
+        "file": "a-4k30-hevc10-phone.mov",
+        "bytes": 152742068,
+        "what": "4K30 HEVC 10-bit, 40 Mb/s, keyframe every 1 s (phone)",
+        "sha256": "dfce8c3053428bd8402d00dbcbcb769d9d55e0558b1a1581346e24f1f8fd5397"
+      },
+      {
+        "file": "b-4k30-hevc10-portrait.mov",
+        "bytes": 76561829,
+        "what": "4K30 HEVC 10-bit, rotated 90° (phone, portrait)",
+        "sha256": "7219b28e957b3acd45df8c161e19a74acb383067fa91415b81e5b4b8ff909cfb"
+      },
+      {
+        "file": "c-4k60-h264-camera.mp4",
+        "bytes": 208155505,
+        "what": "4K60 H.264, 80 Mb/s, keyframe every 1 s (action camera)",
+        "sha256": "0045a5bca1399aec1cc24196b5861851516de17c22051fb0a2b275d94d7340f2"
+      },
+      {
+        "file": "d-1080p30-h264-screen.mp4",
+        "bytes": 61614599,
+        "what": "1080p30 H.264, 8 Mb/s, keyframe every 10 s (screen recording)",
+        "sha256": "8bc9e838506e60399ca55cc2749750557b71e33cd1ba095a92685d20d5b91089"
+      },
+      {
+        "file": "e-1080p30-hevc10.mov",
+        "bytes": 57921379,
+        "what": "1080p30 HEVC 10-bit, 15 Mb/s, keyframe every 1 s",
+        "sha256": "c0bf75c4153abb1ca9962fcedfd5e8a714a68211cb702273907713f24a0551fe"
+      },
+      {
+        "file": "f-music.wav",
+        "bytes": 10584078,
+        "what": "60 s stereo WAV, 44.1 kHz",
+        "sha256": "1c44210637c6f81ecd5ae8cb6718a5851fb58932ebe788e27cacd219a58d6676"
+      }
+    ]
+  },
+  "finished": "2026-11-10T10:45:25.727Z"
+}

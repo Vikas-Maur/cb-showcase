@@ -4,7 +4,7 @@
 //   changes it started with, with its Pause and lit row; Pause stops it, and Play all again goes on from there.
 // - B2: Play all off with nothing to play (an aspect ratio alone) is drawn dimmed, and its tooltip was dimmed with it: the
 //   next row's words showed through the tooltip's second line.
-// `npm test` runs it on React 19, then on preact/compat.
+// `pnpm test` runs it on React 19, then on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

@@ -1,0 +1,760 @@
+{
+  "started": "2026-11-10T09:50:54.599Z",
+  "machine": {
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12450HX",
+    "threads": 12,
+    "ramGB": 16,
+    "cores": 8,
+    "gpus": [
+      "Intel(R) UHD Graphics (driver 32.0.101.7026)",
+      "NVIDIA GeForce RTX 3050 6GB Laptop GPU (driver 32.0.15.8186)"
+    ],
+    "os": "Microsoft Windows 11 Home Single Language 10.0.26300",
+    "onBattery": false
+  },
+  "builds": [
+    {
+      "label": "baseline",
+      "dir": "D:\\cbwork\\bench150\\Cardboard-baseline",
+      "info": {
+        "variant": "baseline",
+        "carton": false,
+        "commit": "56142f3f1e884c88633fb41594b15d9cee930f7a",
+        "built": "2026-11-10T06:55:06.714Z"
+      }
+    },
+    {
+      "label": "ours",
+      "dir": "D:\\cbwork\\bench150\\Cardboard",
+      "info": {
+        "variant": "full",
+        "carton": true,
+        "commit": "56142f3f1e884c88633fb41594b15d9cee930f7a",
+        "built": "2026-11-10T06:54:45.150Z"
+      }
+    }
+  ],
+  "tests": [
+    "import",
+    "cli",
+    "cli-import"
+  ],
+  "runs": [
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T09:50:59.215Z",
+      "metrics": {
+        "clips listed (s)": 3.69789501953125,
+        "first thumbnail (s)": 2.728788330078125,
+        "everything ready (s)": 52.45232934570313
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T09:52:16.330Z",
+      "metrics": {
+        "clips listed (s)": 2.234054931640625,
+        "first thumbnail (s)": 0.748933837890625,
+        "everything ready (s)": 28.468558837890626
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T09:53:08.820Z",
+      "metrics": {
+        "clips listed (s)": 1.941875,
+        "first thumbnail (s)": 0.6310244140625,
+        "everything ready (s)": 28.01754248046875
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T09:53:59.873Z",
+      "metrics": {
+        "clips listed (s)": 1.6902099609375,
+        "first thumbnail (s)": 0.5671865234375,
+        "everything ready (s)": 51.96495434570313
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T09:55:14.738Z",
+      "metrics": {
+        "clips listed (s)": 2.1519150390625,
+        "first thumbnail (s)": 0.699425048828125,
+        "everything ready (s)": 54.79895849609375
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T09:56:32.106Z",
+      "metrics": {
+        "clips listed (s)": 1.999830078125,
+        "first thumbnail (s)": 0.642671630859375,
+        "everything ready (s)": 30.049072998046874
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T09:57:24.622Z",
+      "metrics": {
+        "clips listed (s)": 1.9106650390625,
+        "first thumbnail (s)": 0.578780029296875,
+        "everything ready (s)": 28.644842529296874
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T09:58:15.545Z",
+      "metrics": {
+        "clips listed (s)": 1.589945068359375,
+        "first thumbnail (s)": 0.573106201171875,
+        "everything ready (s)": 48.61197875976563
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T09:59:26.966Z",
+      "metrics": {
+        "clips listed (s)": 1.618989990234375,
+        "first thumbnail (s)": 0.493979736328125,
+        "everything ready (s)": 52.705637451171874
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T10:00:42.396Z",
+      "metrics": {
+        "clips listed (s)": 1.8647451171875,
+        "first thumbnail (s)": 0.54806982421875,
+        "everything ready (s)": 29.625779541015625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "ours",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:01:34.827Z",
+      "metrics": {
+        "clips listed (s)": 1.937574951171875,
+        "first thumbnail (s)": 0.620360595703125,
+        "everything ready (s)": 28.46758251953125
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "import",
+      "build": "baseline",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:02:25.501Z",
+      "metrics": {
+        "clips listed (s)": 1.455794921875,
+        "first thumbnail (s)": 0.47708203125,
+        "everything ready (s)": 47.572275390625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 0,
+        "other": 12
+      },
+      "importFailed": false
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:03:35.910Z",
+      "metrics": {
+        "cb --help (ms)": 233.4226,
+        "cb project create (ms)": 926.1339,
+        "cb project list (ms)": 225.9417,
+        "cb source print (ms)": 211.6239,
+        "cb source apply (ms)": 996.5808,
+        "cb source apply, second edit (ms)": 1120.0999
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:03:39.639Z",
+      "metrics": {
+        "cb --help (ms)": 241.4429,
+        "cb project create (ms)": 1181.6997,
+        "cb project list (ms)": 251.0006,
+        "cb source print (ms)": 258.0251,
+        "cb source apply (ms)": 1188.9035,
+        "cb source apply, second edit (ms)": 1138.0679
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:03:43.915Z",
+      "metrics": {
+        "cb --help (ms)": 245.3688,
+        "cb project create (ms)": 1178.1419,
+        "cb project list (ms)": 260.7695,
+        "cb source print (ms)": 248.329,
+        "cb source apply (ms)": 1204.2461,
+        "cb source apply, second edit (ms)": 1061.3045
+      }
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:03:48.129Z",
+      "metrics": {
+        "cb --help (ms)": 225.1626,
+        "cb project create (ms)": 957.5014,
+        "cb project list (ms)": 230.9539,
+        "cb source print (ms)": 229.2169,
+        "cb source apply (ms)": 1086.8655,
+        "cb source apply, second edit (ms)": 936.0493
+      }
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:03:51.811Z",
+      "metrics": {
+        "cb --help (ms)": 221.4876,
+        "cb project create (ms)": 831.8458,
+        "cb project list (ms)": 242.6069,
+        "cb source print (ms)": 214.0013,
+        "cb source apply (ms)": 943.0813,
+        "cb source apply, second edit (ms)": 898.4534
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:03:55.180Z",
+      "metrics": {
+        "cb --help (ms)": 237.0512,
+        "cb project create (ms)": 1073.3289,
+        "cb project list (ms)": 262.8491,
+        "cb source print (ms)": 249.7,
+        "cb source apply (ms)": 1109.4276,
+        "cb source apply, second edit (ms)": 1164.677
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:03:59.293Z",
+      "metrics": {
+        "cb --help (ms)": 232.713,
+        "cb project create (ms)": 1160.7128,
+        "cb project list (ms)": 255.3703,
+        "cb source print (ms)": 250.0544,
+        "cb source apply (ms)": 1019.0902,
+        "cb source apply, second edit (ms)": 1062.8117
+      }
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:04:03.291Z",
+      "metrics": {
+        "cb --help (ms)": 209.9751,
+        "cb project create (ms)": 1177.3449,
+        "cb project list (ms)": 252.8936,
+        "cb source print (ms)": 225.197,
+        "cb source apply (ms)": 974.2384,
+        "cb source apply, second edit (ms)": 10865.8922
+      }
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T10:04:17.024Z",
+      "metrics": {
+        "cb --help (ms)": 230.6226,
+        "cb project create (ms)": 839.399,
+        "cb project list (ms)": 226.9543,
+        "cb source print (ms)": 232.7363,
+        "cb source apply (ms)": 915.9634,
+        "cb source apply, second edit (ms)": 1085.3562
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T10:04:20.572Z",
+      "metrics": {
+        "cb --help (ms)": 240.0771,
+        "cb project create (ms)": 1157.3989,
+        "cb project list (ms)": 262.9198,
+        "cb source print (ms)": 243.9838,
+        "cb source apply (ms)": 929.2712,
+        "cb source apply, second edit (ms)": 1195.7298
+      }
+    },
+    {
+      "test": "cli",
+      "build": "ours",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:04:24.614Z",
+      "metrics": {
+        "cb --help (ms)": 242.9741,
+        "cb project create (ms)": 1004.0567,
+        "cb project list (ms)": 252.4656,
+        "cb source print (ms)": 259.0092,
+        "cb source apply (ms)": 1011.2587,
+        "cb source apply, second edit (ms)": 1151.3439
+      }
+    },
+    {
+      "test": "cli",
+      "build": "baseline",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:04:28.550Z",
+      "metrics": {
+        "cb --help (ms)": 222.1894,
+        "cb project create (ms)": 922.6674,
+        "cb project list (ms)": 228.9049,
+        "cb source print (ms)": 209.1723,
+        "cb source apply (ms)": 902.8165,
+        "cb source apply, second edit (ms)": 825.831
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:04:31.875Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 78.3514282
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "w1",
+      "warmup": true,
+      "at": "2026-11-10T10:05:51.278Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 40.2575854
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:06:42.671Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 40.7236367
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "1",
+      "warmup": false,
+      "at": "2026-11-10T10:07:24.661Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 63.5709471
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:08:29.196Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 69.5587524
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "2",
+      "warmup": false,
+      "at": "2026-11-10T10:09:39.695Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 44.4957381
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:10:25.435Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 43.6813757
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "3",
+      "warmup": false,
+      "at": "2026-11-10T10:11:10.243Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 61.7858625
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T10:12:15.143Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 64.2470648
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "4",
+      "warmup": false,
+      "at": "2026-11-10T10:13:20.603Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 49.6446933
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "ours",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:14:11.467Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 48.2624393
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    },
+    {
+      "test": "cli-import",
+      "build": "baseline",
+      "i": "5",
+      "warmup": false,
+      "at": "2026-11-10T10:15:01.165Z",
+      "metrics": {
+        "cb media add, everything ready (s)": 64.2998489
+      },
+      "made": {
+        "thumbnails": 315,
+        "waveforms": 6,
+        "peaks": 108,
+        "proxies": 5,
+        "converted": 0,
+        "media": 6,
+        "other": 12
+      }
+    }
+  ],
+  "media": {
+    "dir": "D:\\cbwork\\bench150\\repo\\bench-media",
+    "files": [
+      {
+        "file": "a-4k30-hevc10-phone.mov",
+        "bytes": 152742068,
+        "what": "4K30 HEVC 10-bit, 40 Mb/s, keyframe every 1 s (phone)",
+        "sha256": "dfce8c3053428bd8402d00dbcbcb769d9d55e0558b1a1581346e24f1f8fd5397"
+      },
+      {
+        "file": "b-4k30-hevc10-portrait.mov",
+        "bytes": 76561829,
+        "what": "4K30 HEVC 10-bit, rotated 90° (phone, portrait)",
+        "sha256": "7219b28e957b3acd45df8c161e19a74acb383067fa91415b81e5b4b8ff909cfb"
+      },
+      {
+        "file": "c-4k60-h264-camera.mp4",
+        "bytes": 208155505,
+        "what": "4K60 H.264, 80 Mb/s, keyframe every 1 s (action camera)",
+        "sha256": "0045a5bca1399aec1cc24196b5861851516de17c22051fb0a2b275d94d7340f2"
+      },
+      {
+        "file": "d-1080p30-h264-screen.mp4",
+        "bytes": 61614599,
+        "what": "1080p30 H.264, 8 Mb/s, keyframe every 10 s (screen recording)",
+        "sha256": "8bc9e838506e60399ca55cc2749750557b71e33cd1ba095a92685d20d5b91089"
+      },
+      {
+        "file": "e-1080p30-hevc10.mov",
+        "bytes": 57921379,
+        "what": "1080p30 HEVC 10-bit, 15 Mb/s, keyframe every 1 s",
+        "sha256": "c0bf75c4153abb1ca9962fcedfd5e8a714a68211cb702273907713f24a0551fe"
+      },
+      {
+        "file": "f-music.wav",
+        "bytes": 10584078,
+        "what": "60 s stereo WAV, 44.1 kHz",
+        "sha256": "1c44210637c6f81ecd5ae8cb6718a5851fb58932ebe788e27cacd219a58d6676"
+      }
+    ]
+  },
+  "finished": "2026-11-10T10:16:06.632Z"
+}

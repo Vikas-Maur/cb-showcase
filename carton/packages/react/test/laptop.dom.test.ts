@@ -1,7 +1,7 @@
 // Carton UX v2 on the real Windows laptop (fix/ux2-laptop), P3-11: a landmark's picture was tried once a page. One due
 // while the stage showed black (a project just opened, a dropped canvas), or while comparing, never got one. Now a try
 // that finds no picture is made again while History is open (after a while, and as soon as Compare ends), and nothing
-// runs once History is closed. `npm test` runs it on React 19 and on preact/compat.
+// runs once History is closed. `pnpm test` runs it on React 19 and on preact/compat.
 import { act, cleanup, closeDom, render, runtime } from "./dom.ts";
 import { React } from "./dom.ts";
 import { after, afterEach, test } from "node:test";

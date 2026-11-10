@@ -8,7 +8,7 @@ const { createInterface } = require("readline");
 const PRISTINE = process.env.CARDBOARD_PRISTINE;
 const skip = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app and cli" : false;
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "..", "carton");
-const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
+const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `pnpm install` in carton/ to build the facade");
 // Never /tmp (a small shared tmpfs on the build box).
 const TMP = process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync", "test");
 // Fail fast instead of hanging (CI kills a whole step after 20 minutes, with nothing said about which test hung): a

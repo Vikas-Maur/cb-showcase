@@ -117,13 +117,13 @@ lead, side names, Keep names, viewing labels), so the card, `view()`'s label and
   and the change map's playhead by transform and calls your `onFrame(time)`. React hears only when the lit row or
   play/pause changes. Ghosts move their elements directly too.
 
-Measure it with `npm run bench` (needs Playwright and Chromium: `CARTON_PLAYWRIGHT`, `CARTON_CHROMIUM`). Sizes:
+Measure it with `pnpm run bench` (needs Playwright and Chromium: `CARTON_PLAYWRIGHT`, `CARTON_CHROMIUM`). Sizes:
 `node bench/size.mjs`.
 
 ## Gallery
 
-`npm run gallery` builds `gallery/dist/index.html` (React) and `preact.html` (Preact) on mock data, plain esbuild,
-opened from disk. `npm run screens` is the capture rig (`gallery/capture/`, UX redesign PLAN 9.4: it replaced the old
+`pnpm run gallery` builds `gallery/dist/index.html` (React) and `preact.html` (Preact) on mock data, plain esbuild,
+opened from disk. `pnpm run screens` is the capture rig (`gallery/capture/`, UX redesign PLAN 9.4: it replaced the old
 `gallery/screens.mjs`, which had fallen behind the components): the app's own composition (`scripts/carton/ui.js`) on
 Cardboard's real stylesheet, every state shot in headless Chromium at 384 and 300 px, on React and on `preact/compat`,
 into `gallery/dist/capture/shots/` with an `INDEX.md`. It needs `CARTON_CARDBOARD_ASSETS` (Cardboard 1.4.0's
@@ -131,7 +131,7 @@ into `gallery/dist/capture/shots/` with an `INDEX.md`. It needs `CARTON_CARDBOAR
 
 ## Tests
 
-`npm test` runs the logic tests, the component tests on React, the component tests again on `preact/compat`
+`pnpm test` runs the logic tests, the component tests on React, the component tests again on `preact/compat`
 (`test/preact-alias.ts`), and the adapter tests on a real `Carton.open` with store-memory.
 
 ## Not yet checked on the target

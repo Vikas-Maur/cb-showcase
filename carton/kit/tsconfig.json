@@ -1,6 +1,6 @@
 {
   // Type-checks the kit's runnable samples (the quickstart scripts, the tests, the conformance templates):
-  // `npx tsc -p kit` and, for the UI sample (it needs the DOM's types too), `npx tsc -p kit/tsconfig.ui.json`.
+  // `pnpm exec tsc -p kit` and, for the UI sample (it needs the DOM's types too), `pnpm exec tsc -p kit/tsconfig.ui.json`.
   "extends": "../tsconfig.node.json",
   "compilerOptions": { "noEmit": true },
   "include": ["quickstart", "test", "conformance"],

@@ -28,7 +28,7 @@ export interface Host {
 
 /** Why a host kind can't run here (null when it can). */
 export function hostMissing(kind: HostKind): string | null {
-  if (kind === "cloudflare" && !existsSync(WRANGLER)) return `wrangler isn't installed (${WRANGLER}): run npm ci in carton/`;
+  if (kind === "cloudflare" && !existsSync(WRANGLER)) return `wrangler isn't installed (${WRANGLER}): run pnpm install in carton/`;
   return null;
 }
 

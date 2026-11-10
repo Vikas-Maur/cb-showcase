@@ -1,5 +1,5 @@
 // The laptop's regression check of the release candidate (merge/prod-2, 2026-11-02), in a DOM: what it found in the real
-// app. `npm test` runs this file on React 19 and on preact/compat.
+// app. `pnpm test` runs this file on React 19 and on preact/compat.
 import { $, $$, React, act, click, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

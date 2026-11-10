@@ -1,5 +1,5 @@
 // The change row and the change map (docs/carton-ux DESIGN §5.1, §5.2), shared by History's version card (Workstream
-// 3), the Changes view (4) and the Fold dialog (6). `npm test` runs this file on React 19 and on preact/compat.
+// 3), the Changes view (4) and the Fold dialog (6). `pnpm test` runs this file on React 19 and on preact/compat.
 import { $, $$, React, act, cleanup, click, closeDom, render, renders, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

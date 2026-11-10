@@ -4,7 +4,7 @@
 // - P3-11: the old Compare card said "3 changes" where its shot strips said "2" for the same pair. Their successor, the
 //   Changes view (docs/carton-ux PLAN 4.1), lists one row per change as History counts them. (P3-10, Compare's clip
 //   count, went with the card's spec sheet.)
-// `npm test` runs it on React 19, then on preact/compat.
+// `pnpm test` runs it on React 19, then on preact/compat.
 import { $, $$, React, byText, cleanup, click, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

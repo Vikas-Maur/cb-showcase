@@ -86,7 +86,7 @@ it is set, it names every later command's actor, `--as` included.
 
 ```sh
 cd carton
-npm install
+pnpm install
 mkdir -p "$HOME/carton-try" && cp -r kit/quickstart/Demo.cardboard "$HOME/carton-try"/
 P="$HOME/carton-try/Demo.cardboard"
 node kit/quickstart/import.ts "$P"
@@ -106,8 +106,8 @@ the Director, its turn and its subagents.
 ```sh
 CARDBOARD_ACTOR=director/chat1/turn1 node kit/quickstart/edit.ts "$P" Intro endTime=2.5 trimEnd=2.5
 CARDBOARD_ACTOR=director/chat1/turn1/sub-general-purpose-a1b2 node kit/quickstart/edit.ts "$P" Outro color=#ffcc00
-npx carton --project "$P" history
-npx carton --project "$P" credits Outro
+pnpm exec carton --project "$P" history
+pnpm exec carton --project "$P" credits Outro
 ```
 ```
 director/chat1/turn1: Saved: confirmed 7b0b265c@2
@@ -120,18 +120,18 @@ main@0   just now  unknown                                  root
 outro: last changed by Director › general-purpose (turn turn1) (subagent general-purpose a1b2, chat chat1)
 ```
 
-`npx carton` is the standalone build of the `cb` commands (`@carton/cli-mcp`). It works from inside `carton/`. In
+`pnpm exec carton` is the standalone build of the `cb` commands (`@carton/cli-mcp`). It works from inside `carton/`. In
 Cardboard, the same commands are part of `cb`. Ids such as `7b0b265c` differ on your machine.
 
 ### 3. A second cut, and a fold with a conflict card
 
 ```sh
-npx carton --project "$P" cut new "30s cut"
-npx carton --project "$P" cut switch "30s cut"
+pnpm exec carton --project "$P" cut new "30s cut"
+pnpm exec carton --project "$P" cut switch "30s cut"
 node kit/quickstart/edit.ts "$P" Middle startTime=2.5 endTime=5 trimEnd=2.5 --as codex/tighten
-npx carton --project "$P" cut switch main
+pnpm exec carton --project "$P" cut switch main
 node kit/quickstart/edit.ts "$P" Middle endTime=7 trimEnd=4
-npx carton --project "$P" fold "30s cut" --check
+pnpm exec carton --project "$P" fold "30s cut" --check
 ```
 ```
 New cut "30s cut" (59d9b345)
@@ -149,8 +149,8 @@ them and never mixes half of one edit with half of the other. `--check` saved no
 result:
 
 ```sh
-npx carton --project "$P" fold "30s cut" --keep theirs
-npx carton --project "$P" compare main@4
+pnpm exec carton --project "$P" fold "30s cut" --keep theirs
+pnpm exec carton --project "$P" compare main@4
 ```
 ```
 Folded in: confirmed 7b0b265c@5
@@ -160,8 +160,8 @@ Folded in: confirmed 7b0b265c@5
 ### 4. Undo a whole agent turn
 
 ```sh
-npx carton --project "$P" undo --turn turn1
-npx carton --project "$P" compare main@5 main@6
+pnpm exec carton --project "$P" undo --turn turn1
+pnpm exec carton --project "$P" compare main@5 main@6
 ```
 ```
 Undid turn turn1: confirmed 7b0b265c@6
@@ -241,7 +241,7 @@ From `carton/`:
 
 ```sh
 node --test kit/test/quickstart.test.ts     # runs steps 1–6 as separate processes in a scratch folder
-npx tsc -p kit                              # type-checks the quickstart scripts
+pnpm exec tsc -p kit                              # type-checks the quickstart scripts
 ```
 
 Next: [INTEGRATION.md](INTEGRATION.md) to wire Carton into Cardboard, or [INJECT.md](INJECT.md) to have your agent do

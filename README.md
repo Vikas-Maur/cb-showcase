@@ -38,22 +38,23 @@ it from a terminal that has `ELECTRON_RUN_AS_NODE=1` set (some Electron-based ID
 ## Results
 
 Unless a row says otherwise, measured on one Windows laptop (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11),
-plugged in. Each row compares before and after a change on the same machine, alternating the two. All of them were
-measured before the port to 1.5.0, on 1.4.0. The changes they measure are in the 1.5.0 build, except the retired
-one in the last row. Where each number comes from: [docs/readme-sources.md](docs/readme-sources.md).
+plugged in. Each row compares before and after a change on the same machine, alternating the two. The import rows
+were measured on the 1.5.0 build; the others before the port, on 1.4.0. The changes they measure are in the 1.5.0
+build, except the retired one in the last row. Costs are listed too. Where each number comes from:
+[docs/readme-sources.md](docs/readme-sources.md).
 
 | Change, and what was measured | Before → after | Build and runs | More |
 | --- | --- | --- | --- |
+| **Faster import.** Proxies decode on the GPU, filmstrips use only keyframes when that's enough. Six clips (4K HEVC from a phone, 4K60 H.264, 1080p, a WAV) dropped on a new project, until every thumbnail, waveform and proxy is written | 52.0 → 28.6 s, about 1.7× faster | 1.5.0: Cardboard's own pipeline (the baseline) against ours, both from `56142f3f`, 5 runs each, medians. An independent re-run, 3 runs each: 48.6 → 29.0 s | [table and runs](docs/benchmarks.md#import-on-150) |
+| … through `cb media add`, the CLI agents use | 64.2 → 44.5 s | the same, 5 runs each | |
+| Cost: the clips show up in the media list later, and so does the first thumbnail | 1.62 → 1.94 s, 0.57 → 0.62 s | the same | |
+| Cost: each `cb` command with the app closed | 18 to 234 ms slower (`cb --help` 222 → 240 ms) | the same. Ours includes Carton, which patches the CLI; the baseline doesn't | |
 | **An idle editor rests.** CPU with one project open, window on screen, nothing moving | 20.3% → 0.7% of a core | 1.4.0-based, 144 Hz screen, 5 runs each, medians | [table](docs/benchmarks.md#an-idle-editor), [#3](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#3) |
 | … with four projects open | 64.8% → 2.0% of a core | the same | |
 | … while playing, window in front | unchanged: about 143 frames per second and 1.1 cores | the same, 4 runs each | |
 | **Draw on the NVIDIA GPU of a two-GPU laptop.** Editor stutters over 50 ms in 19 s of playing a graphic with a video inside | 17–20 → 4–6 | 1.4.0-based, 3 runs each | [table](docs/benchmarks.md#playback-the-timeline-and-the-gpu), [#2](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#2) |
 | **Serve the app's files without copies in `%TEMP%`.** Time to fetch 57 of Cardboard's files (9.1 MB) | 170 → 123 ms | Cardboard 1.4.0's own handler in a test app, Electron 43.7.0 for Linux, 20 alternated rounds, medians | [patch 16](docs/windows-port.md#patches) |
 | **Retired: draw a graphic with the newest ready video frame**, plus the GPU change. Frames per second of a graphic with a video inside, while playing | 26–37 → 78–88 | 1.4.0 only. Cardboard reworked how a graphic gets its frames (1.4.1, 1.5.0), so the 1.5.0 build uses Cardboard's way | [#2](https://cardboard-showcase.vikasmaur10.workers.dev/changelog/#2) |
-
-Import times are in the [patch notes](docs/windows-port.md#patches), but not in this table: they were measured
-before the baseline build existed, and an independent check (`07709a41`, 2026-11-01) couldn't back them from the
-recorded runs. They are being re-measured against the baseline.
 
 ## How it works
 
@@ -223,10 +224,11 @@ the app and the baseline on a Windows runner and publishes them as the release `
 
 ## Build from source
 
-You need Windows, Node 24 and 7-Zip. From the repository's root:
+You need Windows, Node 24 and 7-Zip, and pnpm: `corepack enable` once (Node 24 ships corepack), and the
+`packageManager` field picks pnpm 12.18.0. From the repository's root:
 
 ```sh
-cd tools && npm ci && cd ..
+cd tools && pnpm install --frozen-lockfile && cd ..
 node scripts/build-windows.js                               # the app, in out\Cardboard-win
 node scripts/build-windows.js --baseline --out out-baseline # the baseline the benchmarks compare against
 node scripts/build-windows.js --no-carton                   # the app without Carton
@@ -234,13 +236,13 @@ node scripts/build-windows.js --no-carton                   # the app without Ca
 
 The build downloads into `dl\` what the app is made from, from where each is published, and installs Carton's
 workspace when it needs to. Not on Windows: `gh workflow run build-windows.yml --ref <branch>` runs the same build on
-a GitHub Windows runner and publishes it as the release `windows-latest`. Carton's own workspace runs anywhere with
-Node 24:
+a GitHub Windows runner and publishes it as the release `windows-latest` (`-f publish=false` builds without
+publishing). Carton's own workspace runs anywhere with Node 24 and pnpm:
 
 ```sh
-cd carton && npm ci
-npm test            # every package
-npm run typecheck
+cd carton && pnpm install --frozen-lockfile
+pnpm test           # every package
+pnpm run typecheck
 ```
 
 ## Disclaimer

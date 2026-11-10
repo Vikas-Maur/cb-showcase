@@ -17,7 +17,7 @@ that the `displace` protocol now calls the shipped code: `displaceThenInstall`, 
 
 Node 24 or later runs the `.ts` files directly. No build and no dependencies. `node --test race.test.ts` tests the
 turn lock and the writers' steps against Windows' errors and runs two short turn-mode trials (temp+rename, in place).
-`npx tsc -p bench/race` typechecks it.
+`pnpm exec tsc -p bench/race` typechecks it.
 
 ```
 node race.ts                                  # the portable matrix in <tmpdir>/carton-race

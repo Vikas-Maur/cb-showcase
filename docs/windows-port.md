@@ -218,10 +218,12 @@ both, so a 4K HEVC clip took about as long as it runs, twice. Now:
   land up to 0.57 s off for half-second slots and 0.07 s for one-second slots (measured on three
   clips). `eof_action=pass` keeps the last keyframe, which the filter otherwise dropped at the end.
 
-Four clips from a 4K HEVC and phone footage folder (54 s and 9 s 4K, 20 s and 78 s 1080p) went from
-73.5 s to 11.9 s until every filmstrip, waveform and proxy was ready. The clips themselves show up in
-under a second either way. (Measured on 1.4.0 against stock libx264, before the baseline build; an independent
-check couldn't back it from the recorded runs, so treat it as unverified.)
+On 1.5.0, against the baseline build (Cardboard's own pipeline, with the hardware encoder at its set bitrate), six
+clips took 28.6 s instead of 52.0 s until every filmstrip, waveform and proxy was ready: about 1.7× faster,
+re-run independently. The clips show up in the media list about 0.3 s later, though. Every run, and the check, in
+[Import, on 1.5.0](benchmarks.md#import-on-150). (An earlier figure, 73.5 s to 11.9 s for four clips, was measured
+on 1.4.0 against stock libx264, before the baseline build existed; an independent check couldn't back it from the
+recorded runs, so it is withdrawn.)
 
 It also fixes Cardboard staying alive with no window. Main waits for every import to be done before it
 quits, and the worker said an import was done only if all of its background work succeeded. When one
@@ -464,8 +466,10 @@ apply whether Carton is on or off:
 `scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-AEX5IIG7.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
-proxies in software (libx264), since its hardware check only knew VideoToolbox. The same four clips
-took 57.7 s with `cb media add` before, 16.4 s after (unverified, as above).
+proxies in software (libx264), since its hardware check only knew VideoToolbox. On 1.5.0 the six clips
+took 44.5 s with `cb media add` instead of the baseline's 64.2 s ([Import, on 1.5.0](benchmarks.md#import-on-150);
+the independent check recomputed this one but didn't re-run it). An earlier 57.7 s → 16.4 s, from 1.4.0 and the
+same unverified run as above, is withdrawn.
 
 `scripts\mac-scan.js` lists the macOS-specific calls in a bundle, for checking a new Cardboard version.
 
@@ -539,12 +543,13 @@ accelerator tests.
 The patches match strings in minified code, so a new Cardboard version probably needs them
 updated. Each `replace()` fails loudly if its target is missing.
 
-From scratch, on Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads into
+From scratch, on Windows: `cd tools && pnpm install --frozen-lockfile`, then `node scripts/build-windows.js`. It downloads into
 `dl\` what the app is made from, from where each is published: Cardboard 1.5.0 for Mac
 (`assets.cardboard.ai`), Electron 43.7.0 for Windows, ffmpeg 8.1 (BtbN's win64 GPL build), uv 0.13.6 and
 Claude Code 2.1.309 for Windows (npm). It then builds `out\Cardboard-win` and checks the versions of what it
-bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step, plus a
-`build-info.json` that says which build it is (`--baseline` builds the benchmarks' baseline, see
+bundles. It needs 7-Zip, and pnpm: `corepack enable` once (Node 24 ships corepack), and the `packageManager` field
+of `tools/package.json` and `carton/package.json` picks pnpm 12.18.0. The result is byte for byte the same as the
+`Cardboard-win\` built step by step, plus a `build-info.json` that says which build it is (`--baseline` builds the benchmarks' baseline, see
 [Benchmarks](benchmarks.md)).
 On GitHub, the same build runs by hand: Actions → Build Windows app → Run workflow
 (`.github/workflows/build-windows.yml`). It publishes the app as the release `windows-latest`, replacing the

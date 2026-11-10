@@ -1,6 +1,6 @@
 // Carton UX v2, History (N2: docs/carton-ux/v2 DESIGN-V2 §2–§4) on the mock's story: Go back… and its four choices,
 // Bring back one clip, search, landmark rows and the Landmarks filter, pick mode and the Compare button (through the
-// editor's openCompare, or the panel's own Changes view without it), and hold to peek. `npm test` runs it on React 19
+// editor's openCompare, or the panel's own Changes view without it), and hold to peek. `pnpm test` runs it on React 19
 // and on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";

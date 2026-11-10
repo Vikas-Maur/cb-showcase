@@ -87,6 +87,6 @@ file back in as a fold with cards.
 
 ## Tests
 
-`npm test` here (unit tests on real files with a fake clock), and `@carton/conformance`'s `cardboardSuite()` (fixtures
+`pnpm test` here (unit tests on real files with a fake clock), and `@carton/conformance`'s `cardboardSuite()` (fixtures
 made by Cardboard's own CLI, and B10 through 1.4.0's real fm∘sv when a local renderer bundle is available).
 `carton/bench/race` is the P10 race harness on this package's displace-then-install.

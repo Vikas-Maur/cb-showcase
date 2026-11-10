@@ -1,4 +1,4 @@
-// Fetches what a CI test group needs beyond `npm ci`, and tells later steps where it is ($GITHUB_ENV, $GITHUB_PATH).
+// Fetches what a CI test group needs beyond `pnpm install`, and tells later steps where it is ($GITHUB_ENV, $GITHUB_PATH).
 //   node ci/fetch.mjs [tool...]
 //   ffmpeg     ffmpeg 8.1 (BtbN's builds; the version Cardboard bundles), Linux and Windows. macOS has none: the
 //              tests that need it skip there.
@@ -22,14 +22,15 @@ import { OS, REPO, dirs, exportEnv, exportPath, testEnv } from "./env.mjs";
 
 const VERSIONS = { ffmpeg: "n8.1", versitygw: "1.10.0", electron: "43.7.0", playwright: "1.64.1", prettier: "3.9.10", cardboard: "1.4.0" };
 const exe = (name) => (OS === "windows" ? name + ".exe" : name);
-const npm = OS === "windows" ? "npm.cmd" : "npm";
+// pnpm on Windows is a .cmd shim (corepack) or pnpm.exe (pnpm 12's own binary): a shell finds either
+const pnpm = "pnpm";
 const SEVEN_ZIP = OS === "windows" ? "C:\\Program Files\\7-Zip\\7z.exe" : "7z";
 
 // `quiet`: the tool reads Cardboard's code, whose errors can quote it (a parse error prints a code frame), so its
 // stderr is kept out of the log but for one short line.
 function run(cmd, args, opts = {}, quiet = false) {
   const stdio = quiet ? ["ignore", opts.stdio?.[1] ?? "ignore", "pipe"] : (opts.stdio ?? "inherit");
-  const r = spawnSync(cmd, args, { shell: cmd === npm && OS === "windows", encoding: "utf8", ...opts, stdio });
+  const r = spawnSync(cmd, args, { shell: cmd === pnpm && OS === "windows", encoding: "utf8", ...opts, stdio });
   if (r.status !== 0) {
     // Only the error's own line: Node's `SyntaxError: …` / `Error [ERR_X]: …`, or prettier's `[error] file: …Error: …`.
     // Never a fallback line: a file name or a code frame above it may be Cardboard's code.
@@ -121,8 +122,8 @@ const tools = {
   },
 
   async electron() {
-    // The release zip, as build-windows.js takes it (the npm package's postinstall download is blocked by npm 11's
-    // install-script policy).
+    // The release zip, as build-windows.js takes it (the electron package's postinstall download is an install script,
+    // which pnpm doesn't run).
     const plat = { linux: "linux", windows: "win32", macos: "darwin" }[OS];
     const name = `electron-v${VERSIONS.electron}-${plat}-${process.arch}.zip`;
     const dir = path.join(dirs.cache, "electron-" + VERSIONS.electron);
@@ -140,8 +141,11 @@ const tools = {
   async chromium() {
     const dir = path.join(dirs.cache, "playwright-" + VERSIONS.playwright);
     const pw = path.join(dir, "node_modules", "playwright");
-    if (!fs.existsSync(path.join(pw, "package.json")))
-      run(npm, ["install", "--prefix", dir, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", `playwright@${VERSIONS.playwright}`], { env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" } });
+    // a scratch project of its own (pnpm adds a package.json there), with no install scripts run, as npm 11 ran none
+    if (!fs.existsSync(path.join(pw, "package.json"))) {
+      fs.mkdirSync(dir, { recursive: true });
+      run(pnpm, ["add", "--dir", dir, "--ignore-scripts", `playwright@${VERSIONS.playwright}`], { env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1" } });
+    }
     const chrome = {
       linux: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"],
       windows: ["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"],
@@ -177,11 +181,12 @@ const tools = {
       const res = path.join(work, "x", `Cardboard ${VERSIONS.cardboard}`, "Cardboard.app", "Contents", "Resources");
       if (!fs.existsSync(path.join(res, "app.asar"))) throw new Error("no Cardboard.app/Contents/Resources/app.asar in the installer");
       // @electron/asar from the repo's tools/ (what build-windows.js uses), and prettier into the scratch dir
-      if (!fs.existsSync(path.join(REPO, "tools", "node_modules", "@electron", "asar"))) run(npm, ["ci", "--no-audit", "--no-fund"], { cwd: path.join(REPO, "tools") });
+      if (!fs.existsSync(path.join(REPO, "tools", "node_modules", "@electron", "asar"))) run(pnpm, ["install", "--frozen-lockfile"], { cwd: path.join(REPO, "tools") });
       run(process.execPath, [path.join(REPO, "tools", "node_modules", "@electron", "asar", "bin", "asar.mjs"), "extract", path.join(res, "app.asar"), path.join(dest, "app-asar")], {}, true);
       fs.cpSync(path.join(res, "cli"), path.join(dest, "cli"), { recursive: true, dereference: true });
       const pdir = path.join(work, "prettier");
-      run(npm, ["install", "--prefix", pdir, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", `prettier@${VERSIONS.prettier}`]);
+      fs.mkdirSync(pdir, { recursive: true });
+      run(pnpm, ["add", "--dir", pdir, "--ignore-scripts", `prettier@${VERSIONS.prettier}`]);
       fs.mkdirSync(path.dirname(renderer), { recursive: true });
       // Prettier's defaults, as the copy the agents sliced (_inspect/pretty) was made. It runs on a copy in an empty
       // folder of its own: prettier 3 reads .gitignore from its working directory and prints an ignored file unchanged

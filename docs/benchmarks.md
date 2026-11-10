@@ -47,6 +47,50 @@ Nothing the benchmarks do spends credits: no generation, transcription, captions
 Every profile shares the stored sign-in (`%APPDATA%\ai.cardboard\account.json`), so sign in to Cardboard once
 beforehand. Close Cardboard and plug the laptop in first: on battery, Windows slows the CPU and GPU.
 
+## Import, on 1.5.0
+
+Measured on 2026-11-10 on the laptop below (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11), on mains for the
+whole run. `run.js` compared the baseline with ours, both built from `56142f3f` (the 1.5.0 release), with the six
+clips of `media.js`: 5 counted runs per build after a warm-up, alternating. Ours is the build people download,
+Carton included; the baseline leaves Carton out. Every run made the same files: 315 thumbnails, 6 waveforms, 108 peak
+files, 5 proxies and 12 others. The recorded runs and the independent check are in
+[benchmarks/2026-11-10-1.5.0/](benchmarks/2026-11-10-1.5.0/README.md).
+
+| Measure | Baseline | Ours | Baseline ÷ ours |
+| --- | --- | --- | ---: |
+| Import, everything ready (s) | 52.0, 54.8, 48.6, 52.7, 47.6 (median 52.0) | 28.0, 30.0, 28.6, 29.6, 28.5 (median 28.6) | 1.81× |
+| Import, clips listed (s) | 1.69, 2.15, 1.59, 1.62, 1.46 (median 1.62) | 1.94, 2.00, 1.91, 1.86, 1.94 (median 1.94) | 0.84× |
+| Import, first thumbnail (s) | 0.57, 0.70, 0.57, 0.49, 0.48 (median 0.57) | 0.63, 0.64, 0.58, 0.55, 0.62 (median 0.62) | 0.91× |
+| `cb media add`, everything ready (s) | 63.6, 69.6, 61.8, 64.2, 64.3 (median 64.2) | 40.7, 44.5, 43.7, 49.6, 48.3 (median 44.5) | 1.44× |
+
+A separate agent checked it (AGENTS.md rule 6). It read the method, matched the clips' SHA-256 and both builds'
+`build-info.json`, recomputed every median and ratio from `results.json`, checked that the builds alternated, and
+that the laptop stayed on mains. Then it ran the import again, 3 counted runs per build: everything ready took
+47.9, 48.6, 50.1 s (median 48.6) for the baseline and 27.1, 29.0, 29.1 s (median 29.0) for ours, 1.67×. Every
+median of the re-run falls within the first run's spread, and in both sets every run of ours was ready before every
+run of the baseline. So import is **about 1.7× faster** (1.67× to 1.81× across the two sets). The check recomputed
+`cb media add` but didn't re-run it. Its first re-run doesn't count: its own `tail -f` on the window guard's log
+stopped the guard, so those runs went on unguarded, with the user at the laptop. That attempt stays in
+[VERIFY.md](benchmarks/2026-11-10-1.5.0/VERIFY.md).
+
+What is slower in ours:
+- The clips show up in the media list about 0.3 s later (1.62 → 1.94 s), and the first thumbnail about 0.05 s later
+  (0.57 → 0.62 s). The clean re-run agrees (1.54 → 1.93 s and 0.54 → 0.62 s). Not yet explained.
+- Each `cb` command, run with the app closed, takes 18 to 234 ms more:
+
+  | Command (ms) | Baseline | Ours |
+  | --- | ---: | ---: |
+  | `cb --help` | 225, 221, 210, 231, 222 (median 222) | 245, 237, 233, 240, 243 (median 240) |
+  | `cb project create` | 958, 832, 1177, 839, 923 (median 923) | 1178, 1073, 1161, 1157, 1004 (median 1157) |
+  | `cb project list` | 231, 243, 253, 227, 229 (median 231) | 261, 263, 255, 263, 252 (median 261) |
+  | `cb source print` | 229, 214, 225, 233, 209 (median 225) | 248, 250, 250, 244, 259 (median 250) |
+  | `cb source apply` | 1087, 943, 974, 916, 903 (median 943) | 1204, 1109, 1019, 929, 1011 (median 1019) |
+  | `cb source apply`, a second edit | 936, 898, 10866, 1085, 826 (median 936) | 1061, 1165, 1063, 1196, 1151 (median 1151) |
+
+  Carton patches the CLI and the baseline leaves Carton out, so this may be Carton's cost rather than the speed
+  changes'. The two haven't been measured apart. The baseline's 10,866 ms run was a real stall (the next run
+  started 13.7 s later instead of about 4 s); it is that build's slowest, so the median doesn't move.
+
 ## Playback, the timeline and the GPU
 
 Measured on one laptop (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11, on mains), on 1.4.0-based builds (the
