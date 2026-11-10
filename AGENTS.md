@@ -30,8 +30,11 @@ to its minified bundles at build time.
   Find targets by searching the pristine bundles; `scripts/mac-scan.js` lists the macOS-only calls.
 - Keep Windows-only behaviour behind `__cbWin` (in the pages, `window.desktop?.platform === "win32"`), so
   the same code still runs on a Mac.
-- Every patch has a comment saying what it fixes and why, and the README describes it for users. Update
-  both with each change.
+- Every patch has a comment saying what it fixes and why, and the docs describe it for users. Update both
+  with each change: a Windows patch in `docs/windows-port.md` (its script's numbered list), a Carton change in
+  `docs/carton-in-the-app.md`, a measurement in `docs/benchmarks.md`. The README is the overview: change it
+  only when a headline result or the project's shape changes, and give each number it quotes a row in
+  `docs/readme-sources.md`.
 - Never commit Cardboard's code or the built app (`Cardboard-win/`, `asar-src/`, `dl/`, `extracted/`,
   `*.orig.*`, `out/`). `.gitignore` keeps them out: they're not ours to redistribute.
 

@@ -166,7 +166,7 @@ With Carton off (`CARDBOARD_CARTON=0`; it is on by default), every Carton hook t
 either way: the staging folder's removal after Open Project retries on Windows; Open Project of a `.cbproj` that holds
 Carton's data removes, from the staged copy only, the `.carton\` folder and the view files Carton wrote in
 `.scratch\views\` (a person's or an agent's own files there stay; a stock `.cbproj` opens as before); and Save As of a
-`.cbproj` leaves the same files out. The repository's README, "Saves on Windows", has the details.
+`.cbproj` leaves the same files out. The repository's [docs/windows-port.md](../../docs/windows-port.md#saves-on-windows-scriptsrename-retryjs), "Saves on Windows", has the details.
 
 
 Our build of Cardboard 1.4.0 for Windows wires Carton into Cardboard's real bundles. Tested on Linux with the real

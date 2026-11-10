@@ -10,7 +10,7 @@
 // opens exactly as before, and a person's or an agent's own files in `.scratch/views/` stay. It stops someone else's
 // carton.db and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
 // switched on later. The archive itself is untouched, so nothing is lost. Opening a project folder is not scrubbed
-// (orchestrator): it is the person's own project, and keeps its history and every file. README "Saves on Windows"
+// (orchestrator): it is the person's own project, and keeps its history and every file. docs/windows-port.md "Saves on Windows"
 // lists every Carton-off difference.
 //   Save As     the entry list Cardboard's own walk made takes the files Carton rewrites (timeline.tsx, project.json,
 //               views) as they are then, read whole (its zip writer reads a file at its turn, and threw on one rewritten

@@ -4,7 +4,7 @@
 //   CARDBOARD_PRISTINE=… node --test scripts/carton/test/asar-assets.test.js
 // No Electron here: the app:// module is cut out of the bundle and run with a stand-in for electron's protocol, on a
 // real folder named app.asar (to plain Node a folder; to __cbInAsar, an archive). Electron's own copy-out, and that
-// the patched handler doesn't trigger it, is shown on the real Electron 43.7.0 (the README's patch 16).
+// the patched handler doesn't trigger it, is shown on the real Electron 43.7.0 (patch 16 in docs/windows-port.md).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path"), crypto = require("crypto");

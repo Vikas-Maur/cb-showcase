@@ -1,5 +1,5 @@
 // Carton's live-sync and sharing half in Cardboard's bundles (H8's Share panel, Invite to edit and Join, H10, H11's
-// "Bring in their changes", H13): carton/docs/INTEGRATION-1.5.0.md §2 and README "Carton: live sync and sharing".
+// "Bring in their changes", H13): carton/docs/INTEGRATION-1.5.0.md §2 and docs/carton-in-the-app.md "Carton: live sync and sharing".
 // It runs right after patch-carton.js, on the files it wrote (build-windows.js and scripts/carton/test/stage.js call
 // it), and refuses a file that already has these patches. Each part lives in scripts/carton/sync/patches/<part>.js and
 // exports `app({ main, worker, index, editor, store })` and/or `cli({ cb, chunk })`, each value being the file's

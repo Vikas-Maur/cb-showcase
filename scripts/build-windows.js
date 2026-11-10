@@ -25,7 +25,7 @@ const INPUTS = {
   // links the newest one (/desktop/download/stable); each version stays at its own address.
   cardboard: { file: "dl/Cardboard-1.5.0-arm64.dmg", url: "https://assets.cardboard.ai/desktop/releases/1.5.0/Cardboard-1.5.0-arm64.dmg" },
   electron: { file: "dl/electron/electron-v43.7.0-win32-x64.zip", url: "https://github.com/electron/electron/releases/download/v43.7.0/electron-v43.7.0-win32-x64.zip" },
-  // Stay on ffmpeg 8.1: 9.0 and the nightlies need NVIDIA driver 610+ for NVENC (see README).
+  // Stay on ffmpeg 8.1: 9.0 and the nightlies need NVIDIA driver 610+ for NVENC (see docs/windows-port.md, Layout).
   ffmpeg: { file: "dl/ffmpeg-n8.1/ffmpeg-n8.1.zip", url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip" },
   uv: { file: "dl/uv/uv-win.zip", url: "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip" },
   // The Claude Code version the macOS build bundles.

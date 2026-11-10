@@ -609,7 +609,7 @@ onto the packages' APIs, so a package API change touches only the facade.
     for the cloud pull).
   - H12 is for the kit only: the service is dormant on desktop, so nothing is patched there.
 - **Windows only:** the editor's pages (H4–H7, the History tab), gates G1 and G2, the NTFS displace/install race. See
-  the README, "Carton" → "Testing Carton".
+  [docs/carton-in-the-app.md, "Testing Carton"](../../docs/carton-in-the-app.md#testing-carton).
 
 ## 7. Cardboard 1.5.0 (2026-11-10)
 
