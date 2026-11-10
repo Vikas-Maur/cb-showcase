@@ -1,6 +1,6 @@
 # Capture states, one pair of files per feature
 
-`npm run screens` (in `packages/react`) builds the capture page and shoots every state on React and on preact/compat.
+`pnpm run screens` (in `packages/react`) builds the capture page and shoots every state on React and on preact/compat.
 A feature adds its states here, in two files of its own, and edits no shared list, so features made side by side
 merge cleanly.
 
@@ -37,7 +37,7 @@ merge cleanly.
 
    `shoot.mjs` picks up every `states/*.shots.mjs`. A shot name used twice is an error that names both files.
 
-3. **Run it:** `npm run screens -- --only '^find-'`, or one runtime: `node gallery/capture/shoot.mjs --only '^find-'`.
+3. **Run it:** `pnpm run screens --only '^find-'`, or one runtime: `node gallery/capture/shoot.mjs --only '^find-'`.
    `--list` prints every shot with its scenario and file. The shots, `shots.json` and `INDEX.md` go to
    `gallery/dist/capture/shots/` (Preact's in `preact/`).
 

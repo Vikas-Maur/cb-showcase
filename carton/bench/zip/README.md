@@ -11,4 +11,4 @@ flock /tmp/gfv-race/cpu.lock node bench/zip/bench.ts /home/ubuntu/gfv-scratch/ca
 ```
 
 Put the source on the volume you want to measure; outputs go next to it and are removed. Every number it prints is
-UNVERIFIED until a separate verifier re-runs it (AGENTS.md rule 6). Typecheck: `npx tsc -p bench/zip`.
+UNVERIFIED until a separate verifier re-runs it (AGENTS.md rule 6). Typecheck: `pnpm exec tsc -p bench/zip`.

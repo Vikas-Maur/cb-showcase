@@ -1,4 +1,4 @@
-// The cuts menu and Fold in of the UX redesign (docs/carton-ux PLAN 6.1–6.3), on the mock. `npm test` runs it on React
+// The cuts menu and Fold in of the UX redesign (docs/carton-ux PLAN 6.1–6.3), on the mock. `pnpm test` runs it on React
 // 19, then on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";

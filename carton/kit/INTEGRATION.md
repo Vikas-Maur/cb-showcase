@@ -674,7 +674,7 @@ themselves.
 
 **Cloudflare.** `@carton/server-cloudflare` is a Worker plus one `ProjectRoom` Durable Object per project, on DO
 SQLite, with R2 bound as `BLOBS` (remove the binding to fall back to DO-stored blobs, L11). Its `wrangler.toml` and
-`.dev.vars.example` are in `packages/server-cloudflare/`. `npm run dev` there runs it locally under `wrangler dev`, and
+`.dev.vars.example` are in `packages/server-cloudflare/`. `pnpm run dev` there runs it locally under `wrangler dev`, and
 its tests run every host suite inside workerd. We have not deployed it: deploying needs your own account.
 
 **Inside Cardboard's API.** A host is storage plus socket glue around one pure function. Authenticate the socket

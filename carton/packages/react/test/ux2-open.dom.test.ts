@@ -1,7 +1,7 @@
 // fix/ux2-open, the panel: Back to Fold in… keeps the ticks (and says plainly what it couldn't keep); the newest day
 // reads as a story when it isn't today; and the Windows check of b14f8a4e: Exported says nothing of "only you", a
 // landmark row says what its version changed and shows when the landmark happened, a group of edits says what it came
-// to. `npm test` runs it on React 19 and on preact/compat.
+// to. `pnpm test` runs it on React 19 and on preact/compat.
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, render, runtime, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

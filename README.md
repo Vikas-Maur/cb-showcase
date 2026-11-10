@@ -886,10 +886,10 @@ out entirely, and `--baseline` does too.
 #### Testing Carton
 
 On any machine (Linux here), against Cardboard's own unpacked bundles: `CARDBOARD_PRISTINE` is a folder with
-`app-asar\` (`npx asar extract …\app.asar`) and `cli\` from the macOS installer.
+`app-asar\` (`pnpm dlx @electron/asar extract …\app.asar`) and `cli\` from the macOS installer.
 
 ```sh
-cd carton && npm ci && cd ..
+cd carton && pnpm install --frozen-lockfile && cd ..
 set CARDBOARD_PRISTINE=C:\cb-pristine
 node --test --test-concurrency=1 "scripts/carton/test/*.test.js"
 ```
@@ -911,7 +911,7 @@ Windows started, and is done once nothing it should delete is left.
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 
 ```sh
-cd tools && npm ci && cd ..\carton && npm ci && cd ..
+cd tools && pnpm install --frozen-lockfile && cd ..\carton && pnpm install --frozen-lockfile && cd ..
 node scripts/build-windows.js
 set CARDBOARD_USER_DATA=%TEMP%\cb-carton\userdata
 set CARDBOARD_HOME=%TEMP%\cb-carton\home
@@ -1206,12 +1206,13 @@ that a window left behind others still counts as visible.
 The patches match strings in minified code, so a new Cardboard version probably needs them
 updated. Each `replace()` fails loudly if its target is missing.
 
-From scratch, on Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads into
+From scratch, on Windows: `cd tools && pnpm install --frozen-lockfile`, then `node scripts/build-windows.js`. It downloads into
 `dl\` what the app is made from, from where each is published: Cardboard 1.4.0 for Mac
 (`assets.cardboard.ai`), Electron 43.7.0 for Windows, ffmpeg 8.1 (BtbN's win64 GPL build), uv 0.13.6 and
 Claude Code 2.1.309 for Windows (npm). It then builds `out\Cardboard-win` and checks the versions of what it
-bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step, plus a
-`build-info.json` that says which build it is (`--baseline` builds the benchmarks' baseline, see
+bundles. It needs 7-Zip, and pnpm: `corepack enable` once (Node 24 ships corepack), and the `packageManager` field
+of `tools/package.json` and `carton/package.json` picks pnpm 12.18.0. The result is byte for byte the same as the
+`Cardboard-win\` built step by step, plus a `build-info.json` that says which build it is (`--baseline` builds the benchmarks' baseline, see
 [Benchmarks](#benchmarks)).
 On GitHub, the same build runs by hand: Actions → Build Windows app → Run workflow
 (`.github/workflows/build-windows.yml`). It publishes the app as the release `windows-latest`, replacing the

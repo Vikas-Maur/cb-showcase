@@ -1,4 +1,4 @@
-// Component tests in a DOM. `npm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
+// Component tests in a DOM. `pnpm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, renders, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";

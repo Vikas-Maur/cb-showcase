@@ -3,13 +3,14 @@
 //
 //   node --expose-gc carton/bench/core/head.ts <name>=<carton dir> [<name>=<carton dir> ...]
 //
-// Each <carton dir> is the `carton/` folder of a checkout with its dependencies installed (`npm ci` there): the bench
+// Each <carton dir> is the `carton/` folder of a checkout with its dependencies installed (`pnpm install` there, or
+// `npm ci` in a checkout from before pnpm): the bench
 // imports that checkout's packages/core, store-memory and the conformance generator from it, and `@carton/core` inside
 // it resolves through its own node_modules. Run it from any checkout. The builds compared for the freeze of documents
 // handed out (a2d2f04, CONTRACTS "Documents are values"):
 //
 //   git worktree add /tmp/a fd07cc8 && git worktree add /tmp/c <commit>   # before the freeze; the commit under test
-//   (cd /tmp/a/carton && npm ci) && (cd /tmp/c/carton && npm ci)
+//   (cd /tmp/a/carton && npm ci) && (cd /tmp/c/carton && pnpm install --frozen-lockfile)   # fd07cc8 predates pnpm
 //   node --expose-gc /tmp/c/carton/bench/core/head.ts A=/tmp/a/carton C=/tmp/c/carton
 //
 // env: N (items, default "1000,10000"), RUNS (7), CALLS (200), OUT (the JSON, default ./head-bench-<ms>.json). On the

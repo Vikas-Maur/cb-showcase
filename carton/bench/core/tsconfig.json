@@ -1,5 +1,5 @@
 {
-  // Typecheck only (node runs the .ts directly): npx tsc -p bench/core --noEmit
+  // Typecheck only (node runs the .ts directly): pnpm exec tsc -p bench/core --noEmit
   "extends": "../../tsconfig.node.json",
   "compilerOptions": { "noEmit": true },
   "include": ["."]

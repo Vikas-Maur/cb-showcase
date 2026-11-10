@@ -1,4 +1,4 @@
-// The shared minute clock (useNow) on its first subscriber's first render, on React 19 and on preact/compat (npm test
+// The shared minute clock (useNow) on its first subscriber's first render, on React 19 and on preact/compat (pnpm test
 // runs this file twice). UI audit R7, PLAN 9.4: preact/compat read the clock as the module last left it (when it
 // loaded), so a time a minute old read "just now" until the next tick, where React read "1 min ago".
 import { $, React, cleanup, closeDom, render, runtime } from "./dom.ts";

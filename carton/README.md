@@ -52,12 +52,17 @@ Node 24 runs the `.ts` sources directly, so there is no build step for tests.
 
 ```sh
 cd carton
-npm install
-npm test            # every package (node --test, at most 2 files at a time)
-npm run typecheck   # tsc per package
-npm run size        # min+gz budgets (esbuild)
-npm run build       # dist/ for publishing, dependencies first
+pnpm install         # pnpm 12.18.0 (packageManager; `corepack enable` once)
+pnpm test            # every package, one after another (node --test, at most 2 files at a time)
+pnpm run typecheck   # tsc per package
+pnpm run size        # min+gz budgets (esbuild)
+pnpm run build       # dist/ for publishing, dependencies first
 ```
+
+- A pnpm workspace (`pnpm-workspace.yaml`), with pnpm's default strict `node_modules`: each package declares what it
+  imports, and `@carton/*` dependencies are `workspace:*` links. The root declares the `@carton/*` packages its own
+  code uses (`kit/`, `bench/`, `ci/`) and the repo's `scripts/carton/` bundles, plus the repo-wide tools (TypeScript,
+  esbuild, wrangler for the deploy scripts). No dependency's install script runs (`allowBuilds`).
 
 - Erasable TypeScript only (no `enum`, `namespace`, parameter properties); relative imports carry `.ts`.
 - Core, the stores, `local`, `cardboard`, `media` and `react` have no runtime dependencies. Hosts use only their
