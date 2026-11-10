@@ -10,8 +10,8 @@
     "typecheck": "pnpm -r --no-sort --workspace-concurrency=1 --no-bail --if-present run typecheck",
     "build": "node scripts/build.mjs",
     "size": "node scripts/size.mjs",
-    "deploy:cloudflare": "node packages/server-cloudflare/build-site.mjs && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml",
-    "deploy:cloudflare:web": "node apps/web/build.mjs --out packages/server-cloudflare/dist/site && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml"
+    "deploy:cloudflare": "node packages/server-cloudflare/build-site.mjs && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml --name cardboard-showcase",
+    "deploy:cloudflare:web": "node apps/web/build.mjs --out packages/server-cloudflare/dist/site && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml --name cardboard-showcase"
   },
   "devDependencies": {
     "@carton/blob-fs": "workspace:*",

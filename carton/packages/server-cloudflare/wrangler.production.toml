@@ -3,7 +3,8 @@
 # ./dist/site first, then `wrangler deploy` ships them and the API together. Local development stays on wrangler.toml.
 # Secrets are set in the dashboard (Worker → Settings → Variables and Secrets), never here: AUTH_SECRET (required; signs
 # invites and sessions) and, optionally, ADMIN_TOKEN (makes a first owner invite; open creation below needs none).
-# The live Worker is `cardboard-showcase`: the workflow deploys with `--name cardboard-showcase`, over the old name below.
+# The live Worker is `cardboard-showcase`: the workflow and carton/package.json's deploy:cloudflare scripts deploy with
+# `--name cardboard-showcase`, over the old name below. Without it, wrangler would create a second Worker, "carton".
 name = "carton"
 main = "src/worker.ts"
 compatibility_date = "2026-10-23"
