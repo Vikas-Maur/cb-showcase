@@ -1,0 +1,33 @@
+# Carton's pnpm workspace: the same 21 packages as before (they were an npm workspace).
+packages:
+  - packages/core
+  - packages/store-memory
+  - packages/store-sqlite
+  - packages/store-idb
+  - packages/blob-memory
+  - packages/http-node
+  - packages/blob-fs
+  - packages/blob-s3
+  - packages/server
+  - packages/host-http
+  - packages/server-node
+  - packages/server-cloudflare
+  - packages/media
+  - packages/cardboard
+  - packages/local
+  - packages/cli-mcp
+  - packages/react
+  - packages/comments
+  - packages/conformance
+  - e2e
+  - apps/web
+# Dependencies' install scripts: none runs (npm 11 already blocked these three). esbuild and workerd's postinstall
+# only swaps their bin/ launcher for the native binary; their JS APIs find the binary without it. fsevents (macOS,
+# wrangler's file watcher) ships its binary prebuilt; its script rebuilds it from source.
+allowBuilds:
+  esbuild: false
+  workerd: false
+  fsevents: false
+# The cycles are test-only: a package's tests use one that depends on it (server's tests use comments, which server
+# uses; host-http's conformance suite needs media, whose tests use host-http). Nothing builds in workspace order.
+ignoreWorkspaceCycles: true

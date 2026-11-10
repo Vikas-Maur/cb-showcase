@@ -30,15 +30,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0",
-    "@carton/cardboard": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/host-http": "0.1.0",
-    "@carton/blob-memory": "0.1.0",
-    "@carton/blob-fs": "0.1.0"
+    "@carton/core": "workspace:*",
+    "@carton/cardboard": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/host-http": "workspace:*",
+    "@carton/blob-memory": "workspace:*",
+    "@carton/blob-fs": "workspace:*"
   },
   "devDependencies": {
-    "@carton/conformance": "0.1.0",
-    "@carton/media": "0.1.0"
+    "@carton/conformance": "workspace:*",
+    "@carton/media": "workspace:*",
+    "esbuild": "^0.28.2"
   }
 }

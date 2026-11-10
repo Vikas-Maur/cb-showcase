@@ -30,7 +30,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0",
-    "@carton/blob-memory": "0.1.0"
+    "@carton/core": "workspace:*",
+    "@carton/blob-memory": "workspace:*"
+  },
+  "devDependencies": {
+    "@carton/conformance": "workspace:*"
   }
 }

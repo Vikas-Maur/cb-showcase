@@ -10,16 +10,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0",
-    "@carton/store-sqlite": "0.1.0",
-    "@carton/cardboard": "0.1.0",
-    "@carton/local": "0.1.0",
-    "@carton/cli-mcp": "0.1.0",
-    "@carton/server": "0.1.0",
-    "@carton/server-node": "0.1.0",
-    "@carton/media": "0.1.0",
-    "@carton/blob-fs": "0.1.0",
-    "@carton/blob-s3": "0.1.0",
-    "@carton/blob-memory": "0.1.0"
+    "@carton/core": "workspace:*",
+    "@carton/store-sqlite": "workspace:*",
+    "@carton/cardboard": "workspace:*",
+    "@carton/local": "workspace:*",
+    "@carton/cli-mcp": "workspace:*",
+    "@carton/server": "workspace:*",
+    "@carton/server-node": "workspace:*",
+    "@carton/media": "workspace:*",
+    "@carton/blob-fs": "workspace:*",
+    "@carton/blob-s3": "workspace:*",
+    "@carton/blob-memory": "workspace:*"
   }
 }
