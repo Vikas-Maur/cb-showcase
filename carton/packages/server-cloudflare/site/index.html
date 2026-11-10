@@ -137,6 +137,11 @@ body.lb-open{overflow:hidden}
 .about{width:100%;max-width:720px;margin:0 auto;padding:72px 24px 0}
 .about h2{margin:0 0 16px;font-size:36px;line-height:1.15}
 .about p{margin:0 0 16px;color:var(--text)}
+.about h2:not(:first-child){margin-top:56px}
+.about ol{margin:0 0 16px;padding-left:22px;color:var(--text)}
+.about li{margin:0 0 10px;padding-left:4px}
+.about a{color:#fff;text-underline-offset:3px}
+.about b{color:#fff;font-weight:600}
 
 /* the invite view (an invite link opened in a browser) */
 .hero{text-align:center;padding:120px 24px 48px}
@@ -212,15 +217,44 @@ footer a:hover{color:#fff}
       <a class="btn big" href="https://github.com/Vikas-Maur/cb-showcase/releases/download/windows-latest/Cardboard-1.5.0-windows-x64.exe"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg>Download for Windows</a>
       <a class="btn big dark" href="https://github.com/Vikas-Maur/cb-showcase"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>View on GitHub</a>
     </div>
-    <p class="note">Windows 10 and 11, 64-bit · Built on Cardboard 1.5.0 · Not code-signed: if Windows says it protected your PC, choose More info, then Run anyway.</p>
+    <p class="note">Windows 10 and 11, 64-bit · Built on Cardboard 1.5.0 · Run it, choose a folder to unpack into, then open Cardboard.exe and sign in with your Cardboard account · Not code-signed: if Windows says it protected your PC, choose More info, then Run anyway.</p>
   </section>
 
-  <!-- The page's text. -->
+  <!-- The page's text: in the author's own words. -->
   <section class="about" aria-label="About">
-    <h2 class="display">Cardboard, on Windows</h2>
-    <p>Cardboard only ships for Apple Silicon Macs. This is its Mac app turned into a Windows app, with Windows versions of every tool it bundles. It’s one download with nothing to install: run it, choose a folder to unpack into, then open <b>Cardboard.exe</b> and sign in with your Cardboard account.</p>
-    <p>It also has <b>Carton</b>, version history for video. Every change is kept and says who made it: you, a teammate, the Director or Claude Code. Try ideas in separate cuts, fold the parts you like back in, go back to any version, and share a project to edit it live with someone else.</p>
-    <p>And it fixes bugs that are still in Cardboard’s own code, each one marked in red in the <a href="/changelog/?only=cardboard">changelog</a>. It’s an independent project, not made by or affiliated with the Cardboard team.</p>
+    <h2 class="display">About</h2>
+    <p>In this project, I ported Cardboard&#x27;s Mac app to Windows, created a git for video system called Carton, and a live collaboration feature using Cloudflare.</p>
+    <ol>
+      <li>The Windows app was simply created by patching the extracted code, from Cardboard&#x27;s ASAR package, for Windows. Using the patch system itself, the integration of the Carton and live collab features was done, along with improvements and bug fixes along the road.</li>
+      <li>Carton, the git for video feature, works by storing each of the user&#x27;s or the agent&#x27;s changes in a SQLite/IndexedDB database (based on the platform), with merging done at leaf level and features like comparing diffs, resolving conflicts, creating various cuts etc.</li>
+      <li>About the live collab feature, I didn&#x27;t intend to create it at first, but as I was creating Carton, I just felt it to be a natural thing to go alongside the git system so that both of those could complement each other.</li>
+    </ol>
+    <h2 class="display">My approach</h2>
+    <p>All the development was done via Opus 5.5 in this project, with GPT 6.1 Sol for reviews, in T3 Code on an EC2 instance and my Windows machine together.</p>
+    <p>I first started with laying out the requirements and asking Opus to come up with a plan to build that. I asked Opus to create a criticiser agent whose job must be to criticise whatever plan it comes up with, and both must prove each other&#x27;s points correct/wrong through verifiable methods.</p>
+    <p>I ran that at night and didn&#x27;t expect it, but that run took more than 6 hours. And that&#x27;s what my recent tech learnings from watching videos on YouTube tell me, that having a limit is very important.</p>
+    <p>After the plan came, the Opus agent started to develop the plan. Along with that, I asked it to constantly test the application as a real user would, so that it can give better results.</p>
+    <p>Also, as I was editing videos myself using the built Cardboard versions, that also was a key factor in identifying a lot of places which needed improvements and bug fixes.</p>
+    <p>Previously, the agent just had that EC2 instance and hence wasn&#x27;t able to test with a GPU or on a real Windows. Hence, I connected my Windows machine via T3 Code and provided it access to my machine. That helped it create benchmarks and perform verification on an actual machine, and helped improve the codebase more.</p>
+    <p>But that quickly became a blocker for me, as it was hijacking my machine while testing it out. Hence, eventually I got annoyed and asked it whether testing on another virtual desktop on my machine is possible, and it was, and that really made things easier for me.</p>
+    <p>Along with that, while testing the live collab feature, I provided Cloudflare access to the agent so that it can bench it properly and come up with a cost calculator for it, to determine how much live collaboration would actually cost.</p>
+    <h2 class="display">What I learnt</h2>
+    <p>I didn&#x27;t really look at much code throughout the development, and most of the heavy lifting was done by Opus. And hence (again) my actual editing and testing was really important, and that made me find a lot of issues myself.</p>
+    <p>I got to know about Cardboard&#x27;s current systems, where up to 20 latest revisions are being stored currently, about project.json and the timeline.tsx formation etc.</p>
+    <p>One of the key things I enjoyed learning while building this project was that on my 144 Hz display, for a 30 fps video, my GPU was redrawing the frames 144 times a second, even with nothing playing. I fixed that part (the editor now rests when idle), but during playback it still draws at the screen&#x27;s rate. Learning about this was very fun.</p>
+    <p>Apart from that, I have a basic understanding of how Carton works, and of the Cloudflare live sync feature. I got to use Cloudflare for the first time and learn about Durable Objects, R2 etc.</p>
+    <h2 class="display">What will I work on at Cardboard (if I get to)?</h2>
+    <p>Firstly, I like working across the stack.</p>
+    <p>Currently, I built three things, and hence my focus was a little distributed. While building the Windows version, I really wanted to make it extremely great. But I wasn&#x27;t sure whether I should just focus on that only or also on the mentioned hard problems, and hence I currently chose to build on the hard problems and make them my priority.</p>
+    <p>But yeah, I would really want to work on the video editor, be it the web version or the Electron app versions. I would really like to put my heart and soul and focus on building the core editor, improving performance, making it more reliable etc.</p>
+    <p>But yeah, I also do like all the backend stuff, the live sync feature for example. So, like I can work across the stack, I would love to work across the stack.</p>
+    <h2 class="display">About me</h2>
+    <p>Hey 👋,<br>I&#x27;m Vikas. I&#x27;m a 22-year-old who recently graduated from SKIT Jaipur. I love programming and building things, and more importantly building them in the best way possible. I care about the things which I build.</p>
+    <p>And I loved the concept of Cardboard and hence tried to build something around it, and would love to contribute even more.</p>
+    <p>Apart from that, I also love movies a lot. I was in the drama club of my college and even was the coordinator of the club in 3rd year.</p>
+    <p>I have grown up watching videos my entire life, and hence I would say I am something of a video watcher myself. I don&#x27;t like reading books much as of now, but I do like and enjoy learning, and I can read if I have a clear intent of learning anything.</p>
+    <p>You can learn more about me from my website: <a href="https://vikasmaur.com">vikasmaur.com</a></p>
+    <p><b>Expected compensation:</b> Rs. 25 LPA (+ learning budget if possible + more compute/resources to run experiments on building and verifying better + reimbursement of the starter plan which I purchased for this project)</p>
   </section>
 </main>
 
@@ -267,7 +301,7 @@ footer a:hover{color:#fff}
   <div class="lb-strip" role="tablist" aria-label="Videos"></div>
 </dialog>
 
-<footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a></footer>
+<footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a><br>An independent project, not made by or affiliated with the Cardboard team.</footer>
 
 <script>
 // The video row: on a desktop, hovering a tile plays it muted as a preview; a click anywhere on a tile (or its play
