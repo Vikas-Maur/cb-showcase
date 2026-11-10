@@ -54,9 +54,9 @@ const labels = [...new Set([pristine(indexFile, "index.orig.js"), pristine(edito
 
 patch(indexFile, "index.orig.js", (replace) => {
   // ── Dropped folders ──
-  // Helpers, after Cardboard's own folder walker (PH, which reads directory entries recursively).
+  // Helpers, after Cardboard's own folder walker (qH, which reads directory entries recursively).
   // Chromium lists a dropped folder in dataTransfer.files as one entry with no media type, which the
-  // media filter (VH) throws away, so a folder imported nothing. The entries that can be walked ($H)
+  // media filter (YH) throws away, so a folder imported nothing. The entries that can be walked (JH)
   // are only readable while the drop event is dispatching, and Cardboard read them after an await.
   replace(
     `async function qH(e){const t=[];return await Promise.all(e.map(a=>U5(a,t))),t}`,
@@ -94,8 +94,8 @@ patch(indexFile, "index.orig.js", (replace) => {
   replace(`j=Pn({onFiles:D=>C(D),contain:!0})`, `j=Pn({onFiles:D=>C(D),contain:!0,folders:"media"})`);
 
   // ── Keyboard and activity log ──
-  // Helpers, at the top level (and before the shortcut keyboard, z9, is built).
-  // z is the request to main, ue the toast, se/Oi/IH the shortcut ids, list and matcher.
+  // Helpers, at the top level (and before the shortcut keyboard, G9, is built).
+  // q is the request to main, ue the toast, se/$i/UH the shortcut ids, list and matcher.
   const helpers = String.raw`
 const __cbWinKeys=window.desktop?.platform==="win32";
 // Cardboard writes Cmd/Ctrl shortcuts with meta. On Windows Ctrl is that key, so a shortcut recorded
@@ -115,11 +115,11 @@ default:return[k]}}));
 const __cbLayer=e=>[(e.ctrl||e.meta)&&"Ctrl",e.alt&&"Alt",e.shift&&"Shift"].filter(Boolean).map(m=>m+"+").join("");
 // Windows' redo is Ctrl+Y. Redo takes it too while Redo has its default Ctrl+Shift+Z and no shortcut
 // is set to Ctrl+Y.
-const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="z"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!$i.some(o=>{const x=get(o.id);return x&&IH(e,x)});
+const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="q"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!$i.some(o=>{const x=get(o.id);return x&&UH(e,x)});
 
 // Activity log. Main writes it; this page reports shortcuts, keys nothing handled, how an agent
 // question was answered, errors and error toasts. Never text typed into a field.
-const __cbLog=(ev,f)=>{try{z("cb:log",{ev,where:location.pathname.startsWith("/app/editor/")?"editor":location.pathname.replace(/^\/app\/?/,"")||"home",...f}).catch(()=>{})}catch{}};
+const __cbLog=(ev,f)=>{try{q("cb:log",{ev,where:location.pathname.startsWith("/app/editor/")?"editor":location.pathname.replace(/^\/app\/?/,"")||"home",...f}).catch(()=>{})}catch{}};
 // The editor's bundle (EditorRoute) and the store's report playback, preview and canvas events through it.
 window.__cbLog=__cbLog;
 const __cbKeyName=k=>k===" "?"Space":k.length===1?k.toUpperCase():{ArrowLeft:"Left",ArrowRight:"Right",ArrowUp:"Up",ArrowDown:"Down",Escape:"Esc"}[k]??k;
@@ -205,7 +205,7 @@ for(const k of["error","warning"]){const f=ue[k];typeof f=="function"&&(ue[k]=(m
   // one unit for the caret. A badge is text in the box's textarea with a chip drawn over it: two figure
   // spaces, the name, a no-break space (ha, t5, H1). The caret could go inside it: a click on a badge or ←/→
   // put the caret between its letters, and typing there broke it into loose text with its chip gone.
-  // Backspace and Delete next to one already removed it whole (TD); the word deletes (Ctrl+Backspace,
+  // Backspace and Delete next to one already removed it whole (HD); the word deletes (Ctrl+Backspace,
   // Ctrl+Delete) cut into it. Now a click on a badge opens what it stands for, as a link does, and leaves the
   // caret and the text alone (the editor's part is 18); the keys step over a badge or select it whole; no
   // caret or selection end is ever left inside one. Used by the agent's prompt box (Mz, on the Dashboard and
@@ -218,7 +218,7 @@ for(const k of["error","warning"]){const f=ue[k];typeof f=="function"&&(ue[k]=(m
   // same kept the keyboard on the timeline's zoom slider, so → and ← zoomed as well as stepping the playhead.
   const badges = String.raw`
 // [start, end) of each badge in the text v, for the box's picks p: the same badges the chips are drawn for
-// (kr: from the left, the longest badge text starting at each place). kr tries every badge at every
+// (Er: from the left, the longest badge text starting at each place). Er tries every badge at every
 // character, which takes milliseconds on a long prompt; this finds each badge's text with indexOf.
 const __cbChips=(v,p)=>{const c=[];for(const k of new Set(p.map(x=>x.token)))if(k)for(let i=v.indexOf(k);i!==-1;i=v.indexOf(k,i+1))c.push([i,i+k.length]);c.sort((x,y)=>x[0]-y[0]||y[1]-x[1]);const r=[];let n=0;for(const x of c)x[0]>=n&&(r.push(x),n=x[1]);return r};
 // Whether a badge's text starts, ends or lies across q. It looks only at the characters around q, so the
@@ -243,21 +243,21 @@ if(s===e)n=f;else if(ra)n=back?ra[1]:ra[0];
 n<=f?t.setSelectionRange(n,f,"forward"):t.setSelectionRange(f,n,"backward");
 t.__cbSel={s:Math.min(n,f),e:Math.max(n,f),back:f<n,v}};
 // The chip drawn at a point, if any. The chips are in an overlay beside the textarea that takes no pointer
-// events, so they are found by their rectangles. A chip's number is its badge's place in kr's list.
+// events, so they are found by their rectangles. A chip's number is its badge's place in Er's list.
 const __cbChipAt=(t,x,y)=>[...t.parentElement.querySelectorAll("[data-chip]")].find(c=>[...c.getClientRects()].some(r=>x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom));
 // Over a badge the pointer is a hand, as over a link: a click opens it.
 const __cbChipCursor=m=>{const t=m.currentTarget,on=!m.buttons&&!!__cbChipAt(t,m.clientX,m.clientY);on!==!!t.__cbHand&&(t.__cbHand=on,t.style.cursor=on?"pointer":"")};
 // What a click on a badge opens, each in its own place: a link in the browser, an attached file or a skill's
-// file in its app (as the badge card's Preview does, QU), and a clip or media file in the editor, which
+// file in its app (as the badge card's Preview does, oz), and a clip or media file in the editor, which
 // takes the keyboard (the editor's bundle selects the clip on the timeline, or opens the file's Preview from
 // the Library).
 const __cbOpen=(t,k,skills)=>{
 if(!k)return;
-const kind=k.kind!=="mention"?k.kind:k.type===ci?"skill":k.target?.kind??"mention";
+const kind=k.kind!=="mention"?k.kind:k.type===fi?"skill":k.target?.kind??"mention";
 __cbLog("badge.open",{kind});
 if(k.kind==="link")window.open(k.url,"_blank","noopener");
-else if(k.kind==="attachment")QU(k.file);
-else if(kind==="skill"){const s=skills?.find(x=>x.label===k.label);s?.path&&QU({path:s.path,name:s.label})}
+else if(k.kind==="attachment")oz(k.file);
+else if(kind==="skill"){const s=skills?.find(x=>x.label===k.label);s?.path&&oz({path:s.path,name:s.label})}
 else if(k.target){t.blur();dispatchEvent(new CustomEvent("cb:open-badge",{detail:{kind:k.target.kind,id:k.target.id,label:k.target.label}}))}};
 // A mouse press in the box. On a badge the caret doesn't move, not even while the button is down, and a
 // click (not a drag, not the second press of a double-click) opens the badge. Any other press is the
@@ -280,7 +280,7 @@ const __cbMac=window.desktop?.platform==="darwin",__cbWordKey=k=>__cbMac?k.altKe
 // the last character.
 const __cbCaretRect=(t,q)=>{const o=t.parentElement?.querySelector('[aria-hidden="true"]');if(!o)return null;const w=document.createTreeWalker(o,NodeFilter.SHOW_TEXT),r=document.createRange();let x,at=0,last=null;while(x=w.nextNode()){const l=x.data.length;if(q<at+l){r.setStart(x,q-at);r.setEnd(x,q-at+1);const c=r.getClientRects()[0];return c?{left:c.left,top:c.top,bottom:c.bottom}:null}at+=l;l&&(last=x)}if(!last)return null;r.setStart(last,last.data.length-1);r.setEnd(last,last.data.length);const c=r.getClientRects()[0];return c?{left:c.right,top:c.top,bottom:c.bottom}:null};
 // Keys at a badge, before the box's own handling: ← → step over it (with Shift, select it whole), Backspace
-// and Delete remove it whole (Cardboard's TD), and so do the word deletes, also across the spaces between
+// and Delete remove it whole (Cardboard's HD), and so do the word deletes, also across the spaces between
 // the caret and the badge. True when it took the key; the delete keys then delete the selection it made.
 const __cbChipKey=(k,p)=>{
 const t=k.currentTarget;t.__cbPtr=!1;
@@ -384,7 +384,7 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
     [`done:%}`, "Revealed the project in Finder", "Revealed the project in File Explorer"],
   ]);
 
-  // 9. Previous/next frame (← →) keep the playhead in view. Jump to start/end scroll the timeline to it (H1),
+  // 9. Previous/next frame (← →) keep the playhead in view. Jump to start/end scroll the timeline to it (G1),
   // the frame steps did not: holding ← walked the playhead off the edge of the timeline, out of sight.
   replace(
     `U.getState().setPlaybackPosition(_),d("timeline"),lt("playback_prev_frame",{})`,
@@ -422,10 +422,10 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   );
 
   // 22. A clip's name is drawn once on the timeline. Cardboard draws the names on two canvases (D$): the tracks'
-  // base canvas, which scrolls with the clips and spans up to three screens around the view (wv) so that it is
-  // redrawn only every half screen of scrolling, holds each name at its clip's start ("natural", We: v1 with the base's
-  // own left edge); a fixed canvas over the view (the "titles" layer, Ie) holds the names of clips that start left of
-  // the view at its left edge ("sticky", v1 with the scroll position), redrawn on every scroll. A clip that starts
+  // base canvas, which scrolls with the clips and spans up to three screens around the view (Iv) so that it is
+  // redrawn only every half screen of scrolling, holds each name at its clip's start ("natural": k1 with the base's
+  // own left edge); a fixed canvas over the view (the "titles" layer, Ee) holds the names of clips that start left of
+  // the view at its left edge ("sticky", k1 with the scroll position), redrawn on every scroll. A clip that starts
   // left of the view but on the base canvas was on both: its name at its start, cut by the view's edge, and again
   // at the edge, the two overlapping ("…verie (light score)" over "Arctic Reverie (light score)") whenever the
   // clip started less than its name's width off screen. Cardboard's own code, on any screen and scale (seen at
@@ -434,7 +434,7 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // view: until then that name scrolls off with its clip, cut by the edge, and then it shows at the edge. The base
   // canvas is Cardboard's, untouched (its redraws cost what they did, it keeps nothing); the fixed canvas, which
   // already draws the sticky names on every scroll, leaves out those whose clip's name the base canvas still
-  // shows in the view: its letters' right edge as b1 draws them (__cbNameEnd, measureText's ink box, once per name
+  // shows in the view: its letters' right edge as I1 draws them (__cbNameEnd, measureText's ink box, once per name
   // per redraw of the base canvas), so the edge name comes once no more than 2 px of the last letter is left (a faint
   // sliver, 6 px clear of the edge name: no frame without a name).
   // Rejected after review: handing each name over between the two canvases at the edge (a copy of the base
@@ -456,14 +456,14 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
   // Same code on a Mac and on Windows: it isn't a Windows difference.
   const labels = String.raw`__cbNameEnd=(g,n,cache)=>{g.save(),g.font=ym;let r=n.x;if(n.kind){const d=zU(g,n.kind);if(d-ku<=n.maxWidth){const u=d-ku+BU,m=n.maxWidth-u;let h="";g.measureText(n.label).width<=m?h=n.label:m>=UU&&(h=E1(g,n.label,m,cache)),r=Math.max(n.x-ku+d,h?n.x+u+g.measureText(h).actualBoundingBoxRight:0)}}else{const l=E1(g,n.label,n.maxWidth,cache);l&&(r=n.x+g.measureText(l).actualBoundingBoxRight)}return g.restore(),r},
 __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.length)return list;const by=nat.by??=new Map(nat.map(n=>[n.itemId,n])),on=e=>{const n=by.get(e.itemId);return!!n&&(n.end??=__cbNameEnd(g,n,cache))>sl+2};return list.some(on)?list.filter(e=>!on(e)):list},`;
-  // The helpers, beside the names' own functions (v1 lays them out, b1 draws them).
+  // The helpers, beside the names' own functions (k1 lays them out, I1 draws them).
   replace(`,WU=8,ZU=28,GU=(`, `,${labels}WU=8,ZU=28,GU=(`);
-  // The base canvas's names (We), as drawn, kept on the canvas for the fixed canvas to look up.
+  // The base canvas's names, as drawn, kept on the canvas for the fixed canvas to look up.
   replace(
     `I1({ctx:J,entries:ue?ie.filter(Re=>!ue.has(Re.itemId)):ie,`,
     `I1({ctx:J,entries:J.canvas.__cbNat=ue?ie.filter(Re=>!ue.has(Re.itemId)):ie,`,
   );
-  // The fixed canvas's names (Ie, on every scroll): not those still shown on the base canvas.
+  // The fixed canvas's names (Ee, on every scroll): not those still shown on the base canvas.
   replace(
     `const et=k1({clips:J.clips,viewportLeft:Re,viewportRight:Re+ie,mode:"sticky"});I1({ctx:ue,entries:et,`,
     `const et=__cbEdgeNames(I.current,k1({clips:J.clips,viewportLeft:Re,viewportRight:Re+ie,mode:"sticky"}),Re,ue,$.current);I1({ctx:ue,entries:et,`,
@@ -555,7 +555,7 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
   // 18. A click on a badge in the agent's prompt box opens what it stands for (16, __cbOpen). A clip's badge
   // selects the clip, puts the playhead at its start and scrolls the timeline to it, as clicking the clip
   // there would. A media file's badge opens the file in Cardboard's own Media preview, the one its tile's
-  // Preview opens in the Library: the Library's state (EY) is asked to preview that file, by its id, from
+  // Preview opens in the Library: the Library's state (zY) is asked to preview that file, by its id, from
   // all of the project's media, so a file scrolled out of the list, hidden by a search or sharing its name
   // with another opens as well. Cardboard keeps the Library mounted behind the left panel's other tabs and
   // behind a clip's properties, and the preview opens from there without changing the panel. A collapsed
@@ -595,7 +595,7 @@ it?__cbOpenClip(it):wt.info("That clip isn't on the timeline anymore.")});
   replace(`class gH{`, openBadge + `class gH{`);
 
   // 19. The editor's left rail (Library, Layout, Audio, Captions, Text, Transitions, Effects) shows its
-  // tooltips. Each icon is wrapped in Cardboard's tooltip, but the button inside (H_) kept only its own props
+  // tooltips. Each icon is wrapped in Cardboard's tooltip, but the button inside (Z_) kept only its own props
   // and dropped the ones the tooltip's trigger hands it (its pointer and focus handlers, its ref, data-state),
   // so no tooltip ever opened: the rail was icons with no names. The button now takes them; its click runs
   // the trigger's (which closes the tooltip) and then switches the panel, as before.
@@ -648,7 +648,7 @@ it?__cbOpenClip(it):wt.info("That clip isn't on the timeline anymore.")});
 
   // 21. What is drawn over the preview is drawn at the preview's own scale, also in full screen. The preview's
   // zoom (Ctrl+wheel or a pinch over it, undone by its "Reset" button) is a CSS scale on a wrapper around the
-  // stage, and the tracker (l8) took that zoom from the store as the scale its overlays are drawn at: a graphic's
+  // stage, and the tracker (h8) took that zoom from the store as the scale its overlays are drawn at: a graphic's
   // page, the background-removal shimmer, a pending item's placeholder, a clip's proxy progress ring. Their box is
   // the canvas's box on screen divided by it (Nl). Full screen shows the stage on its own (the browser's top layer), outside
   // the wrapper and its scale, so with the preview zoomed to 0.9 a graphic was drawn 1/0.9 = 1.11 times too large

@@ -44,7 +44,7 @@ if (speed) {
   replace(`...RJ(a,i,n.bitrate),"-pix_fmt","yuv420p","-c:a"`, `...RJ(a,i,n.bitrate),...__cbProxyOnGpu(a,n)?[]:["-pix_fmt","yuv420p"],"-c:a"`);
 }
 
-// 3. Speed: timeline filmstrips decode only keyframes when that is enough (see __cbStrip). hS gets ffprobe to check.
+// 3. Speed: timeline filmstrips decode only keyframes when that is enough (see __cbStrip). $P gets ffprobe to check.
 if (speed) {
   replace(`$P=async(e,t,r,n,i)=>{`, `$P=async(e,t,r,n,i,__cbProbeBin)=>{`);
   replace(`let l=await $P(s,i,n,a,c);`, `let l=await $P(s,i,n,a,c,e.binaries().ffprobe);`);
