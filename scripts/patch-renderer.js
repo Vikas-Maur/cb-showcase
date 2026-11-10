@@ -115,7 +115,7 @@ default:return[k]}}));
 const __cbLayer=e=>[(e.ctrl||e.meta)&&"Ctrl",e.alt&&"Alt",e.shift&&"Shift"].filter(Boolean).map(m=>m+"+").join("");
 // Windows' redo is Ctrl+Y. Redo takes it too while Redo has its default Ctrl+Shift+Z and no shortcut
 // is set to Ctrl+Y.
-const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="q"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!$i.some(o=>{const x=get(o.id);return x&&UH(e,x)});
+const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="y"&&(e.ctrlKey||e.metaKey)&&!e.shiftKey&&!e.altKey&&b.key.toLowerCase()==="z"&&(b.meta||b.ctrl)&&b.shift&&!b.alt&&!$i.some(o=>{const x=get(o.id);return x&&UH(e,x)});
 
 // Activity log. Main writes it; this page reports shortcuts, keys nothing handled, how an agent
 // question was answered, errors and error toasts. Never text typed into a field.
