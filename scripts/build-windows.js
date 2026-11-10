@@ -1,4 +1,4 @@
-// Builds the Windows app from scratch into <out>\Cardboard-win: the Windows Electron that Cardboard 1.4.0 is
+// Builds the Windows app from scratch into <out>\Cardboard-win: the Windows Electron that Cardboard 1.5.0 is
 // built on, Cardboard's app code from its macOS installer with every patch applied, and Windows builds of the
 // tools it bundles (ffmpeg, ffprobe, uv, Claude Code). Runs on Windows (7-Zip, tar, PowerShell); the GitHub
 // workflow .github/workflows/build-windows.yml runs it.
@@ -23,7 +23,7 @@ if (BASELINE) process.env.CB_BASELINE = "1";
 const INPUTS = {
   // Cardboard's macOS installer, the version the patches are written against. cardboard.ai/desktop/download
   // links the newest one (/desktop/download/stable); each version stays at its own address.
-  cardboard: { file: "dl/Cardboard-1.4.0-arm64.dmg", url: "https://assets.cardboard.ai/desktop/releases/1.4.0/Cardboard-1.4.0-arm64.dmg" },
+  cardboard: { file: "dl/Cardboard-1.5.0-arm64.dmg", url: "https://assets.cardboard.ai/desktop/releases/1.5.0/Cardboard-1.5.0-arm64.dmg" },
   electron: { file: "dl/electron/electron-v43.7.0-win32-x64.zip", url: "https://github.com/electron/electron/releases/download/v43.7.0/electron-v43.7.0-win32-x64.zip" },
   // Stay on ffmpeg 8.1: 9.0 and the nightlies need NVIDIA driver 610+ for NVENC (see README).
   ffmpeg: { file: "dl/ffmpeg-n8.1/ffmpeg-n8.1.zip", url: "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-8.1.zip" },
@@ -70,8 +70,8 @@ const icnsPng = (icns) => {
 
   step("Cardboard's app from its macOS installer");
   // Only the app's Resources: the installer also holds an /Applications link, which 7-Zip refuses to make.
-  run(SEVEN_ZIP, ["x", files.cardboard, "-o" + path.join(WORK, "dmg"), "-y", "Cardboard 1.4.0/Cardboard.app/Contents/Resources/*"]);
-  const mac = path.join(WORK, "dmg", "Cardboard 1.4.0", "Cardboard.app", "Contents", "Resources");
+  run(SEVEN_ZIP, ["x", files.cardboard, "-o" + path.join(WORK, "dmg"), "-y", "Cardboard 1.5.0/Cardboard.app/Contents/Resources/*"]);
+  const mac = path.join(WORK, "dmg", "Cardboard 1.5.0", "Cardboard.app", "Contents", "Resources");
   if (!fs.existsSync(path.join(mac, "app.asar"))) throw new Error("no Cardboard.app/Contents/Resources/app.asar in the installer");
 
   step("Windows Electron 43.7.0, as Cardboard.exe");
@@ -86,8 +86,8 @@ const icnsPng = (icns) => {
   // Each patch script keeps the pristine bundle next to asar-src (in work\) and starts from it.
   node("scripts/patch-main.js", path.join(dist, "main.js"));
   node("scripts/patch-worker.js", path.join(dist, "library-worker.js"));
-  node("scripts/patch-strip.js", path.join(assets, "tabs-DV5oCzuF.js"));
-  node("scripts/patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+  node("scripts/patch-strip.js", path.join(assets, "tabs-DauD2kkX.js"));
+  node("scripts/patch-renderer.js", path.join(assets, "index-CMWd3X51.js"), path.join(assets, "EditorRoute-fdkrSHAw.js"), path.join(assets, "installErrorTelemetry-B0RfASW6.js"));
   if (CARTON) {
     // Carton's bundles (resources\carton, and carton-ui.js beside the editor's chunks) and its hooks, which go on top
     // of the Windows patches. The carton workspace brings esbuild.
@@ -96,7 +96,7 @@ const icnsPng = (icns) => {
     if (!fs.existsSync(path.join(workspace, "node_modules"))) run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--no-audit", "--no-fund"], { cwd: workspace, shell: process.platform === "win32" });
     node("scripts/carton/build.js", RES, assets);
     // The tab strip last: Carton's History and Share icons in the title bar (patch-carton-sync.js takes the first five).
-    const app = [path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"), path.join(assets, "tabs-DV5oCzuF.js")];
+    const app = [path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-CMWd3X51.js"), path.join(assets, "EditorRoute-fdkrSHAw.js"), path.join(assets, "installErrorTelemetry-B0RfASW6.js"), path.join(assets, "tabs-DauD2kkX.js")];
     node("scripts/patch-carton.js", "--app", ...app);
     // The live-sync and sharing half (windows-sync) patches on top of Carton's; build.js put its files in
     // resources\carton\sync.
@@ -104,9 +104,9 @@ const icnsPng = (icns) => {
   }
   node(ASAR, "pack", src, path.join(RES, "app.asar"));
   node("scripts/patch-cli.js", path.join(RES, "cli", "cardboard.mjs"), path.join(WORK, "cardboard.orig.mjs"));
-  node("scripts/patch-cli-media.js", path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"), path.join(WORK, "cli-media.orig.mjs"));
-  if (CARTON) node("scripts/patch-carton.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
-  if (CARTON && SYNC) node("scripts/patch-carton-sync.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
+  node("scripts/patch-cli-media.js", path.join(RES, "cli", "chunks", "chunk-AEX5IIG7.mjs"), path.join(WORK, "cli-media.orig.mjs"));
+  if (CARTON) node("scripts/patch-carton.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-AEX5IIG7.mjs"));
+  if (CARTON && SYNC) node("scripts/patch-carton-sync.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-AEX5IIG7.mjs"));
 
   step("ffmpeg, ffprobe, uv, Claude Code");
   const bin = path.join(RES, "bin"), director = path.join(RES, "director");
@@ -124,8 +124,8 @@ const icnsPng = (icns) => {
   const { rcedit } = await import(require("url").pathToFileURL(path.join(ROOT, "tools", "node_modules", "rcedit", "lib", "index.js")).href);
   await rcedit(path.join(APP, "Cardboard.exe"), {
     icon: ico,
-    "file-version": "1.4.0",
-    "product-version": "1.4.0",
+    "file-version": "1.5.0",
+    "product-version": "1.5.0",
     "version-string": { FileDescription: "Cardboard", ProductName: "Cardboard", CompanyName: "Cardboard, Inc.", OriginalFilename: "Cardboard.exe", InternalName: "Cardboard" },
   });
 
@@ -137,7 +137,7 @@ const icnsPng = (icns) => {
   step("Check");
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
   const checks = [
-    ["Cardboard CLI", run(path.join(APP, "Cardboard.exe"), [path.join(RES, "cli", "cardboard.mjs"), "--version"], { env }).trim(), /^1\.4\.0$/],
+    ["Cardboard CLI", run(path.join(APP, "Cardboard.exe"), [path.join(RES, "cli", "cardboard.mjs"), "--version"], { env }).trim(), /^1\.5\.0$/],
     ["ffmpeg", run(path.join(bin, "ffmpeg.exe"), ["-version"]).split("\n")[0], /version n8\.1/],
     ["uv", run(path.join(bin, "uv.exe"), ["--version"]).trim(), /^uv 0\.13\.6/],
     ["Claude Code", run(path.join(director, "claude.exe"), ["--version"]).trim(), /^2\.1\.309/],

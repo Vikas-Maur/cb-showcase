@@ -6,7 +6,7 @@
 // - The timeline keeps the playhead in view, and redraws after the GPU drops its canvases.
 // - The timeline draws a clip's name once when the clip starts just off its left edge (Cardboard drew it twice).
 // - Playback starts without waiting on muted audio, and at once on a second press.
-// - Graphics with a video inside play without waiting on the video's frames ("speed").
+// - A graphic whose video frames are slow to decode waits for them instead of being rebuilt.
 // - The editor stops measuring the preview's place on every frame while nothing moves ("speed").
 // - What is drawn over the preview (graphics…) keeps the preview's scale in full screen with the preview zoomed.
 // - Badges in prompt boxes are one unit and open on a click; clicking the timeline takes the keyboard.
@@ -511,7 +511,7 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
     `const __cbAudible=c=>{const m=new Map(c.tracks.map(t=>[t.id,t]));return c.timelineItems.filter(u=>{if(u.type!=="audio"&&u.type!=="video")return!0;const k=m.get(u.trackId);return!(!k||k.muted||cn(u)||u.muted||u.audioDisabled||u.playbackDirection==="reverse")})};class gH{`,
   );
 
-  // 13. A graphic is rebuilt only when its page stops answering. sH, the preview's frame pump, started its
+  // 13. A graphic is rebuilt only when its page stops answering. gH, the preview's frame pump, started its
   // 10 s "stopped responding" timer before fetching the graphic's video frames, so a slow video decode
   // (a busy machine) rebuilt the graphic's page, which stays invisible until it draws: the preview went
   // black for as long as the new page took. The page's timer now starts when the frame is sent to it; a
@@ -521,35 +521,36 @@ __cbEdgeNames=(c,list,sl,g,cache)=>{const nat=c?.__cbNat;if(!nat?.length||!list.
     `if(n&&a.rebuilds<hH){a.rebuilds++,this.options.onRebuild();return}`,
     `if(n&&a.rebuilds<hH){a.rebuilds++,window.__cbLog?.("preview.rebuild",{reason:t}),this.options.onRebuild();return}`,
   );
-  // 14 (speed). While playing, a graphic draws with the newest video frame that is ready instead of waiting
-  // for the frame of this exact moment. Every frame of a graphic waited for its video assets' frames, even
-  // when the video wasn't on screen, and only then asked for the next: measured 7–13 frames/s with a video
-  // inside against 32–41 without, and multi-second freezes when a decode was slow. Paused and scrubbing,
-  // and the first frame after Play, still wait for the exact frame. Frames held as bitmaps (transferred to
-  // the page, so not reusable) keep the old way.
-  const pumpFrom = `const r=this.options.counters.nextRequestId++;this.requestTime=n,this.requestKey=this.options.renderKey?.(),this.requestId=r,this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),aH);const s=l=>{this.active&&this.requestId===r&&this.fail(l instanceof Error?l.message:String(l),!1)},i=l=>{if(!this.active||this.requestId!==r){qc(l);return}const d=this.options.playbackSession?.(),u=a!==void 0&&a===d,m=this.pendingTime!==null&&this.pendingTime!==n;if(a!==d||this.requestKey!==this.options.renderKey?.()||m&&!u){qc(l),this.clearTimer(),this.requestId=null,this.pendingTime??=this.latestTime,this.pump();return}const h={type:Cs.render,id:r,time:n};l&&(h.frames=l);const p=o3(l);try{p.length===0?t.postMessage(h,"*"):t.postMessage(h,"*",p)}catch(f){qc(l),s(f)}};try{const l=this.options.frames?.(n);l?l.then(i,s):i(void 0)}catch(l){s(l)}}}`;
-  // 13's part: the page's timer starts at postMessage. A fetch that is only slow is waited for (and logged
-  // at 10 s): its result is used when it comes. Only a fetch that hasn't answered in 30 s falls back to
-  // what Cardboard did at 10 s, rebuilding the page (and after two rebuilds, its "couldn't render" note),
-  // so one request has one fetch at a time and a hung decode still ends somewhere.
-  const rel = (l) => `${l}!==this.__cbFrames&&qc(${l})`;
-  const pumpTo =
-    `const r=this.options.counters.nextRequestId++;this.requestTime=n,this.requestKey=this.options.renderKey?.(),this.requestId=r;` +
-    `const __cbW=setTimeout(()=>{this.active&&this.requestId===r&&this.__cbSlow("frames",aH)},aH),__cbW2=setTimeout(()=>{this.active&&this.requestId===r&&this.fail("The graphic stopped responding.",!0)},3*aH);` +
-    `const s=l=>{clearTimeout(__cbW),clearTimeout(__cbW2),this.active&&this.requestId===r&&this.fail(l instanceof Error?l.message:String(l),!1)},i=l=>{clearTimeout(__cbW),clearTimeout(__cbW2);if(!this.active||this.requestId!==r){${rel("l")};return}const d=this.options.playbackSession?.(),u=a!==void 0&&a===d,m=this.pendingTime!==null&&this.pendingTime!==n;if(a!==d||this.requestKey!==this.options.renderKey?.()||m&&!u){${rel("l")},this.clearTimer(),this.requestId=null,this.pendingTime??=this.latestTime,this.pump();return}const h={type:Cs.render,id:r,time:n};l&&(h.frames=l);const p=o3(l);this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),aH);try{p.length===0?t.postMessage(h,"*"):t.postMessage(h,"*",p)}catch(f){${rel("l")},s(f)}};` +
-    `try{(a===void 0||this.__cbSession!==a)&&(this.__cbSession=a,this.__cbFrames=void 0);` +
-    (speed
-      ? // 14: playing with frames in hand: draw now, fetch the next frames alongside.
-        `if(a!==void 0&&this.__cbFrames!==void 0){this.__cbFetch(n,a),i(this.__cbFrames);return}` +
-        `const l=this.options.frames?.(n);l?l.then(x=>{a!==void 0&&this.__cbSession===a&&x&&o3(x).length===0&&(this.__cbFrames=x),i(x)},s):i(void 0)`
-      : `const l=this.options.frames?.(n);l?l.then(i,s):i(void 0)`) +
-    `}catch(l){s(l)}}` +
-    // One fetch at a time; the newest frames replace the held ones if nothing was transferred. A fetch
-    // that hasn't answered in 30 s is given up (its late answer dropped) so a new one can start.
-    `__cbFetch(n,a){if(this.__cbBusy)return;let l;try{l=this.options.frames?.(n)}catch{return}if(!l)return;const tok=this.__cbBusy={},t0=performance.now(),tm=setTimeout(()=>{this.__cbBusy===tok&&(this.__cbBusy=null,this.__cbSlow("video-frame",3*aH))},3*aH);` +
-    `l.then(x=>{clearTimeout(tm);const cur=this.__cbBusy===tok;cur&&(this.__cbBusy=null);const ms=performance.now()-t0;cur&&ms>1e3&&this.__cbSlow("video-frame",ms);if(!cur||!this.active||this.__cbSession!==a||!x||o3(x).length!==0){x&&qc(x);return}this.__cbFrames=x},()=>{clearTimeout(tm),this.__cbBusy===tok&&(this.__cbBusy=null)})}` +
-    `__cbSlow(kind,ms){const now=Date.now();now-(this.__cbSlowAt??0)<1e4||(this.__cbSlowAt=now,window.__cbLog?.("preview.slow",{kind,ms:Math.round(ms)}))}}`;
-  replace(pumpFrom, pumpTo);
+  // 13's part, in gH.pump: the page's timer starts at postMessage. A fetch that is only slow is waited for (and
+  // logged at 10 s): its result is used when it comes. Only a fetch that hasn't answered in 30 s falls back to
+  // what Cardboard did at 10 s, rebuilding the page (and after two rebuilds, its "couldn't render" note), so a
+  // hung decode still ends somewhere. Cardboard 1.5.0 reworked this pump (it fetches only the videos the graphic
+  // draws, at the size drawn, and drops late frames while scrubbing), but its timer still starts before the fetch.
+  // A late fetch's result after a rebuild or a newer request is released as before (qc).
+  replace(
+    `this.requestId=r,this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),mH);const s=d=>{this.active&&this.requestId===r&&this.fail(d instanceof Error?d.message:String(d),!1)}`,
+    `this.requestId=r;const __cbW=setTimeout(()=>{this.active&&this.requestId===r&&this.__cbSlow("frames",mH)},mH),__cbW2=setTimeout(()=>{this.active&&this.requestId===r&&this.fail("The graphic stopped responding.",!0)},3*mH);` +
+      `const s=d=>{clearTimeout(__cbW),clearTimeout(__cbW2),this.active&&this.requestId===r&&this.fail(d instanceof Error?d.message:String(d),!1)}`,
+  );
+  replace(
+    `const l=d=>{if(!this.active||this.requestId!==r){qc(d);return}`,
+    `const l=d=>{clearTimeout(__cbW),clearTimeout(__cbW2);if(!this.active||this.requestId!==r){qc(d);return}`,
+  );
+  replace(
+    `const x=h3(d);try{x.length===0?t.postMessage(b,"*"):t.postMessage(b,"*",x)}catch(v){qc(d),s(v)}};`,
+    `const x=h3(d);this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),mH);try{x.length===0?t.postMessage(b,"*"):t.postMessage(b,"*",x)}catch(v){qc(d),s(v)}};`,
+  );
+  replace(
+    `d?d.then(l,s):l(void 0)}catch(d){s(d)}}updateScales(t){`,
+    `d?d.then(l,s):l(void 0)}catch(d){s(d)}}` +
+      `__cbSlow(kind,ms){const now=Date.now();now-(this.__cbSlowAt??0)<1e4||(this.__cbSlowAt=now,window.__cbLog?.("preview.slow",{kind,ms:Math.round(ms)}))}updateScales(t){`,
+  );
+  // 14 (speed), dropped for 1.5.0. On 1.4.0, while playing, a graphic drew with the newest video frames already
+  // fetched instead of waiting for this moment's. Cardboard 1.5.0's pump fetches only the videos the graphic drew
+  // last time, and the page answers "needsFrames" with the ones it was missing; reusing held frames would answer that
+  // with the same frames again, a loop, and the held set could be the wrong videos or size. Doing it safely means
+  // keying held frames on 1.5.0's draw set, sizes and bitmaps, and measuring again on Windows first. So the pump is
+  // Cardboard's own in both builds (ours and the baseline).
 
   // 18. A click on a badge in the agent's prompt box opens what it stands for (16, __cbOpen). A clip's badge
   // selects the clip, puts the playhead at its start and scrolls the timeline to it, as clicking the clip

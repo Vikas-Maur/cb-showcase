@@ -21,7 +21,7 @@ const preamble = require("./rename-retry") + require("./media-helpers");
 
 // CB_BASELINE=1 builds the baseline the benchmarks compare against (scripts/bench): Cardboard's own media
 // pipeline as it runs on a Mac, with only what Windows needs to run it. Decoding stays on the CPU, filmstrips
-// decode every frame, and proxies are made one at a time on the hardware encoder at Cardboard's fixed 12 Mb/s,
+// decode every frame, and proxies are made one at a time on the hardware encoder at Cardboard's set bitrate,
 // as VideoToolbox makes them. The fixes (4, 5) stay in. The steps marked "speed" are left out.
 const speed = process.env.CB_BASELINE !== "1";
 
@@ -73,6 +73,14 @@ replace(
   `await(0,Ft.lstat)((0,Et.join)(a,Y_)).catch(()=>null)&&await(0,Ft.rm)(a,{recursive:!0,force:!0})`,
   `await(0,Ft.lstat)((0,Et.join)(a,Y_)).catch(()=>null)&&await(__cbWin&&globalThis.__cbRetryBusy||(f=>f()))(()=>(0,Ft.rm)(a,{recursive:!0,force:!0}),["EPERM","EBUSY","EACCES","ENOTEMPTY"])`,
 );
+
+// 7. Premiere Pro projects (new in Cardboard 1.5.0: Open Project takes a .prproj; `cb project import-premiere` in the
+// CLI, patch-cli-media.js 7). XT lists the places each media file may be: the absolute paths Premiere saved, then
+// paths relative to the .prproj. Its third argument is the path style, "posix" unless given, and a posix list skips
+// absolute Windows paths (C:\…, \\?\C:\…), which a Mac can't open. The import never passed it, so on Windows the
+// paths Premiere saved there were dropped: only media found relative to the .prproj came in, the rest was "not
+// found". On Windows the call asks for "win32", which keeps them; relative paths are still tried after them.
+replace(`let C=XT(x,o),w;`, `let C=XT(x,o,__cbWin?"win32":"posix"),w;`);
 
 // After the replacements, since the preamble itself names the VideoToolbox encoders.
 src = preamble + src;
