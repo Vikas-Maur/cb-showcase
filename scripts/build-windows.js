@@ -90,10 +90,11 @@ const icnsPng = (icns) => {
   node("scripts/patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
   if (CARTON) {
     // Carton's bundles (resources\carton, and carton-ui.js beside the editor's chunks) and its hooks, which go on top
-    // of the Windows patches. The carton workspace brings esbuild.
+    // of the Windows patches. The carton workspace (pnpm) brings esbuild. On Windows pnpm is a .cmd shim (corepack) or
+    // pnpm.exe (pnpm 12's own binary), which only a shell finds under either name.
     step("Carton");
     const workspace = path.join(ROOT, "carton");
-    if (!fs.existsSync(path.join(workspace, "node_modules"))) run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--no-audit", "--no-fund"], { cwd: workspace, shell: process.platform === "win32" });
+    if (!fs.existsSync(path.join(workspace, "node_modules"))) run("pnpm", ["install", "--frozen-lockfile"], { cwd: workspace, shell: process.platform === "win32" });
     node("scripts/carton/build.js", RES, assets);
     // The tab strip last: Carton's History and Share icons in the title bar (patch-carton-sync.js takes the first five).
     const app = [path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"), path.join(assets, "tabs-DV5oCzuF.js")];

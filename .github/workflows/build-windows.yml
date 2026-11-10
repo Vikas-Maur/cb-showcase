@@ -21,9 +21,19 @@ jobs:
         with:
           node-version: 24
 
+      # pnpm at the version tools/package.json pins (carton/package.json pins the same), with its store cached by both
+      # lockfiles: build-windows.js installs carton/'s itself
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: tools/package.json
+          cache: true
+          cache_dependency_path: |
+            tools/pnpm-lock.yaml
+            carton/pnpm-lock.yaml
+
       - name: Build tools
         working-directory: tools
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: node scripts/build-windows.js
