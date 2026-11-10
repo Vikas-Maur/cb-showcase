@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:,">
 <title>What's new · Cardboard showcase</title>
-<meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
+<meta name="description" content="Everything we've built on Cardboard for Mac, now 1.5.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
 <!-- The changelog: one static page. Its scripts (at the end) run the "Still in Cardboard" filter bar and the "See what
      happens" dialogs; the line below marks the page as having script and applies a linked view (?only=cardboard, or the
      old #cardboard-too) before the first paint. Without script the whole page shows, with no bar and no "i" buttons.
@@ -85,8 +85,8 @@ details li b{color:#fff;font-weight:500}
 .note{margin-top:24px;font-size:14px;line-height:1.6;color:var(--muted);letter-spacing:0}
 
 /* Also in Cardboard: what this build fixes that is also wrong in Cardboard's own code, and still is in its newest
-   Mac release (checked against 1.4.1). A red pill (the user asked for red, 2026-11-06), and a lightly tinted card around the whole section, or around a
-   list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.4.1</span>
+   Mac release (checked against 1.4.1, and again against 1.5.0). A red pill (the user asked for red, 2026-11-06), and a lightly tinted card around the whole section, or around a
+   list of smaller fixes. A new one: <section class="also" id="cb-…"><span class="tag also">Also in Cardboard 1.5.0</span>
    <h3>…</h3><p>In Cardboard, … Now …</p></section>. The filter bar finds and counts them (a card, or each li[id^=cb-]
    of a card that lists several). */
 :root{--also:#f87171;--also-line:rgba(248,113,113,.28);--also-bg:rgba(248,113,113,.045)}
@@ -223,18 +223,18 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <body>
 <header class="top">
   <a class="brand" href="/">Cardboard showcase</a>
-  <!-- The same bar as the landing page. GitHub and Download are placeholders for now: buttons, so a click does nothing
-       on this script-free page. -->
+  <!-- The same bar as the landing page: the repository, and the newest Windows build (the release "windows-latest" that
+       .github/workflows/build-windows.yml publishes; its file name carries Cardboard's version). -->
   <nav class="nav">
     <a class="link" href="/changelog/" aria-current="page">Changelog</a>
-    <button class="btn dark" type="button" data-placeholder="github" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></button>
-    <button class="btn" type="button" data-placeholder="windows-download" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></button>
+    <a class="btn dark" href="https://github.com/Vikas-Maur/cardboard-showcase" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></a>
+    <a class="btn" href="https://github.com/Vikas-Maur/cardboard-showcase/releases/download/windows-latest/Cardboard-1.5.0-windows-x64.exe" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></a>
   </nav>
 </header>
 
 <section class="hero">
   <h1 class="display">What’s new</h1>
-  <p>Everything we’ve built on Cardboard&nbsp;1.4.0, newest first.</p>
+  <p>Everything we’ve built on Cardboard for Mac, newest first. This build is on Cardboard&nbsp;1.5.0.</p>
 </section>
 
 <main>
@@ -243,8 +243,8 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
      #cardboard-too, which was the big list of these bugs that stood here). -->
 <section class="cbonly" id="cardboard-too" aria-labelledby="cbonly-title">
   <h2 class="display" id="cbonly-title">Still in Cardboard</h2>
-  <p>Bugs in Cardboard’s own code, not from our Windows port, and still in 1.4.1, its newest release for Mac. Each one is fixed in this build, under the update it came in.<span class="js-only"> Where there’s an <span class="cbi-mark" aria-hidden="true">i</span><span class="vh">i button</span>, press it to watch the bug happen in Cardboard’s own editor, next to this build.</span></p>
-  <p class="how">Found by reading Cardboard’s code, 1.4.0 and today’s 1.4.1 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
+  <p>Bugs in Cardboard’s own code, not from our Windows port, and still in 1.5.0, its newest release for Mac. Each one is fixed in this build, under the update it came in.<span class="js-only"> Where there’s an <span class="cbi-mark" aria-hidden="true">i</span><span class="vh">i button</span>, press it to watch the bug happen in Cardboard’s own editor, next to this build.</span></p>
+  <p class="how">Found by reading Cardboard’s code, 1.4.0 and 1.4.1, and checked again in today’s 1.5.0 for Mac. We have no Mac, so nothing here was measured on one. Where a problem needs a crash, a restart or two saves at once, it says so.</p>
 </section>
 
 <article id="7">
@@ -256,17 +256,17 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <h2 class="display">Graphics stay on the video, and clip names stay readable</h2>
     <p class="lead">Two drawing bugs from Cardboard itself, found while editing on a Windows laptop: code graphics drifting off the footage in full screen, and clip names drawn on top of each other on the timeline.</p>
     <section class="also" id="cb-fullscreen">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <div class="head"><h3>Code graphics in full screen</h3><button class="cbi" type="button" data-see="cb-fullscreen" aria-label="See what happens: code graphics in full screen" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, if the preview is zoomed in or out (⌘ or Ctrl with the scroll wheel, or a pinch) when you go full screen, every code graphic is drawn at the wrong size from the top-left corner: too large and cut off at the right and bottom when the preview was zoomed out, too small with its edges inside the picture when it was zoomed in. The video is drawn right, so the graphic no longer lines up with it. Full screen shows the picture unzoomed, but the graphics were still sized for the zoom. At the default zoom, and in exports, it was always right.</p>
       <p>Now what’s drawn over the preview takes the size the picture is actually shown at, in full screen and out of it, and stays in place when you zoom inside full screen or leave it.</p>
     </section>
     <section class="also" id="cb-names">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <div class="head"><h3>Clip names drawn once</h3><button class="cbi" type="button" data-see="cb-names" aria-label="See what happens: clip names drawn twice" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, when a clip starts just off the timeline’s left edge, its name is drawn twice on top of itself: once at the clip’s start, cut by the edge, and once pinned at the edge, so neither can be read. It happens on any screen, while scrolling or at rest. Now each name shows once: it scrolls off with its clip, then appears at the edge.</p>
     </section>
-    <p class="how">Full screen: checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Clip names: checked frame by frame while scrolling, in Cardboard’s own timeline and ours, at 1×, 1.25× and 2× screen scaling. Cardboard’s code for both is the same on a Mac and in 1.4.1.</p>
+    <p class="how">Full screen: checked with Cardboard’s unchanged editor code and with ours, zoomed out, at the default zoom and zoomed in, paused and playing. Clip names: checked frame by frame while scrolling, in Cardboard’s own timeline and ours, at 1×, 1.25× and 2× screen scaling. Cardboard’s code for both is the same on a Mac, in 1.4.1 and in 1.5.0.</p>
   </div>
 </article>
 
@@ -350,19 +350,19 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p class="lead">Cardboard keeps a short recent history of a project’s timeline. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
 
     <section class="also" id="cb-saves">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Nothing gets overwritten</h3>
       <p>In Cardboard, two saves at nearly the same moment, say yours and the Director’s, can quietly undo one of them, even when they changed different clips: each save writes the whole project, with no check for a save in between. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
     </section>
 
     <section class="also" id="cb-history">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Every version, and who made it</h3>
       <p>Cardboard keeps only the newest 20 snapshots of a timeline, one for each save that changes it. Carton’s History keeps every version. Each one says who made it: You, a teammate, the Director, Claude Code or Codex. Each Director turn is named after your prompt. Compare any version with the current one, watch the changes play, or restore it.</p>
     </section>
 
     <section class="also" id="cb-stale">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>An agent’s old copy can’t undo newer edits</h3>
       <p>An agent edits a copy of the timeline. In Cardboard, once the version that copy came from has dropped out of its history (the newest 20 changed versions), its edit is merged against the current timeline instead, so its old values can quietly replace newer edits, with no conflict shown. Now an edit is always merged against the version it came from.</p>
     </section>
@@ -401,13 +401,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <article id="3">
   <aside>
     <time datetime="2026-10-31">October 31, 2026</time>
-    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a><a class="tag also" href="#cb-idle">Also in Cardboard 1.4.1</a></div>
+    <div class="tags"><a class="tag" href="#3" aria-label="Link to update 3">#3</a><a class="tag also" href="#cb-idle">Also in Cardboard 1.5.0</a></div>
   </aside>
   <div>
     <h2 class="display">An idle editor that stays idle</h2>
     <p class="lead">With a project open and nothing moving, Cardboard still did work on every screen refresh: up to 144 times a second on a 144&nbsp;Hz screen, in every open project tab of our Windows build. Now the editor rests when nothing moves.</p>
     <section class="also" id="cb-idle">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <p>This is Cardboard’s own editor code, not our port. In Cardboard on a Mac, while a project’s editor is on screen, it measures where the preview sits on every frame, even when nothing moves.</p>
     </section>
     <div class="stats">
@@ -441,19 +441,19 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p>On a laptop with two GPUs, Cardboard drew everything on the power-saving one, which borrows system memory, while the NVIDIA card sat idle. Plugged in, Cardboard now uses the NVIDIA card. On battery it stays on the power-saving one, and Windows’ own per-app setting still wins.</p>
 
     <section class="also" id="cb-play">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Play means play</h3>
       <p>In Cardboard, Play after a seek can wait for sound that hasn’t loaded yet from clips on muted tracks, which will never be heard, and pressing Play again while it waits doesn’t skip the wait. Now it waits only for sound you’ll hear, and a second press starts at once.</p>
     </section>
 
     <section class="also" id="cb-badges">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <div class="head"><h3>Prompt badges stay whole, and open on a click</h3><button class="cbi" type="button" data-see="cb-badges" aria-label="See what happens: a prompt badge breaking apart" title="See what happens" aria-haspopup="dialog">i</button></div>
       <p>In Cardboard, a badge in the Director’s prompt box (a clip or file mentioned with @, an attachment, a link, a skill) can be clicked or arrowed into, and typing there breaks it into loose text. Now a badge is one piece that the caret steps over. Click one to open it: a clip is selected on the timeline, a file opens in Media preview, a link opens in your browser.</p>
     </section>
 
     <section class="also" id="cb-fixes-2">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Bugs Cardboard has too</h3>
       <ul>
         <li id="cb-playhead"><b>The playhead stays in view.</b> <button class="cbi" type="button" data-see="cb-playhead" aria-label="See what happens: the playhead leaving the view" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, stepping frames with ← and → walks it off the edge of the timeline, and dragging it past the edge doesn’t scroll. Now the timeline scrolls to follow.</li>
@@ -493,7 +493,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p>Imported video is decoded and encoded on the GPU, with an automatic fallback to the CPU.</p>
 
     <section class="also" id="cb-filmstrip">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Timeline thumbnails from keyframes</h3>
       <p>To draw a video’s thumbnails along the timeline, Cardboard decodes every frame of it, then keeps one every half second or second. Now, when a video has a keyframe at least every 2 seconds, only the keyframes are decoded; otherwise every frame is, on the NVIDIA GPU when there is one.</p>
     </section>
@@ -502,13 +502,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <p>Ctrl+Y redoes, the Shortcuts page draws a Windows keyboard, and a new shortcut that clashes with another one is caught.</p>
 
     <section class="also" id="cb-folder">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Import a whole folder</h3>
       <p>In Cardboard, a folder dropped on the editor imports no media, and its media import pickers can’t choose a folder. Now use File → Import Folder…, or drop a folder on the editor or the Dashboard. Its videos, audio and images come in, subfolders included, in name order.</p>
     </section>
 
     <section class="also" id="cb-fixes-1">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <h3>Bugs Cardboard has too</h3>
       <ul>
         <li id="cb-enter"><b>Enter answers the Director’s questions.</b> <button class="cbi" type="button" data-see="cb-enter" aria-label="See what happens: Enter on a question’s option" title="See what happens" aria-haspopup="dialog">i</button> In Cardboard, clicking an option and then pressing Enter un-picks it, so nothing is sent. Now Enter on a picked option sends the answer.</li>
@@ -533,9 +533,9 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 
 </main>
 
-<div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change. Every number here was checked independently before it went up.<span class="cb-note"> The bugs marked “Also in Cardboard” were found by reading Cardboard’s code; we have no Mac, so none of them was measured on one.</span></p></div>
+<div class="signoff"><p>Speed numbers come from recorded runs on one Windows laptop, against the build before the change; the ones in #1–#7 were measured on Cardboard&nbsp;1.4.0. Every number here was checked independently before it went up.<span class="cb-note"> The bugs marked “Also in Cardboard” were found by reading Cardboard’s code; we have no Mac, so none of them was measured on one.</span></p></div>
 
-<footer>An independent project built on Cardboard&nbsp;1.4.0 for macOS. It isn’t made by, or affiliated with, the Cardboard team.</footer>
+<footer>An independent project built on Cardboard&nbsp;1.5.0 for macOS. It isn’t made by, or affiliated with, the Cardboard team.</footer>
 
 <!-- The "Still in Cardboard" filter: a radio group of two, fixed at the bottom (the CSS above). The count is the page's
      own: its section.also cards, each li[id^=cb-] counted for a card that lists several. -->
@@ -613,7 +613,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 })();
 </script>
 <!-- "See what happens": what each bug looks like, captured with scripts/changelog/capture-visuals.js from Cardboard
-     1.4.0's own editor pages as shipped (the same code in 1.4.1) and from this build's, in Chromium with a sample
+     1.4.0's own editor pages as shipped (the same code in 1.4.1 and 1.5.0) and from this build's, in Chromium with a sample
      project. Only the red rings and labels named in a dialog are added afterwards. One <template> per bug: its media
      load only when its dialog opens. data-layout: side (two columns) or stack (one), and narrow for a narrower dialog. -->
 <template id="see-cb-fullscreen" data-layout="side">
@@ -623,7 +623,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/fullscreen-cardboard.webp" width="960" height="540" alt="Full screen, a coast at sunrise. The graphic’s white frame runs off the right and bottom edges, its ring sits below and to the right of the sun, and its title is pushed down to the bottom edge."></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/fullscreen-ours.webp" width="960" height="540" alt="The same moment in this build. The white frame sits just inside the picture’s edges, the ring circles the sun, and the title sits in the lower left."></figure>
   </div>
-  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample picture and graphic. Not recorded on a Mac.</p>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample picture and graphic. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-names" data-layout="stack narrow">
   <h2 class="display" id="cbv-title">Clip names drawn once</h2>
@@ -632,7 +632,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1058" height="316" muted loop playsinline preload="auto" poster="/changelog/img/cb/names-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/names-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/names-cardboard.webm" type="video/webm"></video><p class="vh">Two music clips scroll past the timeline’s left edge. Each clip’s name is drawn twice, overlapping into unreadable letters, until the clip is far enough off screen.</p></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1058" height="316" muted loop playsinline preload="auto" poster="/changelog/img/cb/names-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/names-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/names-ours.webm" type="video/webm"></video><p class="vh">The same scroll in this build. Each name shows once: it slides off with its clip, then reappears at the left edge.</p></figure>
   </div>
-  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project, a frame taken every few pixels of scrolling. Not recorded on a Mac.</p>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample project, a frame taken every few pixels of scrolling. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-playhead" data-layout="stack">
   <h2 class="display" id="cbv-title">The playhead stays in view</h2>
@@ -641,7 +641,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1100" height="208" muted loop playsinline preload="auto" poster="/changelog/img/cb/playhead-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/playhead-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/playhead-cardboard.webm" type="video/webm"></video><p class="vh">The timeline with the playhead near its right edge. With each press it moves right, then leaves the visible part, and the time keeps counting with no playhead in sight.</p></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1100" height="208" muted loop playsinline preload="auto" poster="/changelog/img/cb/playhead-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/playhead-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/playhead-ours.webm" type="video/webm"></video><p class="vh">The same presses in this build. When the playhead reaches the edge, the timeline scrolls and the playhead stays in view.</p></figure>
   </div>
-  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project and real key presses. The red label was added to show the key. Not recorded on a Mac.</p>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample project and real key presses. The red label was added to show the key. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-focus" data-layout="stack">
   <h2 class="display" id="cbv-title">Clicking the timeline takes the keyboard</h2>
@@ -650,7 +650,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="1100" height="220" muted loop playsinline preload="auto" poster="/changelog/img/cb/focus-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/focus-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/focus-cardboard.webm" type="video/webm"></video><p class="vh">The timeline and the prompt box. After the click, the playhead jumps to the clicked time. After Space, the caret in the prompt box moves one space to the right, and the playhead stays still.</p></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="1100" height="220" muted loop playsinline preload="auto" poster="/changelog/img/cb/focus-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/focus-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/focus-ours.webm" type="video/webm"></video><p class="vh">The same steps in this build. After Space, playback starts: the play button turns to pause and the playhead moves along the timeline.</p></figure>
   </div>
-  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project, a real click and real keys. The red ring and labels were added to show them. Not recorded on a Mac.</p>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample project, a real click and real keys. The red ring and labels were added to show them. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-badges" data-layout="side">
   <h2 class="display" id="cbv-title">Prompt badges stay whole</h2>
@@ -659,7 +659,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="744" height="264" muted loop playsinline preload="auto" poster="/changelog/img/cb/badges-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/badges-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/badges-cardboard.webm" type="video/webm"></video><p class="vh">The prompt box reads “Make” and a green clip badge. After the two presses and the typing, the badge’s green chip is gone, and “the” is stuck to the end of the clip’s name as plain text.</p></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="744" height="264" muted loop playsinline preload="auto" poster="/changelog/img/cb/badges-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/badges-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/badges-ours.webm" type="video/webm"></video><p class="vh">The same keys in this build. The caret jumps to before the badge, and the box reads “Make the” followed by the badge, still whole.</p></figure>
   </div>
-  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample project and real keys. The red labels were added to show the keys. Not recorded on a Mac.</p>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample project and real keys. The red labels were added to show the keys. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-enter" data-layout="side narrow">
   <h2 class="display" id="cbv-title">Enter answers the Director’s questions</h2>
@@ -668,7 +668,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><video width="758" height="692" muted loop playsinline preload="auto" poster="/changelog/img/cb/enter-cardboard.webp" aria-hidden="true"><source src="/changelog/img/cb/enter-cardboard.mp4" type="video/mp4"><source src="/changelog/img/cb/enter-cardboard.webm" type="video/webm"></video><p class="vh">A question with three options. The click picks the second option and lights up Confirm. After Enter, the option is no longer picked and Confirm is greyed out.</p></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><video width="758" height="692" muted loop playsinline preload="auto" poster="/changelog/img/cb/enter-ours.webp" aria-hidden="true"><source src="/changelog/img/cb/enter-ours.mp4" type="video/mp4"><source src="/changelog/img/cb/enter-ours.webm" type="video/webm"></video><p class="vh">The same click and Enter in this build. After Enter, the answer is sent and the question closes, leaving the empty prompt box.</p></figure>
   </div>
-  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium with a sample question, a real click and a real key. The red ring and labels were added to show them. Not recorded on a Mac.</p>
+  <p class="cbv-how">From Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium with a sample question, a real click and a real key. The red ring and labels were added to show them. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-tooltips" data-layout="side narrow">
   <h2 class="display" id="cbv-title">The left rail shows its tooltips</h2>
@@ -677,7 +677,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/tooltips-cardboard.webp" width="480" height="420" alt="The editor’s left rail with the music icon lit under the pointer, and no tooltip."></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/tooltips-ours.webp" width="480" height="420" alt="The same rail in this build, with a tooltip reading “Audio” beside the music icon."></figure>
   </div>
-  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium. The red ring was added to show where the pointer rests. Not recorded on a Mac.</p>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium. The red ring was added to show where the pointer rests. Not recorded on a Mac.</p>
 </template>
 <template id="see-cb-gpu" data-layout="stack">
   <h2 class="display" id="cbv-title">The timeline redraws after a GPU reset</h2>
@@ -686,13 +686,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <figure class="cbv-side cb"><figcaption>Cardboard</figcaption><img src="/changelog/img/cb/gpu-cardboard.webp" width="1100" height="208" alt="The timeline’s toolbar and track names show, but the ruler and the tracks are solid black."></figure>
     <figure class="cbv-side ours"><figcaption>This build</figcaption><img src="/changelog/img/cb/gpu-ours.webp" width="1100" height="208" alt="The same moment in this build: the ruler and both music clips are drawn."></figure>
   </div>
-  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped, the same in 1.4.1) and from this build’s, run in Chromium, whose graphics process was made to restart. Not recorded on a Mac.</p>
+  <p class="cbv-how">Stills from Cardboard’s own editor (1.4.0 as shipped; the same code is in 1.4.1 and 1.5.0) and from this build’s, run in Chromium, whose graphics process was made to restart. Not recorded on a Mac.</p>
 </template>
 
 <dialog class="cbv" id="cbv" aria-labelledby="cbv-title" aria-describedby="cbv-cap">
   <div class="cbv-in">
     <div class="cbv-top">
-      <span class="tag also">Also in Cardboard 1.4.1</span>
+      <span class="tag also">Also in Cardboard 1.5.0</span>
       <button class="cbv-x" type="button" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
     <div class="cbv-body"></div>
