@@ -1,5 +1,5 @@
 // The facade the bridges call (scripts/carton/*-bridge.js), bundled by scripts/carton/build.js into
-// resources/carton/carton-node.cjs. It maps what Cardboard 1.4.0's hooks need (carton/docs/INTEGRATION-1.4.0.md §5)
+// resources/carton/carton-node.cjs. It maps what Cardboard 1.4.0's hooks need (carton/docs/INTEGRATION-1.5.0.md §5)
 // onto the @carton packages, so a package API change touches only this file.
 // - History: one Carton (@carton/local, openLocal) per bundle, opened on first use; a project with no history yet
 //   starts from its document on disk as main@1.

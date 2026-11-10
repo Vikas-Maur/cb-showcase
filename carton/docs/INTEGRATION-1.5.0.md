@@ -1,6 +1,6 @@
-# Carton in Cardboard 1.4.0: integration points
+# Carton in Cardboard 1.5.0: integration points
 
-This is where Carton plugs into Cardboard 1.4.0: version history, cuts, fold in, credits, and live collaboration for a
+This is where Carton plugs into Cardboard 1.5.0 (written for 1.4.0, ported to 1.5.0 on 2026-11-10: §7): version history, cuts, fold in, credits, and live collaboration for a
 Cardboard project. It has two readers:
 
 - **Cardboard's team**, who would make these changes in their own source. Each hook is described by what Cardboard's
@@ -8,11 +8,13 @@ Cardboard project. It has two readers:
   `recordRevision`, `pushTimelineHistory`), IPC channels, and user-visible strings. That way it can be found in the
   real source.
 - **Our Windows build**, which makes the same changes by patching the shipped bundles (`scripts/patch-carton*.js`).
-  Appendix A lists the exact text each patch replaces. Every anchor occurs exactly once in the pristine 1.4.0 bundle,
+  Appendix A lists the exact text each patch replaces. Every anchor occurs exactly once in the pristine 1.5.0 bundle,
   and again once after our Windows patches.
 
 `§n` references are to `PLAN.md` v14. Hook numbers H1–H13 are the plan's §16 numbers. Minified names (`ti`, `W1`,
-`Rde`) are only valid for 1.4.0. They're given so the anchors can be read, not as names to rely on.
+`Rde`) are only valid for the version they're quoted from: §1 to §6 quote 1.4.0 as they were written (1.5.0 renamed
+nearly every one; §7 lists the ones the port had to follow), and Appendix A quotes 1.5.0. They're given so the anchors
+can be read, not as names to rely on.
 
 ## 1. Who writes a project in 1.4.0
 
@@ -23,8 +25,8 @@ under all of them.
 
 | Process | Cardboard code there | Carton there |
 |---|---|---|
-| Library worker (`dist/library-worker.js`, a utility process) | The **project store** (the class with `writeNow`, `applyMutation`, `updateScoped`, `latest`, `seenOnDisk`; `W1` in the bundle). The **timeline mirror** (`apply`, `applyEdits`, `undo`, `history`, `recordRevision`, `writeMirror`; `Cp`). The bundle watcher. `.cbproj` save and open | The engine, on its own thread (a waiting `node:sqlite` call blocks its thread, §6.2). Commits for GUI saves and watched files. The materializer. The per-agent view watcher. Later, the sync client |
-| `cb` CLI and `cb mcp` (`resources/cli/`) | Its **own copy** of the same store and mirror (`ti`, `Li` in `chunk-LL26E55H.mjs`). The commander program. The MCP tool table. Cloud mode | The engine, in-process. `cb history` and `cb undo` extended. `cb cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`. The MCP tools `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish` |
+| Library worker (`dist/library-worker.js`, a utility process) | The **project store** (the class with `writeNow`, `applyMutation`, `updateScoped`, `latest`, `seenOnDisk`; `W1` in 1.4.0's bundle, `Ep` in 1.5.0's). The **timeline mirror** (`apply`, `applyEdits`, `undo`, `history`, `recordRevision`, `writeMirror`; `Cp`, 1.5.0's `fm`). The bundle watcher. `.cbproj` save and open | The engine, on its own thread (a waiting `node:sqlite` call blocks its thread, §6.2). Commits for GUI saves and watched files. The materializer. The per-agent view watcher. Later, the sync client |
+| `cb` CLI and `cb mcp` (`resources/cli/`) | Its **own copy** of the same store and mirror (`ti`, `Li` in 1.4.0's `chunk-LL26E55H.mjs`; `$i`, `ga` in 1.5.0's `chunk-AEX5IIG7.mjs`). The commander program. The MCP tool table. Cloud mode | The engine, in-process. `cb history` and `cb undo` extended. `cb cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`. The MCP tools `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish` |
 | Main (`dist/main.js`) | IPC (`project:patch`, `library:call`). The control socket. Agent launch. The in-process Director (Claude Agent SDK) and its `PreToolUse` hook | Who is acting (`CARDBOARD_ACTOR`). The Director's turn and subagent ids. The `Stop`/`SubagentStop` conflict hook. A `carton:call` IPC channel, which forwards to the library worker |
 | Renderer (`index-*.js`, `EditorRoute-*.js`, `installErrorTelemetry-*.js`) | The editor store (zustand). Its 300 ms debounced save. Adopting outside changes ("Timeline updated from disk"). The 50-snapshot undo stack | The save carries its base, actor and recorded remaps. Adopt moves the base atomically and adds no undo entry. ⌘Z undoes your actor group. The History panel and conflict cards |
 
@@ -609,136 +611,217 @@ onto the packages' APIs, so a package API change touches only the facade.
 - **Windows only:** the editor's pages (H4–H7, the History tab), gates G1 and G2, the NTFS displace/install race. See
   the README, "Carton" → "Testing Carton".
 
+## 7. Cardboard 1.5.0 (2026-11-10)
+
+Cardboard 1.5.0 is the same code with nearly every minified name changed: of the anchors the 1.4.0 patches used, all
+but a handful matched 1.5.0 once only their short names were renamed. The hooks are the same hooks, in the same
+places. What the port had to follow besides the anchors themselves:
+
+- **Names that only the replacements use.** A replacement calls bundle names its anchor doesn't show, and 1.5.0 gave
+  some of those old names to other things. Each such name was checked by what it is first assigned in 1.4.0 and in
+  1.5.0 (esbuild declares most names bare and assigns them later). The ones that moved: the library client main hands
+  Carton (`St` → `wt`), main's chat namer pieces (`UKt`, `LEe`, `hke`, `lV`, `aV` → `fJt`, `Axe`, `lSe`, `kq`, `_q`),
+  the editor store's handles the renderer bridge takes (adopt `Rde` → `Mde`, armed `Mde` → `Nde`, in flight `Yy` →
+  `Xy`, flush `cN` → `lN`, deserialize `av` → `sv`, the playback clock `qx` → `$x`), the worker's post to main (`rc` →
+  `Rc`), the CLI's library opener and resolver (`H`, `I` → `z`, `P`) and MCP helpers (`fe`, `Y` → `pe`, `X`), the tab
+  strip's button class (`C` → `S`) and the empty library's button class (`q4` → `K4`).
+- **EditorRoute's imports** for Compare (H4, editor-panel.js): the playback clock `dn` (export `aK`, 1.4.0's `hn`),
+  the aspect ratio's size `D2` (`fX`, 1.4.0's `L2`), the editor store `U` (`aF`), ReactDOM `ja` (`dv`, 1.4.0's `Na`),
+  and the preview engine's hook `sF` (1.4.0's `YD`). Each was found by the module it imports, not by a wildcard: four
+  wildcarded aliases matched hundreds of imports.
+- **The worker's RPC table** (`SR`, 1.4.0's `IA`) gained `audioProcessing`; Carton's `carton` namespace goes after it.
+- **The GUI save projection** (fmsv.js, B3) is cut out of the editor store's bundle by where its item projection calls
+  each piece, not by minified name (1.5.0: `fo`, `tx`, `iv`, `_2`, `zb`; 1.4.0: `ho`, `nx`, `sv`, `x2`, `Vb`). On 1.4.0
+  it cuts out the same code as before, byte for byte.
+
+New code in 1.5.0 that reads or writes a project, and how it meets Carton:
+
+| 1.5.0 code | What it does | Carton |
+|---|---|---|
+| `applyEdits` / `printedAt` (timeline mirror; MCP `apply_timeline` and `check_timeline` with `edits`) | Applies oldText → newText edits to the print they were copied from, then hands the result to `apply` | Every write goes through `apply` (H3), so it was covered. `printedAt` takes a numeric `rev` only, and with Carton on a print's rev is Carton's ref: edits copied from an older print were matched against the current one, and MCP refused the ref. Now `printedAt` prints the version a Carton ref names (`cartonBase`, as the apply's base) or says "print it again", and MCP's `rev` takes the ref with Carton on |
+| Premiere import (`importPremiere` → `pM` in the worker, its copy in the CLI chunk) | `create` a project, `ingest` its media, `mutate` its timeline | `create` and `mutate` are the store's own (`writeNow`, `applyMutation`: H1), and `ingest` is the standard ingest. Nothing to patch |
+| Audio clean-up (`audioProcessing.process`, `lP`) | Reads a clip through `inspectable`, ingests the processed audio with `copy` | The standard ingest again (H1). Its `inspectable` is the resolver H10's tools patch already serves a teammate's clip through |
+| `.cbproj` save (`saveArchive` → `US`, the CLI's `mf`) | Writes the archive | The same function as 1.4.0's `NI` (CLI `rp`), with H11's entry hook in it; open (`aC`, the CLI's `pg`) likewise |
+
 ## Appendix A: every anchor, checked
 
-Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and again on the output of our Windows
-patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
-file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
+A.1 is counted with `src.split(anchor).length - 1` in the pristine 1.5.0 bundles, and again on the output of our
+Windows patches, where `patch-carton.js` applies them (2026-11-10): `ok` is once in both. `@` is the byte offset of the
+first match in the pristine file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node
+scripts/patch-carton.js …` prints the Windows-patched side. Bundles: Main `main.js`, Worker `library-worker.js`, I
+`index-CMWd3X51.js`, E `EditorRoute-fdkrSHAw.js`, S `installErrorTelemetry-B0RfASW6.js`, T `tabs-DauD2kkX.js`, CLI
+`chunk-AEX5IIG7.mjs`, cb `cardboard.mjs`.
 
-### A.1 The anchors patch-carton.js replaces (115)
+### A.1 The anchors patch-carton.js replaces (158)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
 
 ```
-ok  Worker 1 @1418249   15B  "h=OC(r)?li(r):r"
-ok  Worker 1 @1418924   28B  "pathOf:x=>LC(x)?kd(x,i):null"
-ok  Worker 1 @1419012   24B  "Q=F?await RC(F,h,K):null"
-ok  Worker 1 @1419084   20B  "let fe=await YQ(h,i)"
-ok  Worker 1 @1419112  103B  "Ee=Iy(h,{resolveMedia:S,readTemplate:x=>fe.get(x)??null,storedItem:xy(Zs(a)),newId:this.options.newId})"
-ok  Worker 1 @1419588  150B  "we=await iC(be,de,B,x=>{let _=I.get(x);return(_&&cw(_))??void 0},n.prefer),qe=S4(xI(we,de),a,this.options.newId),ee=$f(be,de,qe.doc,{prefer:n.prefer})"
-ok  Worker 1 @1421883   39B  "writeTimeline(t,r,n){let i={...Ay(t,r),"
-ok  Worker 1 @1422013   76B  "a=rd(i);return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],"
-ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
-ok  Worker 1 @1263655   35B  "this.applyMutation(t,s=>K1(r(s)),n)"
-ok  Worker 1 @1263890   27B  "async applyMutation(t,r,n){"
-ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
-ok  Worker 1 @1265976   36B  "d=JSON.stringify(o);this.lastWritten"
-ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
-ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
-ok  Worker 1 @1255296   66B  "let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map("
-ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
-ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
-ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
-ok  Worker 1 @1425091   59B  "let l=await this.listRevisions(r);for(let u of l.slice(20))"
-ok  Worker 1 @1424032   23B  "async listRevisions(t){"
-ok  Worker 1 @1424213   24B  "async readRevision(t,r){"
-ok  Worker 1 @1424442   30B  "async revisionAtOrBefore(t,r){"
-ok  Worker 1 @1417418   77B  "async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"
-ok  Worker 1 @1421085   17B  "async history(t){"
-ok  Worker 1 @1421828   55B  "return await this.writeTimeline(i,s.doc,s.added),o.rev}"
-ok  Worker 1 @1418249   15B  "h=OC(r)?li(r):r"
-ok  Worker 1 @1419542   46B  "be=await this.revisionAtOrBefore(i,h.rev)??de,"
-ok  Worker 1 @1419701   37B  "ee=$f(be,de,qe.doc,{prefer:n.prefer})"
-ok  Worker 1 @1420071  155B  "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})"
-ok  Worker 1 @1421883   38B  "writeTimeline(t,r,n){let i={...Ay(t,r)"
-ok  Worker 1 @1422021   68B  "return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],"
-ok  Worker 1 @1423605   52B  "await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}"
-ok  Worker 1 @1267459   37B  "if(o&&(rH.has(a.name)||a.name===Mt)||"
-ok  Worker 1 @1414024   58B  "OC=e=>typeof e==\"string\",$C=\"# This is a Cardboard project"
-ok  Worker 1 @1416104   15B  "\",HQ=async e=>{"
-ok  Worker 1 @1481784  112B  "var IA=[\"projects\",\"media\",\"cache\",\"transcripts\",\"voiceovers\",\"mattes\",\"inspect\",\"timeline\",\"luts\",\"downloads\"];"
-ok  Worker 1 @1482325   24B  "kte=e=>{let t=\"\",r=()=>{"
-ok  Worker 1 @1469002   52B  "c=async g=>{let T=t.idForBundlePath(g);if(!T)return;"
-ok  Worker 1 @1469154   41B  "await t.read(T);let I=await r.apply(T,k);"
-ok  Worker 1 @1468657   62B  "k=await(0,_d.readFile)((0,Vn.join)(g,Mt),\"utf8\")}catch{k=null}"
-ok  Worker 1 @1477718   90B  "let $=await(0,Ar.readFile)(m.mirrorPath(N),\"utf8\");return m.apply(y,$,{..._,writeBack:!0})"
-ok  Main   1 @76        22B  "var cxe=Object.create;"
-ok  Main   1 @2875234   56B  "_e.handle(\"project:patch\",async({document:t,scope:r})=>{"
-ok  Main   1 @2875450   36B  "St.call(\"projects.updateScoped\",t,r)"
-ok  Main   1 @2681412   79B  "e.tabs.broadcast(\"project:changed\",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})"
-ok  Main   1 @2681590   57B  "onChange:async i=>{if(i.kind===\"removed\"){n(i.id);return}"
-ok  Main   1 @2767297   58B  "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})"
-ok  Main   1 @2725359   15B  "env:CVt(e,t,c),"
-ok  Main   1 @2587228   45B  "PreToolUse:[{matcher:\"Bash\",hooks:[async v=>{"
-ok  Main   1 @2588123   52B  "permissionDecisionReason:k.reason}}}],timeout:Tzt}]}"
-ok  Main   1 @2766497   44B  "n.turn={state:\"running\",id:s.id,text:s.text}"
-ok  Main   1 @2771821   41B  "closeTurn(t,r){t.turn.state===\"running\"&&"
-ok  Main   1 @2645491   31B  "\"--append-system-prompt\",ju(e),"
-ok  Main   1 @2642960   38B  "Never write `project.json` directly.\","
-ok  S      1 @1556833  115B  "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});"
-ok  S      1 @1128812   75B  "updateScoped:(t,e)=>Zp(t.id,cK(e),On(\"project:patch\",{document:t,scope:e}))"
-ok  S      1 @1525370   52B  "_m({projectId:n,projectName:r,activeLeftTab:\"media\","
-ok  S      1 @1520713   44B  "Tm=t=>ah()||t.timelineLockState!==\"unlocked\""
-ok  S      1 @1555464   15B  "ure=t=>ah()?aN:"
-ok  S      1 @1555786   26B  "(n===iN||n===sN||n===aN)&&"
-ok  S      1 @1559585   46B  "function de(){const e=ne.getState().projectId;"
-ok  S      1 @1544606   37B  "undo:()=>{if(me())return;const n=e();"
-ok  S      1 @1545211   37B  "redo:()=>{if(me())return;const n=e();"
-ok  S      1 @1551117   77B  "e().pushTimelineHistory(\"rippleDeleteGap\"),t({timelineItems:s.timelineItems})"
-ok  S      1 @1551349   81B  "e().pushTimelineHistory(\"rippleDeleteAllGaps\"),t({timelineItems:i.timelineItems})"
-ok  S      1 @1550578   56B  "return e().pushTimelineHistory(\"removeSilences\"),t(c=>({"
-ok  S      1 @1546888   60B  "i?.skipHistory||e().pushTimelineHistory(\"splitTimelineItem\")"
-ok  I      1 @1113444   53B  "sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;"
-ok  E      1 @342410    80B  "{id:\"effects\",icon:gw,label:\"Effects\",event:\"filters_panel_opened\"}]],U_=V_.map("
-ok  E      1 @350297    92B  "uf=[\"media\",\"layouts\",\"music\",\"captions\",\"voiceover\",\"text\",\"transitions\",\"effects\"].filter("
-ok  E      1 @350679    54B  "case\"effects\":return c.jsx(tP,{});default:return null}"
-ok  CLI    1 @84        50B  "const require = __createRequire(import.meta.url);\n"
-ok  CLI    1 @299554    15B  "g=Nh(r)?rt(r):r"
-ok  CLI    1 @300216    28B  "pathOf:y=>$h(y)?Dn(y,o):null"
-ok  CLI    1 @300304    24B  "F=D?await Lh(D,g,k):null"
-ok  CLI    1 @300376    19B  "let $=await a2(g,o)"
-ok  CLI    1 @300402   101B  "q=Ta(g,{resolveMedia:I,readTemplate:y=>$.get(y)??null,storedItem:wa(Cr(i)),newId:this.options.newId})"
-ok  CLI    1 @300868   140B  "z=await dh(B,j,R,y=>{let x=S.get(y);return(x&&Xn(x))??void 0},n.prefer),J=hs(km(z,j),i,this.options.newId),Z=rn(B,j,J.doc,{prefer:n.prefer})"
-ok  CLI    1 @303124    39B  "writeTimeline(t,r,n){let o={...Aa(t,r),"
-ok  CLI    1 @303254    76B  "i=mn(o);return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],"
-ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
-ok  CLI    1 @158555    35B  "this.applyMutation(t,c=>Jo(r(c)),n)"
-ok  CLI    1 @158790    27B  "async applyMutation(t,r,n){"
-ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
-ok  CLI    1 @160751    36B  "u=JSON.stringify(a);this.lastWritten"
-ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
-ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
-ok  CLI    1 @150320    66B  "let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map("
-ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
-ok  CLI    1 @344422    38B  "n.onWritten((h,y)=>f.afterWrite(h,y));"
-ok  CLI    1 @305827    82B  "let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);"
-ok  CLI    1 @306180    59B  "let d=await this.listRevisions(r);for(let m of d.slice(20))"
-ok  CLI    1 @305183    23B  "async listRevisions(t){"
-ok  CLI    1 @305353    24B  "async readRevision(t,r){"
-ok  CLI    1 @305561    30B  "async revisionAtOrBefore(t,r){"
-ok  CLI    1 @298723    77B  "async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"
-ok  CLI    1 @302326    17B  "async history(t){"
-ok  CLI    1 @303069    55B  "return await this.writeTimeline(o,c.doc,c.added),a.rev}"
-ok  CLI    1 @299554    15B  "g=Nh(r)?rt(r):r"
-ok  CLI    1 @300824    44B  "B=await this.revisionAtOrBefore(o,g.rev)??j,"
-ok  CLI    1 @300975    33B  "Z=rn(B,j,J.doc,{prefer:n.prefer})"
-ok  CLI    1 @301326   153B  "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})"
-ok  CLI    1 @303124    38B  "writeTimeline(t,r,n){let o={...Aa(t,r)"
-ok  CLI    1 @303262    68B  "return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],"
-ok  CLI    1 @304809    39B  "await Uh(this.mirrorPath(t),r,\"utf8\"))}"
-ok  CLI    1 @162151    37B  "if(a&&(nS.has(i.name)||i.name===re)||"
-ok  CLI    1 @295432    58B  "Nh=e=>typeof e==\"string\",jh=\"# This is a Cardboard project"
-ok  CLI    1 @297512    30B  "\",n2=async e=>{let t=await On("
-ok  cb     1 @84        50B  "const require = __createRequire(import.meta.url);\n"
-ok  cb     1 @752048    14B  "var FN=ak(Ie);"
-ok  cb     1 @740630    87B  ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);"
-ok  cb     1 @604506    21B  "p(\"timeline_history\","
-ok  cb     1 @604809    18B  "p(\"undo_timeline\","
-ok  cb     1 @605113    15B  "p(\"list_media\","
+ok  Worker 1 @1426453    15B  "h=XE(r)?Si(r):r"
+ok  Worker 1 @1427128    28B  "pathOf:v=>YE(v)?Yd(v,i):null"
+ok  Worker 1 @1427216    24B  "J=L?await WE(L,h,K):null"
+ok  Worker 1 @1427288    20B  "let E=await yre(h,i)"
+ok  Worker 1 @1427316   102B  "ae=h4(h,{resolveMedia:w,readTemplate:v=>E.get(v)??null,storedItem:d4(yc(a)),newId:this.options.newId})"
+ok  Worker 1 @1427788   149B  "he=await TE(fe,re,O,v=>{let _=x.get(v);return(_&&hI(_))??void 0},n.prefer),Ee=h6(_S(he,re),a,this.options.newId),G=ld(fe,re,Ee.doc,{prefer:n.prefer})"
+ok  Worker 1 @1430073    39B  "writeTimeline(t,r,n){let i={...ud(t,r),"
+ok  Worker 1 @1430203    76B  "a=Rd(i);return this.options.bundles.updateScoped(CS(i),{ownedFields:[...x4],"
+ok  Worker 1 @1267278    18B  "n=>fJ(n,gI(n,t,r))"
+ok  Worker 1 @1267993    35B  "this.applyMutation(t,s=>_p(r(s)),n)"
+ok  Worker 1 @1268228    27B  "async applyMutation(t,r,n){"
+ok  Worker 1 @1267278    18B  "n=>fJ(n,gI(n,t,r))"
+ok  Worker 1 @1270314    36B  "d=JSON.stringify(o);this.lastWritten"
+ok  Worker 1 @1270411    38B  "l=await Cp(c),await(0,Wt.rename)(c,s)}"
+ok  Worker 1 @1259563    71B  "try{t=await(0,Wt.readFile)((0,at.join)(e,Lt),\"utf8\")}catch{return null}"
+ok  Worker 1 @1259634    66B  "let r=ui(t);if(!r)return null;let n=await Promise.all(r.media.map("
+ok  Worker 1 @1266686    59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
+ok  Worker 1 @1512651    38B  "n.onWritten((y,v)=>m.afterWrite(y,v));"
+ok  Worker 1 @1432914    82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
+ok  Worker 1 @1433285    59B  "let l=await this.listRevisions(r);for(let u of l.slice(20))"
+ok  Worker 1 @1432224    23B  "async listRevisions(t){"
+ok  Worker 1 @1432405    24B  "async readRevision(t,r){"
+ok  Worker 1 @1432635    30B  "async revisionAtOrBefore(t,r){"
+ok  Worker 1 @1425622    77B  "async print(t,r=[]){return this.printTimeline(t,yc(t),t.stateUpdatedAt??0,r)}"
+ok  Worker 1 @1428972    63B  "async printedAt(t,r,n){if(n!==void 0&&n<(t.stateUpdatedAt??0)){"
+ok  Worker 1 @1429275    17B  "async history(t){"
+ok  Worker 1 @1430018    55B  "return await this.writeTimeline(i,s.doc,s.added),o.rev}"
+ok  Worker 1 @1426453    15B  "h=XE(r)?Si(r):r"
+ok  Worker 1 @1427742    46B  "fe=await this.revisionAtOrBefore(i,h.rev)??re,"
+ok  Worker 1 @1427901    36B  "G=ld(fe,re,Ee.doc,{prefer:n.prefer})"
+ok  Worker 1 @1428263   153B  "let y=await this.writeTimeline(a,G.doc,[...b,...Ee.added]);return p({applied:!0,ops:W,conflicts:I,diagnostics:V,rev:y?.stateUpdatedAt??a.stateUpdatedAt})"
+ok  Worker 1 @1430073    38B  "writeTimeline(t,r,n){let i={...ud(t,r)"
+ok  Worker 1 @1430211    68B  "return this.options.bundles.updateScoped(CS(i),{ownedFields:[...x4],"
+ok  Worker 1 @1431795    52B  "await(0,rn.writeFile)(this.mirrorPath(t),r,\"utf8\"))}"
+ok  Worker 1 @1425491   131B  "async sync(t,r,n=[]){await this.recordRevision(t,r);let i=await this.print(t,n);await this.writeMirror(r,i),await this.scaffold(r)}"
+ok  Worker 1 @1271797    37B  "if(o&&(pJ.has(a.name)||a.name===Lt)||"
+ok  Worker 1 @1422222    58B  "XE=e=>typeof e==\"string\",JE=\"# This is a Cardboard project"
+ok  Worker 1 @1424302    16B  "\",hre=async e=>{"
+ok  Worker 1 @1523257   130B  "var SR=[\"projects\",\"media\",\"cache\",\"transcripts\",\"voiceovers\",\"mattes\",\"audioProcessing\",\"inspect\",\"timeline\",\"luts\",\"downloads\"];"
+ok  Worker 1 @1523816    24B  "Lie=e=>{let t=\"\",r=()=>{"
+ok  Worker 1 @1510039    52B  "c=async g=>{let T=t.idForBundlePath(g);if(!T)return;"
+ok  Worker 1 @1510191    41B  "await t.read(T);let x=await r.apply(T,k);"
+ok  Worker 1 @1509694    62B  "k=await(0,cl.readFile)((0,ri.join)(g,Lt),\"utf8\")}catch{k=null}"
+ok  Worker 1 @1519005    90B  "let $=await(0,Ur.readFile)(m.mirrorPath(D),\"utf8\");return m.apply(y,$,{..._,writeBack:!0})"
+ok  Main   1 @76         22B  "var rCe=Object.create;"
+ok  Main   1 @2887257    56B  "_e.handle(\"project:patch\",async({document:t,scope:r})=>{"
+ok  Main   1 @2887473    36B  "wt.call(\"projects.updateScoped\",t,r)"
+ok  Main   1 @2691134    79B  "e.tabs.broadcast(\"project:changed\",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})"
+ok  Main   1 @2691312    57B  "onChange:async i=>{if(i.kind===\"removed\"){n(i.id);return}"
+ok  Main   1 @2820345    45B  "command(t){let r=this.activeContents();if(r){"
+ok  Main   1 @2820269    76B  "setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}"
+ok  Main   1 @2811918   196B  "setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&nZt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}"
+ok  Main   1 @2884268    74B  "_e.handle(\"window:set-editor-state\",(t,r)=>fe.setEditorState(r.sender,t)),"
+ok  Main   1 @2777019    58B  "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})"
+ok  Main   1 @2735081    15B  "env:YGt(e,t,c),"
+ok  Main   1 @2596950    45B  "PreToolUse:[{matcher:\"Bash\",hooks:[async v=>{"
+ok  Main   1 @2597845    52B  "permissionDecisionReason:k.reason}}}],timeout:WBt}]}"
+ok  Main   1 @2776219    44B  "n.turn={state:\"running\",id:s.id,text:s.text}"
+ok  Main   1 @2781543    41B  "closeTurn(t,r){t.turn.state===\"running\"&&"
+ok  Main   1 @2871436    64B  "fJt=async e=>{let t=await Axe();return t?Pxe(t,aSe(e),sSe):null}"
+ok  Main   1 @2655213    31B  "\"--append-system-prompt\",Bu(e),"
+ok  Main   1 @2652682    38B  "Never write `project.json` directly.\","
+ok  S      1 @1557652   115B  "ne.setState=nN({getState:ne.getState,isWriteBlocked:km,onAcceptedDocumentWrite:iN,onRejectedWrite:_v,setState:Tm});"
+ok  S      1 @1128849    75B  "updateScoped:(t,e)=>Qp(t.id,lK(e),On(\"project:patch\",{document:t,scope:e}))"
+ok  S      1 @1518254    66B  "(rN.set(o.id,o),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))"
+ok  S      1 @1560821    94B  "c=cN(Jt(o,{ownedFields:[\"tracks\",\"timelineItems\"]}),r,\"Failed to save timeline to IndexedDB:\")"
+ok  S      1 @1558792   151B  "s=cN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},{ownedFields:[\"tracks\",\"timelineItems\"]}),t,\"Failed to flush timeline to IndexedDB:\")"
+ok  S      1 @1526189    52B  "Tm({projectId:n,projectName:r,activeLeftTab:\"media\","
+ok  S      1 @1521532    44B  "km=t=>sh()||t.timelineLockState!==\"unlocked\""
+ok  S      1 @1556283    15B  "fre=t=>sh()?oN:"
+ok  S      1 @1556605    26B  "(n===sN||n===aN||n===oN)&&"
+ok  S      1 @1556372    45B  "function _v(){const t=ne.getState(),e=fre(t);"
+ok  S      1 @1560404    46B  "function de(){const e=ne.getState().projectId;"
+ok  S      1 @1184087    64B  "throw console.error(\"Failed to update scoped project data:\",n),n"
+ok  S      1 @1545425    37B  "undo:()=>{if(me())return;const n=e();"
+ok  S      1 @1546030    37B  "redo:()=>{if(me())return;const n=e();"
+ok  S      1 @1551936    77B  "e().pushTimelineHistory(\"rippleDeleteGap\"),t({timelineItems:s.timelineItems})"
+ok  S      1 @1552168    81B  "e().pushTimelineHistory(\"rippleDeleteAllGaps\"),t({timelineItems:i.timelineItems})"
+ok  S      1 @1551397    56B  "return e().pushTimelineHistory(\"removeSilences\"),t(c=>({"
+ok  S      1 @1547707    60B  "i?.skipHistory||e().pushTimelineHistory(\"splitTimelineItem\")"
+ok  S      1 @1329421    37B  "Ex=(t,e)=>{const n=iee(t,e)??ree(t,e)"
+ok  I      1 @1118240    53B  "pO=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;"
+ok  I      1 @758574     55B  "\"export.start\":async e=>{const t=Es();if(t.isExporting)"
+ok  E      1 @890717    111B  "return c.jsx(\"div\",{className:\"flex flex-1 flex-col overflow-hidden bg-muted/60\",children:c.jsxs(\"div\",{ref:Ye,"
+ok  E      1 @1079846    99B  "c.jsx(\"div\",{className:\"contents\",\"data-analytics-region\":\"editor-timeline\",children:c.jsx(xZ,{})})"
+ok  E      1 @632871    127B  "function sF(e){const{width:t,height:n,timelineItems:a,tracks:r,mediaItems:s,currentTime:i,isPlaying:l,masterVolume:d,enabled:u,"
+ok  E      1 @633189     27B  "drivenByExternalClock:T=!1,"
+ok  E      1 @642072      9B  "Ce=l&&!T,"
+ok  E      1 @644225     86B  "return{diagnostics:A,getDecoderDiagnostics:yt,frameScheduler:F,canvasRef:M,isReady:Ne,"
+ok  E      1 @5750        9B  "aK as dn,"
+ok  E      1 @6920        9B  "fX as D2,"
+ok  E      1 @5670        8B  "aF as U,"
+ok  E      1 @7028        9B  "dv as ja,"
+ok  E      1 @890987    152B  "children:[c.jsx(\"div\",{className:\"absolute inset-0 flex items-center justify-center\",style:{transform:`translate(${C.x}px, ${C.y}px) scale(${C.scale})`,"
+ok  E      1 @1067718   131B  "className:\"timeline-horizontal-scrollbar relative flex flex-1 flex-col overflow-x-auto overflow-y-hidden\",\"data-timeline-scroll\":!0"
+ok  E      1 @978779     33B  "\"data-timeline-canvas-surface\":!0"
+ok  E      1 @979291     21B  "\"data-track-id\":r.id,"
+ok  E      1 @1038984    33B  "pixelsPerSecond:N.pixelsPerSecond"
+ok  E      1 @1071746    37B  "vZ=e=>{U.getState().setIsPlaying(!1),"
+ok  E      1 @1014441    63B  "y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)"
+ok  E      1 @1079946   108B  "b&&c.jsx(eP,{variant:\"project\"})]}),c.jsx(\"div\",{className:\"contents\",\"data-analytics-region\":\"editor-chat\","
+ok  E      1 @781795     48B  "ue=o.useCallback(()=>{B&&B.type===\"text\"&&!pe&&("
+ok  E      1 @781225     84B  "const Pe=Fs(Te,Y.clientX,Y.clientY);if(Pe&&(Pe.type===\"text\"||Pe.type===\"caption\")){"
+ok  E      1 @788523     37B  "vn=B&&fe&&!p&&dt&&!pe&&!M&&!x?{item:B"
+ok  E      1 @669035     91B  "const g=je.getState().getProjectById(a)??f;return St(async()=>{const{updateProjectScoped:b}"
+ok  T      1 @17968      86B  "n.jsx(Bt,{value:t.aspectRatio}),t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),"
+ok  T      1 @17883      74B  "className:\"mr-[8px] ml-2 flex shrink-0 items-center gap-[8px] self-center\""
+ok  T      1 @29453     124B  "n.jsxs(\"div\",{className:\"flex min-w-0 flex-1 items-center pr-2 pl-[max(6px,var(--desktop-controls-inset)_+_4px)]\",children:["
+ok  T      1 @29657      43B  "n.jsxs(\"div\",{ref:l,style:Ue(d),onWheel:Ge,"
+ok  T      1 @29883      97B  "n.jsx(nt,{as:\"div\",axis:\"x\",values:b,onReorder:x,className:\"flex min-w-0 items-center gap-[2px]\","
+ok  T      1 @26778      79B  "className:w(W,\"ml-[2px] w-[28px] shrink-0 justify-center\",K),children:n.jsx(We,"
+ok  CLI    1 @84         50B  "const require = __createRequire(import.meta.url);\n"
+ok  CLI    1 @306885     15B  "h=J0(r)?bt(r):r"
+ok  CLI    1 @307547     28B  "pathOf:y=>eb(y)?fo(y,o):null"
+ok  CLI    1 @307635     24B  "F=L?await K0(L,h,O):null"
+ok  CLI    1 @307707     19B  "let P=await AA(h,o)"
+ok  CLI    1 @307733    101B  "j=bs(h,{resolveMedia:R,readTemplate:y=>P.get(y)??null,storedItem:ms(en(i)),newId:this.options.newId})"
+ok  CLI    1 @308199    140B  "V=await T0(B,_,T,y=>{let S=x.get(y);return(S&&Oo(S))??void 0},n.prefer),Y=cc(Up(V,_),i,this.options.newId),X=On(B,_,Y.doc,{prefer:n.prefer})"
+ok  CLI    1 @310450     39B  "writeTimeline(t,r,n){let o={...Fn(t,r),"
+ok  CLI    1 @310580     76B  "i=qn(o);return this.options.bundles.updateScoped(Vp(o),{ownedFields:[...Ss],"
+ok  CLI    1 @162025     18B  "n=>rI(n,xu(n,t,r))"
+ok  CLI    1 @162740     35B  "this.applyMutation(t,c=>Oi(r(c)),n)"
+ok  CLI    1 @162975     27B  "async applyMutation(t,r,n){"
+ok  CLI    1 @162025     18B  "n=>rI(n,xu(n,t,r))"
+ok  CLI    1 @164936     36B  "m=JSON.stringify(a);this.lastWritten"
+ok  CLI    1 @165020     28B  "d=await Ni(l),await YP(l,c)}"
+ok  CLI    1 @154455     50B  "try{t=await Wp(Me(e,ae),\"utf8\")}catch{return null}"
+ok  CLI    1 @154505     66B  "let r=nt(t);if(!r)return null;let n=await Promise.all(r.media.map("
+ok  CLI    1 @161442     59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
+ok  CLI    1 @383854     38B  "n.onWritten((g,y)=>f.afterWrite(g,y));"
+ok  CLI    1 @313153     82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
+ok  CLI    1 @313506     59B  "let d=await this.listRevisions(r);for(let u of d.slice(20))"
+ok  CLI    1 @312509     23B  "async listRevisions(t){"
+ok  CLI    1 @312679     24B  "async readRevision(t,r){"
+ok  CLI    1 @312887     30B  "async revisionAtOrBefore(t,r){"
+ok  CLI    1 @306054     77B  "async print(t,r=[]){return this.printTimeline(t,en(t),t.stateUpdatedAt??0,r)}"
+ok  CLI    1 @309361     63B  "async printedAt(t,r,n){if(n!==void 0&&n<(t.stateUpdatedAt??0)){"
+ok  CLI    1 @309652     17B  "async history(t){"
+ok  CLI    1 @310395     55B  "return await this.writeTimeline(o,c.doc,c.added),a.rev}"
+ok  CLI    1 @306885     15B  "h=J0(r)?bt(r):r"
+ok  CLI    1 @308155     44B  "B=await this.revisionAtOrBefore(o,h.rev)??_,"
+ok  CLI    1 @308306     33B  "X=On(B,_,Y.doc,{prefer:n.prefer})"
+ok  CLI    1 @308653    152B  "let g=await this.writeTimeline(i,X.doc,[...w,...Y.added]);return p({applied:!0,ops:Q,conflicts:M,diagnostics:k,rev:g?.stateUpdatedAt??i.stateUpdatedAt})"
+ok  CLI    1 @310450     38B  "writeTimeline(t,r,n){let o={...Fn(t,r)"
+ok  CLI    1 @310588     68B  "return this.options.bundles.updateScoped(Vp(o),{ownedFields:[...Ss],"
+ok  CLI    1 @312135     39B  "await rb(this.mirrorPath(t),r,\"utf8\"))}"
+ok  CLI    1 @305923    131B  "async sync(t,r,n=[]){await this.recordRevision(t,r);let o=await this.print(t,n);await this.writeMirror(r,o),await this.scaffold(r)}"
+ok  CLI    1 @166336     37B  "if(a&&(pI.has(i.name)||i.name===ae)||"
+ok  CLI    1 @302763     58B  "J0=e=>typeof e==\"string\",Q0=\"# This is a Cardboard project"
+ok  CLI    1 @304843     30B  "\",EA=async e=>{let t=await ho("
+ok  cb     1 @84         50B  "const require = __createRequire(import.meta.url);\n"
+ok  cb     1 @755754     14B  "var JN=uk(Ie);"
+ok  cb     1 @744336     87B  ".action(async(a,s)=>{let o=await z(r()),i=await P(o,a),c=await o.timeline.undo(i.id,s);"
+ok  cb     1 @606573     21B  "p(\"timeline_history\","
+ok  cb     1 @606876     18B  "p(\"undo_timeline\","
+ok  cb     1 @607180     15B  "p(\"list_media\","
+ok  cb     1 @604751     53B  "rev:f.number().int().optional().describe(\"With edits:"
+ok  cb     1 @207849    127B  "for(let u of t.matched)a.push(`matched: ${u.name} (${u.id}) ${u.distanceBefore} -> ${u.distanceAfter}`);return a.join(`\n`)},Nr="
 ```
 
 ### A.2 Mapped for the hooks still to come (H1b, H10, H11 import, H12, H13, the rest of H4–H7 and the UI)
+
+As mapped on 1.4.0 on 2026-10-31, before those hooks were built (their anchors are now in patch-carton.js and
+`scripts/carton/sync/patches/`, ported to 1.5.0 with the rest); kept for the record, in 1.4.0's names.
 
 ```
 ok  H1                CLI    1/1 @157798    62B  "updateScoped(t,r){return this.mutate(t.id,n=>qx(n,pd(n,t,r)))}"

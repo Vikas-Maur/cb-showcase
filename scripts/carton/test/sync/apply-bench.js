@@ -280,7 +280,7 @@ async function drive() {
     // what actually runs: the facade and cb's two patched bundles, by hash
     const sha = (f) => require("crypto").createHash("sha256").update(fs.readFileSync(f)).digest("hex").slice(0, 16);
     const b = builtIn(bld.dir);
-    bld.artifacts = { facade: sha(facade), cb: sha(path.join(b.cli, "cardboard.mjs")), cbChunk: sha(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")), worker: sha(b.worker) };
+    bld.artifacts = { facade: sha(facade), cb: sha(path.join(b.cli, "cardboard.mjs")), cbChunk: sha(b.chunk), worker: sha(b.worker) };
     console.log(JSON.stringify({ build: bld.name, tree: bld.tree, head, artifacts: bld.artifacts }));
   }
   const rowsFile = path.join(OUT, "rows.jsonl"), cellsFile = path.join(OUT, "cells.jsonl");

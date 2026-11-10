@@ -78,12 +78,12 @@ test("#2 a print carries Carton's exact header; its base, and an old numeric pri
 
 /**
  * Open Project in cb's copy (the CLI chunk's library, as `cb project open <file.cbproj>` calls it; `project open`
- * itself refuses --root, cbproj.test.js). `Za` is the chunk's library opener in Cardboard 1.4.0.
+ * itself refuses --root, cbproj.test.js). `bb` is the chunk's library opener in Cardboard 1.5.0 (1.4.0's `Za`).
  */
 function cliOpen(b, pc, file) {
-  const chunk = require("url").pathToFileURL(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")).href;
+  const chunk = require("url").pathToFileURL(b.chunk).href;
   const code = `const m = await import(${JSON.stringify(chunk)});
-const lib = await m.Za({ root: ${JSON.stringify(pc.root)} });
+const lib = await m.bb({ root: ${JSON.stringify(pc.root)} });
 try { const p = await lib.projects.openArchive(${JSON.stringify(file)}); console.log(JSON.stringify({ ok: true, id: p?.id })); }
 catch (e) { console.log(JSON.stringify({ ok: false, error: String(e?.message ?? e) })); }`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env: pc.env, encoding: "utf8", timeout: 120_000 });

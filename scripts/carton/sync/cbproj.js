@@ -1,4 +1,4 @@
-// H11 "Bring in their changes" (PLAN §13, §16 H11; carton/docs/INTEGRATION-1.4.0.md §4.5): what Carton adds to
+// H11 "Bring in their changes" (PLAN §13, §16 H11; carton/docs/INTEGRATION-1.5.0.md §4.5): what Carton adds to
 // Cardboard's own .cbproj Save As and Open Project, in both copies of them (the CLI's and the library worker's).
 // build.js bundles this file into carton-node.cjs (worker.js imports it), so it shares the facade's one copy of
 // @carton/*. The patches (patches/cbproj.js) reach it through globalThis.__cartonCbproj, set below, and only with

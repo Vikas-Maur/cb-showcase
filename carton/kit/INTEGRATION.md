@@ -7,7 +7,7 @@ test proves it.
 It uses the names of Cardboard's own code: the project store and its `applyMutation`, `writeNow` and `updateScoped`;
 the timeline mirror and its `apply`, `applyEdits`, `recordRevision` and `history`; the editor store's save path; and
 so on. These are the names of Cardboard 1.4.0, read from the shipped app. Our Windows build makes the same changes by
-patching the minified bundles, and [`carton/docs/INTEGRATION-1.4.0.md`](../docs/INTEGRATION-1.4.0.md) maps every hook
+patching the minified bundles, and [`carton/docs/INTEGRATION-1.5.0.md`](../docs/INTEGRATION-1.5.0.md) maps every hook
 below to its exact place there. In your source the changes are simpler: no bridges, no anchors.
 
 Hook numbers H1–H13 are the plan's (§16). Every Carton call on this page is real. The samples under

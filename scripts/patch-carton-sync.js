@@ -1,5 +1,5 @@
 // Carton's live-sync and sharing half in Cardboard's bundles (H8's Share panel, Invite to edit and Join, H10, H11's
-// "Bring in their changes", H13): carton/docs/INTEGRATION-1.4.0.md §2 and README "Carton: live sync and sharing".
+// "Bring in their changes", H13): carton/docs/INTEGRATION-1.5.0.md §2 and README "Carton: live sync and sharing".
 // It runs right after patch-carton.js, on the files it wrote (build-windows.js and scripts/carton/test/stage.js call
 // it), and refuses a file that already has these patches. Each part lives in scripts/carton/sync/patches/<part>.js and
 // exports `app({ main, worker, index, editor, store })` and/or `cli({ cb, chunk })`, each value being the file's
@@ -7,7 +7,7 @@
 // With Carton off at run time (CARDBOARD_CARTON=0; it is on by default) nothing here runs: each patch is behind `window.__carton?.on`
 // or `__carton.on` / `__cartonMain.on` / `__cartonCli.on`, and the worker's services exist only when the facade loads.
 // Usage: node patch-carton-sync.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>
-//        node patch-carton-sync.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
+//        node patch-carton-sync.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-AEX5IIG7.mjs>
 const fs = require("fs");
 const path = require("path");
 
@@ -54,8 +54,8 @@ if (mode === "--app") {
   run({ main, worker, index, editor, store });
 } else if (mode === "--cli") {
   const [cb, chunk] = files;
-  if (!chunk) throw new Error("usage: node patch-carton-sync.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs>");
+  if (!chunk) throw new Error("usage: node patch-carton-sync.js --cli <cardboard.mjs> <chunk-AEX5IIG7.mjs>");
   run({ cb, chunk });
 } else {
-  throw new Error("usage: node patch-carton-sync.js --app <five files> | --cli <cardboard.mjs> <chunk-LL26E55H.mjs>");
+  throw new Error("usage: node patch-carton-sync.js --app <five files> | --cli <cardboard.mjs> <chunk-AEX5IIG7.mjs>");
 }

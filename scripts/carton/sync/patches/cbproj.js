@@ -1,5 +1,5 @@
-// H11 "Bring in their changes" (PLAN §13; carton/docs/INTEGRATION-1.4.0.md §4.5) in both copies of Cardboard's .cbproj
-// Save As and Open Project: the CLI's (chunk-LL26E55H.mjs) and the library worker's (library-worker.js). The code is
+// H11 "Bring in their changes" (PLAN §13; carton/docs/INTEGRATION-1.5.0.md §4.5) in both copies of Cardboard's .cbproj
+// Save As and Open Project: the CLI's (chunk-AEX5IIG7.mjs) and the library worker's (library-worker.js). The code is
 // scripts/carton/sync/cbproj.js, bundled into carton-node.cjs; each patch calls it through a small preamble that loads
 // carton-node.cjs the way the store bridge does (the same file, so the same module instance). Every Carton hook is
 // behind `__carton.on`: with Carton off the bundles run 1.4.0's code, including its "This project ID already exists in
@@ -28,7 +28,7 @@
 const preamble = (dir) => String.raw`var __cartonCbprojApi = () => {
   if (!globalThis.__cartonCbproj) {
     try { require(require("node:path").join(process.env.CARTON_DIR || ${dir}, "carton-node.cjs")); }
-    catch (e) { console.warn("[carton] Carton didn't load; .cbproj files open and save as in Cardboard 1.4.0:", e?.message ?? e); }
+    catch (e) { console.warn("[carton] Carton didn't load; .cbproj files open and save as in Cardboard:", e?.message ?? e); }
   }
   return globalThis.__cartonCbproj ?? null;
 };

@@ -1,6 +1,6 @@
 // The bridge between Cardboard's project store and timeline mirror and Carton. It is injected into both copies of
-// them: the CLI's (chunk-LL26E55H.mjs) and the library worker's (library-worker.js). patch-carton.js places the hooks;
-// carton/docs/INTEGRATION-1.4.0.md §4.1–4.2 says what each one does and why.
+// them: the CLI's (chunk-AEX5IIG7.mjs) and the library worker's (library-worker.js). patch-carton.js places the hooks;
+// carton/docs/INTEGRATION-1.5.0.md §4.1–4.2 says what each one does and why.
 // Carton is on by default; CARDBOARD_CARTON=0 (or false / off / no) turns it off (the same rule in main-bridge.js and
 // cli-bridge.js). With Carton off, every hook runs Cardboard's own code and nothing of Carton is loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
 // Usage: require("./carton/store-bridge")({ dir, slice, who, codec }) → the preamble's text. `dir` is a JS expression

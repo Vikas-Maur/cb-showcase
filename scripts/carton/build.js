@@ -1,4 +1,4 @@
-// Bundles Carton for the Windows build (build-windows.js runs it; see carton/docs/INTEGRATION-1.4.0.md §2):
+// Bundles Carton for the Windows build (build-windows.js runs it; see carton/docs/INTEGRATION-1.5.0.md §2):
 //   <resources>/carton/carton-node.cjs     the facade (carton-node.js) with @carton/* for the library worker, main and cb
 //   <resources>/carton/engine-thread-main.js, helper-main.js, factory.js
 //                                          @carton/local's engine thread, headless helper and engine factory, which it

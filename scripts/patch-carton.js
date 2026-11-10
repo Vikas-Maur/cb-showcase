@@ -1,11 +1,11 @@
 // Carton in Cardboard's bundles: version history, cuts, fold in, credits and live collaboration. What each hook does,
-// in Cardboard's own terms, is in carton/docs/INTEGRATION-1.4.0.md; the numbers below (H1…H13) are its hook numbers.
+// in Cardboard's own terms, is in carton/docs/INTEGRATION-1.5.0.md; the numbers below (H1…H13) are its hook numbers.
 // It runs after the Windows patches, on the files they wrote. Each Windows patch script starts again from its pristine
 // copy, so a rebuild runs both in order; this script refuses a file that already has Carton in it.
 // With Carton off at run time (CARDBOARD_CARTON=0; it is on by default), every hook runs Cardboard's own code; only the .cbproj
 // exclusions (H11: .carton/ and Carton's own view files) apply either way. build-windows.js --no-carton leaves this
 // script out.
-// Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
+// Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-AEX5IIG7.mjs>
 //        node patch-carton.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js> [tabs-*.js]
 const fs = require("fs");
 const path = require("path");
@@ -235,7 +235,7 @@ const patchStore = (replace, k) => {
 const [mode, ...files] = process.argv.slice(2);
 if (mode === "--cli") {
   const [cbFile, chunkFile] = files;
-  if (!chunkFile) throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs>");
+  if (!chunkFile) throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-AEX5IIG7.mjs>");
   const shim = `const require = __createRequire(import.meta.url);\n`;
   patch(chunkFile, (replace) => {
     replace(shim, shim + require("./carton/store-bridge")(STORE.cli));
@@ -494,5 +494,5 @@ if (mode === "--cli") {
     prepend(require("./carton/strip-buttons"));
   });
 } else {
-  throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs> | --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
+  throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-AEX5IIG7.mjs> | --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
 }

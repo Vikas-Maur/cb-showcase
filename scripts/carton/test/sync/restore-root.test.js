@@ -513,7 +513,7 @@ test("3d. another project's history, or another computer's, is never used to fin
   }
 });
 
-/** Cardboard 1.4.0's own project.json reader (`ti`, library-worker.js), out of the pristine bundle: null when it refuses. */
+/** Cardboard's own project.json reader (`ui` in 1.5.0's library-worker.js, 1.4.0's `ti`), out of the pristine bundle: null when it refuses. */
 function cardboardReader() {
   const Module = require("module");
   const file = path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "library-worker.js");
@@ -521,7 +521,7 @@ function cardboardReader() {
   const m = new Module(file, module);
   m.filename = file;
   m.paths = Module._nodeModulePaths(path.dirname(file));
-  m._compile(src.slice(0, src.lastIndexOf("wte().catch(")) + "module.exports={parse:ti};", file);
+  m._compile(src.slice(0, src.lastIndexOf("Fie().catch(")) + "module.exports={parse:ui};", file);
   return m.exports.parse;
 }
 

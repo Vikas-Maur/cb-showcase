@@ -1,6 +1,6 @@
 // Carton in the editor's pages (H4–H7), injected at the top of the editor store's bundle (installErrorTelemetry-*.js),
 // which the main bundle and the editor bundle both import. patch-carton.js places the hooks; carton/docs/
-// INTEGRATION-1.4.0.md §4.3 says why each one is where it is.
+// INTEGRATION-1.5.0.md §4.3 says why each one is where it is.
 // - H4: a timeline save carries the version the editor shows (cartonBase), its actor and the recorded remaps, so the
 //   worker commits only the person's edits. A preview of an earlier version is read-only.
 // - H5: a change from elsewhere is adopted without an undo entry and without dropping a pending save: the armed save

@@ -115,12 +115,12 @@ function readOnlyCut(pc, pick) {
 /**
  * Open Project in cb's copy (the CLI chunk's library, as `cb project open <file.cbproj>` calls it). cb itself can't be
  * used here: `project open` refuses --root before importing (it shows the project in the running app), and without
- * --root it needs a signed-in account. `Za` is the chunk's library opener in Cardboard 1.4.0 (cb's `H`).
+ * --root it needs a signed-in account. `bb` is the chunk's library opener in Cardboard 1.5.0 (1.4.0's `Za`; cb's `z`).
  */
 function cliOpen(pc, file, extra = {}, method = "openArchive") {
-  const chunk = pathToFileURL(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")).href;
+  const chunk = pathToFileURL(b.chunk).href;
   const code = `const m = await import(${JSON.stringify(chunk)});
-const lib = await m.Za({ root: ${JSON.stringify(pc.root)} });
+const lib = await m.bb({ root: ${JSON.stringify(pc.root)} });
 try { const p = await lib.projects.${method}(${JSON.stringify(file)}); console.log(JSON.stringify({ ok: true, id: p?.id })); }
 catch (e) { console.log(JSON.stringify({ ok: false, error: String(e?.message ?? e) })); }`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env: { ...pc.env, ...extra }, encoding: "utf8", timeout: 120_000 });
