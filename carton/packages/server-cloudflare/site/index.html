@@ -39,13 +39,14 @@ a{color:inherit}
 
 /* the video row, after cardboard.ai's "Made with Cardboard": a centred serif heading, then tiles with no browser
    controls. A tile shows its poster and a small round play button in its corner (off the picture's subject); on a desktop, hovering plays it muted as a preview; a click
-   or tap plays it from the start with sound and its controls. One video plays at a time. Three to a row on a wide
+   or tap anywhere on it plays it from the start with sound and its controls; a click on the picture pauses or resumes it,
+   and paused for a moment it shows the play button again. One video plays at a time. Three to a row on a wide
    screen; a fourth starts the next row. */
 .videos{padding-top:56px}
 .videos .head{margin:0 0 28px;text-align:center;font-size:40px;line-height:1.15}
 .videos .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .video{margin:0}
-.frame{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#0d0d0d;box-shadow:0 0 0 1px rgba(255,255,255,.08);transition:box-shadow .2s}
+.frame{position:relative;aspect-ratio:16/9;border-radius:12px;overflow:hidden;cursor:pointer;background:#0d0d0d;box-shadow:0 0 0 1px rgba(255,255,255,.08);transition:box-shadow .2s}
 .frame video{position:absolute;inset:0;width:100%;height:100%;border:0;background:#000;object-fit:cover}
 .frame .play{position:absolute;left:12px;bottom:12px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.14);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:0 0 0 1px rgba(255,255,255,.2),0 8px 24px rgba(0,0,0,.35);color:#fff;cursor:pointer;transition:opacity .2s,transform .2s}
 .frame .play svg{width:17px;height:17px;margin-left:2px;fill:currentColor}
@@ -173,24 +174,51 @@ footer a:hover{color:#fff}
 <footer>Cardboard showcase · <a href="/changelog/">See what we've built →</a> · <a href="/cost/">Cost calculator</a></footer>
 
 <script>
-// The video row: on a desktop, hovering a tile plays it muted as a preview, from where it was; a click or tap plays it
-// from the start with sound and its controls. One video plays at a time; when it ends, or another starts, it goes back
-// to its poster.
+// The video row. At rest a tile shows its poster and the corner play button; on a desktop, hovering plays it muted as
+// a preview. A click anywhere on a tile plays it from the start with sound and its own controls; a click on the picture
+// then pauses or resumes it (a click on the control bar is the controls'). Paused for a moment, a tile hides its
+// controls and shows the play button again, on the paused frame, and a click resumes it there. One video plays at a
+// time; at its end it goes back to its poster.
 const tiles = [...document.querySelectorAll("[data-video]")];
-const rest = (f) => { const v = f.querySelector("video"); f.classList.remove("playing", "previewing"); v.controls = false; v.muted = true; v.loop = true; v.load(); };
 const canHover = matchMedia("(hover: hover) and (pointer: fine)").matches;
+const BAR = 56; // px at the bottom of a playing video that belong to its control bar
+const IDLE = 2500; // ms paused, with the pointer still, before the play button comes back
+const is = (f, c) => f.classList.contains(c);
+const rest = (f) => {
+  const v = f.querySelector("video");
+  clearTimeout(f.idle);
+  f.classList.remove("playing", "paused", "previewing");
+  v.controls = false; v.muted = true; v.loop = true; v.load();
+};
+const start = (f, fromStart) => {
+  const v = f.querySelector("video");
+  for (const o of tiles) if (o !== f && (is(o, "playing") || is(o, "paused"))) rest(o);
+  clearTimeout(f.idle);
+  f.classList.remove("previewing", "paused"); f.classList.add("playing");
+  v.loop = false; v.muted = false; v.controls = true;
+  if (fromStart) v.currentTime = 0;
+  v.play().catch(() => {});
+};
 for (const f of tiles) {
   const v = f.querySelector("video");
-  f.querySelector(".play").addEventListener("click", () => {
-    for (const o of tiles) if (o !== f && (o.classList.contains("playing") || !o.querySelector("video").paused)) rest(o);
-    f.classList.remove("previewing"); f.classList.add("playing");
-    v.loop = false; v.muted = false; v.controls = true; v.currentTime = 0;
-    v.play().catch(() => {});
+  const settle = () => {
+    clearTimeout(f.idle);
+    f.idle = setTimeout(() => { if (is(f, "playing") && v.paused && !v.ended) { f.classList.replace("playing", "paused"); v.controls = false; } }, IDLE);
+  };
+  f.addEventListener("click", (e) => {
+    if (is(f, "playing") && e.clientY > v.getBoundingClientRect().bottom - BAR) return;
+    e.preventDefault();
+    if (!is(f, "playing")) start(f, !is(f, "paused"));
+    else if (v.paused) v.play().catch(() => {});
+    else v.pause();
   });
-  v.addEventListener("ended", () => { if (f.classList.contains("playing")) rest(f); });
+  v.addEventListener("pause", () => { if (is(f, "playing") && !v.ended) settle(); });
+  v.addEventListener("play", () => clearTimeout(f.idle));
+  f.addEventListener("mousemove", () => { if (is(f, "playing") && v.paused) settle(); });
+  v.addEventListener("ended", () => { if (is(f, "playing")) rest(f); });
   if (canHover) {
-    f.addEventListener("mouseenter", () => { if (!f.classList.contains("playing")) { f.classList.add("previewing"); v.play().catch(() => {}); } });
-    f.addEventListener("mouseleave", () => { if (!f.classList.contains("playing")) { f.classList.remove("previewing"); v.pause(); } });
+    f.addEventListener("mouseenter", () => { if (!is(f, "playing") && !is(f, "paused")) { f.classList.add("previewing"); v.play().catch(() => {}); } });
+    f.addEventListener("mouseleave", () => { if (is(f, "previewing")) { f.classList.remove("previewing"); v.pause(); } });
   }
 }
 // An invite link (#join=<project>.<code>) opened in a browser: show it to copy into Cardboard. The code stays in the
