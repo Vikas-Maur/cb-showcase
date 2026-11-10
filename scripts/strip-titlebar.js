@@ -1,7 +1,7 @@
 // The Windows title bar menu, injected into Cardboard's tab strip bundle by patch-strip.js. It runs in
 // that bundle's scope: c is React, n the JSX runtime, w joins class names, T calls main, O listens to
-// main, re() is the platform, E and S are motion and AnimatePresence, $/F claim and release room below
-// the strip for popovers, W/Y/fe/me are the strip's tab styles, mn its divider, Ae a caret, ae a check.
+// main, re() is the platform, E and C are motion and AnimatePresence, $/F claim and release room below
+// the strip for popovers, W/K/fe/me are the strip's tab styles, mn its divider, Ae a caret, ae a check.
 // Classes are the ones Cardboard's own menus use (the timeline context menu), so they exist in its CSS.
 module.exports = String.raw`
 const __cbWinBar = re() === "win32";
@@ -300,11 +300,11 @@ const __cbMenu = ({ separated }) => {
             title: "Menu (Alt)",
             onClick: (e) => toggle.current(e.detail === 0),
             onKeyDown: (e) => { !open && e.key === "ArrowDown" && (e.preventDefault(), show(!0)); },
-            className: w(W, "w-[28px] shrink-0 justify-center", open ? fe : Y),
+            className: w(W, "w-[28px] shrink-0 justify-center", open ? fe : K),
             children: [open && n.jsx(me, {}), n.jsx(__cbMark, {})],
           }),
-          n.jsx(S, { children: rootPanel }),
-          n.jsx(S, { children: subPanel }),
+          n.jsx(C, { children: rootPanel }),
+          n.jsx(C, { children: subPanel }),
         ],
       }),
       separated && n.jsx(mn, {}),
