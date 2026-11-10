@@ -758,7 +758,7 @@ function dashboard(ready, on = false, { win = {}, portal = (x) => x, doc = {} } 
   part.app({ editor: file("editor"), index: file("index") });
   if (ready !== undefined) win.__carton = { ...win.__carton, on, ready };
   const src = pre.join("\n").split('import("./carton-ui.js")').join("window.__testUi()");
-  const api = new Function("r", "i", "Au", "window", "document", src + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn, Host: typeof __cbCartonJoinHost === 'function' ? __cbCartonJoinHost : null };")(React, fromReact("react/jsx-runtime"), { createPortal: portal }, win, doc);
+  const api = new Function("r", "i", "Tu", "window", "document", src + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn, Host: typeof __cbCartonJoinHost === 'function' ? __cbCartonJoinHost : null };")(React, fromReact("react/jsx-runtime"), { createPortal: portal }, win, doc);
   return { edits, ...api };
 }
 
