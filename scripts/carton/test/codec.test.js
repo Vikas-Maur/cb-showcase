@@ -200,6 +200,46 @@ test("cb source apply of a file under a Carton header merges against that exact 
   assert.equal(fs.readFileSync(path.join(b, "project.json"), "utf8"), before);
 });
 
+// Cardboard 1.5.0's edit API (the mirror's applyEdits: MCP apply_timeline/check_timeline with `edits` and the `rev` of
+// the print they were copied from), in cb's copy: with Carton on, that rev is Carton's header ref. printedAt prints the
+// version it names, so edits copied from an older print apply to that print and merge into head (1.5.0 alone took a
+// string rev for none and matched the edits against the current print); an unknown ref is the print-again error.
+test("applyEdits with a Carton header's rev: the edits apply to the print they were copied from and merge; an unknown one is the print-again error", { skip: noBuild }, async () => {
+  const extra = await real(), root = path.join(TMP, "lib-edits"), b = setup(carton.cli, root, extra);
+  const A = cartonHeader(carton.cli, root, extra), id = project(b).id;
+  // Since A: the clip runs to 2.5 s, and the title says "Hello there" (version B)
+  ok(cb(carton.cli, root, ["source", "apply", "Demo", write("edits-b.tsx", clipTo25(timeline(b)).replace('textContent="Hello"', 'textContent="Hello there"'))], extra), "apply B");
+  // the CLI chunk's own library (cb's `z`, the chunk's `bb` in 1.5.0) and its mirror's applyEdits
+  const edits = (list, rev) => {
+    const code = `const m = await import(${JSON.stringify(require("url").pathToFileURL(carton.chunk).href)});
+const lib = await m.bb({ root: ${JSON.stringify(root)} });
+try { await lib.projects.list(); const r = await lib.timeline.applyEdits(${JSON.stringify(id)}, ${JSON.stringify(list)}, { rev: ${JSON.stringify(rev)} }); console.log(JSON.stringify({ ok: true, applied: r.applied, diagnostics: r.diagnostics, carton: r.carton })); }
+catch (e) { console.log(JSON.stringify({ ok: false, error: String(e?.message ?? e) })); }`;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env: env(extra), encoding: "utf8", timeout: 120_000 });
+    const line = (r.stdout ?? "").split("\n").reverse().find((l) => l.startsWith('{"ok"'));
+    assert.ok(line, "no answer from the CLI's library:\n" + r.stdout + r.stderr);
+    return JSON.parse(line);
+  };
+  // 1. Copied from A's print: its text is still "Hello" there (head says "Hello there"), so only A's print has it
+  const r1 = edits([{ oldText: "fontSize={120}", newText: "fontSize={140}" }, { oldText: 'textContent="Hello"', newText: 'textContent="Hi"' }], A);
+  assert.equal(r1.ok, true, r1.error);
+  assert.equal(r1.applied, true, JSON.stringify(r1.diagnostics));
+  let p = project(b);
+  // merged against A: B's clip stays; the size lands; the text both changed since A is a clash, head keeps B's
+  assert.deepEqual([item(p, "video").endTime, item(p, "text").fontSize, item(p, "text").textContent], [2.5, 140, "Hello there"]);
+  assert.equal(r1.carton?.status, "conflicts", JSON.stringify(r1.carton));
+  // 2. No rev: the current print, as 1.5.0 does
+  const r2 = edits([{ oldText: "fontSize={140}", newText: "fontSize={150}" }], undefined);
+  assert.equal(r2.applied, true, JSON.stringify(r2.diagnostics));
+  assert.equal(item(project(b), "text").fontSize, 150);
+  // 3. A Carton ref nothing can rebuild: the print-again error, nothing written
+  const before = fs.readFileSync(path.join(b, "project.json"), "utf8");
+  const r3 = edits([{ oldText: "fontSize={120}", newText: "fontSize={99}" }], A.replace(/~[0-9a-f]{8} /, "~deadbeef "));
+  assert.equal(r3.ok, false);
+  assert.match(r3.error, PRINT_AGAIN);
+  assert.equal(fs.readFileSync(path.join(b, "project.json"), "utf8"), before);
+});
+
 test("the worker's apply of a file under a Carton header merges against that exact version; an unknown one is the print-again error", { skip: noBuild }, async () => {
   const extra = await real(), seed = path.join(TMP, "lib-real-worker-seed"), b = setup(carton.cli, seed, extra);
   const old = timeline(b), A = cartonHeader(carton.cli, seed, extra);
